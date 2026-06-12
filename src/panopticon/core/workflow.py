@@ -1,0 +1,250 @@
+"""The workflow interface: an abstract base class each concrete workflow subclasses.
+
+A workflow is **code, not data** (ADR 0004). Its states are :mod:`~panopticon.core.state`
+classes nested inside the workflow class; they are discovered, their string transition
+references resolved to classes, and the whole graph validated the first time the workflow is
+queried — then cached (à la an ORM's lazy mapper-configuration step). The resolved graph
+lives in the :attr:`Workflow._graph` cached property; the public methods answer state-machine
+queries against it.
+"""
+
+from __future__ import annotations
+
+from abc import ABC
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
+from functools import cached_property
+from typing import ClassVar
+
+from panopticon.core.models import Actor, HistoryEntry, Responsibility, Task
+from panopticon.core.state import BaseState, Complete, Dropped, State, TerminalState
+
+_ABSTRACT_BASES = (BaseState, State, TerminalState)
+
+
+class InvalidWorkflow(Exception):
+    """Raised when a workflow's states/transitions are inconsistent or unresolvable."""
+
+
+class IllegalTransition(Exception):
+    """Raised when a requested transition is not permitted for a task's current state."""
+
+
+class ResponsibilitiesNotMet(Exception):
+    """Raised when the turn is handed back before the state's responsibilities are resolved.
+
+    A responsibility is unresolved if it is still ``PENDING``, or ``FAILED`` without a comment.
+    """
+
+
+def _nested_states(workflow_cls: type) -> Iterator[type[BaseState]]:
+    """Yield the state classes nested in a workflow class, in definition order."""
+    for value in vars(workflow_cls).values():
+        if isinstance(value, type) and issubclass(value, BaseState) and value not in _ABSTRACT_BASES:
+            yield value
+
+
+def _accumulated_transitions(state_cls: type[BaseState]) -> Iterator[type[BaseState] | str]:
+    """Yield the ``transitions`` declared at every level of a state's MRO.
+
+    This is how the inherited ``Dropped`` (declared on :class:`State`) combines with a
+    concrete state's own transitions.
+    """
+    for klass in state_cls.__mro__:
+        declared = klass.__dict__.get("transitions")
+        if declared:
+            yield from declared
+
+
+@dataclass(frozen=True)
+class _Graph:
+    """The resolved, validated state graph — built once and cached on the workflow."""
+
+    states: dict[str, type[BaseState]]  # label -> state class
+    transitions: dict[str, frozenset[str]]  # label -> reachable labels
+    initial: str  # label of the initial state
+
+
+class Workflow(ABC):
+    """Abstract base for a workflow definition (the workflow interface)."""
+
+    #: Stable identifier used to register and select the workflow.
+    name: ClassVar[str]
+    #: The state a new task starts in — a nested ``State`` class or its label string.
+    initial: ClassVar[type[BaseState] | str]
+
+    # -- build / validate (the resolution pass; answers "why not a free function?") -----
+
+    @cached_property
+    def _graph(self) -> _Graph:
+        """Discover, resolve, and validate this workflow's states — once, then cached."""
+        by_label: dict[str, type[BaseState]] = {}
+
+        def register(cls: type[BaseState]) -> None:
+            if cls in _ABSTRACT_BASES:
+                raise InvalidWorkflow(
+                    f"{self.name!r}: abstract base {cls.__name__} used as a state"
+                )
+            label = getattr(cls, "label", None)
+            if not label:
+                raise InvalidWorkflow(f"{self.name!r}: state {cls.__name__} has no label")
+            existing = by_label.get(label)
+            if existing is not None and existing is not cls:
+                raise InvalidWorkflow(f"{self.name!r}: duplicate state label {label!r}")
+            by_label[label] = cls
+
+        for cls in _nested_states(type(self)):
+            register(cls)
+        # Built-in terminals are always available (so "DROPPED"/"COMPLETE" resolve, and the
+        # required Dropped state is always present).
+        register(Complete)
+        register(Dropped)
+
+        def label_of(target: type[BaseState] | str) -> str:
+            if isinstance(target, str):
+                if target not in by_label:
+                    raise InvalidWorkflow(
+                        f"{self.name!r}: reference to unknown state {target!r}"
+                    )
+                return target
+            if not (isinstance(target, type) and issubclass(target, BaseState)):
+                raise InvalidWorkflow(f"{self.name!r}: invalid transition target {target!r}")
+            if target.label not in by_label:
+                register(target)  # a directly-referenced class not nested (e.g. a built-in)
+            return target.label
+
+        states: dict[str, type[BaseState]] = {}
+        transitions: dict[str, frozenset[str]] = {}
+        for label, cls in list(by_label.items()):
+            if getattr(cls, "turn_on_enter", None) is None:
+                raise InvalidWorkflow(f"{self.name!r}: state {label!r} has no turn_on_enter")
+            if issubclass(cls, TerminalState):
+                dests: frozenset[str] = frozenset()
+            else:
+                dests = frozenset(label_of(t) for t in _accumulated_transitions(cls))
+            states[label] = cls
+            transitions[label] = dests
+
+        initial = label_of(self.initial)
+        if "DROPPED" not in states:  # guaranteed by the built-in; assert the invariant
+            raise InvalidWorkflow(f"{self.name!r}: a DROPPED terminal state is required")
+        return _Graph(states=states, transitions=transitions, initial=initial)
+
+    # -- queries ----------------------------------------------------------------------
+
+    def _state_class(self, label: str) -> type[BaseState]:
+        try:
+            return self._graph.states[label]
+        except KeyError:
+            raise InvalidWorkflow(f"{self.name!r}: unknown state {label!r}") from None
+
+    @property
+    def initial_label(self) -> str:
+        return self._graph.initial
+
+    def labels(self) -> Iterator[str]:
+        """Yield all state labels (declared order, then built-in terminals)."""
+        yield from self._graph.states
+
+    def transitions(self, label: str) -> Iterator[str]:
+        """Yield the labels reachable directly from ``label`` — its resolved legal transitions."""
+        self._state_class(label)  # validate the label exists
+        yield from self._graph.transitions[label]
+
+    def can_transition(self, source: str, dest: str) -> bool:
+        self._state_class(source)  # validate the label exists
+        return dest in self._graph.transitions[source]
+
+    def is_terminal(self, label: str) -> bool:
+        return issubclass(self._state_class(label), TerminalState)
+
+    def turn_on_enter(self, label: str) -> Actor:
+        """Who holds the turn upon entering ``label`` (the state's declared value)."""
+        return self._state_class(label).turn_on_enter
+
+    def advanced_by(self, label: str) -> Actor:
+        """Who moves the task out of ``label`` — the user, or the agent once satisfied."""
+        cls = self._state_class(label)
+        if not issubclass(cls, State):
+            raise InvalidWorkflow(f"{self.name!r}: terminal state {label!r} does not advance")
+        return cls.advanced_by
+
+    def responsibilities(self, label: str) -> Iterator[Responsibility]:
+        """Yield the obligations (PENDING definitions) the agent takes on entering ``label``."""
+        yield from self._state_class(label).responsibilities
+
+    def skills(self) -> Sequence[str]:
+        """Workflow-specific in-container skills, on top of the core operations."""
+        return ()
+
+    # -- task lifecycle (deterministic: no clock, no I/O; timestamps passed in) ---------
+
+    def _promised(self, label: str) -> list[Responsibility]:
+        """A fresh PENDING responsibility list to seed the history entry for entering ``label``."""
+        return list(self.responsibilities(label))
+
+    def start_task(self, task_id: str, repo_id: str, *, at: str) -> Task:
+        """Create a task in this workflow's initial state, with turn and seed history set.
+
+        The seed history entry carries the initial state's responsibilities (all ``PENDING``).
+        """
+        state = self.initial_label
+        return Task(
+            id=task_id,
+            repo_id=repo_id,
+            workflow=self.name,
+            state=state,
+            turn=self.turn_on_enter(state),
+            history=[
+                HistoryEntry(
+                    at=at,
+                    from_state=None,
+                    to_state=state,
+                    trigger="start",
+                    responsibilities=self._promised(state),
+                )
+            ],
+        )
+
+    def apply_transition(
+        self,
+        task: Task,
+        to_state: str,
+        *,
+        at: str,
+        trigger: str | None = None,
+        note: str | None = None,
+    ) -> Task:
+        """Validate and apply a transition, mutating ``task`` in place and returning it.
+
+        Enforces, in order: the task is not terminal; the transition is legal; and, unless
+        this is a **drop**, that every responsibility promised on entering the *current* state
+        is resolved (each ``MET`` or ``FAILED``-with-comment, none ``PENDING``). Dropping is
+        always allowed and bypasses the gate. On success, appends a new history entry for the
+        destination state — seeded with *its* responsibilities (``PENDING``) — and recomputes
+        the turn.
+        """
+        if self.is_terminal(task.state):
+            raise IllegalTransition(f"task {task.id!r} is terminal ({task.state!r})")
+        if not self.can_transition(task.state, to_state):
+            raise IllegalTransition(f"{self.name!r}: no transition {task.state!r} -> {to_state!r}")
+        # Dropping is the universal escape hatch — always allowed, never gated.
+        if to_state != Dropped.label:
+            outstanding = task.outstanding_responsibilities
+            if outstanding:
+                raise ResponsibilitiesNotMet(
+                    f"{self.name!r}: responsibility {outstanding[0].key!r} is not resolved"
+                )
+        task.history.append(
+            HistoryEntry(
+                at=at,
+                from_state=task.state,
+                to_state=to_state,
+                trigger=trigger,
+                note=note,
+                responsibilities=self._promised(to_state),
+            )
+        )
+        task.state = to_state
+        task.turn = self.turn_on_enter(to_state)
+        return task
