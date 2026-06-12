@@ -16,12 +16,20 @@ See the `design-docs` branch for the full picture.
 
 ## Status
 
-Early development. Building Milestone 1 in vertical slices (see the roadmap). This slice
-lands the core contracts:
+Early development. Building Milestone 1 in vertical slices (see the roadmap). **Slice 1**
+lands the four contracts plus a walking skeleton:
 
-- `panopticon.core` — domain models, the workflow port (`Workflow` ABC), and the
-  deterministic lifecycle engine (state machine, turn tracking, responsibility gating).
-- `panopticon.workflows.FreeFormWorkflow` — the minimal seed workflow.
+- `panopticon.core` — domain models, state classes, the `Workflow` interface (the
+  deterministic state machine: resolution, turn tracking, responsibility gating), and the
+  store & artifact interfaces.
+- `panopticon.taskservice` — the control plane: `TaskService`, a FastAPI REST API, the
+  SQLAlchemy store adapter (in-memory or on-disk SQLite), the filesystem artifact store, and
+  the MCP surface contract.
+- `panopticon.sessionservice` / `panopticon.container` — a stub runner and the container
+  entrypoint protocol that drive the end-to-end walking skeleton (no Docker, no LLM yet).
+- `panopticon.workflows.Spike` — the minimal seed workflow.
+
+See [`CLAUDE.md`](CLAUDE.md) for the operating manual and the determinism invariant.
 
 ## Development
 
