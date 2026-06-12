@@ -41,6 +41,9 @@ in the ADRs; this file is for the smaller stuff that doesn't have a home there y
   _(Slice 1, P2)_
 - [ ] **Registrations are in-memory** — lost on task-service restart; no reconciliation with
   live containers on reconnect (relates to ADR 0008 failure-handling). _(Slice 1, P2)_
+- [ ] **Slug-addressable artifacts** — once a task has a `slug`, both
+  `tasks/{task_id}/artifacts/{name}` and `tasks/{slug}/artifacts/{name}` should resolve to the
+  same artifact (slug as an alias for the id on the artifact routes). _(Slice 1, P3)_
 
 ## Tracked elsewhere (pointers, do not duplicate)
 

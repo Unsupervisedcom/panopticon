@@ -4,13 +4,16 @@ version = "0.0.1"
 description = "Orchestrate multiple coding agents across isolated tasks and configurable workflows."
 requires-python = ">=3.11"
 dependencies = [
+    "fastapi>=0.110",
     "sqlalchemy>=2.0.50",
+    "uvicorn>=0.29",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8",
     "mypy>=1.11",
+    "httpx>=0.27",
 ]
 
 [build-system]
