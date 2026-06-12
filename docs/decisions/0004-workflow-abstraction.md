@@ -7,8 +7,8 @@
   boundary. See "Where imperative behavior runs" below.
 - Amended: 2026-06-12 — terminology + model: the "ball" is now the **turn**; a state's
   Definition-of-Done is now the agent's **responsibilities** (agent-only, unlike cloude-cade);
-  each settles to a **status** (`PENDING`/`MET`/`FAILED`, a `FAILED` one needs a comment) and
-  the settled set is recorded per turn in history.
+  each resolves to a **status** (`PENDING`/`MET`/`FAILED`, a `FAILED` one needs a comment) and
+  the resolved set is recorded per turn in history.
 - Deciders: Charlie Scherer
 
 ## Context
@@ -64,8 +64,8 @@ Within the class, the two kinds of responsibility are expressed differently:
     (agent-driven), which feeds the agnostic turn-tracking;
   - the **transition policy** (which transitions are user-approved vs. auto-advance);
   - the **responsibilities** per state — the agent's obligations to fulfil before handing
-    the turn back. Each settles to a **status** (`PENDING` → `MET`/`FAILED`; a `FAILED`
-    responsibility requires a comment), and the settled set is recorded per turn in history.
+    the turn back. Each resolves to a **status** (`PENDING` → `MET`/`FAILED`; a `FAILED`
+    responsibility requires a comment), and the resolved set is recorded per turn in history.
 - **Imperative behavior** — what the workflow *does* at defined moments. This is delivered
   in two forms depending on where it must run (see "Where imperative behavior runs" below):
   - **provisioning** — forge-side setup a task needs on entry (PR creation, ADOPT-style
@@ -74,7 +74,7 @@ Within the class, the two kinds of responsibility are expressed differently:
   - **remote VCS / forge integration** — PR creation, CI watching/fixing, merge-queue
     shepherding (the `babysit-*` behaviors). Workflow-specific because it talks to a remote
     forge; local git is not. *Largely delivered as in-container skills (see below).*
-  - **settling responsibilities** — the agent judges each of the current state's
+  - **resolving responsibilities** — the agent judges each of the current state's
     responsibilities `MET` or `FAILED` (with a comment) before handing the turn back
     (in-container);
   - **lifecycle hooks** — e.g. on-plan-accepted, on-transition;
@@ -97,7 +97,7 @@ make **no LLM calls** — all LLM work happens inside task containers. A workflo
   calls these directly.
 - **Container side (LLM, in the task container):** the workflow's **skills** — agent-driven
   procedures such as planning, implementing, `babysit-ci`'s diagnose-and-fix loop, and
-  settling its responsibilities. The agent runs these and calls back to the task service
+  resolving its responsibilities. The agent runs these and calls back to the task service
   over REST/MCP to record results and request transitions.
 
 So the `babysit-*` "handlers" are **not** control-plane methods that call an LLM; they are
@@ -187,10 +187,10 @@ future use case demands it (e.g. untrusted or multi-tenant operation).
 - **Residual trust risk.** Reviewing workflow code is the user's responsibility (decided
   above, not engine-enforced). This is acceptable for single-user operation but should be
   revisited for Milestone 5 (remote execution) and any future multi-tenant use.
-- **Responsibility settlement** is now decided (2026-06-12 amendment): the agent settles
+- **Responsibility resolution** is now decided (2026-06-12 amendment): the agent resolves
   each of a state's responsibilities `MET`/`FAILED` (FAILED needs a comment) before handing
-  the turn back; the engine gates the transition on all being settled, without knowing
-  workflow specifics, and records the settled set in history.
+  the turn back; the engine gates the transition on all being resolved, without knowing
+  workflow specifics, and records the resolved set in history.
 - **Cleanup composition** — workflow-specific teardown must compose predictably with the
   core's agnostic teardown and its confirmation/exit-code gating (PARITY §12).
 - **Multiple concurrent workflows** — the dashboard, history, and turn-tracking must

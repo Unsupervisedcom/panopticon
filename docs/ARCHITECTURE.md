@@ -169,7 +169,7 @@ registration. Sketch of the ABC's two faces:
 - **Declarative members** (data the control plane reads):
   - `states`, `transitions`, and per-state `foreground`/`background` classification;
   - `transition_policy` (user-approved vs. auto-advance);
-  - `responsibilities(state)` → the agent's obligations for that state (each settles to a
+  - `responsibilities(state)` → the agent's obligations for that state (each resolves to a
     `status`: `PENDING` → `MET`/`FAILED`, a `FAILED` one needs a comment);
   - `skills()` → the catalogue of workflow-specific skills exposed in the container (e.g.
     `babysit-ci`), on top of the core operations (`advance`, `drop`). A free-form workflow
@@ -199,7 +199,7 @@ active workflow*, not a fixed global list.
   `state`, **`turn`** (`agent`/`user`), `mode` (fg/bg), git refs (branch/worktree), optional
   forge refs (PR), and an **optional `slug`** (see §8.3).
 - **History** — append-only transition log per task. Each entry: timestamp, from/to state,
-  via, and the **responsibilities settled that turn** (each with its `status` and, if
+  via, and the **responsibilities resolved that turn** (each with its `status` and, if
   `FAILED`, the agent's comment). This is cloude-cade's `** Log` as structured rows — but
   responsibilities are **agent-only** obligations (a deliberate divergence: cloude-cade's DoD
   could include user items; here user actions just drive transitions directly).

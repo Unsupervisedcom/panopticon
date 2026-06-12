@@ -32,7 +32,7 @@ the **sole authority over task state** and the host for orchestration logic.
 - **Hosts the workflow registry (ADR 0004).** On startup it loads all workflow classes
   via path-based registration; it instantiates/dispatches to the active workflow for each
   task.
-- **Drives task lifecycle.** Applies workflow-defined transitions, runs responsibility settlement,
+- **Drives task lifecycle.** Applies workflow-defined transitions, runs responsibility resolution,
   invokes workflow imperative methods (provisioning, remote VCS integration, hooks,
   cleanup), and maintains the turn-tracking mechanism (workflows only supply the fg/bg
   classification).
