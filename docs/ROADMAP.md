@@ -48,7 +48,7 @@ later work can proceed in parallel against stable seams.
    "working on task X", and stays connected.
 
 Plus a **stubbed runner** and **fake container client** that drive the seed workflow through
-the real task service (no Docker yet), and the **state-machine + ball + DoD engine** with its
+the real task service (no Docker yet), and the **state-machine + turn + responsibility engine** with its
 **golden test harness** (the durable parity spec).
 
 **Acceptance:**
@@ -84,7 +84,7 @@ controller starts the daemons); container→host-service addressing (real).
 **Goal:** the operator surface.
 
 **Delivers:** the `panopticon` CLI; the Textual dashboard (presentation adapter, ADR 0002) as
-a REST client — task list, state/ball/history (read first); then **`t` → `tmux attach`** and
+a REST client — task list, state/turn/history (read first); then **`t` → `tmux attach`** and
 back; then **input** (capture idea, promote, drive transitions) over REST (PARITY §5).
 
 **Acceptance:** the dashboard reflects live task state; `t` switches into a task's tmux and
@@ -99,13 +99,13 @@ rejoins on detach; a task can be created and advanced from the UI.
 **Goal:** the cloude-cade lifecycle as a workflow class — minus remote forge.
 
 **Delivers:** the parity workflow (`PLANNING→ITERATING→REVIEW→MERGING→COMPLETE`/`DROPPED`),
-its DoD definitions + verdict semantics, fg/bg classification, transition policy; core
+its per-state responsibilities, fg/bg classification, transition policy; core
 operations (`advance`, `iterate`, `drop`); **local git** (branch/worktree) as core ops;
-the **plan artifact** (ADR 0003) + plan-accepted hook; ball-flip hooks.
+the **plan artifact** (ADR 0003) + plan-accepted hook; turn-flip hooks.
 
 **Acceptance:** a task runs the full parity lifecycle end-to-end (without forge skills),
-gated by DoD, with the ball flipping correctly; the golden harness covers every legal/illegal
-transition.
+gated by responsibilities, with the turn flipping correctly; the golden harness covers every
+legal/illegal transition.
 
 **Depends on:** Slices 1–3. **Resolves (JIT):** artifact concurrency (start simple:
 re-read-from-disk).

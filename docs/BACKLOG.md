@@ -39,9 +39,6 @@ in the ADRs; this file is for the smaller stuff that doesn't have a home there y
   _(Slice 1, P2)_
 - [ ] **Registrations are in-memory** — lost on task-service restart; no reconciliation with
   live containers on reconnect (relates to ADR 0008 failure-handling). _(Slice 1, P2)_
-- [ ] **DoD evaluation mechanism** — the engine gates on a single passed-in verdict; there's
-  no per-item evaluation (programmatic vs. agent-judged) or per-item tracking yet. Build with
-  the parity workflow (Slice 4). _(Slice 1, P2)_
 
 ## Tracked elsewhere (pointers, do not duplicate)
 

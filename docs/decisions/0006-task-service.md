@@ -7,8 +7,8 @@
 ## Context
 
 Across the ADRs, a hexagonal "core" has been described abstractly: it owns structured
-task state (ADR 0001), drives per-workflow state machines and the `:agent:`/`:user:`
-ball (ADR 0004), and is what the dashboard (ADR 0002), in-container agents, and MCP
+task state (ADR 0001), drives per-workflow state machines and the `agent`/`user`
+**turn** (ADR 0004), and is what the dashboard (ADR 0002), in-container agents, and MCP
 artifact serving (ADR 0003) all talk to. ADR 0004 named the concrete form of this core:
 a **task service** that wraps the task database and loads workflow classes on startup via
 path-based registration.
@@ -32,9 +32,9 @@ the **sole authority over task state** and the host for orchestration logic.
 - **Hosts the workflow registry (ADR 0004).** On startup it loads all workflow classes
   via path-based registration; it instantiates/dispatches to the active workflow for each
   task.
-- **Drives task lifecycle.** Applies workflow-defined transitions, runs DoD evaluation,
+- **Drives task lifecycle.** Applies workflow-defined transitions, runs responsibility settlement,
   invokes workflow imperative methods (provisioning, remote VCS integration, hooks,
-  cleanup), and maintains the ball-tracking mechanism (workflows only supply the fg/bg
+  cleanup), and maintains the turn-tracking mechanism (workflows only supply the fg/bg
   classification).
 - **Coordinates the other ports.** Artifact store (ADR 0003), execution backend
   (containers / remote, M5 + ADR 0005 composed images), and per-repo secret injection
@@ -60,7 +60,7 @@ guidance to keep the core's boundaries transport-friendly.
 **Positive**
 - **Resolves ADR 0001's concurrency concern structurally**: a single writer (the service)
   over the DB, instead of many processes racing on it.
-- One coherent home for the workflow registry, lifecycle driving, and ball-tracking.
+- One coherent home for the workflow registry, lifecycle driving, and turn-tracking.
 - A clean client/server boundary that Milestones 4 (web UI) and 5 (remote tasks) extend
   rather than retrofit.
 - Keeps the presentation port honest: the dashboard can only do what the service API

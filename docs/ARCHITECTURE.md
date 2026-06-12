@@ -27,8 +27,8 @@ Read the ADRs for *why*; read this for *what* and *how it fits together*.
   ┌────────────────┐  REST   ┌──────────────────────────────────────────────────────────┐
   │ Terminal       │────────▶│  ┌───────────┐  ┌────────────┐  ┌──────────────────────┐  │
   │ controller     │◀────────│  │Repository │  │  Workflow  │  │ Lifecycle engine:    │  │
-  │  └─ dashboard  │  REST/   │  │ (SQLite)  │  │  registry  │  │ state machine, ball, │  │
-  │     (Textual)  │  MCP     │  └───────────┘  └────────────┘  │ DoD enforcement      │  │
+  │  └─ dashboard  │  REST/   │  │ (SQLite)  │  │  registry  │  │ state machine, turn, │  │
+  │     (Textual)  │  MCP     │  └───────────┘  └────────────┘  │ responsibility enforcement      │  │
   └───────┬────────┘         │     REST API  ·  MCP surface (artifacts + task tools)   │  │
           │                   └───────▲─────────────────────────────▲──────────────────┘
           │ tmux attach (local)       │ REST (register, pull work)   │ MCP (+ some REST)
@@ -72,8 +72,8 @@ Why:
 so its responsibilities split by *where they run*:
 
 - **Control-plane side (deterministic, in the task service):** the workflow class's
-  declarative members (state set, transitions, foreground/background classification, DoD
-  *definitions*) and any deterministic imperative methods (compute next state, list cleanup
+  declarative members (state set, transitions, foreground/background classification,
+  responsibility *definitions*) and any deterministic imperative methods (compute next state, list cleanup
   steps, construct a non-reasoning forge request). No LLM.
 - **Container side (LLM, in the task container):** the workflow's **skills** — the
   agent-driven procedures it contributes (planning, implementing, `babysit-ci`'s
@@ -94,8 +94,8 @@ The single authority over task state (ADR 0006). Responsibilities:
   mutates state *through* it, which provides the serialization that gives integrity.
 - **Hosts the workflow registry** (ADR 0004) — on startup, loads workflow classes via
   path-based registration; dispatches to the active workflow per task.
-- **Runs the lifecycle engine** — applies workflow-defined transitions, enforces DoD gating,
-  maintains the `:agent:`/`:user:` ball (workflows supply only the fg/bg classification).
+- **Runs the lifecycle engine** — applies workflow-defined transitions, enforces responsibility gating,
+  maintains the `agent`/`user` turn (workflows supply only the fg/bg classification).
 - **Exposes two interfaces:** a **REST API** (dashboard, session service, in-container
   skills) and an **MCP surface** (in-container agents: artifacts as resources, task
   operations as tools). See §5.
@@ -136,7 +136,7 @@ the task service. It:
 | Client | Protocol | Used for |
 |---|---|---|
 | Terminal controller / dashboard | **REST** | queries (task list/detail), commands (create idea, promote, advance, drop), runner/status views |
-| In-container agent | **MCP** | artifacts as resources (plan/notes, ADR 0003); task operations as tools (set slug, advance, report DoD verdict, append log) |
+| In-container agent | **MCP** | artifacts as resources (plan/notes, ADR 0003); task operations as tools (set slug, advance, report responsibility status, append log) |
 | In-container skills | **REST** (some) | operations not natural as MCP tools, or when a skill needs the broader API |
 | Session service | **REST** | register as runner, pull assigned work, report session lifecycle/health |
 
@@ -150,7 +150,7 @@ Every port is a Python ABC in the core; adapters live in the owning component.
 | Port | ABC responsibility | Adapter now | Future adapters | ADR |
 |---|---|---|---|---|
 | **Repository** | persist tasks, repos, history; enforce transitions | SQLite | Postgres | 0001/0006 |
-| **Workflow** | define a lifecycle (states, DoD, skills, deterministic methods) | parity, free-form | user/agent-authored | 0004 |
+| **Workflow** | define a lifecycle (states, responsibilities, skills, deterministic methods) | parity, free-form | user/agent-authored | 0004 |
 | **Execution backend** (session service) | spawn/stop a task's session; inject secrets; run image | local Docker+tmux | remote, non-container | 0005/0008 |
 | **Artifact store** | read/write per-task files (plan, notes) | local filesystem | object storage | 0003 |
 | **Presentation** | render + drive the system | Textual TUI | web UI, other-lang dashboard | 0002 |
@@ -167,7 +167,8 @@ registration. Sketch of the ABC's two faces:
 - **Declarative members** (data the control plane reads):
   - `states`, `transitions`, and per-state `foreground`/`background` classification;
   - `transition_policy` (user-approved vs. auto-advance);
-  - `definition_of_done(state)` → checklist + verdict semantics (`PENDING`/`PASS`/`UNSATISFIABLE`);
+  - `responsibilities(state)` → the agent's obligations for that state (each settles to a
+    `status`: `PENDING` → `MET`/`FAILED`, a `FAILED` one needs a comment);
   - `skills()` → the catalogue of workflow-specific skills exposed in the container (e.g.
     `babysit-ci`), on top of the core operations (`advance`, `drop`). A free-form workflow
     contributes few or none.
@@ -193,10 +194,13 @@ active workflow*, not a fixed global list.
 - **Repo** — first-class (ADR 0007): identity, default base, association to its env config +
   creds volume (references, **never secret values**).
 - **Task** — stable internal **id** (generated at creation), `repo_id`, `workflow`, current
-  `state`, ball holder (`agent`/`user`), `mode` (fg/bg), git refs (branch/worktree), optional
+  `state`, **`turn`** (`agent`/`user`), `mode` (fg/bg), git refs (branch/worktree), optional
   forge refs (PR), and an **optional `slug`** (see §8.3).
-- **History** — append-only transition log per task (timestamp, from/to state, via, DoD
-  verdict). This is cloude-cade's `** Log` as structured rows.
+- **History** — append-only transition log per task. Each entry: timestamp, from/to state,
+  via, and the **responsibilities settled that turn** (each with its `status` and, if
+  `FAILED`, the agent's comment). This is cloude-cade's `** Log` as structured rows — but
+  responsibilities are **agent-only** obligations (a deliberate divergence: cloude-cade's DoD
+  could include user items; here user actions just drive transitions directly).
 
 ### 8.2 Artifacts (ADR 0003)
 
@@ -225,7 +229,7 @@ mounted creds. Values never enter the DB, artifacts, or image layers.
 
 1. **Idea → task.** A user captures an idea / promotes it via the dashboard (REST). The task
    service creates a Task row (internal id, chosen workflow, `repo_id`), in the workflow's
-   initial state, with the ball held appropriately. No slug yet.
+   initial state, with the turn assigned appropriately. No slug yet.
 2. **Assign & spawn.** The task service assigns the task to a session service (runner). The
    runner builds/selects the composed image (ADR 0005), injects the repo's secrets (ADR 0007),
    creates the task container (sibling, DooD) and its tmux session, and starts the agent.
@@ -237,8 +241,8 @@ mounted creds. Values never enter the DB, artifacts, or image layers.
 5. **Work.** The agent plans/implements; artifacts (plan/notes) flow over MCP; the agent runs
    workflow skills (e.g. `babysit-ci`) that may use `gh`/git and call back over REST/MCP to
    request transitions. The task service deterministically enforces the workflow's state
-   machine and DoD gating, flips the ball per the fg/bg classification, and appends history.
-6. **Observe & steer.** The dashboard reflects state/ball/history live (REST); the user
+   machine and responsibility gating, flips the turn per the fg/bg classification, and appends history.
+6. **Observe & steer.** The dashboard reflects state/turn/history live (REST); the user
    presses `t` to drop into a task's tmux and back.
 7. **Terminal states & cleanup.** On COMPLETE/DROPPED (or the workflow's terminals), cleanup
    runs the core's agnostic teardown (tmux/worktree/branch) plus the workflow's specific
@@ -259,12 +263,12 @@ mounted creds. Values never enter the DB, artifacts, or image layers.
 
 ```
 panopticon/
-  core/          # ports (ABCs), domain models, state-machine + ball + DoD engine — no LLM/UI/DB
+  core/          # ports (ABCs), domain models, state-machine + turn + responsibility engine — no LLM/UI/DB
   taskservice/   # control plane: REST + MCP servers, repository adapter (SQLite), workflow loader
   sessionservice/# runner: execution-backend adapter (Docker+tmux), image build/compose, secret injection
   terminal/      # `panopticon` CLI + dashboard (Textual) — presentation adapter
   workflows/     # built-in workflow classes (parity, free-form) on a registered path
-  container/     # in-container entrypoint, hooks (slug, ball), skill definitions, REST/MCP client
+  container/     # in-container entrypoint, hooks (slug, turn), skill definitions, REST/MCP client
 ```
 
 The determinism invariant maps onto packages: only `container/` (and user workflow *skills*)

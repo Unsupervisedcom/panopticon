@@ -5,6 +5,10 @@
 - Amended: 2026-06-11 — reconciled with the determinism invariant (ADR 0008 /
   ARCHITECTURE.md §3): a workflow's "imperative" behavior splits across the determinism
   boundary. See "Where imperative behavior runs" below.
+- Amended: 2026-06-12 — terminology + model: the "ball" is now the **turn**; a state's
+  Definition-of-Done is now the agent's **responsibilities** (agent-only, unlike cloude-cade);
+  each settles to a **status** (`PENDING`/`MET`/`FAILED`, a `FAILED` one needs a comment) and
+  the settled set is recorded per turn in history.
 - Deciders: Charlie Scherer
 
 ## Context
@@ -24,8 +28,8 @@ whole checklist was a repeated split between **workflow-specific** and
   integration, ADOPT mode, the plan-accepted lifecycle hook, parts of `/finalize`, and
   workflow-specific parts of cleanup.
 - Kept *workflow-agnostic* (K): **local git branch creation/naming**, worktree
-  management and teardown tiers, idempotent cleanup mechanics, the `:agent:`/`:user:`
-  "who holds the ball" tracking (flagged the single most important feature), task
+  management and teardown tiers, idempotent cleanup mechanics, the `agent`/`user`
+  **turn** tracking (flagged the single most important feature), task
   identity/slug, the per-task container/tmux plumbing, and the secret store / repo
   entity.
 
@@ -57,10 +61,11 @@ Within the class, the two kinds of responsibility are expressed differently:
   data:
   - the **state set and legal transitions** (the state machine);
   - per-state **classification** as foreground (user-driven) or background
-    (agent-driven), which feeds the agnostic ball-tracking;
+    (agent-driven), which feeds the agnostic turn-tracking;
   - the **transition policy** (which transitions are user-approved vs. auto-advance);
-  - the **Definition-of-Done checklist** per state and verdict semantics
-    (`PENDING` / `PASS` / `UNSATISFIABLE`).
+  - the **responsibilities** per state — the agent's obligations to fulfil before handing
+    the turn back. Each settles to a **status** (`PENDING` → `MET`/`FAILED`; a `FAILED`
+    responsibility requires a comment), and the settled set is recorded per turn in history.
 - **Imperative behavior** — what the workflow *does* at defined moments. This is delivered
   in two forms depending on where it must run (see "Where imperative behavior runs" below):
   - **provisioning** — forge-side setup a task needs on entry (PR creation, ADOPT-style
@@ -69,8 +74,9 @@ Within the class, the two kinds of responsibility are expressed differently:
   - **remote VCS / forge integration** — PR creation, CI watching/fixing, merge-queue
     shepherding (the `babysit-*` behaviors). Workflow-specific because it talks to a remote
     forge; local git is not. *Largely delivered as in-container skills (see below).*
-  - **DoD evaluation** — how each DoD item is judged: programmatic checks (deterministic)
-    or **agent judgment** (in-container skill);
+  - **settling responsibilities** — the agent judges each of the current state's
+    responsibilities `MET` or `FAILED` (with a comment) before handing the turn back
+    (in-container);
   - **lifecycle hooks** — e.g. on-plan-accepted, on-transition;
   - **workflow-specific cleanup** — the teardown steps unique to this workflow, layered
     on top of the agnostic teardown the core provides.
@@ -87,12 +93,12 @@ make **no LLM calls** — all LLM work happens inside task containers. A workflo
 
 - **Control-plane side (deterministic, in the task service):** the declarative members
   above, plus imperative methods that need no reasoning — computing the next state, listing
-  cleanup steps, contributing image layers, constructing a forge request, programmatic DoD
-  checks. The task service calls these directly.
+  cleanup steps, contributing image layers, constructing a forge request. The task service
+  calls these directly.
 - **Container side (LLM, in the task container):** the workflow's **skills** — agent-driven
   procedures such as planning, implementing, `babysit-ci`'s diagnose-and-fix loop, and
-  agent-judged DoD. The agent runs these and calls back to the task service over REST/MCP to
-  record results and request transitions.
+  settling its responsibilities. The agent runs these and calls back to the task service
+  over REST/MCP to record results and request transitions.
 
 So the `babysit-*` "handlers" are **not** control-plane methods that call an LLM; they are
 **in-container skills the workflow contributes**, with the control plane holding only the
@@ -105,19 +111,19 @@ the boundary.
 | Concern | Owner |
 |---|---|
 | State set, transitions, fg/bg classification, transition policy | **Workflow** (declarative) |
-| DoD checklist + verdict semantics | **Workflow** (declarative) |
+| Per-state responsibilities (agent obligations) + their `status` | **Workflow** (declarative) |
 | **Remote** VCS/forge integration: PR creation, CI babysit, merge babysit, ADOPT checkout | **Workflow** — mostly **in-container skills** (LLM); deterministic forge requests may be control-plane |
 | Plan-accepted / on-transition lifecycle hooks | **Workflow** (control-plane method, deterministic) |
 | Workflow-specific cleanup steps | **Workflow** (control-plane method, deterministic) |
 | Driving the state machine; persisting state + history | **Core** (repository, ADR 0001) |
-| `:agent:`/`:user:` ball tracking (the *mechanism*) | **Core** — workflow only supplies the fg/bg classification |
+| `agent`/`user` turn tracking (the *mechanism*) | **Core** — workflow only supplies the fg/bg classification |
 | **Local git: branch create + naming**, worktree create/teardown tiers, idempotent cleanup | **Core** |
 | Task identity / slug, repo entity, per-repo secrets | **Core** |
 | Container/exec plumbing (image *layers* are workflow/repo-configurable, ADR 0005) | **Core**, parameterized by workflow |
 | Dashboard rendering + idea input | **Core** (presentation, ADR 0002) |
 
-The rule of thumb: **the core knows *that* there is a state machine with a held-by ball
-and a history; the workflow knows *what* the states are, *when* the ball flips, and
+The rule of thumb: **the core knows *that* there is a state machine with a held-by turn
+and a history; the workflow knows *what* the states are, *when* the turn flips, and
 *how* the imperative steps happen.**
 
 ### Commands / skills are workflow-determined
@@ -125,7 +131,7 @@ and a history; the workflow knows *what* the states are, *when* the ball flips, 
 The prototype's slash commands are not hardcoded transitions. They split into two tiers:
 
 1. **Core operations** — present for every workflow, routed to the active workflow's
-   spec/handlers. E.g. `advance` asks the workflow for the next state and its DoD;
+   spec/handlers. E.g. `advance` asks the workflow for the next state and its responsibilities;
    `drop` is a generic transition to the workflow's terminal abandon state.
 2. **Workflow-specific skills** — exist **only if the active workflow defines them**.
    The `/babysit-ci` and `/babysit-merge` skills are the prime example: they are remote
@@ -181,11 +187,13 @@ future use case demands it (e.g. untrusted or multi-tenant operation).
 - **Residual trust risk.** Reviewing workflow code is the user's responsibility (decided
   above, not engine-enforced). This is acceptable for single-user operation but should be
   revisited for Milestone 5 (remote execution) and any future multi-tenant use.
-- **DoD evaluation contract** — programmatic vs. agent-judged items need a uniform
-  interface so the engine can gate transitions without knowing workflow specifics.
+- **Responsibility settlement** is now decided (2026-06-12 amendment): the agent settles
+  each of a state's responsibilities `MET`/`FAILED` (FAILED needs a comment) before handing
+  the turn back; the engine gates the transition on all being settled, without knowing
+  workflow specifics, and records the settled set in history.
 - **Cleanup composition** — workflow-specific teardown must compose predictably with the
   core's agnostic teardown and its confirmation/exit-code gating (PARITY §12).
-- **Multiple concurrent workflows** — the dashboard, history, and ball-tracking must
+- **Multiple concurrent workflows** — the dashboard, history, and turn-tracking must
   render uniformly across tasks running *different* workflows.
 
 ## Related
