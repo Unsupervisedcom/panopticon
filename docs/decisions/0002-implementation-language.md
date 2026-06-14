@@ -30,7 +30,7 @@ Rationale:
 
 **The dashboard is a substitutable module.** The design separates a UI-agnostic core
 from the presentation layer, behind an explicit interface (a "presentation interface"),
-exactly as ADR 0001 puts the database behind a repository interface. The dashboard consumes
+exactly as ADR 0001 puts the database behind a store interface. The dashboard consumes
 the core through that interface and never the reverse.
 
 Consequences of that boundary:
@@ -64,6 +64,6 @@ To keep this real (not aspirational):
 ## Related
 
 - ADR 0001 (task store) — same interface-and-adapters pattern: core depends on **interfaces**
-  (repository for storage, presentation for UI); concrete adapters (SQLite, Textual) are
+  (store for storage, presentation for UI); concrete adapters (SQLite, Textual) are
   replaceable.
 - The core/presentation split and the interface contracts belong in `docs/ARCHITECTURE.md`.

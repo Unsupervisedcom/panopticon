@@ -35,7 +35,7 @@ move (e.g. to Postgres) without changing domain logic.
 
 Concretely:
 
-1. **Repository / interface boundary.** All task-store access goes through a repository
+1. **Store / interface boundary.** All task-store access goes through a store
    interface. Domain and command code depend on the interface,
    never on the database driver. SQL and driver imports live only in the adapter.
 2. **No backend-specific features in domain code.** Avoid SQLite-only SQL, pragmas,
@@ -50,7 +50,7 @@ Concretely:
 The concrete ORM / query-builder / migration tooling is **deferred to the
 implementation-language ADR** (still open), since it depends on language:
 - Python → SQLAlchemy Core/ORM + Alembic gives backend-agnosticism + migrations directly.
-- TypeScript → a backend-portable query builder (e.g. Kysely/Drizzle) behind the repository interface.
+- TypeScript → a backend-portable query builder (e.g. Kysely/Drizzle) behind the store interface.
 
 ## Consequences
 
@@ -69,12 +69,12 @@ implementation-language ADR** (still open), since it depends on language:
     snapshot (Markdown/JSON) for debugging and history — read-only, not the source
     of truth.
 - **Backend-agnosticism requires discipline.** It is easy to let SQLite specifics
-  leak. Enforce by exercising the repository against a second backend (or at least
+  leak. Enforce by exercising the store against a second backend (or at least
   an in-memory variant) in tests, so leakage is caught early.
 
 ## Related
 
 - Supersedes the plain-text task-store exploration (org-mode / Markdown+frontmatter / TOML).
 - The lifecycle state machine and its legal transitions should be enforced at the
-  repository boundary (the "golden state-machine harness" artifact in TODO.md).
+  store boundary (the "golden state-machine harness" artifact in TODO.md).
 - Blocks on / informs the implementation-language ADR (tooling choice).

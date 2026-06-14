@@ -60,7 +60,7 @@ three already decided:
 
 | Concern | Interface | Adapter (now) | Driven by |
 |---|---|---|---|
-| Structured state | repository | SQLite | ADR 0001 |
+| Structured state | store | SQLite | ADR 0001 |
 | Dashboard | presentation | Textual TUI | ADR 0002, Milestone 4 |
 | Artifacts (plan, notes) | artifact store | local filesystem | ADR 0003 |
 | **Workflow / lifecycle** | workflow | cloude-cade flow + free-form | Milestone 1 |

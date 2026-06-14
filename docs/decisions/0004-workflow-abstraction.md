@@ -123,7 +123,7 @@ the boundary.
 | **Remote** VCS/forge integration: PR creation, CI babysit, merge babysit, ADOPT checkout | **Workflow** — mostly **in-container skills** (LLM); deterministic forge requests may be control-plane |
 | Plan-accepted / on-transition lifecycle hooks | **Workflow** (control-plane method, deterministic) |
 | Workflow-specific cleanup steps | **Workflow** (control-plane method, deterministic) |
-| Driving the state machine; persisting state + history | **Core** (repository, ADR 0001) |
+| Driving the state machine; persisting state + history | **Core** (store, ADR 0001) |
 | `agent`/`user` turn tracking (the *mechanism*) | **Core** — workflow only supplies the fg/bg classification |
 | **Local git: branch create + naming**, worktree create/teardown tiers, idempotent cleanup | **Core** |
 | Task identity / slug, repo entity, per-repo secrets | **Core** |
@@ -154,7 +154,7 @@ the active workflow contributes, on top of the core operations.
 ### Discovery, loading, and trust
 
 Workflow classes are loaded by a **task service** — a long-running service that wraps
-the task database (the repository interface, ADR 0001) and is the core's home for
+the task database (the store interface, ADR 0001) and is the core's home for
 orchestration state. On startup, the task service **loads all workflow classes via a
 path-based registration mechanism** (a configured set of paths/modules it imports and
 registers against the workflow ABC). The active set of workflows is whatever the task
@@ -209,9 +209,9 @@ future use case demands it (e.g. untrusted or multi-tenant operation).
 ## Related
 
 - GOALS.md — Milestone 1 (parity + free-form workflow) and the flexibility motivation.
-- ADR 0001 — repository persists state/history; the **state-machine enforcement** noted
+- ADR 0001 — store persists state/history; the **state-machine enforcement** noted
   there is now *per-workflow* (the workflow defines legal transitions; the core enforces
-  them at the repository boundary).
+  them at the store boundary).
 - ADR 0002 — dashboard renders tasks across heterogeneous workflows.
 - ADR 0003 — the `Plan` artifact is written by a workflow's plan-accepted hook.
 - ADR 0005 — composable workflow/repo container images: a workflow contributes image

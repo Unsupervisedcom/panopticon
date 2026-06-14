@@ -44,7 +44,7 @@ A task is **structured record (DB) + a set of file-backed artifacts**.
    None of these is a separate copy; they are access surfaces over the same file.
 
 3. **Access goes through an artifact-store interface.** Consistent with the interface-and-adapters spine
-   (ADR 0001 repository interface, ADR 0002 presentation interface), artifact access is behind an
+   (ADR 0001 store interface, ADR 0002 presentation interface), artifact access is behind an
    **artifact-store interface**. The initial adapter is the local filesystem; the interface keeps
    the door open to other backends later (e.g. object storage) without changing core or
    MCP logic. The MCP server and the dashboard are *consumers* of this interface, not

@@ -24,7 +24,7 @@ the **sole authority over task state** and the host for orchestration logic.
 
 ### Responsibilities
 
-- **Owns the repository interface (ADR 0001).** It is the only component that reads/writes the
+- **Owns the store interface (ADR 0001).** It is the only component that reads/writes the
   task database directly. All task-state mutations go through it — clients never touch the
   DB. This makes the service the serialization point that gives ADR 0001's required
   concurrency/integrity guarantees (multiple host commands and in-container agents mutate
@@ -80,7 +80,7 @@ guidance to keep the core's boundaries transport-friendly.
 
 ## Related
 
-- ADR 0001 — repository interface; the task service is its sole owner and the serialization
+- ADR 0001 — store interface; the task service is its sole owner and the serialization
   point for the integrity guarantees it requires.
 - ADR 0002 — presentation interface; the dashboard is a client of the task service API.
 - ADR 0003 — artifact store + MCP; fronted by the task service.

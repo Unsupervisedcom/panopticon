@@ -39,7 +39,7 @@ later work can proceed in parallel against stable seams.
    classification, transition policy, `definition_of_done`, `skills()` catalogue) and the
    deterministic-method signatures. Plus a trivial **"free-form seed" workflow** (1–2 states,
    no gates) implementing it.
-2. **DB schema + repository interface** — `repo`, `task` (internal id, optional slug), `history`
+2. **DB schema + store interface** — `repo`, `task` (internal id, optional slug), `history`
    tables; SQLite adapter; migrations. Transition enforcement lives at this boundary.
 3. **Task service API contract** — the REST endpoints + MCP tools/resources, defined as a
    schema with minimal implementations (create/query task, request transition, set slug,
@@ -54,7 +54,7 @@ the real task service (no Docker yet), and the **Workflow state machine** (trans
 **Acceptance:**
 - A CLI/test creates a task → task service persists it → fake container registers (liveness)
   → sets a slug → requests a transition the workflow accepts → history reflects it.
-- Workflow ABC + repository + API are type-checked and covered by contract tests.
+- Workflow ABC + store + API are type-checked and covered by contract tests.
 - Determinism holds: nothing in `core`/`taskservice` imports an LLM.
 
 **Resolves (JIT):** container→host-service addressing (contract only); minimal runner

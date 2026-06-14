@@ -28,7 +28,7 @@ Read the ADRs for *why*; read this for *what* and *how it fits together*.
    user's terminal           TASK SERVICE  (control plane · deterministic · sole DB authority)
   ┌────────────────┐  REST   ┌──────────────────────────────────────────────────────────┐
   │ Terminal       │────────▶│  ┌───────────┐  ┌────────────┐  ┌──────────────────────┐  │
-  │ controller     │◀────────│  │Repository │  │  Workflow  │  │ Lifecycle engine:    │  │
+  │ controller     │◀────────│  │Store      │  │  Workflow  │  │ Lifecycle engine:    │  │
   │  └─ dashboard  │  REST/   │  │ (SQLite)  │  │  registry  │  │ state machine, turn, │  │
   │     (Textual)  │  MCP     │  └───────────┘  └────────────┘  │ responsibility gating│  │
   └───────┬────────┘         │     REST API  ·  MCP surface (artifacts + task tools)   │  │
@@ -92,7 +92,7 @@ catalogue of which skills exist. *(This sharpens ADR 0004's "imperative methods"
 ### 4.1 Task service (control plane)
 
 The single authority over task state (ADR 0006). Responsibilities:
-- **Owns the repository** (ADR 0001) — the only direct DB reader/writer; everything else
+- **Owns the store** (ADR 0001) — the only direct DB reader/writer; everything else
   mutates state *through* it, which provides the serialization that gives integrity.
 - **Hosts the workflow registry** (ADR 0004) — on startup, loads workflow classes via
   path-based registration; dispatches to the active workflow per task.
@@ -152,7 +152,7 @@ Every interface is a Python ABC in the core; adapters live in the owning compone
 
 | Interface | ABC responsibility | Adapter now | Future adapters | ADR |
 |---|---|---|---|---|
-| **Repository** | persist tasks, repos, history; enforce transitions | SQLite | Postgres | 0001/0006 |
+| **Store** | persist tasks, repos, history; enforce transitions | SQLite | Postgres | 0001/0006 |
 | **Workflow** | define a lifecycle (states, responsibilities, skills, deterministic methods) | parity, free-form | user/agent-authored | 0004 |
 | **Execution backend** (session service) | spawn/stop a task's session; inject secrets; run image | local Docker+tmux | remote, non-container | 0005/0008 |
 | **Artifact store** | read/write per-task files (plan, notes) | local filesystem | object storage | 0003 |
@@ -198,7 +198,7 @@ active workflow*, not a fixed global list.
 
 ## 8. Data & artifacts
 
-### 8.1 Entities (repository, ADR 0001)
+### 8.1 Entities (store, ADR 0001)
 
 - **Repo** — first-class (ADR 0007): identity, default base, association to its env config +
   creds volume (references, **never secret values**).
@@ -278,7 +278,7 @@ mounted creds. Values never enter the DB, artifacts, or image layers.
 ```
 panopticon/
   core/          # interfaces (ABCs), domain models, state classes + the Workflow state machine — no LLM/UI/DB
-  taskservice/   # control plane: REST + MCP servers, repository adapter (SQLite), workflow loader
+  taskservice/   # control plane: REST + MCP servers, store adapter (SQLite), workflow loader
   sessionservice/# runner: execution-backend adapter (Docker+tmux), image build/compose, secret injection
   terminal/      # `panopticon` CLI + dashboard (Textual) — presentation adapter
   workflows/     # built-in workflow classes (parity, free-form) on a registered path
