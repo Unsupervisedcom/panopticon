@@ -48,12 +48,12 @@ later work can proceed in parallel against stable seams.
    "working on task X", and stays connected.
 
 Plus a **stubbed runner** and **fake container client** that drive the seed workflow through
-the real task service (no Docker yet), and the **state-machine + turn + responsibility engine** with its
+the real task service (no Docker yet), and the **Workflow state machine** (transitions, turn, responsibilities) with its
 **golden test harness** (the durable parity spec).
 
 **Acceptance:**
 - A CLI/test creates a task → task service persists it → fake container registers (liveness)
-  → sets a slug → requests a transition the engine accepts → history reflects it.
+  → sets a slug → requests a transition the workflow accepts → history reflects it.
 - Workflow ABC + repository + API are type-checked and covered by contract tests.
 - Determinism holds: nothing in `core`/`taskservice` imports an LLM.
 

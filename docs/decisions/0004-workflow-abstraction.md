@@ -38,8 +38,8 @@ workflow owns its specific behavior.
 
 ## Decision
 
-A **workflow** is a first-class, pluggable unit behind a **workflow interface**. The core
-engine drives tasks generically; the active workflow supplies everything specific to a
+A **workflow** is a first-class, pluggable unit behind a **workflow interface**. The
+interface drives tasks generically; the active workflow supplies everything specific to a
 given way of working. The cloude-cade flow and the free-form flow are two
 implementations of this interface.
 
@@ -189,7 +189,7 @@ future use case demands it (e.g. untrusted or multi-tenant operation).
   revisited for Milestone 5 (remote execution) and any future multi-tenant use.
 - **Responsibility resolution** is now decided (2026-06-12 amendment): the agent resolves
   each of a state's responsibilities `MET`/`FAILED` (FAILED needs a comment) before handing
-  the turn back; the engine gates the transition on all being resolved, without knowing
+  the turn back; the workflow gates the transition on all being resolved, without knowing
   workflow specifics, and records the resolved set in history.
 - **Cleanup composition** — workflow-specific teardown must compose predictably with the
   core's agnostic teardown and its confirmation/exit-code gating (PARITY §12).

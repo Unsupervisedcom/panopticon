@@ -96,8 +96,9 @@ The single authority over task state (ADR 0006). Responsibilities:
   mutates state *through* it, which provides the serialization that gives integrity.
 - **Hosts the workflow registry** (ADR 0004) — on startup, loads workflow classes via
   path-based registration; dispatches to the active workflow per task.
-- **Runs the lifecycle engine** — applies workflow-defined transitions, enforces responsibility gating,
-  maintains the `agent`/`user` turn (workflows supply only the fg/bg classification).
+- **Drives task lifecycle** — calls the active workflow to apply transitions, enforce
+  responsibility gating, and maintain the `agent`/`user` turn (workflows supply only the
+  fg/bg classification).
 - **Exposes two interfaces:** a **REST API** (dashboard, session service, in-container
   skills) and an **MCP surface** (in-container agents: artifacts as resources, task
   operations as tools). See §5.
@@ -265,7 +266,7 @@ mounted creds. Values never enter the DB, artifacts, or image layers.
 
 ```
 panopticon/
-  core/          # interfaces (ABCs), domain models, state-machine + turn + responsibility engine — no LLM/UI/DB
+  core/          # interfaces (ABCs), domain models, state classes + the Workflow state machine — no LLM/UI/DB
   taskservice/   # control plane: REST + MCP servers, repository adapter (SQLite), workflow loader
   sessionservice/# runner: execution-backend adapter (Docker+tmux), image build/compose, secret injection
   terminal/      # `panopticon` CLI + dashboard (Textual) — presentation adapter
