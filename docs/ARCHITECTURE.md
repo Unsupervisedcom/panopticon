@@ -139,7 +139,7 @@ the task service. It:
 | Client | Protocol | Used for |
 |---|---|---|
 | Terminal controller / dashboard | **REST** | queries (task list/detail), commands (create idea, promote, advance, drop), runner/status views |
-| In-container agent | **MCP** | artifacts as resources (plan/notes, ADR 0003); task operations as tools (set slug, advance, report responsibility status, append log) |
+| In-container agent | **MCP** | artifacts as resources (plan/notes, ADR 0003); task operations as tools (set slug, advance, resolve responsibility, append log) |
 | In-container skills | **REST** (some) | operations not natural as MCP tools, or when a skill needs the broader API |
 | Session service | **REST** | register as runner, pull assigned work, report session lifecycle/health |
 

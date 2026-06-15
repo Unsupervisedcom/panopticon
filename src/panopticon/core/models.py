@@ -110,17 +110,17 @@ class Task:
         """The latest history entry — the one recorded on entering the current state."""
         return self.history[-1]
 
-    def record_responsibility(
+    def resolve_responsibility(
         self, *, key: str, status: Status, comment: str | None = None
     ) -> None:
-        """Fulfil one responsibility promised on entering the current state, in place.
+        """Resolve one responsibility promised on entering the current state, in place.
 
         Resolves the matching promise on :attr:`current_entry`. ``status`` must be ``MET`` or
         ``FAILED`` (the latter requires a ``comment``). Raises :class:`ValueError` for an
         unknown key, a ``PENDING`` status, or a ``FAILED`` without a comment.
         """
         if status is Status.PENDING:
-            raise ValueError("record a responsibility as MET or FAILED, not PENDING")
+            raise ValueError("resolve a responsibility as MET or FAILED, not PENDING")
         if status is Status.FAILED and not (comment and comment.strip()):
             raise ValueError(f"FAILED responsibility {key!r} requires a comment")
         promised = self.current_entry.responsibilities
@@ -135,7 +135,7 @@ class Task:
         """Promises on the current entry still unresolved (``PENDING``).
 
         An empty result means the turn may be handed back and the task may advance. A
-        ``FAILED`` promise counts as resolved — :meth:`record_responsibility` already requires
+        ``FAILED`` promise counts as resolved — :meth:`resolve_responsibility` already requires
         its comment, so it never lingers here.
         """
         return [r for r in self.current_entry.responsibilities if r.status is Status.PENDING]

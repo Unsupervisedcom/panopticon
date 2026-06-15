@@ -111,8 +111,8 @@ def test_advanced_by_policy() -> None:
 def test_turn_updates_on_each_transition() -> None:
     task = _to_working()
     assert task.turn is Actor.AGENT  # WORKING.turn_on_enter
-    task.record_responsibility(key="tests-pass", status=Status.MET)
-    task.record_responsibility(key="pr-opened", status=Status.MET)
+    task.resolve_responsibility(key="tests-pass", status=Status.MET)
+    task.resolve_responsibility(key="pr-opened", status=Status.MET)
     WF.apply_transition(task, "COMPLETE", at="t2")
     assert task.turn is Actor.USER  # COMPLETE is terminal → back to the user
 
@@ -151,7 +151,7 @@ def test_leaving_gated_state_requires_all_resolved() -> None:
     task = _to_working()
     with pytest.raises(ResponsibilitiesNotMet):
         WF.apply_transition(task, "COMPLETE", at="t2")  # nothing resolved
-    task.record_responsibility(key="tests-pass", status=Status.MET)
+    task.resolve_responsibility(key="tests-pass", status=Status.MET)
     with pytest.raises(ResponsibilitiesNotMet):
         WF.apply_transition(task, "COMPLETE", at="t2")  # pr-opened still PENDING
 
@@ -159,8 +159,8 @@ def test_leaving_gated_state_requires_all_resolved() -> None:
 def test_all_met_allows_transition_and_keeps_the_record() -> None:
     task = _to_working()
     working_entry = task.history[-1]
-    task.record_responsibility(key="tests-pass", status=Status.MET)
-    task.record_responsibility(key="pr-opened", status=Status.MET)
+    task.resolve_responsibility(key="tests-pass", status=Status.MET)
+    task.resolve_responsibility(key="pr-opened", status=Status.MET)
     WF.apply_transition(task, "COMPLETE", at="t2")
     assert task.state == "COMPLETE"
     # the resolved promises stay on the WORKING entry that owned them
@@ -173,8 +173,8 @@ def test_all_met_allows_transition_and_keeps_the_record() -> None:
 
 def test_failed_with_comment_allows_transition() -> None:
     task = _to_working()
-    task.record_responsibility(key="tests-pass", status=Status.MET)
-    task.record_responsibility(key="pr-opened", status=Status.FAILED, comment="forge down")
+    task.resolve_responsibility(key="tests-pass", status=Status.MET)
+    task.resolve_responsibility(key="pr-opened", status=Status.FAILED, comment="forge down")
     WF.apply_transition(task, "COMPLETE", at="t2")
     assert task.state == "COMPLETE"
 
@@ -198,8 +198,8 @@ def test_ungated_state_needs_no_responsibilities() -> None:
 def test_history_accumulates_in_order() -> None:
     task = WF.start_task("t1", "r1", at="t0")
     WF.apply_transition(task, "WORKING", at="t1", trigger="advance")
-    task.record_responsibility(key="tests-pass", status=Status.MET)
-    task.record_responsibility(key="pr-opened", status=Status.MET)
+    task.resolve_responsibility(key="tests-pass", status=Status.MET)
+    task.resolve_responsibility(key="pr-opened", status=Status.MET)
     WF.apply_transition(task, "COMPLETE", at="t2", trigger="finish")
     assert [(h.from_state, h.to_state) for h in task.history] == [
         (None, "PLAN"),

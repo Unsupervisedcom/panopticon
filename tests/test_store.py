@@ -244,7 +244,7 @@ def test_current_entry_responsibilities_persist_in_place(store: Store) -> None:
     store.create_task(task)
 
     # Fulfil the promise on the current entry and save — the in-place change must persist.
-    task.record_responsibility(key="tests-pass", status=Status.MET)
+    task.resolve_responsibility(key="tests-pass", status=Status.MET)
     store.save_task(task)
 
     got = store.get_task("t1")

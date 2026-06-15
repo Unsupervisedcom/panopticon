@@ -42,10 +42,10 @@ def test_current_entry_is_the_latest() -> None:
     assert task.current_entry.to_state == "WORKING"
 
 
-def test_record_responsibility_fulfils_in_place() -> None:
+def test_resolve_responsibility_fulfils_in_place() -> None:
     task = _working_task()
     entry = task.current_entry
-    task.record_responsibility(key="tests-pass", status=Status.MET)
+    task.resolve_responsibility(key="tests-pass", status=Status.MET)
     by_key = {r.key: r for r in entry.responsibilities}  # same entry object, mutated
     assert by_key["tests-pass"].status is Status.MET
     assert by_key["tests-pass"].description == "Tests pass"  # definition text preserved
@@ -55,25 +55,25 @@ def test_record_responsibility_fulfils_in_place() -> None:
 def test_outstanding_responsibilities_tracks_progress() -> None:
     task = _working_task()
     assert {r.key for r in task.outstanding_responsibilities} == {"tests-pass", "pr-opened"}
-    task.record_responsibility(key="tests-pass", status=Status.MET)
+    task.resolve_responsibility(key="tests-pass", status=Status.MET)
     assert {r.key for r in task.outstanding_responsibilities} == {"pr-opened"}
-    task.record_responsibility(key="pr-opened", status=Status.FAILED, comment="forge down")
+    task.resolve_responsibility(key="pr-opened", status=Status.FAILED, comment="forge down")
     assert task.outstanding_responsibilities == []  # FAILED-with-comment is resolved
 
 
-def test_record_unknown_responsibility_is_rejected() -> None:
+def test_resolve_unknown_responsibility_is_rejected() -> None:
     task = _working_task()
     with pytest.raises(ValueError):
-        task.record_responsibility(key="ghost", status=Status.MET)
+        task.resolve_responsibility(key="ghost", status=Status.MET)
 
 
-def test_record_pending_is_rejected() -> None:
+def test_resolve_pending_is_rejected() -> None:
     task = _working_task()
     with pytest.raises(ValueError):
-        task.record_responsibility(key="tests-pass", status=Status.PENDING)
+        task.resolve_responsibility(key="tests-pass", status=Status.PENDING)
 
 
 def test_failed_requires_comment() -> None:
     task = _working_task()
     with pytest.raises(ValueError):
-        task.record_responsibility(key="pr-opened", status=Status.FAILED)  # no comment
+        task.resolve_responsibility(key="pr-opened", status=Status.FAILED)  # no comment
