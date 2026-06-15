@@ -44,6 +44,10 @@ in the ADRs; this file is for the smaller stuff that doesn't have a home there y
 - [ ] **Slug-addressable artifacts** — once a task has a `slug`, both
   `tasks/{task_id}/artifacts/{name}` and `tasks/{slug}/artifacts/{name}` should resolve to the
   same artifact (slug as an alias for the id on the artifact routes). _(Slice 1, P3)_
+- [ ] **Slug-gated worktree + provisioning** — the core doesn't yet create the task's
+  (slug-derived) worktree/branch, and workflow provisioning (e.g. the parity workflow's PR)
+  isn't wired; the walking skeleton stubs both. Implement the ARCHITECTURE §9 ordering
+  (slug → worktree → provisioning) alongside the parity workflow. _(Slice 1, P2)_
 
 ## Tracked elsewhere (pointers, do not duplicate)
 
