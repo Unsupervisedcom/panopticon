@@ -117,6 +117,43 @@ def test_turn_updates_on_each_transition() -> None:
     assert task.turn is Actor.USER  # COMPLETE is terminal → back to the user
 
 
+# -- named core operations (advance / drop, derived; declared ops) ------------------
+
+
+def test_operations_derive_advance_and_imply_drop() -> None:
+    # PLAN and WORKING each have a single non-DROPPED edge → advance is derived; drop is implicit.
+    assert WF.operations("PLAN") == {"advance": "WORKING", "drop": "DROPPED"}
+    assert WF.operations("WORKING") == {"advance": "COMPLETE", "drop": "DROPPED"}
+    assert WF.operations("COMPLETE") == {}  # terminal: no operations
+
+
+def test_resolve_operation_returns_target_or_raises() -> None:
+    assert WF.resolve_operation("PLAN", "advance") == "WORKING"
+    assert WF.resolve_operation("WORKING", "drop") == "DROPPED"
+    with pytest.raises(IllegalTransition):
+        WF.resolve_operation("PLAN", "iterate")  # not offered here
+
+
+def test_declared_operation_must_target_a_legal_transition() -> None:
+    class Bad(Workflow):
+        name = "bad-op"
+
+        class A(State):
+            label = "A"
+            transitions = (Complete,)
+            operations = {"advance": "DROPPED", "iterate": "COMPLETE"}  # iterate→COMPLETE ok; ...
+
+        class B(State):
+            label = "B"
+            transitions = (Complete,)
+            operations = {"jump": "B"}  # ...but B has no self-edge
+
+        initial = A
+
+    with pytest.raises(InvalidWorkflow):
+        Bad().operations("B")
+
+
 # -- illegal transitions ------------------------------------------------------------
 
 

@@ -45,6 +45,13 @@ def test_drives_slug_and_transition(client: TaskServiceClient) -> None:
     assert client.get_task(task_id)["slug"] == "fix-widget"
 
 
+def test_drives_core_operations(client: TaskServiceClient) -> None:
+    task_id = client.create_task("r1", "spike")["id"]
+    assert client.list_operations(task_id) == {"advance": "COMPLETE", "drop": "DROPPED"}
+    done = client.apply_operation(task_id, "advance")
+    assert done["state"] == "COMPLETE"
+
+
 def test_create_repo_over_rest(client: TaskServiceClient) -> None:
     client.create_repo("r2", "acme/other", "https://x/r2.git")
     assert {r["id"] for r in client.list_repos()} == {"r1", "r2"}

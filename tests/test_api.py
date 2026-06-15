@@ -86,6 +86,23 @@ def test_list_legal_transitions(client: TestClient) -> None:
     assert resp.json() == ["COMPLETE", "DROPPED"]  # spike ITERATING, sorted
 
 
+def test_list_and_apply_operations(client: TestClient) -> None:
+    task_id = _new_task(client)  # spike ITERATING
+    ops = client.get(f"/tasks/{task_id}/operations")
+    assert ops.json() == {"advance": "COMPLETE", "drop": "DROPPED"}  # advance derived, drop implicit
+
+    advanced = client.post(f"/tasks/{task_id}/operations/advance")
+    assert advanced.status_code == 200
+    assert advanced.json()["state"] == "COMPLETE"
+    assert advanced.json()["history"][-1]["trigger"] == "advance"  # the verb is the trigger
+
+
+def test_apply_unavailable_operation_409(client: TestClient) -> None:
+    task_id = _new_task(client)
+    resp = client.post(f"/tasks/{task_id}/operations/iterate")  # spike offers no iterate
+    assert resp.status_code == 409
+
+
 def test_legal_transition(client: TestClient) -> None:
     task_id = _new_task(client)
     resp = client.post(f"/tasks/{task_id}/transition", json={"to_state": "COMPLETE", "trigger": "finish"})

@@ -111,6 +111,20 @@ class TaskService:
         task = self.get_task(task_id)
         return sorted(self._workflow(task.workflow).transitions(task.state))
 
+    def operations(self, task_id: str) -> dict[str, str]:
+        """The named core operations available now (verb → target state) — e.g. advance/iterate/drop."""
+        task = self.get_task(task_id)
+        return self._workflow(task.workflow).operations(task.state)
+
+    def apply_operation(self, task_id: str, operation: str, *, note: str | None = None) -> Task:
+        """Apply a named core operation: resolve it to a transition (the verb becomes the trigger)."""
+        task = self.get_task(task_id)
+        wf = self._workflow(task.workflow)
+        to_state = wf.resolve_operation(task.state, operation)
+        wf.apply_transition(task, to_state, at=self._clock(), trigger=operation, note=note)
+        self._store.save_task(task)
+        return task
+
     def request_transition(
         self,
         task_id: str,

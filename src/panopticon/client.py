@@ -44,6 +44,9 @@ class TaskServiceClient:
     def list_transitions(self, task_id: str) -> list[str]:
         return cast("list[str]", self._json(self._http.get(f"/tasks/{task_id}/transitions")))
 
+    def list_operations(self, task_id: str) -> dict[str, str]:
+        return cast("dict[str, str]", self._json(self._http.get(f"/tasks/{task_id}/operations")))
+
     def list_registrations(self, task_id: str) -> list[JsonObj]:
         return cast("list[JsonObj]", self._json(self._http.get(f"/tasks/{task_id}/registrations")))
 
@@ -64,6 +67,10 @@ class TaskServiceClient:
     ) -> JsonObj:
         body: JsonObj = {"to_state": to_state, "trigger": trigger, "note": note}
         return cast(JsonObj, self._json(self._http.post(f"/tasks/{task_id}/transition", json=body)))
+
+    def apply_operation(self, task_id: str, operation: str) -> JsonObj:
+        """Apply a named core operation (e.g. advance/iterate/drop); the workflow resolves the target."""
+        return cast(JsonObj, self._json(self._http.post(f"/tasks/{task_id}/operations/{operation}")))
 
     def resolve_responsibility(
         self, task_id: str, key: str, status: Status, comment: str | None = None

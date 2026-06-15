@@ -69,6 +69,14 @@ def test_parity_has_no_forge_skills_yet() -> None:
     assert tuple(WF.skills()) == ()  # babysit-* are in-container skills, a later slice
 
 
+def test_core_operations_per_state() -> None:
+    assert WF.operations("PLANNING") == {"advance": "ITERATING", "drop": "DROPPED"}
+    assert WF.operations("ITERATING") == {"advance": "REVIEW", "drop": "DROPPED"}
+    assert WF.operations("REVIEW") == {"advance": "MERGING", "drop": "DROPPED"}
+    assert WF.operations("MERGING") == {"advance": "COMPLETE", "drop": "DROPPED"}
+    assert WF.operations("COMPLETE") == {}
+
+
 # -- the happy path: full lifecycle, gated at every stage ---------------------------
 
 

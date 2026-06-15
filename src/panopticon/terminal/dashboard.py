@@ -2,10 +2,11 @@
 
 A task table on the left, the highlighted task's state/turn/history on the right. Keys: `r`
 refreshes from the task service over REST, `t` attaches to the task's container tmux, `n`
-creates a task (pick repo → workflow), `a` advances it (pick a legal next state). The pickers
-are modal choice lists; the legal next states come from the service so the operator can't pick
-an illegal one. Network calls are synchronous (small, local); moving them to Textual workers is
-a refinement (docs/BACKLOG.md).
+creates a task (pick repo → workflow), and `x` **drops** it. Drop is the only state transition
+the dashboard drives: every other transition starts a new agentic turn, so it's triggered by an
+in-container agent skill (advance/iterate over REST/MCP), not the operator (ADR 0004). Network
+calls are synchronous (small, local); moving them to Textual workers is a refinement
+(docs/BACKLOG.md).
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import subprocess
 from collections.abc import Callable
 from typing import Any
 
+import httpx
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
@@ -82,7 +84,7 @@ class Dashboard(App[None]):
     BINDINGS = [
         ("r", "refresh", "Refresh"),
         ("n", "new_task", "New task"),
-        ("a", "advance", "Advance"),
+        ("x", "drop", "Drop"),
         ("t", "attach", "Attach tmux"),
         ("q", "quit", "Quit"),
     ]
@@ -150,23 +152,20 @@ class Dashboard(App[None]):
 
         self.push_screen(ChoiceScreen("repo", repos), pick_workflow)
 
-    def action_advance(self) -> None:
-        """`a`: move the highlighted task to one of its legal next states (chosen from a picker)."""
+    def action_drop(self) -> None:
+        """`x`: abandon the highlighted task. Drop is the **only** transition the dashboard
+        drives — every other transition starts a new agentic turn, so it's triggered by an
+        in-container agent skill, not the operator (ADR 0004)."""
         task_id = self._current
         if task_id is None:
             return
-        states = self._client.list_transitions(task_id)
-        if not states:
-            self.notify("No transitions available from this state.", severity="warning")
+        try:
+            self._client.apply_operation(task_id, "drop")
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.json().get("detail", str(exc))
+            self.notify(f"Can't drop: {detail}", severity="error")
             return
-
-        def apply(state: str | None) -> None:
-            if state is None:
-                return
-            self._client.request_transition(task_id, state)
-            self.action_refresh()
-
-        self.push_screen(ChoiceScreen("advance to", states), apply)
+        self.action_refresh()
 
     def action_attach(self) -> None:
         """`t`: switch into the highlighted task's container tmux session, if it's running."""

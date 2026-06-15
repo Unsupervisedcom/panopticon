@@ -95,6 +95,12 @@ CI (`.github/workflows/ci.yml`) runs `uv sync`, `mypy`, and `pytest` on every PR
 - **Actor** — a party, `user` or `agent`. A state declares `turn_on_enter` (who holds the
   turn on entry; seeds `Task.turn`) and `advanced_by` (who transitions out — the default is
   `USER`). The two are orthogonal.
+- **Operation** — a named core verb the active workflow resolves to a transition (ADR 0004's
+  two-tier commands): `drop` (→ `DROPPED`) is implicit for every non-terminal state, `advance`
+  is auto-derived when a state has one non-`DROPPED` edge, and a state may declare more (e.g.
+  `iterate`) in its `operations` map. A transition starts a new agentic turn, so all of these
+  except `drop` are invoked by an **in-container agent skill** (over REST/MCP), not the
+  dashboard; the dashboard drives only `drop` (`x`).
 - **Responsibility / Status** — an agent obligation for a state. Entering a state seeds its
   responsibilities onto that entry's history record, all `PENDING` (a promise); the agent
   fulfils each one at a time (`MET`, or `FAILED` with a comment) — mutating that entry — and a

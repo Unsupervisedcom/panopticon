@@ -23,6 +23,7 @@ Each state declares two orthogonal, immutable facts:
 from __future__ import annotations
 
 from abc import ABC
+from collections.abc import Mapping
 from typing import ClassVar
 
 from panopticon.core.models import Actor, Responsibility
@@ -73,3 +74,10 @@ class State(BaseState):
     turn_on_enter: ClassVar[Actor] = Actor.AGENT
     advanced_by: ClassVar[Actor] = Actor.USER
     transitions: ClassVar[tuple[type[BaseState] | str, ...]] = (Dropped,)
+    #: Named **core operations** beyond the implicit `drop` — a verb → target-state map (the
+    #: target must be one of this state's ``transitions``). The control plane and the
+    #: in-container agent invoke these by name (ADR 0004's two-tier commands) instead of naming
+    #: a raw state. `advance` is auto-derived when a state has exactly one non-`DROPPED`
+    #: transition, so linear states need declare nothing; declare it (and e.g. `iterate`) only
+    #: when a state has several outgoing edges. `drop` → `DROPPED` is always implicit.
+    operations: ClassVar[Mapping[str, type[BaseState] | str]] = {}

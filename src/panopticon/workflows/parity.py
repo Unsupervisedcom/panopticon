@@ -64,6 +64,7 @@ class Parity(Workflow):
             Responsibility(key="pr-reviewed", description="The PR has been reviewed."),
         )
         transitions = ("MERGING", "ITERATING")  # advance, or iterate back to coding
+        operations = {"advance": "MERGING"}  # disambiguate the forward edge (back-edge still present here)
 
     class Merging(State):
         label = "MERGING"
@@ -72,5 +73,6 @@ class Parity(Workflow):
             Responsibility(key="pr-merged", description="The PR is merged."),
         )
         transitions = (Complete, "ITERATING")  # auto-advance to COMPLETE, or iterate back
+        operations = {"advance": "COMPLETE"}
 
     initial = Planning

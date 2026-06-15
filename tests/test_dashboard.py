@@ -35,15 +35,15 @@ class _FakeClient:
         *,
         repos: list[str] | None = None,
         workflows: list[str] | None = None,
-        transitions: list[str] | None = None,
+        operations: dict[str, str] | None = None,
     ) -> None:
         self._tasks = tasks
         self._registrations = registrations or {}
         self._repos = repos or []
         self._workflows = workflows or []
-        self._transitions = transitions or []
+        self._operations = operations or {}
         self.created: list[tuple[str, str]] = []
-        self.transitioned: list[tuple[str, str]] = []
+        self.applied: list[tuple[str, str]] = []
 
     def list_tasks(self) -> list[dict[str, Any]]:
         return self._tasks
@@ -57,15 +57,15 @@ class _FakeClient:
     def list_workflows(self) -> list[str]:
         return self._workflows
 
-    def list_transitions(self, task_id: str) -> list[str]:
-        return self._transitions
+    def list_operations(self, task_id: str) -> dict[str, str]:
+        return self._operations
 
     def create_task(self, repo_id: str, workflow: str) -> dict[str, Any]:
         self.created.append((repo_id, workflow))
         return {"id": "new"}
 
-    def request_transition(self, task_id: str, to_state: str) -> dict[str, Any]:
-        self.transitioned.append((task_id, to_state))
+    def apply_operation(self, task_id: str, operation: str) -> dict[str, Any]:
+        self.applied.append((task_id, operation))
         return {"id": task_id}
 
 
@@ -129,23 +129,13 @@ async def test_pressing_n_creates_a_task_via_repo_then_workflow_picker() -> None
         assert fake.created == [("r1", "spike")]
 
 
-async def test_pressing_a_advances_to_a_chosen_legal_state() -> None:
-    fake = _FakeClient([_TASK], transitions=["COMPLETE", "DROPPED"])
+async def test_dashboard_drives_drop() -> None:
+    # Drop is the one transition the operator drives; advance and the rest are agent skills, so
+    # they aren't dashboard actions (no `a`/`i` bindings).
+    fake = _FakeClient([_TASK], operations={"advance": "MERGING", "drop": "DROPPED"})
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("a")  # opens the transition picker
+        await pilot.press("x")
         await pilot.pause()
-        await pilot.press("enter")  # first legal state: COMPLETE
-        await pilot.pause()
-        assert fake.transitioned == [("task-abcdef0123", "COMPLETE")]
-
-
-async def test_pressing_a_with_no_transitions_is_a_noop() -> None:
-    fake = _FakeClient([_TASK], transitions=[])
-    app = Dashboard(fake)  # type: ignore[arg-type]
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("a")
-        await pilot.pause()
-        assert fake.transitioned == []
+        assert fake.applied == [("task-abcdef0123", "drop")]

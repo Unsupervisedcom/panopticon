@@ -62,6 +62,7 @@ class _Graph:
 
     states: dict[str, type[BaseState]]  # label -> state class
     transitions: dict[str, frozenset[str]]  # label -> reachable labels
+    operations: dict[str, dict[str, str]]  # label -> {operation name -> dest label}
     initial: str  # label of the initial state
 
 
@@ -125,10 +126,37 @@ class Workflow(ABC):
             states[label] = cls
             transitions[label] = dests
 
+        operations = {label: self._resolve_operations(cls, transitions[label]) for label, cls in states.items()}
+
         initial = label_of(self.initial)
         if "DROPPED" not in states:  # guaranteed by the built-in; assert the invariant
             raise InvalidWorkflow(f"{self.name!r}: a DROPPED terminal state is required")
-        return _Graph(states=states, transitions=transitions, initial=initial)
+        return _Graph(states=states, transitions=transitions, operations=operations, initial=initial)
+
+    def _resolve_operations(self, cls: type[BaseState], dests: frozenset[str]) -> dict[str, str]:
+        """The named core operations available from one state (verb -> dest label).
+
+        `drop` (-> DROPPED) is implicit for every non-terminal state; `advance` is auto-derived
+        when there's exactly one non-DROPPED transition; declared ``operations`` (e.g. `iterate`)
+        are validated to target a legal transition.
+        """
+        if issubclass(cls, TerminalState):
+            return {}
+        ops: dict[str, str] = {}
+        for name, target in getattr(cls, "operations", {}).items():
+            dest = target if isinstance(target, str) else target.label
+            if dest not in dests:
+                raise InvalidWorkflow(
+                    f"{self.name!r}: operation {name!r} on {cls.label!r} targets {dest!r}, "
+                    "which is not one of its transitions"
+                )
+            ops[name] = dest
+        if "advance" not in ops:
+            forward = [d for d in dests if d != Dropped.label]
+            if len(forward) == 1:
+                ops["advance"] = forward[0]
+        ops.setdefault("drop", Dropped.label)
+        return ops
 
     # -- queries ----------------------------------------------------------------------
 
@@ -150,6 +178,26 @@ class Workflow(ABC):
         """Yield the labels reachable directly from ``label`` — its resolved legal transitions."""
         self._state_class(label)  # validate the label exists
         yield from self._graph.transitions[label]
+
+    def operations(self, label: str) -> dict[str, str]:
+        """The named core operations available from ``label`` — verb → destination label.
+
+        Always includes `drop`; includes `advance` when there's a single forward edge or one
+        was declared; plus any workflow-declared operations (e.g. `iterate`). Terminal states
+        offer none.
+        """
+        self._state_class(label)  # validate the label exists
+        return dict(self._graph.operations[label])
+
+    def resolve_operation(self, label: str, operation: str) -> str:
+        """The destination label for ``operation`` from ``label``, or raise if unavailable."""
+        self._state_class(label)  # validate the label exists
+        try:
+            return self._graph.operations[label][operation]
+        except KeyError:
+            raise IllegalTransition(
+                f"{self.name!r}: operation {operation!r} is not available in state {label!r}"
+            ) from None
 
     def can_transition(self, source: str, dest: str) -> bool:
         self._state_class(source)  # validate the label exists
