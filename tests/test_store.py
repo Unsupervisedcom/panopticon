@@ -61,6 +61,18 @@ def test_create_and_get_repo(store: Store) -> None:
     assert got is not None
     assert got.name == "acme/widgets"
     assert got.default_base == "main"
+    assert got.env_file is None and got.creds_volume is None  # references default to unset
+
+
+def test_repo_secret_references_round_trip(store: Store) -> None:
+    store.create_repo(
+        Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git",
+             env_file="/secrets/r1.env", creds_volume="panopticon-creds-r1")
+    )
+    got = store.get_repo("r1")
+    assert got is not None
+    assert got.env_file == "/secrets/r1.env"
+    assert got.creds_volume == "panopticon-creds-r1"
 
 
 def test_get_missing_repo_returns_none(store: Store) -> None:

@@ -58,12 +58,20 @@ class Responsibility:
 
 @dataclass
 class Repo:
-    """A repository tasks operate on. Owns secret references (added in a later slice)."""
+    """A repository tasks operate on.
+
+    Holds *references* to its per-repo secrets (ADR 0007), never the values: ``env_file`` is a
+    host path to an env-file of API-key-style secrets, and ``creds_volume`` names a persisted
+    volume of OAuth credential files. Both are injected into the task container at launch (the
+    runner), so secrets stay out of the DB, artifacts, and image layers.
+    """
 
     id: str
     name: str
     git_url: str
     default_base: str = "main"
+    env_file: str | None = None
+    creds_volume: str | None = None
 
 
 @dataclass(frozen=True)

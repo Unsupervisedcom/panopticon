@@ -68,3 +68,12 @@ def test_lists_states_and_sets_state_freely(client: TaskServiceClient) -> None:
 def test_create_repo_over_rest(client: TaskServiceClient) -> None:
     client.create_repo("r2", "acme/other", "https://x/r2.git")
     assert {r["id"] for r in client.list_repos()} == {"r1", "r2"}
+
+
+def test_create_repo_with_secret_references(client: TaskServiceClient) -> None:
+    repo = client.create_repo(
+        "r3", "acme/svc", "https://x/r3.git",
+        env_file="/secrets/r3.env", creds_volume="panopticon-creds-r3",
+    )
+    assert repo["env_file"] == "/secrets/r3.env"
+    assert repo["creds_volume"] == "panopticon-creds-r3"
