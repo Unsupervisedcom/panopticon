@@ -11,9 +11,10 @@ import itertools
 
 from panopticon.container.client import TaskServiceClient
 from panopticon.container.entrypoint import Work, run_task_container
+from panopticon.sessionservice.runner import Runner
 
 
-class StubRunner:
+class StubRunner(Runner):
     def __init__(self, client: TaskServiceClient, *, runner_id: str = "stub-runner") -> None:
         self._client = client
         self._runner_id = runner_id
@@ -22,7 +23,12 @@ class StubRunner:
     def spawn(
         self, task_id: str, *, proposed_slug: str | None = None, work: Work | None = None
     ) -> str:
-        """"Spawn" a fake container for ``task_id`` and return its container id."""
+        """"Spawn" a fake container for ``task_id`` and return its container id.
+
+        Runs the entrypoint protocol in-process. ``proposed_slug``/``work`` are skeleton-only
+        affordances (a real runner passes neither — the container decides its slug and runs the
+        agent); they extend, not replace, the :class:`Runner` contract.
+        """
         container_id = f"{self._runner_id}-c{next(self._counter)}"
         run_task_container(
             self._client,
@@ -33,3 +39,6 @@ class StubRunner:
             work=work,
         )
         return container_id
+
+    def stop(self, container_id: str) -> None:
+        """No-op: the in-process entrypoint already ran to completion (and deregistered)."""
