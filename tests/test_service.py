@@ -72,6 +72,31 @@ def test_legal_transition_persists(tmp_path: Path) -> None:
     assert [h.to_state for h in reloaded.history] == ["ITERATING", "COMPLETE"]
 
 
+# -- lifecycle hook: the service runs Workflow.on_transition on each transition ------
+
+
+def test_on_transition_hook_fires_through_the_service(tmp_path: Path) -> None:
+    calls: list[tuple[str | None, str]] = []
+
+    class Hooked(Workflow):
+        name = "hooked"
+
+        class A(State):
+            label = "A"
+            transitions = (Complete,)
+
+        initial = A
+
+        def on_transition(self, task, *, from_state, to_state, artifacts):  # type: ignore[override]
+            calls.append((from_state, to_state))
+
+    svc = TaskService(SqlAlchemyStore(), {"hooked": Hooked()}, FilesystemArtifactStore(tmp_path))
+    svc.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
+    task = svc.create_task("r1", "hooked")
+    svc.apply_operation(task.id, "advance")  # A -> COMPLETE
+    assert calls == [("A", "COMPLETE")]
+
+
 def test_illegal_transition_rejected(tmp_path: Path) -> None:
     svc = make_service(tmp_path)
     task = svc.create_task("r1", "spike")

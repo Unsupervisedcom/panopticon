@@ -15,7 +15,7 @@ ungated), exercised through an agent skill, so a backward edge needn't be in the
 **Responsibilities mirror cloude-cade's per-stage Definition-of-Done** (`bin/cloude_stages.py`'s
 `dod_bullets`), with two model divergences (ADR 0004): they are **agent-only**, so cloude-cade's
 "The user has approved the plan" is *not* a responsibility — the user approving *is* the advance
-out of PLANNING (its plan-accepted hook); and the terminal "the task file has TODO state X"
+out of PLANNING (the claude plan-accepted hook lands in Slice 6); and the terminal "the task file has TODO state X"
 bullets fall away because DB state replaces org-mode mechanics. cloude-cade's "A draft PR has
 been created" is **provisioning** here (ADR 0004's provision seam), not a responsibility. The
 forge-tied responsibilities (CI passing, PR updated/reviewed/merged) are the real DoD and gate

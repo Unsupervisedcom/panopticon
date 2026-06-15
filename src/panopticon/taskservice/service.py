@@ -148,10 +148,14 @@ class TaskService:
     def _commit_transition(
         self, task: Task, wf: Workflow, to_state: str, *, force: bool, trigger: str | None, note: str | None
     ) -> Task:
+        from_state = task.state
         if force:
             wf.force_transition(task, to_state, at=self._clock(), trigger=trigger, note=note)
         else:
             wf.apply_transition(task, to_state, at=self._clock(), trigger=trigger, note=note)
+        # Deterministic lifecycle hook (e.g. seed the plan on plan acceptance) — may touch the
+        # task/artifacts; run before the single save so any task mutation persists with it.
+        wf.on_transition(task, from_state=from_state, to_state=task.state, artifacts=self._artifacts)
         self._store.save_task(task)
         return task
 

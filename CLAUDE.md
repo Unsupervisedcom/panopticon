@@ -116,3 +116,7 @@ CI (`.github/workflows/ci.yml`) runs `uv sync`, `mypy`, and `pytest` on every PR
 - **Session service / runner** — spawns task containers (stubbed for now).
 - **Terminal controller** — the user-facing CLI/dashboard (Slice 3).
 - **Artifact** — a file-backed per-task document (plan, notes), reachable via REST/FS/MCP.
+- **Lifecycle hook** — a deterministic `Workflow` method the task service runs at a defined
+  moment (currently `on_transition`, after a transition, before persistence). It may write
+  artifacts or mutate the task's own record — no LLM, no clock. The seam; the built-in workflows
+  don't override it yet (the parity plan-accepted hook is claude-driven, Slice 6).

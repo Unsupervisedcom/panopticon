@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import ClassVar
 
+from panopticon.core.artifacts import ArtifactStore
 from panopticon.core.models import Actor, HistoryEntry, Responsibility, Task
 from panopticon.core.state import BaseState, Complete, Dropped, State, TerminalState
 
@@ -226,6 +227,18 @@ class Workflow(ABC):
     def skills(self) -> Sequence[str]:
         """Workflow-specific in-container skills, on top of the core operations."""
         return ()
+
+    # -- lifecycle hooks (deterministic; run in the control plane, no LLM) ---------------
+
+    def on_transition(
+        self, task: Task, *, from_state: str | None, to_state: str, artifacts: ArtifactStore
+    ) -> None:
+        """Hook run by the task service after a transition is applied, before persistence.
+
+        The default is a no-op. Overrides may write artifacts (e.g. seed the plan on plan
+        acceptance) or mutate the task's own record. Deterministic — no LLM, no clock; any
+        timestamps come from the task/history already stamped by the caller.
+        """
 
     # -- task lifecycle (deterministic: no clock, no I/O; timestamps passed in) ---------
 
