@@ -24,6 +24,7 @@ src/panopticon/
   workflows/       # built-in Workflow subclasses (Spike seed; Parity = cloude-cade lifecycle)
   taskservice/     # control plane: TaskService, FastAPI REST API, the SQLAlchemy store
                    # adapter (in-memory or on-disk SQLite), filesystem artifact store, MCP
+                   # server (mcp.py: operations=tools, artifacts=resources; FastMCP)
   sessionservice/  # the runner: Runner ABC + StubRunner (in-process) + LocalRunner
                    # (real Docker+tmux via the CLIs); `python -m panopticon.sessionservice`
   container/       # in-container client + entrypoint (`python -m panopticon.container`,
@@ -103,6 +104,9 @@ commands the Makefile wraps).
   proving the interface is backend-agnostic (and that rows/domain models stay in sync).
 - `tests/test_git.py` — local branch/worktree ops: unit tests pin the emitted `git` commands
   and slug-gating (fake runner); a `skipif` integration test creates a real worktree.
+- `tests/test_mcp.py` — the MCP server surface, exercised **in-memory** via the MCP
+  client (`create_connected_server_and_client_session`) — tools mutate the task, the artifact
+  resource reads back. No LLM, no HTTP (HTTP hosting is the runnable server, Slice 7a).
 - `tests/test_skeleton.py` — the end-to-end walking skeleton (create → register → slug →
   transition → history) over the REST API, no Docker.
 - `tests/test_local_runner.py` / `tests/test_entrypoint.py` — the runner's emitted docker/tmux
