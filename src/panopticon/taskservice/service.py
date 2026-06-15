@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from panopticon.core.artifacts import ArtifactStore
-from panopticon.core.models import Repo, Status, Task
+from panopticon.core.models import Actor, Repo, Status, Task
 from panopticon.core.store import NotFound, Store
 from panopticon.core.workflow import Workflow
 
@@ -171,6 +171,24 @@ class TaskService:
     def set_slug(self, task_id: str, slug: str) -> Task:
         task = self.get_task(task_id)
         task.slug = slug
+        self._store.save_task(task)
+        return task
+
+    def set_turn(self, task_id: str, turn: Actor) -> Task:
+        """Flip who holds the turn within a state (the in-container hooks' callback).
+
+        This is the agnostic agent↔user ball tracking (ADR 0004). It leaves ``blocked``
+        untouched, so a deliberate block survives turn flips.
+        """
+        task = self.get_task(task_id)
+        task.turn = turn
+        self._store.save_task(task)
+        return task
+
+    def set_blocked(self, task_id: str, blocked: bool) -> Task:
+        """Set/clear the task's deliberate ``blocked`` marker (orthogonal to the turn)."""
+        task = self.get_task(task_id)
+        task.blocked = blocked
         self._store.save_task(task)
         return task
 

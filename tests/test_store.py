@@ -140,6 +140,15 @@ def test_save_persists_transition_and_slug(store: Store) -> None:
     assert [h.to_state for h in got.history] == ["ITERATING", "COMPLETE"]
 
 
+def test_blocked_marker_round_trips(store: Store) -> None:
+    _seed_repo(store)
+    task = _new_task(store)
+    assert store.get_task("t1").blocked is False  # default on create  # type: ignore[union-attr]
+    task.blocked = True
+    store.save_task(task)
+    assert store.get_task("t1").blocked is True  # type: ignore[union-attr]
+
+
 def test_save_missing_task_raises(store: Store) -> None:
     _seed_repo(store)
     task = WF.start_task("ghost", "r1", at="t0")
@@ -293,6 +302,7 @@ def _fully_populated_task() -> Task:
         workflow="gated",
         state="WORKING",
         turn=Actor.AGENT,
+        blocked=True,
         slug="fix-the-widget",
         history=[
             HistoryEntry(

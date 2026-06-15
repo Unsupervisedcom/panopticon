@@ -33,9 +33,10 @@ def _short(task_id: str) -> str:
 
 def render_detail(task: JsonObj) -> str:
     """The right-pane text for one task: identity, state/turn, and history."""
+    turn = f"{task['turn']}{' (blocked)' if task.get('blocked') else ''}"
     lines = [
         f"[b]{task.get('slug') or task['id']}[/b]",
-        f"state: {task['state']}    turn: {task['turn']}    workflow: {task['workflow']}",
+        f"state: {task['state']}    turn: {turn}    workflow: {task['workflow']}",
         "",
         "history:",
     ]
@@ -115,8 +116,9 @@ class Dashboard(App[None]):
         table.clear()
         self._tasks = {t["id"]: t for t in self._client.list_tasks()}
         for task in self._tasks.values():
+            turn = f"{task['turn']} ⚠" if task.get("blocked") else task["turn"]
             table.add_row(
-                _short(task["id"]), task["slug"] or "-", task["state"], task["turn"],
+                _short(task["id"]), task["slug"] or "-", task["state"], turn,
                 key=task["id"],
             )
         self._update_detail(next(iter(self._tasks), None))
