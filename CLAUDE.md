@@ -63,6 +63,7 @@ make check       # typecheck + test (what CI runs)
 make serve       # run the task service over HTTP (python -m panopticon.taskservice)
 make dashboard   # launch the dashboard in the foreground (no tmux)
 make panopticon  # task service + dashboard in the panopticon tmux server (the switcher)
+make login REPO=<id>  # populate a repo's creds volume interactively (panopticon login)
 make build       # docker build the base task-container image (panopticon-base)
 make clean       # remove the base + composed panopticon-* images
 ```
@@ -106,7 +107,9 @@ commands the Makefile wraps).
 - **Task** — a unit of work; identity is `id`, label is `slug`.
 - **Repo** — a repository tasks operate on. Holds *references* to its per-repo secrets
   (ADR 0007) — `env_file` (API-key env-file path) and `creds_volume` (OAuth creds volume) —
-  never the values; the runner injects them at launch (Slice 5).
+  never the values; the runner injects them at launch (`--env-file` + `-v <vol>:/creds`,
+  Slice 5), so a task gets only its own repo's secrets. `panopticon login <repo> [cmd]`
+  populates the creds volume interactively (the claude OAuth command arrives in Slice 6).
 - **Workflow** — a `Workflow` subclass whose **states are nested `State` classes**
   (declarative). It declares `initial`; states are discovered and their transitions
   (class refs or label strings) resolved + validated when the workflow is instantiated.

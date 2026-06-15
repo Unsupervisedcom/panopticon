@@ -1,6 +1,6 @@
 # panopticon — dev tasks. Thin wrappers over `uv`/`docker`; see CLAUDE.md for details.
 .DEFAULT_GOAL := help
-.PHONY: help sync test typecheck check serve dashboard panopticon build clean
+.PHONY: help sync test typecheck check serve dashboard panopticon login build clean
 
 #: The base task-container image (ADR 0005 base layer); must match DEFAULT_IMAGE.
 IMAGE ?= panopticon-base
@@ -31,6 +31,9 @@ panopticon:  ## Start the task service + dashboard in one panopticon tmux sessio
 		tmux -L panopticon new-window -t panopticon -n dashboard 'uv run panopticon dashboard'; \
 	}
 	tmux -L panopticon attach -t panopticon
+
+login:  ## Populate a repo's creds volume interactively (REPO=<id>)
+	uv run panopticon login $(REPO)
 
 build:  ## Build the base task-container image (override with IMAGE=)
 	docker build --tag $(IMAGE) --file docker/Dockerfile .

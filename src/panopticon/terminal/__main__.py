@@ -1,23 +1,34 @@
 """``panopticon`` / ``python -m panopticon.terminal`` — the operator CLI.
 
 `panopticon` (or `panopticon dashboard`) launches the Textual dashboard; `panopticon tasks`
-lists tasks as plain text over REST.
+lists tasks as plain text over REST; `panopticon login <repo> [cmd...]` populates a repo's
+creds volume interactively (ADR 0007).
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import sys
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import httpx
 
 from panopticon.client import TaskServiceClient
 
+if TYPE_CHECKING:  # avoid importing sessionservice at module load
+    from panopticon.sessionservice.local_runner import LocalRunner
+
 DEFAULT_SERVICE_URL = "http://localhost:8000"
 
 
-def main(argv: Sequence[str] | None = None, *, client: TaskServiceClient | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    client: TaskServiceClient | None = None,
+    runner: LocalRunner | None = None,
+) -> int:
     parser = argparse.ArgumentParser(prog="panopticon", description="panopticon operator CLI")
     parser.add_argument(
         "--service-url",
@@ -27,12 +38,23 @@ def main(argv: Sequence[str] | None = None, *, client: TaskServiceClient | None 
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("dashboard", help="launch the dashboard (default)")
     sub.add_parser("tasks", help="list tasks as plain text")
+    login_p = sub.add_parser("login", help="populate a repo's creds volume interactively")
+    login_p.add_argument("repo")
+    login_p.add_argument("cmd", nargs="*", help="login command to run (default: bash)")
     args = parser.parse_args(argv)
 
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
     if args.command == "tasks":
         for t in client.list_tasks():
             print(f"{t['id']}  {t['state']:<10}  {t['turn']:<5}  {t['slug'] or '-'}")
+    elif args.command == "login":
+        creds = client.get_repo(args.repo).get("creds_volume")
+        if not creds:
+            print(f"repo {args.repo!r} has no creds_volume configured", file=sys.stderr)
+            return 1
+        from panopticon.sessionservice.local_runner import LocalRunner
+
+        (runner or LocalRunner(args.service_url)).login(creds, args.cmd or ["bash"])
     else:  # default / "dashboard"
         from panopticon.terminal.dashboard import run
 

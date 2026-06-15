@@ -82,6 +82,17 @@ def test_stop_kills_session_and_force_removes_container_idempotently() -> None:
     assert (["docker", "rm", "--force", "panopticon-t1"], False) in rec.calls
 
 
+def test_login_runs_interactive_container_with_creds_volume() -> None:
+    rec = _Recorder()
+    LocalRunner("http://svc", image="img:1", run=rec).login("creds-r1", ["claude", "login"])
+    cmd, check = rec.calls[0]
+    assert cmd == [
+        "docker", "run", "--interactive", "--tty", "--rm",
+        "--volume", "creds-r1:/creds", "img:1", "claude", "login",
+    ]
+    assert check is False  # interactive; tolerate non-zero exit
+
+
 def test_tmux_socket_can_be_overridden() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", tmux_socket="panopt", run=rec).spawn("t1")
