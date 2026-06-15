@@ -26,6 +26,10 @@ DEFAULT_IMAGE = "panopticon-base"
 #: ``host-gateway`` maps to the host's gateway IP; the service binds 0.0.0.0.
 HOST_GATEWAY = "host.docker.internal:host-gateway"
 
+#: Dedicated tmux server socket for panopticon's task sessions — isolates them from the
+#: operator's own tmux and gives the terminal controller a known place to `tmux attach`.
+TMUX_SOCKET = "panopticon"
+
 
 class CommandRunner(Protocol):
     """Runs an external command and returns its stdout; ``check`` raises on non-zero exit."""
@@ -47,7 +51,7 @@ class LocalRunner(Runner):
         image: str = DEFAULT_IMAGE,
         runner_id: str = "local",
         shell: str = "bash",
-        tmux_socket: str | None = None,
+        tmux_socket: str | None = TMUX_SOCKET,
         extra_env: Mapping[str, str] | None = None,
         run: CommandRunner = _subprocess_run,
     ) -> None:
