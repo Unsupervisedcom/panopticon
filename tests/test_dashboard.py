@@ -78,6 +78,11 @@ def test_render_detail_shows_state_turn_and_history() -> None:
     assert "tests-pass=pending" in text
 
 
+def test_render_detail_marks_blocked() -> None:
+    assert "(blocked)" not in render_detail(_TASK)
+    assert "turn: agent (blocked)" in render_detail({**_TASK, "blocked": True})
+
+
 async def test_dashboard_mounts_lists_tasks_and_shows_detail() -> None:
     app = Dashboard(_FakeClient([_TASK]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:

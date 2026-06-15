@@ -71,6 +71,7 @@ class _TaskRow(_Base):
     workflow: Mapped[str]
     state: Mapped[str]
     turn: Mapped[str]
+    blocked: Mapped[bool] = mapped_column(default=False)
     slug: Mapped[str | None]
     history: Mapped[list[_HistoryRow]] = relationship(
         order_by="_HistoryRow.seq",
@@ -86,6 +87,7 @@ class _TaskRow(_Base):
             workflow=self.workflow,
             state=self.state,
             turn=Actor(self.turn),
+            blocked=self.blocked,
             slug=self.slug,
             history=[h.to_domain() for h in self.history],
         )
@@ -98,6 +100,7 @@ class _TaskRow(_Base):
             workflow=task.workflow,
             state=task.state,
             turn=task.turn.value,
+            blocked=task.blocked,
             slug=task.slug,
             history=[_HistoryRow.from_domain(e, seq) for seq, e in enumerate(task.history)],
         )
@@ -258,6 +261,7 @@ class SqlAlchemyStore(Store):
                 raise NotFound(f"task {task.id!r} does not exist")
             row.state = task.state
             row.turn = task.turn.value
+            row.blocked = task.blocked
             row.slug = task.slug
             # The current (last stored) entry's promises may have been fulfilled in place.
             if stored:

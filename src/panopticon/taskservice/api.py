@@ -54,6 +54,7 @@ class TaskOut(BaseModel):
     workflow: str
     state: str
     turn: Actor
+    blocked: bool
     slug: str | None
     history: list[HistoryOut]
 
@@ -97,6 +98,14 @@ class SlugIn(BaseModel):
 
 class StateIn(BaseModel):
     state: str
+
+
+class TurnIn(BaseModel):
+    turn: Actor
+
+
+class BlockedIn(BaseModel):
+    blocked: bool
 
 
 class RegisterIn(BaseModel):
@@ -232,6 +241,14 @@ def create_app(service: TaskService) -> FastAPI:
     @app.put("/tasks/{task_id}/slug")
     async def set_slug(task_id: str, body: SlugIn) -> TaskOut:
         return TaskOut.model_validate(service.set_slug(task_id, body.slug))
+
+    @app.put("/tasks/{task_id}/turn")
+    async def set_turn(task_id: str, body: TurnIn) -> TaskOut:
+        return TaskOut.model_validate(service.set_turn(task_id, body.turn))
+
+    @app.put("/tasks/{task_id}/blocked")
+    async def set_blocked(task_id: str, body: BlockedIn) -> TaskOut:
+        return TaskOut.model_validate(service.set_blocked(task_id, body.blocked))
 
     # -- artifacts ----------------------------------------------------------------
 

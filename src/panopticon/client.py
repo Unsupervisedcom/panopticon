@@ -70,6 +70,14 @@ class TaskServiceClient:
         """The user's free override — move the task to any state (bypasses the graph and gate)."""
         return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/state", json={"state": state})))
 
+    def set_turn(self, task_id: str, turn: str) -> JsonObj:
+        """Flip who holds the turn (the in-container stop/user-prompt hooks call this)."""
+        return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/turn", json={"turn": turn})))
+
+    def set_blocked(self, task_id: str, blocked: bool) -> JsonObj:
+        """Set/clear the deliberate `blocked` marker (survives turn flips)."""
+        return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/blocked", json={"blocked": blocked})))
+
     def request_transition(
         self, task_id: str, to_state: str, *, trigger: str | None = None, note: str | None = None
     ) -> JsonObj:

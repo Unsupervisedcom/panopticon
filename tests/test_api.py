@@ -128,6 +128,17 @@ def test_set_slug(client: TestClient) -> None:
     assert resp.json()["slug"] == "fix-widget"
 
 
+def test_set_turn_and_blocked(client: TestClient) -> None:
+    task_id = _new_task(client)  # turn=agent, blocked=false
+    turned = client.put(f"/tasks/{task_id}/turn", json={"turn": "user"})
+    assert turned.status_code == 200
+    assert turned.json()["turn"] == "user"
+
+    blocked = client.put(f"/tasks/{task_id}/blocked", json={"blocked": True})
+    assert blocked.json()["blocked"] is True
+    assert blocked.json()["turn"] == "user"  # flip-independent: the block left the turn alone
+
+
 # -- artifacts ----------------------------------------------------------------------
 
 
