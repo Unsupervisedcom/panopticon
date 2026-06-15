@@ -12,12 +12,12 @@ from collections.abc import Sequence
 
 import httpx
 
-from panopticon.terminal.client import DashboardClient
+from panopticon.client import TaskServiceClient
 
 DEFAULT_SERVICE_URL = "http://localhost:8000"
 
 
-def main(argv: Sequence[str] | None = None, *, client: DashboardClient | None = None) -> int:
+def main(argv: Sequence[str] | None = None, *, client: TaskServiceClient | None = None) -> int:
     parser = argparse.ArgumentParser(prog="panopticon", description="panopticon operator CLI")
     parser.add_argument(
         "--service-url",
@@ -29,7 +29,7 @@ def main(argv: Sequence[str] | None = None, *, client: DashboardClient | None = 
     sub.add_parser("tasks", help="list tasks as plain text")
     args = parser.parse_args(argv)
 
-    client = client or DashboardClient(httpx.Client(base_url=args.service_url))
+    client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
     if args.command == "tasks":
         for t in client.list_tasks():
             print(f"{t['id']}  {t['state']:<10}  {t['turn']:<5}  {t['slug'] or '-'}")

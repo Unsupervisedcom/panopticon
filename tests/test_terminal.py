@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from panopticon.terminal import __main__ as cli
-from panopticon.terminal.client import DashboardClient
+from panopticon.client import TaskServiceClient
 from panopticon.core.models import Repo
 from panopticon.taskservice.api import create_app
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
@@ -19,14 +19,14 @@ from panopticon.workflows import Spike
 
 
 @pytest.fixture
-def client(tmp_path: Path) -> Iterator[DashboardClient]:
+def client(tmp_path: Path) -> Iterator[TaskServiceClient]:
     service = TaskService(SqlAlchemyStore("sqlite://"), {"spike": Spike()}, FilesystemArtifactStore(tmp_path))
     service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
     with TestClient(create_app(service)) as http:
-        yield DashboardClient(http)
+        yield TaskServiceClient(http)
 
 
-def test_reads_workflows_repos_and_tasks(client: DashboardClient) -> None:
+def test_reads_workflows_repos_and_tasks(client: TaskServiceClient) -> None:
     assert client.list_workflows() == ["spike"]
     assert [r["id"] for r in client.list_repos()] == ["r1"]
     task = client.create_task("r1", "spike")
@@ -35,7 +35,7 @@ def test_reads_workflows_repos_and_tasks(client: DashboardClient) -> None:
     assert client.get_task(task["id"])["state"] == "ITERATING"
 
 
-def test_drives_slug_and_transition(client: DashboardClient) -> None:
+def test_drives_slug_and_transition(client: TaskServiceClient) -> None:
     task_id = client.create_task("r1", "spike")["id"]
     client.set_slug(task_id, "fix-widget")
     assert client.list_transitions(task_id) == ["COMPLETE", "DROPPED"]
@@ -44,7 +44,7 @@ def test_drives_slug_and_transition(client: DashboardClient) -> None:
     assert client.get_task(task_id)["slug"] == "fix-widget"
 
 
-def test_create_repo_over_rest(client: DashboardClient) -> None:
+def test_create_repo_over_rest(client: TaskServiceClient) -> None:
     client.create_repo("r2", "acme/other", "https://x/r2.git")
     assert {r["id"] for r in client.list_repos()} == {"r1", "r2"}
 
