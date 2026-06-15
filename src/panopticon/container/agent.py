@@ -1,10 +1,10 @@
 """The in-container **agent launcher** — what the runner's tmux pane runs.
 
-It prepares the agent CLI's surface from the active workflow, then `exec`s the agent. This is
-the only LLM-bearing path (the determinism invariant): the **bootstrap** (render the workflow's
-skills to the CLI, point it at the repo's creds) is deterministic and unit-tested with fakes;
-the **launch** (real `claude`) is injectable and only runs for real in a `skipif`-gated
-integration / a live container — never in CI.
+It prepares the agent CLI's surface from the active workflow (skills + turn-flip hooks), then
+`exec`s the agent. This is the only LLM-bearing path (the determinism invariant): the
+**bootstrap** (render the workflow's skills + hooks to the CLI, point it at the repo's creds) is
+deterministic and unit-tested with fakes; the **launch** (real `claude`) is injectable and only
+runs for real in a `skipif`-gated integration / a live container — never in CI.
 
 The container's entrypoint (`python -m panopticon.container`) stays the liveness/heartbeat loop;
 this runs alongside it in the tmux pane, so `tmux attach` reaches the live agent.
@@ -19,6 +19,7 @@ from pathlib import Path
 import httpx
 
 from panopticon.client import TaskServiceClient
+from panopticon.container.hooks import write_settings
 from panopticon.container.skills import write_commands
 from panopticon.core.models import Skill
 
@@ -65,10 +66,13 @@ def main(
     home: Path | None = None,
     launch: Callable[[], None] = _exec_claude,
 ) -> None:
-    """Bootstrap the agent CLI from the active workflow, then launch the agent."""
+    """Bootstrap the agent CLI from the active workflow (skills + turn-flip hooks), then launch
+    the agent."""
     env = os.environ
     client = client_factory(env["PANOPTICON_SERVICE_URL"])
-    render_skills(client, env["PANOPTICON_TASK_ID"], home or Path.home())
+    home = home or Path.home()
+    render_skills(client, env["PANOPTICON_TASK_ID"], home)
+    write_settings(home)  # turn-flip hooks (Slice 4 contract)
     launch()
 
 

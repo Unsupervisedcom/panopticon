@@ -154,7 +154,8 @@ commands the Makefile wraps).
 - **Turn-flip / blocked** — the live `Task.turn` flips *within* a state via
   `PUT /tasks/{id}/turn` (the agnostic agent↔user ball tracking). The **contract** for the
   in-container hooks: the agent's stop hook sets `turn=user`; the user-prompt hook sets
-  `turn=agent` (the claude-specific hook scripts themselves land in Slice 6). `Task.blocked`
+  `turn=agent`. The claude wiring is `container/hooks.py` (renders `.claude/settings.json`) +
+  `container/hook.py` (the callback the events invoke), rendered by the agent launcher. `Task.blocked`
   (`PUT …/blocked`) is a deliberate "waiting" marker the agent sets; it's **orthogonal to the
   turn and survives flips** (cloude-cade's `:blocked:`), cleared only explicitly.
 - **Skill** — a workflow-specific, agent-driven procedure exposed *in the container* (ADR 0004),

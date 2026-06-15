@@ -1,9 +1,11 @@
-"""The in-container agent launcher: the deterministic bootstrap (render the workflow's skills to
-the CLI surface) then launch. No LLM — the real `claude` exec is injected as a fake here."""
+"""The in-container agent launcher: the deterministic bootstrap (render the workflow's skills +
+turn-flip hooks) then launch. No LLM — the real `claude` exec is a fake here."""
 
 from __future__ import annotations
 
 from pathlib import Path
+
+import pytest
 
 from panopticon.container import agent
 
@@ -33,7 +35,7 @@ def test_claude_argv_continues_an_existing_session(tmp_path: Path) -> None:
     assert agent._claude_argv(tmp_path, Path("/work/repo")) == ["claude", "--continue"]
 
 
-def test_main_bootstraps_then_launches(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_main_bootstraps_skills_and_hooks_then_launches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PANOPTICON_SERVICE_URL", "http://svc")
     monkeypatch.setenv("PANOPTICON_TASK_ID", "t1")
     launched: list[bool] = []
@@ -42,5 +44,6 @@ def test_main_bootstraps_then_launches(tmp_path: Path, monkeypatch) -> None:  # 
         home=tmp_path,
         launch=lambda: launched.append(True),
     )
-    assert (tmp_path / ".claude" / "commands" / "s.md").exists()  # bootstrap ran...
-    assert launched == [True]  # ...then the agent launched
+    assert (tmp_path / ".claude" / "commands" / "s.md").exists()  # skills rendered...
+    assert (tmp_path / ".claude" / "settings.json").exists()  # ...turn-flip hooks written...
+    assert launched == [True]  # ...then launched
