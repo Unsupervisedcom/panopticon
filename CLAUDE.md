@@ -86,7 +86,9 @@ CI (`.github/workflows/ci.yml`) runs `uv sync`, `mypy`, and `pytest` on every PR
 ## Glossary
 
 - **Task** — a unit of work; identity is `id`, label is `slug`.
-- **Repo** — a repository tasks operate on (owns secret references, later slices).
+- **Repo** — a repository tasks operate on. Holds *references* to its per-repo secrets
+  (ADR 0007) — `env_file` (API-key env-file path) and `creds_volume` (OAuth creds volume) —
+  never the values; the runner injects them at launch (Slice 5).
 - **Workflow** — a `Workflow` subclass whose **states are nested `State` classes**
   (declarative). It declares `initial`; states are discovered and their transitions
   (class refs or label strings) resolved + validated when the workflow is instantiated.

@@ -56,8 +56,20 @@ class TaskServiceClient:
 
     # -- repos / tasks ------------------------------------------------------------
 
-    def create_repo(self, repo_id: str, name: str, git_url: str, default_base: str = "main") -> JsonObj:
-        body = {"id": repo_id, "name": name, "git_url": git_url, "default_base": default_base}
+    def create_repo(
+        self,
+        repo_id: str,
+        name: str,
+        git_url: str,
+        default_base: str = "main",
+        *,
+        env_file: str | None = None,
+        creds_volume: str | None = None,
+    ) -> JsonObj:
+        body = {
+            "id": repo_id, "name": name, "git_url": git_url, "default_base": default_base,
+            "env_file": env_file, "creds_volume": creds_volume,
+        }
         return cast(JsonObj, self._json(self._http.post("/repos", json=body)))
 
     def create_task(self, repo_id: str, workflow: str) -> JsonObj:

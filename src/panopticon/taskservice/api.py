@@ -64,6 +64,8 @@ class RepoIn(BaseModel):
     name: str
     git_url: str
     default_base: str = "main"
+    env_file: str | None = None
+    creds_volume: str | None = None
 
 
 class RepoOut(BaseModel):
@@ -73,6 +75,8 @@ class RepoOut(BaseModel):
     name: str
     git_url: str
     default_base: str
+    env_file: str | None = None
+    creds_volume: str | None = None
 
 
 class CreateTaskIn(BaseModel):

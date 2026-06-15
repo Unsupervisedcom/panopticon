@@ -54,13 +54,21 @@ class _RepoRow(_Base):
     name: Mapped[str]
     git_url: Mapped[str]
     default_base: Mapped[str]
+    env_file: Mapped[str | None] = mapped_column(default=None)
+    creds_volume: Mapped[str | None] = mapped_column(default=None)
 
     def to_domain(self) -> Repo:
-        return Repo(id=self.id, name=self.name, git_url=self.git_url, default_base=self.default_base)
+        return Repo(
+            id=self.id, name=self.name, git_url=self.git_url, default_base=self.default_base,
+            env_file=self.env_file, creds_volume=self.creds_volume,
+        )
 
     @classmethod
     def from_domain(cls, repo: Repo) -> _RepoRow:
-        return cls(id=repo.id, name=repo.name, git_url=repo.git_url, default_base=repo.default_base)
+        return cls(
+            id=repo.id, name=repo.name, git_url=repo.git_url, default_base=repo.default_base,
+            env_file=repo.env_file, creds_volume=repo.creds_volume,
+        )
 
 
 class _TaskRow(_Base):
