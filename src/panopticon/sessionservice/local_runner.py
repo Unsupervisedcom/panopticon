@@ -110,3 +110,14 @@ class LocalRunner(Runner):
         # Idempotent: tolerate an already-gone session/container.
         self._run(self._tmux("kill-session", "-t", container_id), check=False)
         self._run(["docker", "rm", "--force", container_id], check=False)
+
+    def login(self, creds_volume: str, command: Sequence[str]) -> None:
+        """Run an interactive container with a repo's creds volume mounted, to populate it
+        (ADR 0007's generalized `login`). Generic: ``command`` is the CLI's login invocation —
+        the claude OAuth command is supplied by the agent layer (Slice 6). The named volume is
+        created on first use; persists across task restarts."""
+        self._run(
+            ["docker", "run", "--interactive", "--tty", "--rm",
+             "--volume", f"{creds_volume}:{CREDS_MOUNT}", self._image, *command],
+            check=False,
+        )
