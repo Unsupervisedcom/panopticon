@@ -104,6 +104,14 @@ class StateIn(BaseModel):
     state: str
 
 
+class SkillOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    name: str
+    description: str
+    instructions: str
+
+
 class TurnIn(BaseModel):
     turn: Actor
 
@@ -219,6 +227,10 @@ def create_app(service: TaskService) -> FastAPI:
     @app.get("/tasks/{task_id}/states")
     async def list_states(task_id: str) -> list[str]:
         return service.workflow_states(task_id)
+
+    @app.get("/tasks/{task_id}/skills")
+    async def list_skills(task_id: str) -> list[SkillOut]:
+        return [SkillOut.model_validate(s) for s in service.skills(task_id)]
 
     @app.put("/tasks/{task_id}/state")
     async def set_state(task_id: str, body: StateIn) -> TaskOut:

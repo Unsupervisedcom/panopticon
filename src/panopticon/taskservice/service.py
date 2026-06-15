@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 
 from panopticon.core.artifacts import ArtifactStore
 from panopticon.core.git import GitWorktrees, Worktree
-from panopticon.core.models import Actor, Repo, Status, Task
+from panopticon.core.models import Actor, Repo, Skill, Status, Task
 from panopticon.core.store import NotFound, Store
 from panopticon.core.workflow import Workflow
 
@@ -123,6 +123,11 @@ class TaskService:
         """The named core operations available now (verb → target state) — advance/drop."""
         task = self.get_task(task_id)
         return self._workflow(task.workflow).operations(task.state)
+
+    def skills(self, task_id: str) -> list[Skill]:
+        """The active workflow's in-container skills (rendered to the agent CLI in the container)."""
+        task = self.get_task(task_id)
+        return list(self._workflow(task.workflow).skills())
 
     def apply_operation(self, task_id: str, operation: str, *, note: str | None = None) -> Task:
         """Apply a named core operation (advance/drop) — a gated move along the declared graph."""

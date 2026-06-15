@@ -9,6 +9,7 @@ from panopticon.core.models import (
     HistoryEntry,
     Repo,
     Responsibility,
+    Skill,
     Status,
     Task,
 )
@@ -37,6 +38,7 @@ __all__ = [
     "Repo",
     "ResponsibilitiesNotMet",
     "Responsibility",
+    "Skill",
     "State",
     "Status",
     "Task",

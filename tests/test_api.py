@@ -108,6 +108,13 @@ def test_list_states(client: TestClient) -> None:
     assert set(client.get(f"/tasks/{task_id}/states").json()) == {"ITERATING", "COMPLETE", "DROPPED"}
 
 
+def test_list_skills_empty_for_forgeless_workflow(client: TestClient) -> None:
+    task_id = _new_task(client)
+    resp = client.get(f"/tasks/{task_id}/skills")
+    assert resp.status_code == 200
+    assert resp.json() == []  # spike is forge-less → no skills
+
+
 def test_legal_transition(client: TestClient) -> None:
     task_id = _new_task(client)
     resp = client.post(f"/tasks/{task_id}/transition", json={"to_state": "COMPLETE", "trigger": "finish"})

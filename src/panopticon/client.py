@@ -54,6 +54,10 @@ class TaskServiceClient:
         """Every state of the task's workflow — the candidates for a free state-set."""
         return cast("list[str]", self._json(self._http.get(f"/tasks/{task_id}/states")))
 
+    def list_skills(self, task_id: str) -> list[JsonObj]:
+        """The active workflow's in-container skills (the harness renders these to the CLI)."""
+        return cast("list[JsonObj]", self._json(self._http.get(f"/tasks/{task_id}/skills")))
+
     def list_registrations(self, task_id: str) -> list[JsonObj]:
         return cast("list[JsonObj]", self._json(self._http.get(f"/tasks/{task_id}/registrations")))
 
