@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import itertools
 
-from panopticon.container.client import TaskServiceClient
+from panopticon.client import TaskServiceClient
 from panopticon.container.entrypoint import Work, run_task_container
 from panopticon.sessionservice.runner import Runner
 

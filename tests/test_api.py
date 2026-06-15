@@ -79,6 +79,13 @@ def test_create_task_missing_repo_404(client: TestClient) -> None:
     assert resp.status_code == 404
 
 
+def test_list_legal_transitions(client: TestClient) -> None:
+    task_id = _new_task(client)
+    resp = client.get(f"/tasks/{task_id}/transitions")
+    assert resp.status_code == 200
+    assert resp.json() == ["COMPLETE", "DROPPED"]  # spike ITERATING, sorted
+
+
 def test_legal_transition(client: TestClient) -> None:
     task_id = _new_task(client)
     resp = client.post(f"/tasks/{task_id}/transition", json={"to_state": "COMPLETE", "trigger": "finish"})

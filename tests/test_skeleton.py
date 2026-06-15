@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from panopticon.container.client import TaskServiceClient
+from panopticon.client import TaskServiceClient
 from panopticon.core.models import Repo
 from panopticon.sessionservice.stub_runner import StubRunner
 from panopticon.taskservice.api import create_app

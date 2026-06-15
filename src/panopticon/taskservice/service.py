@@ -106,6 +106,11 @@ class TaskService:
     def list_tasks(self) -> list[Task]:
         return self._store.list_tasks()
 
+    def legal_transitions(self, task_id: str) -> list[str]:
+        """The states the task may move to next (its workflow's edges out of the current state)."""
+        task = self.get_task(task_id)
+        return sorted(self._workflow(task.workflow).transitions(task.state))
+
     def request_transition(
         self,
         task_id: str,
