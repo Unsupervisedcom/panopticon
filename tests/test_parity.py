@@ -67,8 +67,10 @@ def test_responsibilities_mirror_cloude_cade_dod() -> None:
     assert {r.key for r in WF.responsibilities("MERGING")} == {"pr-merged"}
 
 
-def test_parity_has_no_forge_skills_yet() -> None:
-    assert tuple(WF.skills()) == ()  # babysit-* are in-container skills, a later slice
+def test_parity_exposes_forge_skills() -> None:
+    skills = WF.skills()
+    assert {s.name for s in skills} == {"open-pr", "babysit-ci", "babysit-merge"}
+    assert all(s.description and s.instructions for s in skills)  # functional specs, not stubs
 
 
 def test_parity_image_layer_installs_gh() -> None:
