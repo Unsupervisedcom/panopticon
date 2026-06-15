@@ -20,7 +20,7 @@ src/panopticon/
   core/            # domain models, state classes, the Workflow interface (the state
                    # machine: resolution, queries, start_task/apply_transition),
                    # store & artifact interfaces — pure, no I/O
-  workflows/       # built-in Workflow subclasses (Spike seed for now)
+  workflows/       # built-in Workflow subclasses (Spike seed; Parity = cloude-cade lifecycle)
   taskservice/     # control plane: TaskService, FastAPI REST API, the SQLAlchemy store
                    # adapter (in-memory or on-disk SQLite), filesystem artifact store, MCP
   sessionservice/  # the runner: Runner ABC + StubRunner (in-process) + LocalRunner
@@ -65,6 +65,10 @@ CI (`.github/workflows/ci.yml`) runs `uv sync`, `mypy`, and `pytest` on every PR
 - `tests/test_workflow.py` — the **golden harness**: every legal/illegal transition, turn
   derivation, responsibility gating, and workflow validation. Extend it when you touch the
   state machine.
+- `tests/test_parity.py` — the golden spec for the **Parity workflow** (cloude-cade's
+  lifecycle): the full `PLANNING→…→COMPLETE` path, the fg/bg `advanced_by` policy, per-stage
+  gating, iterate-back (resolve the stage `FAILED` then retreat), and drop. Extend it when you
+  touch the parity flow.
 - `tests/test_store.py` — store **contract tests run against in-memory and on-disk SQLite**,
   proving the interface is backend-agnostic (and that rows/domain models stay in sync).
 - `tests/test_skeleton.py` — the end-to-end walking skeleton (create → register → slug →
