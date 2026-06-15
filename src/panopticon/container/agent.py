@@ -18,7 +18,8 @@ from pathlib import Path
 
 import httpx
 
-from panopticon.client import TaskServiceClient
+from panopticon.client import JsonObj, TaskServiceClient
+from panopticon.container.hooks import write_settings
 from panopticon.container.skills import write_commands
 from panopticon.core.models import Skill
 
@@ -33,25 +34,35 @@ def render_skills(client: TaskServiceClient, task_id: str, home: Path) -> list[P
     return write_commands(skills, home)
 
 
-def _claude_argv(config_dir: Path, cwd: Path) -> list[str]:
-    """`claude` argv, resuming the project's most recent conversation if one exists.
+def build_prefill(task: JsonObj) -> str:
+    """The initial prompt the agent's input is pre-populated with on launch (PARITY §7)."""
+    who = f"task {task['id']}" + (f" ({task['slug']})" if task.get("slug") else "")
+    return (
+        f"You are the agent for panopticon {who}. Workflow: {task['workflow']}; "
+        f"current state: {task['state']}.\n"
+        "Do the work for this stage, resolve your responsibilities, then use the core commands "
+        "(/advance, /drop) and this workflow's skills to move the task forward."
+    )
 
-    claude keeps per-project transcripts under ``<config>/projects/<cwd with '/' → '-'>``; when
-    one is there (e.g. the pane or container restarted, or the operator re-attached) we
-    ``--continue`` it instead of starting a fresh conversation. Sessions persist because the
-    config dir is the repo's creds volume. If our path encoding ever misses claude's, we simply
-    start fresh — a safe degradation, never a broken launch.
+
+def _claude_argv(config_dir: Path, cwd: Path, prefill: str) -> list[str]:
+    """`claude` argv: resume the project's most recent conversation if one exists (it already has
+    context); otherwise start fresh, prefilled with the orientation prompt.
+
+    claude keeps per-project transcripts under ``<config>/projects/<cwd with '/' → '-'>`` (which
+    persists across pane/container restarts, since the config dir is the repo's creds volume), so
+    a restart or re-attach `--continue`s instead of losing the conversation. If our path encoding
+    ever misses claude's, we just start fresh — a safe degradation, never a broken launch.
     """
-    argv = ["claude"]
     project = config_dir / "projects" / str(cwd).replace("/", "-")
     if any(project.glob("*.jsonl")):
-        argv.append("--continue")
-    return argv
+        return ["claude", "--continue"]  # has context; re-prefilling would re-orient mid-conversation
+    return ["claude", prefill]
 
 
-def _exec_claude() -> None:  # pragma: no cover - real LLM; skipif-gated / live only
-    """Replace this process with `claude` (resuming the session if any), pointed at the creds."""
-    argv = _claude_argv(Path(CREDS_DIR), Path.cwd())
+def _exec_claude(prefill: str) -> None:  # pragma: no cover - real LLM; skipif-gated / live only
+    """Replace this process with `claude` (resumed, or fresh + prefilled), pointed at the creds."""
+    argv = _claude_argv(Path(CREDS_DIR), Path.cwd(), prefill)
     os.execvpe(argv[0], argv, {**os.environ, "CLAUDE_CONFIG_DIR": CREDS_DIR})
 
 
@@ -63,13 +74,17 @@ def main(
     *,
     client_factory: Callable[[str], TaskServiceClient] = _default_client,
     home: Path | None = None,
-    launch: Callable[[], None] = _exec_claude,
+    launch: Callable[[str], None] = _exec_claude,
 ) -> None:
-    """Bootstrap the agent CLI from the active workflow, then launch the agent."""
+    """Bootstrap the agent CLI from the active workflow (skills + turn-flip hooks), then launch
+    the agent with a prefilled prompt."""
     env = os.environ
     client = client_factory(env["PANOPTICON_SERVICE_URL"])
-    render_skills(client, env["PANOPTICON_TASK_ID"], home or Path.home())
-    launch()
+    task_id = env["PANOPTICON_TASK_ID"]
+    home = home or Path.home()
+    render_skills(client, task_id, home)
+    write_settings(home)  # turn-flip hooks (Slice 4 contract)
+    launch(build_prefill(client.get_task(task_id)))
 
 
 if __name__ == "__main__":  # pragma: no cover
