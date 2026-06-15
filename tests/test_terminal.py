@@ -38,6 +38,7 @@ def test_reads_workflows_repos_and_tasks(client: DashboardClient) -> None:
 def test_drives_slug_and_transition(client: DashboardClient) -> None:
     task_id = client.create_task("r1", "spike")["id"]
     client.set_slug(task_id, "fix-widget")
+    assert client.list_transitions(task_id) == ["COMPLETE", "DROPPED"]
     done = client.request_transition(task_id, "COMPLETE", trigger="finish")
     assert done["state"] == "COMPLETE"
     assert client.get_task(task_id)["slug"] == "fix-widget"

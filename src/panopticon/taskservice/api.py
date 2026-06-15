@@ -187,6 +187,10 @@ def create_app(service: TaskService) -> FastAPI:
     async def get_task(task_id: str) -> TaskOut:
         return TaskOut.model_validate(service.get_task(task_id))
 
+    @app.get("/tasks/{task_id}/transitions")
+    async def list_transitions(task_id: str) -> list[str]:
+        return service.legal_transitions(task_id)
+
     @app.post("/tasks/{task_id}/transition")
     async def transition(task_id: str, body: TransitionIn) -> TaskOut:
         return TaskOut.model_validate(
