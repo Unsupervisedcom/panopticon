@@ -76,6 +76,28 @@ def test_legal_transition_persists(tmp_path: Path) -> None:
 # -- lifecycle hook: the service runs Workflow.on_transition on each transition ------
 
 
+def test_skills_exposes_the_active_workflows_skills(tmp_path: Path) -> None:
+    from panopticon.core.models import Skill
+
+    class Skilled(Workflow):
+        name = "skilled"
+
+        class A(State):
+            label = "A"
+            transitions = (Complete,)
+
+        initial = A
+
+        def skills(self) -> tuple[Skill, ...]:
+            return (Skill("babysit-ci", "Watch CI.", "Do it."),)
+
+    svc = TaskService(SqlAlchemyStore(), {"skilled": Skilled()}, FilesystemArtifactStore(tmp_path))
+    svc.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
+    task = svc.create_task("r1", "skilled")
+    skills = svc.skills(task.id)
+    assert [(s.name, s.description) for s in skills] == [("babysit-ci", "Watch CI.")]
+
+
 def test_on_transition_hook_fires_through_the_service(tmp_path: Path) -> None:
     calls: list[tuple[str | None, str]] = []
 

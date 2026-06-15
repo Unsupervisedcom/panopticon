@@ -56,6 +56,21 @@ class Responsibility:
         )
 
 
+@dataclass(frozen=True)
+class Skill:
+    """A workflow-specific, agent-driven procedure exposed in the task container (ADR 0004).
+
+    Workflow-agnostic by design: a workflow declares skills as data (``name``, one-line
+    ``description``, and ``instructions`` — the agent procedure); the agent layer renders them to
+    whatever the active CLI needs (claude slash-commands for now, other CLIs in M3). On top of
+    the core operations (advance/drop), and present only if the active workflow defines them.
+    """
+
+    name: str
+    description: str
+    instructions: str
+
+
 @dataclass
 class Repo:
     """A repository tasks operate on.

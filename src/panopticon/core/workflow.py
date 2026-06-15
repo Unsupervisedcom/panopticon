@@ -17,7 +17,7 @@ from functools import cached_property
 from typing import ClassVar
 
 from panopticon.core.artifacts import ArtifactStore
-from panopticon.core.models import Actor, HistoryEntry, Responsibility, Task
+from panopticon.core.models import Actor, HistoryEntry, Responsibility, Skill, Task
 from panopticon.core.state import BaseState, Complete, Dropped, State, TerminalState
 
 _ABSTRACT_BASES = (BaseState, State, TerminalState)
@@ -224,8 +224,14 @@ class Workflow(ABC):
         """Yield the obligations (PENDING definitions) the agent takes on entering ``label``."""
         yield from self._state_class(label).responsibilities
 
-    def skills(self) -> Sequence[str]:
-        """Workflow-specific in-container skills, on top of the core operations."""
+    def skills(self) -> Sequence[Skill]:
+        """Workflow-specific in-container skills (ADR 0004), on top of the core operations.
+
+        Declared as agnostic :class:`~panopticon.core.models.Skill` specs; the agent layer
+        renders them to the active CLI's surface. Skills are optional — they are whatever extra
+        agent procedures a workflow wants to offer (parity's forge skills are one example, not a
+        requirement), so the base default is none; a workflow overrides this to declare its own.
+        """
         return ()
 
     # -- lifecycle hooks (deterministic; run in the control plane, no LLM) ---------------
