@@ -82,6 +82,11 @@ def test_runner_spawns_real_container_that_registers_and_loses_liveness(
         image=_IMAGE,
         runner_id="acceptance",
         tmux_socket=_TMUX_SOCKET,
+        # The pane normally execs the agent launcher, but that runs `claude`, which the bare
+        # base image lacks (it arrives in a later image layer) — and "no LLMs in tests" anyway.
+        # This acceptance test only proves liveness + a live tmux pane to attach to, so a
+        # stay-alive shell stands in for the agent.
+        agent_command=["bash"],
         extra_env={"PANOPTICON_HEARTBEAT_INTERVAL": "0.5", "PANOPTICON_PROPOSED_SLUG": "acc-slug"},
     )
     container = runner.spawn(task_id)

@@ -54,7 +54,7 @@ class LocalRunner(Runner):
         *,
         image: str = DEFAULT_IMAGE,
         runner_id: str = "local",
-        shell: str = "bash",
+        agent_command: Sequence[str] = ("python", "-m", "panopticon.container.agent"),
         tmux_socket: str | None = TMUX_SOCKET,
         extra_env: Mapping[str, str] | None = None,
         run: CommandRunner = _subprocess_run,
@@ -62,7 +62,9 @@ class LocalRunner(Runner):
         self._service_url = service_url
         self._image = image
         self._runner_id = runner_id
-        self._shell = shell  # the base image's interactive shell, exec'd in the tmux pane
+        # What the tmux pane execs into the container: the in-container agent launcher (it
+        # bootstraps the CLI then runs `claude`). `tmux attach` therefore reaches the live agent.
+        self._agent_command = list(agent_command)
         self._tmux_socket = tmux_socket  # isolate panopticon's tmux server when set (-L)
         self._extra_env = dict(extra_env or {})
         self._run = run
@@ -101,7 +103,7 @@ class LocalRunner(Runner):
         self._run(
             self._tmux(
                 "new-session", "-d", "-s", container,
-                "docker", "exec", "--interactive", "--tty", container, self._shell,
+                "docker", "exec", "--interactive", "--tty", container, *self._agent_command,
             )
         )
         return container
@@ -113,11 +115,13 @@ class LocalRunner(Runner):
 
     def login(self, creds_volume: str, command: Sequence[str]) -> None:
         """Run an interactive container with a repo's creds volume mounted, to populate it
-        (ADR 0007's generalized `login`). Generic: ``command`` is the CLI's login invocation —
-        the claude OAuth command is supplied by the agent layer (Slice 6). The named volume is
-        created on first use; persists across task restarts."""
+        (ADR 0007's generalized `login`). ``command`` is the CLI's login invocation (e.g.
+        ``claude``); `CLAUDE_CONFIG_DIR` points claude at the mounted volume so its OAuth creds
+        land there. The named volume is created on first use and persists across task restarts."""
         self._run(
             ["docker", "run", "--interactive", "--tty", "--rm",
-             "--volume", f"{creds_volume}:{CREDS_MOUNT}", self._image, *command],
+             "--volume", f"{creds_volume}:{CREDS_MOUNT}",
+             "--env", f"CLAUDE_CONFIG_DIR={CREDS_MOUNT}",
+             self._image, *command],
             check=False,
         )

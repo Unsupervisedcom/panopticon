@@ -47,10 +47,13 @@ def test_spawn_runs_detached_container_then_tmux_pane_execing_in() -> None:
     # container -> host addressing so the container can reach the task service
     assert docker_run[docker_run.index("--add-host") + 1] == "host.docker.internal:host-gateway"
     # the tmux session (on the default `panopticon` socket) shares the container name; its
-    # pane execs an interactive shell in
+    # pane execs the in-container agent launcher (so `tmux attach` reaches the live agent)
     assert tmux_new[:4] == ["tmux", "-L", "panopticon", "new-session"]
     assert tmux_new[tmux_new.index("-s") + 1] == "panopticon-t1"
-    assert tmux_new[-6:] == ["docker", "exec", "--interactive", "--tty", "panopticon-t1", "bash"]
+    assert tmux_new[-8:] == [
+        "docker", "exec", "--interactive", "--tty", "panopticon-t1",
+        "python", "-m", "panopticon.container.agent",
+    ]
 
 
 def test_extra_env_is_forwarded() -> None:
@@ -88,7 +91,8 @@ def test_login_runs_interactive_container_with_creds_volume() -> None:
     cmd, check = rec.calls[0]
     assert cmd == [
         "docker", "run", "--interactive", "--tty", "--rm",
-        "--volume", "creds-r1:/creds", "img:1", "claude", "login",
+        "--volume", "creds-r1:/creds",
+        "--env", "CLAUDE_CONFIG_DIR=/creds", "img:1", "claude", "login",
     ]
     assert check is False  # interactive; tolerate non-zero exit
 
@@ -120,7 +124,7 @@ def test_spawn_and_stop_real_container_and_session() -> None:
         text=True, check=True, capture_output=True,
     )
     runner = LocalRunner(
-        "http://unused", image=image, runner_id="itest", shell="sh", tmux_socket=socket
+        "http://unused", image=image, runner_id="itest", agent_command=["sh"], tmux_socket=socket
     )
     cid = "panopticon-itest1"
     try:

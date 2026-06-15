@@ -15,8 +15,9 @@ Two shapes share that protocol:
   the stub runner for the walking skeleton (no Docker).
 * :func:`serve` / :func:`main` — the long-lived form a real container runs as
   ``python -m panopticon.container``: register, set slug, then **heartbeat until signalled**,
-  deregistering on exit. The "agent" here is the heartbeat loop itself — a stay-alive
-  placeholder; a real agent invocation replaces it in a later slice. (No LLM runs in tests.)
+  deregistering on exit. This is liveness only; the **agent** runs alongside it in the tmux pane
+  via :mod:`panopticon.container.agent` (the launcher), so the roles stay separate and
+  ``tmux attach`` reaches the live agent. (No LLM runs here or in tests.)
 """
 
 from __future__ import annotations

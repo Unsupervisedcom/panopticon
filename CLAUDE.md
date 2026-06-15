@@ -28,8 +28,9 @@ src/panopticon/
   sessionservice/  # the runner: Runner ABC + StubRunner (in-process) + LocalRunner
                    # (real Docker+tmux via the CLIs); images.py = ADR-0005 composed images
                    # (base→workflow→repo); `python -m panopticon.sessionservice`
-  container/       # in-container client + entrypoint (`python -m panopticon.container`,
-                   # the real connect/register/slug/heartbeat loop) — the ONLY LLM-bearing pkg
+  container/       # entrypoint (`python -m panopticon.container` = connect/register/slug/
+                   # heartbeat liveness) + agent.py (`-m panopticon.container.agent` = the tmux
+                   # pane's launcher: render skills → exec `claude`) — the ONLY LLM-bearing pkg
 docker/Dockerfile  # minimal base task-container image (ADR 0005 base layer)
 ```
 
@@ -56,8 +57,10 @@ docker/Dockerfile  # minimal base task-container image (ADR 0005 base layer)
   command: runner/CLI code, the `Makefile`, the base `Dockerfile`, composed `image_layer`s, and
   tests. Use a short flag **only** where the tool has no long form — `tmux` (single-letter
   options only), `ssh -t`, `git -C` / `git worktree add -b`, and `python -m`.
-- **No LLMs in tests.** Automated tests never call a real LLM/agent; the entrypoint's agent
-  step is a stay-alive placeholder, and real-infra tests are `skipif`-gated.
+- **No LLMs in tests.** Automated tests never call a real LLM/agent. The agent launcher
+  (`container/agent.py`) splits a deterministic, tested **bootstrap** (render skills, point at
+  creds) from the **launch** (real `claude`), which is injected as a fake in tests and only runs
+  for real in `skipif`-gated/live containers.
 
 ## Dev commands
 
