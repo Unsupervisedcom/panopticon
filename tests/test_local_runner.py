@@ -44,10 +44,18 @@ def test_spawn_runs_detached_container_then_tmux_pane_execing_in() -> None:
     assert "PANOPTICON_TASK_ID=t1" in docker_run
     assert "PANOPTICON_CONTAINER_ID=panopticon-t1" in docker_run
     assert "PANOPTICON_RUNNER_ID=r1" in docker_run
+    # container -> host addressing so the container can reach the task service
+    assert docker_run[docker_run.index("--add-host") + 1] == "host.docker.internal:host-gateway"
     # the tmux session shares the container name; its pane execs an interactive shell in
     assert tmux_new[:4] == ["tmux", "new-session", "-d", "-s"]
     assert tmux_new[4] == "panopticon-t1"
     assert tmux_new[5:] == ["docker", "exec", "-it", "panopticon-t1", "bash"]
+
+
+def test_extra_env_is_forwarded() -> None:
+    rec = _Recorder()
+    LocalRunner("http://svc", extra_env={"PANOPTICON_HEARTBEAT_INTERVAL": "0.5"}, run=rec).spawn("t1")
+    assert "PANOPTICON_HEARTBEAT_INTERVAL=0.5" in rec.calls[0][0]
 
 
 def test_stop_kills_session_and_force_removes_container_idempotently() -> None:
@@ -113,3 +121,14 @@ def test_spawn_and_stop_real_container_and_session() -> None:
         subprocess.run(["docker", "rm", "-f", cid], capture_output=True)
         subprocess.run(["tmux", "-L", socket, "kill-server"], capture_output=True)
         subprocess.run(["docker", "rmi", "-f", image], capture_output=True)
+
+
+def test_cli_spawns_with_service_url_and_image() -> None:
+    from panopticon.sessionservice.__main__ import main as cli_main
+
+    rec = _Recorder()
+    cid = cli_main(["t1", "--service-url", "http://svc:9", "--image", "img:2"], run=rec)
+    assert cid == "panopticon-t1"
+    docker_run = rec.calls[0][0]
+    assert "PANOPTICON_SERVICE_URL=http://svc:9" in docker_run
+    assert docker_run[-1] == "img:2"
