@@ -23,8 +23,11 @@ src/panopticon/
   workflows/       # built-in Workflow subclasses (Spike seed for now)
   taskservice/     # control plane: TaskService, FastAPI REST API, the SQLAlchemy store
                    # adapter (in-memory or on-disk SQLite), filesystem artifact store, MCP
-  sessionservice/  # the runner (stub for now; real Docker+tmux runner later)
-  container/       # in-container client + entrypoint protocol — the ONLY LLM-bearing pkg
+  sessionservice/  # the runner: Runner ABC + StubRunner (in-process) + LocalRunner
+                   # (real Docker+tmux via the CLIs); `python -m panopticon.sessionservice`
+  container/       # in-container client + entrypoint (`python -m panopticon.container`,
+                   # the real connect/register/slug/heartbeat loop) — the ONLY LLM-bearing pkg
+docker/Dockerfile  # minimal base task-container image (ADR 0005 base layer)
 ```
 
 ## Conventions
@@ -36,8 +39,16 @@ src/panopticon/
   (ARCHITECTURE.md §8.3) — not chosen host-side.
 - **All task-state mutations go through the task service**, which enforces transitions via
   the workflow before persisting (the store is the single writer; ADR 0006).
-- **Interfaces vs. adapters.** Interfaces (ABCs) live in `core`; adapters live in the owning
-  package. New backends implement an interface; they don't change callers.
+- **Interfaces vs. adapters.** Control-plane interfaces (ABCs) live in `core` — `Store`,
+  `ArtifactStore`, `Workflow`; adapters live in the owning package. The execution-backend
+  `Runner` interface lives in `sessionservice` (not `core`): runners pull work via REST, so
+  it isn't a control-plane dependency. New backends implement an interface; they don't change
+  callers.
+- **Docker/tmux via the CLIs.** The runner shells out to `docker`/`tmux` (the interactive
+  surface — container TTY in a tmux pane, operator `tmux attach` — is inherently CLI; the
+  Python SDKs don't serve it) behind an **injectable command-runner** so it's unit-testable.
+- **No LLMs in tests.** Automated tests never call a real LLM/agent; the entrypoint's agent
+  step is a stay-alive placeholder, and real-infra tests are `skipif`-gated.
 
 ## Dev commands
 
@@ -58,6 +69,12 @@ CI (`.github/workflows/ci.yml`) runs `uv sync`, `mypy`, and `pytest` on every PR
   proving the interface is backend-agnostic (and that rows/domain models stay in sync).
 - `tests/test_skeleton.py` — the end-to-end walking skeleton (create → register → slug →
   transition → history) over the REST API, no Docker.
+- `tests/test_local_runner.py` / `tests/test_entrypoint.py` — the runner's emitted docker/tmux
+  commands and the container entrypoint loop (fakes; no Docker/LLM), plus a `skipif` docker
+  integration test.
+- `tests/test_acceptance.py` — Slice 2 acceptance (`skipif` no docker/tmux): builds the base
+  image and a real container connects back to an in-process task service, registers,
+  heartbeats, and loses liveness on kill. No LLM.
 
 ## Glossary
 

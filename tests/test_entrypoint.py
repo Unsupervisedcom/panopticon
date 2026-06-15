@@ -100,10 +100,12 @@ def test_serve_deregisters_even_on_error() -> None:
 def test_main_reads_env_and_serves(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _FakeClient()
     seen_url: list[str] = []
+    naps: list[float] = []
     monkeypatch.setenv("PANOPTICON_SERVICE_URL", "http://svc:8000")
     monkeypatch.setenv("PANOPTICON_TASK_ID", "t1")
     monkeypatch.setenv("PANOPTICON_CONTAINER_ID", "panopticon-t1")
     monkeypatch.setenv("PANOPTICON_RUNNER_ID", "local")
+    monkeypatch.setenv("PANOPTICON_HEARTBEAT_INTERVAL", "0.5")
 
     def factory(url: str) -> _FakeClient:
         seen_url.append(url)
@@ -112,8 +114,9 @@ def test_main_reads_env_and_serves(monkeypatch: pytest.MonkeyPatch) -> None:
     entrypoint.main(
         client_factory=factory,  # type: ignore[arg-type]
         running=_stop_after(1),
-        sleep=lambda _s: None,
+        sleep=naps.append,
     )
     assert seen_url == ["http://svc:8000"]
     assert client.calls[0] == "register"
     assert client.calls[-1] == "deregister"
+    assert naps == [0.5]  # PANOPTICON_HEARTBEAT_INTERVAL threaded through

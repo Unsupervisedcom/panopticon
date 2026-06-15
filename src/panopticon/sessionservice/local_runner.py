@@ -15,10 +15,16 @@ import subprocess
 from collections.abc import Sequence
 from typing import Protocol
 
+from collections.abc import Mapping
+
 from panopticon.sessionservice.runner import Runner
 
 #: Default composed image (base layer, ADR 0005); built in a later PR of this slice.
 DEFAULT_IMAGE = "panopticon-base"
+
+#: Lets the container reach the host task service (container→host addressing, ADR 0008).
+#: ``host-gateway`` maps to the host's gateway IP; the service binds 0.0.0.0.
+HOST_GATEWAY = "host.docker.internal:host-gateway"
 
 
 class CommandRunner(Protocol):
@@ -42,6 +48,7 @@ class LocalRunner(Runner):
         runner_id: str = "local",
         shell: str = "bash",
         tmux_socket: str | None = None,
+        extra_env: Mapping[str, str] | None = None,
         run: CommandRunner = _subprocess_run,
     ) -> None:
         self._service_url = service_url
@@ -49,6 +56,7 @@ class LocalRunner(Runner):
         self._runner_id = runner_id
         self._shell = shell  # the base image's interactive shell, exec'd in the tmux pane
         self._tmux_socket = tmux_socket  # isolate panopticon's tmux server when set (-L)
+        self._extra_env = dict(extra_env or {})
         self._run = run
 
     def _tmux(self, *args: str) -> list[str]:
@@ -58,18 +66,23 @@ class LocalRunner(Runner):
     def spawn(self, task_id: str) -> str:
         # The container name doubles as the tmux session name, so stop() needs only the id.
         container = f"panopticon-{task_id}"
-        self._run(
-            [
-                "docker", "run", "-d",
-                "--name", container,
-                "--label", f"panopticon.task={task_id}",
-                "-e", f"PANOPTICON_SERVICE_URL={self._service_url}",
-                "-e", f"PANOPTICON_TASK_ID={task_id}",
-                "-e", f"PANOPTICON_CONTAINER_ID={container}",
-                "-e", f"PANOPTICON_RUNNER_ID={self._runner_id}",
-                self._image,
-            ]
-        )
+        env = {
+            "PANOPTICON_SERVICE_URL": self._service_url,
+            "PANOPTICON_TASK_ID": task_id,
+            "PANOPTICON_CONTAINER_ID": container,
+            "PANOPTICON_RUNNER_ID": self._runner_id,
+            **self._extra_env,
+        }
+        docker_run = [
+            "docker", "run", "-d",
+            "--name", container,
+            "--label", f"panopticon.task={task_id}",
+            "--add-host", HOST_GATEWAY,
+        ]
+        for key, value in env.items():
+            docker_run += ["-e", f"{key}={value}"]
+        docker_run.append(self._image)  # the image's entrypoint runs (no command override)
+        self._run(docker_run)
         # `docker run -d` returns once the container is running, so the pane can exec into it.
         self._run(
             self._tmux(

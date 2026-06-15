@@ -121,5 +121,6 @@ def main(
         runner_id=env.get("PANOPTICON_RUNNER_ID"),
         proposed_slug=env.get("PANOPTICON_PROPOSED_SLUG"),
         running=running if running is not None else _until_signalled(),
+        heartbeat_interval=float(env.get("PANOPTICON_HEARTBEAT_INTERVAL", HEARTBEAT_INTERVAL)),
         sleep=sleep,
     )
