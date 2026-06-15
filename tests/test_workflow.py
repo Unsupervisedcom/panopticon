@@ -135,23 +135,34 @@ def test_resolve_operation_returns_target_or_raises() -> None:
 
 
 def test_declared_operation_must_target_a_legal_transition() -> None:
+    # Operations are named verbs for the declared, gated graph; off-graph moves are free moves
+    # (set_state), not operations. So a declared op whose target isn't a transition is rejected.
     class Bad(Workflow):
         name = "bad-op"
 
         class A(State):
             label = "A"
-            transitions = (Complete,)
-            operations = {"advance": "DROPPED", "iterate": "COMPLETE"}  # iterate→COMPLETE ok; ...
+            transitions = ("B",)
+            operations = {"jump": "A"}  # self-target is not a transition
 
         class B(State):
             label = "B"
             transitions = (Complete,)
-            operations = {"jump": "B"}  # ...but B has no self-edge
 
         initial = A
 
     with pytest.raises(InvalidWorkflow):
-        Bad().operations("B")
+        Bad().operations("A")
+
+
+def test_force_transition_is_a_free_ungated_move() -> None:
+    task = _to_working()  # WORKING has unresolved promises and only COMPLETE/DROPPED edges
+    WF.force_transition(task, "PLAN", at="t2", trigger="set-state")  # backward, ungated, off-graph
+    assert task.state == "PLAN"
+    assert task.turn is Actor.AGENT  # PLAN.turn_on_enter
+    assert task.history[-1].from_state == "WORKING"
+    with pytest.raises(InvalidWorkflow):
+        WF.force_transition(task, "GHOST", at="t3")  # target must still exist
 
 
 # -- illegal transitions ------------------------------------------------------------

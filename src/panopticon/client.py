@@ -47,6 +47,10 @@ class TaskServiceClient:
     def list_operations(self, task_id: str) -> dict[str, str]:
         return cast("dict[str, str]", self._json(self._http.get(f"/tasks/{task_id}/operations")))
 
+    def list_states(self, task_id: str) -> list[str]:
+        """Every state of the task's workflow — the candidates for a free state-set."""
+        return cast("list[str]", self._json(self._http.get(f"/tasks/{task_id}/states")))
+
     def list_registrations(self, task_id: str) -> list[JsonObj]:
         return cast("list[JsonObj]", self._json(self._http.get(f"/tasks/{task_id}/registrations")))
 
@@ -61,6 +65,10 @@ class TaskServiceClient:
 
     def set_slug(self, task_id: str, slug: str) -> JsonObj:
         return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/slug", json={"slug": slug})))
+
+    def set_state(self, task_id: str, state: str) -> JsonObj:
+        """The user's free override — move the task to any state (bypasses the graph and gate)."""
+        return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/state", json={"state": state})))
 
     def request_transition(
         self, task_id: str, to_state: str, *, trigger: str | None = None, note: str | None = None

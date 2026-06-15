@@ -6,10 +6,11 @@ just `advanced_by`: PLANNING/ITERATING/REVIEW need user approval to leave (`USER
 default), while MERGING is agent-driven and advances itself once the change is merged
 (`AGENT`). Every non-terminal state seeds the agent's responsibilities for that stage.
 
-`iterate` (return to coding) is the backward edge REVIEW/MERGING → ITERATING; `advance` and
-`drop` are the forward edge and the universal `DROPPED` escape. Iterating back is a normal
-(gated) transition: taking it means the stage didn't pass, so the agent resolves the unmet
-responsibility `FAILED` with a reason (recorded in history) before retreating.
+`advance` is the happy path — the single forward edge of each state, auto-derived — and `drop`
+is the universal `DROPPED` escape; those are the only core operations. Going back to coding from
+REVIEW/MERGING is **not** a declared transition: it's a **free move** to ITERATING (`set_state`,
+ungated), exercised through an agent skill, so a backward edge needn't be in the graph. Only
+`advance` along the declared graph is gated by responsibilities.
 
 **Responsibilities mirror cloude-cade's per-stage Definition-of-Done** (`bin/cloude_stages.py`'s
 `dod_bullets`), with two model divergences (ADR 0004): they are **agent-only**, so cloude-cade's
@@ -63,8 +64,7 @@ class Parity(Workflow):
         responsibilities = (
             Responsibility(key="pr-reviewed", description="The PR has been reviewed."),
         )
-        transitions = ("MERGING", "ITERATING")  # advance, or iterate back to coding
-        operations = {"advance": "MERGING"}  # disambiguate the forward edge (back-edge still present here)
+        transitions = ("MERGING",)  # the happy path; `advance` derives from it
 
     class Merging(State):
         label = "MERGING"
@@ -72,7 +72,6 @@ class Parity(Workflow):
         responsibilities = (
             Responsibility(key="pr-merged", description="The PR is merged."),
         )
-        transitions = (Complete, "ITERATING")  # auto-advance to COMPLETE, or iterate back
-        operations = {"advance": "COMPLETE"}
+        transitions = (Complete,)  # the happy path; `advance` derives → COMPLETE
 
     initial = Planning

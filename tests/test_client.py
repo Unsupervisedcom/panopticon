@@ -52,6 +52,12 @@ def test_drives_core_operations(client: TaskServiceClient) -> None:
     assert done["state"] == "COMPLETE"
 
 
+def test_lists_states_and_sets_state_freely(client: TaskServiceClient) -> None:
+    task_id = client.create_task("r1", "spike")["id"]
+    assert set(client.list_states(task_id)) == {"ITERATING", "COMPLETE", "DROPPED"}
+    assert client.set_state(task_id, "COMPLETE")["state"] == "COMPLETE"
+
+
 def test_create_repo_over_rest(client: TaskServiceClient) -> None:
     client.create_repo("r2", "acme/other", "https://x/r2.git")
     assert {r["id"] for r in client.list_repos()} == {"r1", "r2"}

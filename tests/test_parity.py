@@ -38,11 +38,13 @@ def test_starts_in_planning_on_the_agents_turn() -> None:
     assert [h.to_state for h in task.history] == ["PLANNING"]
 
 
-def test_transition_graph() -> None:
+def test_transition_graph_is_the_happy_path_plus_drop() -> None:
+    # Backward edges (iterate) are NOT declared transitions — they're free moves. So each
+    # non-terminal state has a single forward edge (+ inherited DROPPED).
     assert set(WF.transitions("PLANNING")) == {"ITERATING", "DROPPED"}
     assert set(WF.transitions("ITERATING")) == {"REVIEW", "DROPPED"}
-    assert set(WF.transitions("REVIEW")) == {"MERGING", "ITERATING", "DROPPED"}
-    assert set(WF.transitions("MERGING")) == {"COMPLETE", "ITERATING", "DROPPED"}
+    assert set(WF.transitions("REVIEW")) == {"MERGING", "DROPPED"}
+    assert set(WF.transitions("MERGING")) == {"COMPLETE", "DROPPED"}
     assert list(WF.transitions("COMPLETE")) == []
 
 
@@ -119,24 +121,11 @@ def test_partial_resolution_still_gates() -> None:
 # -- iterate-back + drop ------------------------------------------------------------
 
 
-def test_iterate_back_from_review_to_iterating() -> None:
-    task = WF.start_task("t1", "r1", at="t0")
-    _advance(task, "ITERATING")
-    _advance(task, "REVIEW")
-    # Iterating back *is* declaring the stage didn't pass: resolve it FAILED with a reason
-    # (recorded in history), then retreat to coding. Re-entering ITERATING re-seeds its promises.
-    task.resolve_responsibility(key="pr-reviewed", status=Status.FAILED, comment="found issues")
-    WF.apply_transition(task, "ITERATING", at="t3", trigger="iterate")
-    assert task.state == "ITERATING"
-    assert "tests-pass" in {r.key for r in task.outstanding_responsibilities}  # promises re-seeded
-
-
-def test_iterate_back_from_merging_to_iterating() -> None:
+def test_free_move_back_from_merging_to_iterating() -> None:
     task = WF.start_task("t1", "r1", at="t0")
     for nxt in ("ITERATING", "REVIEW", "MERGING"):
         _advance(task, nxt)
-    task.resolve_responsibility(key="pr-merged", status=Status.FAILED, comment="merge blocked; reworking")
-    WF.apply_transition(task, "ITERATING", at="t4", trigger="iterate")
+    WF.force_transition(task, "ITERATING", at="t4", trigger="set-state")  # free move, ungated
     assert task.state == "ITERATING"
 
 

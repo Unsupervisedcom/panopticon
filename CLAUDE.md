@@ -67,8 +67,8 @@ CI (`.github/workflows/ci.yml`) runs `uv sync`, `mypy`, and `pytest` on every PR
   state machine.
 - `tests/test_parity.py` — the golden spec for the **Parity workflow** (cloude-cade's
   lifecycle): the full `PLANNING→…→COMPLETE` path, the fg/bg `advanced_by` policy, per-stage
-  gating, iterate-back (resolve the stage `FAILED` then retreat), and drop. Extend it when you
-  touch the parity flow.
+  gating, going back to coding as an ungated free move (`set_state`), and drop. Extend it when you touch the parity
+  flow.
 - `tests/test_store.py` — store **contract tests run against in-memory and on-disk SQLite**,
   proving the interface is backend-agnostic (and that rows/domain models stay in sync).
 - `tests/test_skeleton.py` — the end-to-end walking skeleton (create → register → slug →
@@ -95,12 +95,18 @@ CI (`.github/workflows/ci.yml`) runs `uv sync`, `mypy`, and `pytest` on every PR
 - **Actor** — a party, `user` or `agent`. A state declares `turn_on_enter` (who holds the
   turn on entry; seeds `Task.turn`) and `advanced_by` (who transitions out — the default is
   `USER`). The two are orthogonal.
-- **Operation** — a named core verb the active workflow resolves to a transition (ADR 0004's
-  two-tier commands): `drop` (→ `DROPPED`) is implicit for every non-terminal state, `advance`
-  is auto-derived when a state has one non-`DROPPED` edge, and a state may declare more (e.g.
-  `iterate`) in its `operations` map. A transition starts a new agentic turn, so all of these
-  except `drop` are invoked by an **in-container agent skill** (over REST/MCP), not the
-  dashboard; the dashboard drives only `drop` (`x`).
+- **Operation** — a named core verb for the **declared, gated** graph (ADR 0004's two-tier
+  commands): `advance` is the **happy path** — auto-derived as a state's single non-`DROPPED`
+  declared transition (gated by responsibilities) — and `drop` (→ `DROPPED`) is the universal
+  escape. Those are the core operations (a workflow may declare more, but each must target a
+  legal transition). `advance` starts a new agentic turn, so it's invoked by an **in-container
+  agent skill** (over REST/MCP); the dashboard drives only `drop` (`x`).
+- **Free move / set state** — moving a task to *any* state directly (`set_state` /
+  `PUT …/state`), bypassing the declared graph **and** the responsibility gate. A workflow's
+  `transitions` declare only the intended path (what `advance` follows); the user is never boxed
+  in — but, being a transition, a free move runs through an agent skill (the user directs the
+  agent), not the dashboard. `force_transition` is the engine primitive (e.g. going back to
+  coding is just `set_state(ITERATING)` — not a named operation).
 - **Responsibility / Status** — an agent obligation for a state. Entering a state seeds its
   responsibilities onto that entry's history record, all `PENDING` (a promise); the agent
   fulfils each one at a time (`MET`, or `FAILED` with a comment) — mutating that entry — and a

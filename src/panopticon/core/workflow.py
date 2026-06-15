@@ -136,9 +136,12 @@ class Workflow(ABC):
     def _resolve_operations(self, cls: type[BaseState], dests: frozenset[str]) -> dict[str, str]:
         """The named core operations available from one state (verb -> dest label).
 
-        `drop` (-> DROPPED) is implicit for every non-terminal state; `advance` is auto-derived
-        when there's exactly one non-DROPPED transition; declared ``operations`` (e.g. `iterate`)
-        are validated to target a legal transition.
+        Operations are named verbs for the **declared, gated** graph: `drop` (-> DROPPED) is
+        implicit for every non-terminal state; `advance` is auto-derived as the single
+        non-DROPPED transition (the happy path) — so a linear state declares nothing; a declared
+        operation must target a legal transition. Off-graph moves are not operations — they are
+        free moves (`set_state` / `force_transition`), the user's authority exercised through an
+        agent skill.
         """
         if issubclass(cls, TerminalState):
             return {}
@@ -183,8 +186,7 @@ class Workflow(ABC):
         """The named core operations available from ``label`` — verb → destination label.
 
         Always includes `drop`; includes `advance` when there's a single forward edge or one
-        was declared; plus any workflow-declared operations (e.g. `iterate`). Terminal states
-        offer none.
+        was declared; plus any other workflow-declared operations. Terminal states offer none.
         """
         self._state_class(label)  # validate the label exists
         return dict(self._graph.operations[label])
@@ -283,6 +285,29 @@ class Workflow(ABC):
                 raise ResponsibilitiesNotMet(
                     f"{self.name!r}: responsibility {outstanding[0].key!r} is not resolved"
                 )
+        return self._enter(task, to_state, at=at, trigger=trigger, note=note)
+
+    def force_transition(
+        self,
+        task: Task,
+        to_state: str,
+        *,
+        at: str,
+        trigger: str | None = None,
+        note: str | None = None,
+    ) -> Task:
+        """Set the task to *any* state directly — the user's authority to move freely.
+
+        Bypasses the declared graph and the responsibility gate (and the terminal check), so the
+        user can correct or override the lifecycle from anywhere to anywhere (this is why a
+        backward edge like REVIEW→ITERATING need not be a declared transition). Validates only
+        that the target state exists. Same history/turn bookkeeping as a normal transition.
+        """
+        self._state_class(to_state)  # validate the target exists
+        return self._enter(task, to_state, at=at, trigger=trigger, note=note)
+
+    def _enter(self, task: Task, to_state: str, *, at: str, trigger: str | None, note: str | None) -> Task:
+        """Append the entry for ``to_state`` (seeding its promises) and recompute state + turn."""
         task.history.append(
             HistoryEntry(
                 at=at,

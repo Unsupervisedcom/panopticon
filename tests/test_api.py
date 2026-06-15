@@ -103,6 +103,11 @@ def test_apply_unavailable_operation_409(client: TestClient) -> None:
     assert resp.status_code == 409
 
 
+def test_list_states(client: TestClient) -> None:
+    task_id = _new_task(client)
+    assert set(client.get(f"/tasks/{task_id}/states").json()) == {"ITERATING", "COMPLETE", "DROPPED"}
+
+
 def test_legal_transition(client: TestClient) -> None:
     task_id = _new_task(client)
     resp = client.post(f"/tasks/{task_id}/transition", json={"to_state": "COMPLETE", "trigger": "finish"})
@@ -172,6 +177,15 @@ def gated_client(tmp_path: Path) -> Iterator[TestClient]:
     service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
     with TestClient(create_app(service)) as c:
         yield c
+
+
+def test_set_state_bypasses_the_gate(gated_client: TestClient) -> None:
+    task_id = gated_client.post("/tasks", json={"repo_id": "r1", "workflow": "gated"}).json()["id"]
+    # The declared transition is gated (409); the user's free state-set overrides it.
+    assert gated_client.post(f"/tasks/{task_id}/transition", json={"to_state": "COMPLETE"}).status_code == 409
+    forced = gated_client.put(f"/tasks/{task_id}/state", json={"state": "COMPLETE"})
+    assert forced.status_code == 200
+    assert forced.json()["state"] == "COMPLETE"
 
 
 def test_resolve_responsibility_then_transition(gated_client: TestClient) -> None:

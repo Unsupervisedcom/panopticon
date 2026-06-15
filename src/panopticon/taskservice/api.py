@@ -95,6 +95,10 @@ class SlugIn(BaseModel):
     slug: str
 
 
+class StateIn(BaseModel):
+    state: str
+
+
 class RegisterIn(BaseModel):
     container_id: str
     runner_id: str | None = None
@@ -198,6 +202,14 @@ def create_app(service: TaskService) -> FastAPI:
     @app.post("/tasks/{task_id}/operations/{operation}")
     async def apply_operation(task_id: str, operation: str) -> TaskOut:
         return TaskOut.model_validate(service.apply_operation(task_id, operation))
+
+    @app.get("/tasks/{task_id}/states")
+    async def list_states(task_id: str) -> list[str]:
+        return service.workflow_states(task_id)
+
+    @app.put("/tasks/{task_id}/state")
+    async def set_state(task_id: str, body: StateIn) -> TaskOut:
+        return TaskOut.model_validate(service.set_state(task_id, body.state))
 
     @app.post("/tasks/{task_id}/transition")
     async def transition(task_id: str, body: TransitionIn) -> TaskOut:

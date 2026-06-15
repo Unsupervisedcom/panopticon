@@ -19,7 +19,7 @@ from panopticon.core.store import NotFound
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 from panopticon.taskservice.store_sqlalchemy import SqlAlchemyStore
 from panopticon.taskservice.service import TaskService, UnknownWorkflow
-from panopticon.workflows import Spike
+from panopticon.workflows import Parity, Spike
 
 
 def make_service(tmp_path: Path) -> TaskService:
@@ -27,7 +27,7 @@ def make_service(tmp_path: Path) -> TaskService:
     times: Iterator[str] = iter(f"t{i}" for i in range(1, 10_000))
     svc = TaskService(
         SqlAlchemyStore(),
-        {"spike": Spike()},
+        {"spike": Spike(), "parity": Parity()},
         FilesystemArtifactStore(tmp_path),
         clock=lambda: next(times),
         id_factory=lambda: next(ids),
@@ -172,3 +172,40 @@ def test_report_unknown_responsibility_rejected(tmp_path: Path) -> None:
     task = svc.create_task("r1", "gated")
     with pytest.raises(ValueError):
         svc.resolve_responsibility(task.id, "ghost", status=Status.MET)
+
+
+# -- free state override (the user can move freely) + free operations ----------------
+
+
+def test_set_state_is_a_free_move_off_graph_and_ungated(tmp_path: Path) -> None:
+    svc = make_service(tmp_path)
+    task = svc.create_task("r1", "parity")  # PLANNING, plan-written unmet
+    # Skip straight to MERGING — not a legal transition, and the gate is unmet — yet it succeeds.
+    moved = svc.set_state(task.id, "MERGING")
+    assert moved.state == "MERGING"
+    assert svc.get_task(task.id).history[-1].trigger == "set-state"
+
+
+def test_set_state_can_reopen_a_terminal_task(tmp_path: Path) -> None:
+    svc = make_service(tmp_path)
+    task = svc.create_task("r1", "spike")
+    svc.request_transition(task.id, "COMPLETE")  # terminal
+    svc.set_state(task.id, "ITERATING")  # the user can move even out of a terminal
+    assert svc.get_task(task.id).state == "ITERATING"
+
+
+def test_workflow_states_lists_every_state(tmp_path: Path) -> None:
+    svc = make_service(tmp_path)
+    task = svc.create_task("r1", "parity")
+    assert set(svc.workflow_states(task.id)) == {
+        "PLANNING", "ITERATING", "REVIEW", "MERGING", "COMPLETE", "DROPPED",
+    }
+
+
+def test_going_back_to_coding_uses_set_state_not_an_operation(tmp_path: Path) -> None:
+    svc = make_service(tmp_path)
+    task = svc.create_task("r1", "parity")
+    svc.set_state(task.id, "REVIEW")  # jump to REVIEW (pr-reviewed now PENDING)
+    assert "iterate" not in svc.operations(task.id)  # no such operation
+    svc.set_state(task.id, "ITERATING")  # free move back to coding, despite the unmet promise
+    assert svc.get_task(task.id).state == "ITERATING"
