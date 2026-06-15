@@ -78,7 +78,10 @@ Within the class, the two kinds of responsibility are expressed differently:
   in two forms depending on where it must run (see "Where imperative behavior runs" below):
   - **provisioning** — forge-side setup a task needs on entry (PR creation, ADOPT-style
     checkout of an existing PR, image layers — see ADR 0005). *Local* branch creation,
-    naming, and worktree setup are **core**, not here;
+    naming, and worktree setup are **core**, not here. Provisioning runs **after** the core
+    has created the task's slug-derived worktree (ARCHITECTURE.md §9): the worktree is always
+    required and is named from the slug, so it cannot precede the slug — and therefore neither
+    can anything that needs the branch, e.g. the parity workflow opening its PR;
   - **remote VCS / forge integration** — PR creation, CI watching/fixing, merge-queue
     shepherding (the `babysit-*` behaviors). Workflow-specific because it talks to a remote
     forge; local git is not. *Largely delivered as in-container skills (see below).*

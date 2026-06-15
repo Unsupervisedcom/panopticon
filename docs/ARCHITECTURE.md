@@ -233,6 +233,10 @@ tool/REST. A container **hook** detects an unset slug and instructs the agent to
 decouples identity from naming and lets the agent (which has the most context) choose the
 slug. *(Refines PARITY §14's "YYYY-MM-DD-<slug>" id.)*
 
+The task's **worktree/branch are named from the slug**, so the slug must be set before the
+core can create the (always-required) worktree — and therefore before any workflow
+provisioning that needs the branch (e.g. the parity workflow's PR). See the §9 lifecycle.
+
 ### 8.4 Secrets (ADR 0007)
 
 Per repo: an env config (API-key-style secrets) and an optional creds volume (OAuth token
@@ -252,13 +256,17 @@ mounted creds. Values never enter the DB, artifacts, or image layers.
    the workflow's in-container skills (from the active workflow) on top of the core operations.
 4. **Slug.** A hook notices the slug is unset and instructs the agent to set one via a task
    tool; the task service records it.
-5. **Work.** The agent plans/implements; artifacts (plan/notes) flow over MCP; the agent runs
+5. **Worktree & provisioning.** With the slug known, the core creates the task's
+   **worktree/branch** — always required, and named from the slug, so this step cannot precede
+   step 4. The active workflow's **provisioning** then runs (e.g. the parity workflow opens its
+   PR); because it needs that branch, PR creation is transitively gated on the slug too.
+6. **Work.** The agent plans/implements; artifacts (plan/notes) flow over MCP; the agent runs
    workflow skills (e.g. `babysit-ci`) that may use `gh`/git and call back over REST/MCP to
    request transitions. The task service deterministically enforces the workflow's state
    machine and responsibility gating, flips the turn per the fg/bg classification, and appends history.
-6. **Observe & steer.** The dashboard reflects state/turn/history live (REST); the user
+7. **Observe & steer.** The dashboard reflects state/turn/history live (REST); the user
    presses `t` to drop into a task's tmux and back.
-7. **Terminal states & cleanup.** On COMPLETE/DROPPED (or the workflow's terminals), cleanup
+8. **Terminal states & cleanup.** On COMPLETE/DROPPED (or the workflow's terminals), cleanup
    runs the core's agnostic teardown (tmux/worktree/branch) plus the workflow's specific
    steps; the session service stops the container/session.
 
