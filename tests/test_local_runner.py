@@ -46,10 +46,11 @@ def test_spawn_runs_detached_container_then_tmux_pane_execing_in() -> None:
     assert "PANOPTICON_RUNNER_ID=r1" in docker_run
     # container -> host addressing so the container can reach the task service
     assert docker_run[docker_run.index("--add-host") + 1] == "host.docker.internal:host-gateway"
-    # the tmux session shares the container name; its pane execs an interactive shell in
-    assert tmux_new[:4] == ["tmux", "new-session", "-d", "-s"]
-    assert tmux_new[4] == "panopticon-t1"
-    assert tmux_new[5:] == ["docker", "exec", "-it", "panopticon-t1", "bash"]
+    # the tmux session (on the default `panopticon` socket) shares the container name; its
+    # pane execs an interactive shell in
+    assert tmux_new[:4] == ["tmux", "-L", "panopticon", "new-session"]
+    assert tmux_new[tmux_new.index("-s") + 1] == "panopticon-t1"
+    assert tmux_new[-5:] == ["docker", "exec", "-it", "panopticon-t1", "bash"]
 
 
 def test_extra_env_is_forwarded() -> None:
@@ -61,15 +62,14 @@ def test_extra_env_is_forwarded() -> None:
 def test_stop_kills_session_and_force_removes_container_idempotently() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", run=rec).stop("panopticon-t1")
-    assert (["tmux", "kill-session", "-t", "panopticon-t1"], False) in rec.calls
+    assert (["tmux", "-L", "panopticon", "kill-session", "-t", "panopticon-t1"], False) in rec.calls
     assert (["docker", "rm", "-f", "panopticon-t1"], False) in rec.calls
 
 
-def test_tmux_socket_is_threaded_through() -> None:
+def test_tmux_socket_can_be_overridden() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", tmux_socket="panopt", run=rec).spawn("t1")
-    tmux_new = rec.calls[1][0]
-    assert tmux_new[:4] == ["tmux", "-L", "panopt", "new-session"]
+    assert rec.calls[1][0][:4] == ["tmux", "-L", "panopt", "new-session"]
 
 
 # -- integration: real docker + tmux ------------------------------------------------
