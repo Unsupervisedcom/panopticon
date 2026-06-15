@@ -9,9 +9,17 @@ default), while MERGING is agent-driven and advances itself once the change is m
 `iterate` (return to coding) is the backward edge REVIEW/MERGING → ITERATING; `advance` and
 `drop` are the forward edge and the universal `DROPPED` escape. Iterating back is a normal
 (gated) transition: taking it means the stage didn't pass, so the agent resolves the unmet
-responsibility `FAILED` with a reason (recorded in history) before retreating. Remote forge behavior — PR
-creation, `babysit-ci`/`babysit-merge` — is workflow-specific *in-container skills* and lands
-in a later slice (ADR 0004); this class is forge-less, so `skills()` is empty here.
+responsibility `FAILED` with a reason (recorded in history) before retreating.
+
+**Responsibilities mirror cloude-cade's per-stage Definition-of-Done** (`bin/cloude_stages.py`'s
+`dod_bullets`), with two model divergences (ADR 0004): they are **agent-only**, so cloude-cade's
+"The user has approved the plan" is *not* a responsibility — the user approving *is* the advance
+out of PLANNING (its plan-accepted hook); and the terminal "the task file has TODO state X"
+bullets fall away because DB state replaces org-mode mechanics. cloude-cade's "A draft PR has
+been created" is **provisioning** here (ADR 0004's provision seam), not a responsibility. The
+forge-tied responsibilities (CI passing, PR updated/reviewed/merged) are the real DoD and gate
+now; the *skills* that help fulfil them — `babysit-ci`/`babysit-merge`, PR creation — are
+workflow-specific in-container skills that land in a later slice, so `skills()` is empty here.
 """
 
 from __future__ import annotations
@@ -31,22 +39,29 @@ class Parity(Workflow):
     class Planning(State):
         label = "PLANNING"
         responsibilities = (
-            Responsibility(key="plan-drafted", description="Draft a plan and capture it in the plan artifact"),
+            Responsibility(key="plan-written", description="The plan is written into the plan artifact."),
         )
         transitions = ("ITERATING",)  # advance; + DROPPED inherited
 
     class Iterating(State):
         label = "ITERATING"
         responsibilities = (
-            Responsibility(key="changes-implemented", description="Implement the planned changes"),
-            Responsibility(key="tests-pass", description="The project's tests pass locally"),
+            Responsibility(key="plan-implemented", description="The plan is implemented in code."),
+            Responsibility(key="requests-implemented", description="All user requests are implemented in code."),
+            Responsibility(key="tests-pass", description="New and relevant tests pass locally."),
+            Responsibility(key="committed-pushed", description="Changes are committed and pushed."),
+            Responsibility(key="ci-passing", description="CI tests are passing, or any failures are irrelevant flakes."),
+            Responsibility(
+                key="pr-updated",
+                description="The PR title and description reflect the final change, with no Test Plan / Verification section.",
+            ),
         )
         transitions = ("REVIEW",)
 
     class Review(State):
         label = "REVIEW"
         responsibilities = (
-            Responsibility(key="self-reviewed", description="Self-review the diff for correctness, scope, and style"),
+            Responsibility(key="pr-reviewed", description="The PR has been reviewed."),
         )
         transitions = ("MERGING", "ITERATING")  # advance, or iterate back to coding
 
@@ -54,7 +69,7 @@ class Parity(Workflow):
         label = "MERGING"
         advanced_by = Actor.AGENT  # background: the agent shepherds the merge and advances itself
         responsibilities = (
-            Responsibility(key="merged", description="The change is merged into the base branch"),
+            Responsibility(key="pr-merged", description="The PR is merged."),
         )
         transitions = (Complete, "ITERATING")  # auto-advance to COMPLETE, or iterate back
 

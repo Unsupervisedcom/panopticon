@@ -53,11 +53,16 @@ def test_foreground_states_are_user_advanced_merging_is_agent_driven() -> None:
     assert WF.advanced_by("MERGING") is Actor.AGENT  # background: agent shepherds the merge
 
 
-def test_each_state_seeds_its_responsibilities() -> None:
-    assert {r.key for r in WF.responsibilities("PLANNING")} == {"plan-drafted"}
-    assert {r.key for r in WF.responsibilities("ITERATING")} == {"changes-implemented", "tests-pass"}
-    assert {r.key for r in WF.responsibilities("REVIEW")} == {"self-reviewed"}
-    assert {r.key for r in WF.responsibilities("MERGING")} == {"merged"}
+def test_responsibilities_mirror_cloude_cade_dod() -> None:
+    # cloude-cade's per-stage dod_bullets (bin/cloude_stages.py), agent-only (no user-approval),
+    # DB state replacing the terminal org bullets, and draft-PR creation moved to provisioning.
+    assert {r.key for r in WF.responsibilities("PLANNING")} == {"plan-written"}
+    assert {r.key for r in WF.responsibilities("ITERATING")} == {
+        "plan-implemented", "requests-implemented", "tests-pass",
+        "committed-pushed", "ci-passing", "pr-updated",
+    }
+    assert {r.key for r in WF.responsibilities("REVIEW")} == {"pr-reviewed"}
+    assert {r.key for r in WF.responsibilities("MERGING")} == {"pr-merged"}
 
 
 def test_parity_has_no_forge_skills_yet() -> None:
@@ -92,15 +97,15 @@ def test_turn_flips_to_user_on_entering_a_foreground_state() -> None:
 def test_cannot_advance_with_unresolved_responsibilities() -> None:
     task = WF.start_task("t1", "r1", at="t0")
     with pytest.raises(ResponsibilitiesNotMet):
-        WF.apply_transition(task, "ITERATING", at="t1")  # plan-drafted still PENDING
+        WF.apply_transition(task, "ITERATING", at="t1")  # plan-written still PENDING
 
 
 def test_partial_resolution_still_gates() -> None:
     task = WF.start_task("t1", "r1", at="t0")
-    _advance(task, "ITERATING")  # now in ITERATING with two promises
+    _advance(task, "ITERATING")  # now in ITERATING with several promises
     task.resolve_responsibility(key="tests-pass", status=Status.MET)
     with pytest.raises(ResponsibilitiesNotMet):
-        WF.apply_transition(task, "REVIEW", at="t2")  # changes-implemented still PENDING
+        WF.apply_transition(task, "REVIEW", at="t2")  # the rest (e.g. plan-implemented) still PENDING
 
 
 # -- iterate-back + drop ------------------------------------------------------------
@@ -112,17 +117,17 @@ def test_iterate_back_from_review_to_iterating() -> None:
     _advance(task, "REVIEW")
     # Iterating back *is* declaring the stage didn't pass: resolve it FAILED with a reason
     # (recorded in history), then retreat to coding. Re-entering ITERATING re-seeds its promises.
-    task.resolve_responsibility(key="self-reviewed", status=Status.FAILED, comment="found issues")
+    task.resolve_responsibility(key="pr-reviewed", status=Status.FAILED, comment="found issues")
     WF.apply_transition(task, "ITERATING", at="t3", trigger="iterate")
     assert task.state == "ITERATING"
-    assert {r.key for r in task.outstanding_responsibilities} == {"changes-implemented", "tests-pass"}
+    assert "tests-pass" in {r.key for r in task.outstanding_responsibilities}  # promises re-seeded
 
 
 def test_iterate_back_from_merging_to_iterating() -> None:
     task = WF.start_task("t1", "r1", at="t0")
     for nxt in ("ITERATING", "REVIEW", "MERGING"):
         _advance(task, nxt)
-    task.resolve_responsibility(key="merged", status=Status.FAILED, comment="merge blocked; reworking")
+    task.resolve_responsibility(key="pr-merged", status=Status.FAILED, comment="merge blocked; reworking")
     WF.apply_transition(task, "ITERATING", at="t4", trigger="iterate")
     assert task.state == "ITERATING"
 
