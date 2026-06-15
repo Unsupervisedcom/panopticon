@@ -20,9 +20,9 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Label, OptionList, Static
 
+from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.sessionservice.local_runner import TMUX_SOCKET
 from panopticon.terminal.attach import attach_command
-from panopticon.terminal.client import DashboardClient, JsonObj
 
 
 def _short(task_id: str) -> str:
@@ -88,7 +88,7 @@ class Dashboard(App[None]):
     ]
     TITLE = "panopticon"
 
-    def __init__(self, client: DashboardClient, *, attach: Callable[[str], None] | None = None) -> None:
+    def __init__(self, client: TaskServiceClient, *, attach: Callable[[str], None] | None = None) -> None:
         super().__init__()
         self._client = client
         self._tasks: dict[str, JsonObj] = {}
@@ -188,6 +188,6 @@ class Dashboard(App[None]):
                 subprocess.run(command, check=False)
 
 
-def run(client: DashboardClient) -> None:
+def run(client: TaskServiceClient) -> None:
     """Launch the interactive dashboard."""
     Dashboard(client).run()
