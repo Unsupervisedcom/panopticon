@@ -94,7 +94,7 @@ are suggestions, not decisions.
 | Base image                | Node20/Bookworm + git/tmux/jq/gh/claude/uv/bun                        | C - start w/ minimal image to support claude and other general panopticon requirements, allow worksflows and repos to layer onto this |                                    |
 | Volume mounts             | RO root, RW task dir + worktree, per-repo creds, per-task dind        | C - structure likely different                                                                                                        |                                    |
 | Entrypoint sequence       | Creds persist, command registration, dind init, privilege drop (gosu) | C - per configurable images                                                                                                           |                                    |
-| Prefill prompt            | Pre-populate Claude input on launch (bracketed-paste detect)          | K                                                                                                                                     | claude-specific → revisit (M3)     |
+| Prefill prompt            | Pre-populate Claude input on launch (bracketed-paste detect)          | K                                                                                                                                     | claude-specific → Slice 6          |
 | Read-only task-file pane  | Auto-reverting editor view of the task                                | D                                                                                                                                     |                                    |
 
 ## 8. Integrations (git / GitHub)
@@ -124,7 +124,7 @@ are suggestions, not decisions.
 | ----------------------------------- | ----------------------------------------------------- | --------------------------------------- | ----------------------------------- |
 | `:agent:` ↔ `:user:` tag flips      | Track who holds the ball across turns/questions       | K - probably the most important feature |                                     |
 | Plan-accepted hook                  | Auto-advance PLANNING→ITERATING, write plan, tick DoD | C - workflow specific                   |                                     |
-| User-prompt / stop / question hooks | Tag flips + DoD consistency enforcement               | K                                       | claude-hook-specific → revisit (M3) |
+| User-prompt / stop / question hooks | Tag flips + DoD consistency enforcement               | K                                       | claude-hook-specific → Slice 6      |
 | `:blocked:` tag preservation        | Deliberate agent marker survives auto-flips           | K                                       |                                     |
 | Host session-start hook             | Arms slug watcher                                     | D                                       |                                     |
 

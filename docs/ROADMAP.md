@@ -68,8 +68,9 @@ registration.
 
 **Delivers:** the session-service runner (host process) spawning a task container on the host
 Docker daemon; the **host tmux** session (one per task); the real **container entrypoint**
-(connect/register/liveness, slug hook); a minimal composed image (base layer only, ADR 0005);
-a minimal real agent invocation (`claude`).
+(connect/register/liveness, slug hook); a minimal composed image (base layer only, ADR 0005).
+The in-container agent step ships as a **stay-alive placeholder** — the real `claude` agent
+lands in Slice 6.
 
 **Acceptance:** the runner launches a real container that registers with the task service;
 `tmux attach` reaches it; killing the container is reflected as lost liveness.
@@ -127,16 +128,26 @@ creds; secrets never appear in the DB, artifacts, or image layers.
 
 ---
 
-### Slice 6 — Forge integration skills
+### Slice 6 — Claude integration (real agent + skills)
 
-**Goal:** the remote-VCS behaviors, as in-container skills (per the determinism boundary).
+**Goal:** stand up the **real in-container `claude` agent** — replacing Slice 2's stay-alive
+placeholder — and the workflow's in-container **skills** it runs (per the determinism boundary:
+the agent and its skills are the only LLM-bearing code, ADR 0008).
 
-**Delivers:** `gh` PR creation; `babysit-ci` (watch/diagnose/fix loop, retry/budget) and
-`babysit-merge` (merge-queue shepherding) as **workflow-contributed in-container skills**
-that call back over REST/MCP; ADOPT-style checkout.
+**Delivers:** the real agent runtime in the task container — `claude` doing the work, reading
+and writing artifacts (plan/notes) and calling back over REST/MCP to drive the lifecycle
+(core operations / `set_state`) and resolve responsibilities; plus the **workflow-contributed
+skills** layered on the core operations — for the parity workflow, the forge behaviors: `gh`
+PR creation, `babysit-ci` (watch/diagnose/fix loop, retry/budget), `babysit-merge`
+(merge-queue shepherding), and ADOPT-style checkout. Skills are exposed only by workflows that
+define them (a forge-less workflow gets none). Plus the **claude-specific hooks** that wire the
+contracts defined in Slice 4: the turn-flip hooks (stop → `turn=user`, user-prompt →
+`turn=agent`, with `:blocked:` preserved) and the prefill prompt.
 
-**Acceptance:** a parity task opens a PR, `babysit-ci` reacts to CI, `babysit-merge` lands it,
-reaching COMPLETE; a forge-less workflow exposes none of these skills.
+**Acceptance:** a parity task is driven end-to-end by a real `claude` agent — it plans,
+implements, advances through the lifecycle, opens a PR, `babysit-ci` reacts to CI and
+`babysit-merge` lands it, reaching COMPLETE; a forge-less workflow exposes none of the forge
+skills. (Real-agent/forge tests are `skipif`-gated; no LLM in CI.)
 
 **Depends on:** Slices 4–5.
 
