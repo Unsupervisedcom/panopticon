@@ -45,6 +45,13 @@ def test_drives_slug_and_transition(client: TaskServiceClient) -> None:
     assert client.get_task(task_id)["slug"] == "fix-widget"
 
 
+def test_drives_turn_and_blocked(client: TaskServiceClient) -> None:
+    task_id = client.create_task("r1", "spike")["id"]
+    assert client.set_turn(task_id, "user")["turn"] == "user"
+    blocked = client.set_blocked(task_id, True)
+    assert blocked["blocked"] is True and blocked["turn"] == "user"  # block preserves the turn
+
+
 def test_drives_core_operations(client: TaskServiceClient) -> None:
     task_id = client.create_task("r1", "spike")["id"]
     assert client.list_operations(task_id) == {"advance": "COMPLETE", "drop": "DROPPED"}

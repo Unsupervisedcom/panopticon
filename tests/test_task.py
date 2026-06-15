@@ -42,6 +42,10 @@ def test_current_entry_is_the_latest() -> None:
     assert task.current_entry.to_state == "WORKING"
 
 
+def test_blocked_defaults_false() -> None:
+    assert _working_task().blocked is False  # the deliberate marker starts clear
+
+
 def test_resolve_responsibility_fulfils_in_place() -> None:
     task = _working_task()
     entry = task.current_entry

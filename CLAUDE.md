@@ -107,6 +107,12 @@ CI (`.github/workflows/ci.yml`) runs `uv sync`, `mypy`, and `pytest` on every PR
   in — but, being a transition, a free move runs through an agent skill (the user directs the
   agent), not the dashboard. `force_transition` is the engine primitive (e.g. going back to
   coding is just `set_state(ITERATING)` — not a named operation).
+- **Turn-flip / blocked** — the live `Task.turn` flips *within* a state via
+  `PUT /tasks/{id}/turn` (the agnostic agent↔user ball tracking). The **contract** for the
+  in-container hooks: the agent's stop hook sets `turn=user`; the user-prompt hook sets
+  `turn=agent` (the claude-specific hook scripts themselves land in Slice 6). `Task.blocked`
+  (`PUT …/blocked`) is a deliberate "waiting" marker the agent sets; it's **orthogonal to the
+  turn and survives flips** (cloude-cade's `:blocked:`), cleared only explicitly.
 - **Responsibility / Status** — an agent obligation for a state. Entering a state seeds its
   responsibilities onto that entry's history record, all `PENDING` (a promise); the agent
   fulfils each one at a time (`MET`, or `FAILED` with a comment) — mutating that entry — and a

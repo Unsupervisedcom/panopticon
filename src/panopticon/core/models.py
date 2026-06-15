@@ -102,6 +102,9 @@ class Task:
     workflow: str
     state: str
     turn: Actor
+    #: A deliberate "waiting on something" marker the agent sets; it is **orthogonal to the
+    #: turn** and survives turn flips (cloude-cade's `:blocked:`), cleared only explicitly.
+    blocked: bool = False
     slug: str | None = None
     history: list[HistoryEntry] = field(default_factory=list)
 

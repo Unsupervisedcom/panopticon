@@ -97,6 +97,29 @@ def test_on_transition_hook_fires_through_the_service(tmp_path: Path) -> None:
     assert calls == [("A", "COMPLETE")]
 
 
+# -- turn-flip + blocked marker -----------------------------------------------------
+
+
+def test_set_turn_flips_within_a_state(tmp_path: Path) -> None:
+    svc = make_service(tmp_path)
+    task = svc.create_task("r1", "spike")  # turn=AGENT on entry
+    flipped = svc.set_turn(task.id, Actor.USER)  # e.g. the agent asked a question
+    assert flipped.turn is Actor.USER
+    assert svc.get_task(task.id).turn is Actor.USER
+    assert svc.set_turn(task.id, Actor.AGENT).turn is Actor.AGENT  # user replied
+
+
+def test_blocked_marker_survives_turn_flips(tmp_path: Path) -> None:
+    svc = make_service(tmp_path)
+    task = svc.create_task("r1", "spike")
+    svc.set_blocked(task.id, True)
+    svc.set_turn(task.id, Actor.USER)  # a flip must not clear the deliberate block
+    reloaded = svc.get_task(task.id)
+    assert reloaded.turn is Actor.USER
+    assert reloaded.blocked is True
+    assert svc.set_blocked(task.id, False).blocked is False  # cleared only explicitly
+
+
 def test_illegal_transition_rejected(tmp_path: Path) -> None:
     svc = make_service(tmp_path)
     task = svc.create_task("r1", "spike")
