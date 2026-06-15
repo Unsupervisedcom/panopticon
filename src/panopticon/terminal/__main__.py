@@ -1,7 +1,7 @@
 """``panopticon`` / ``python -m panopticon.terminal`` — the operator CLI.
 
-For now: ``panopticon tasks`` lists tasks (a plain-text read over REST). The Textual dashboard
-becomes the default command in a later PR of this slice.
+`panopticon` (or `panopticon dashboard`) launches the Textual dashboard; `panopticon tasks`
+lists tasks as plain text over REST.
 """
 
 from __future__ import annotations
@@ -24,14 +24,19 @@ def main(argv: Sequence[str] | None = None, *, client: DashboardClient | None = 
         default=os.environ.get("PANOPTICON_SERVICE_URL", DEFAULT_SERVICE_URL),
         help="task service base URL",
     )
-    sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("tasks", help="list tasks")
+    sub = parser.add_subparsers(dest="command")
+    sub.add_parser("dashboard", help="launch the dashboard (default)")
+    sub.add_parser("tasks", help="list tasks as plain text")
     args = parser.parse_args(argv)
 
     client = client or DashboardClient(httpx.Client(base_url=args.service_url))
     if args.command == "tasks":
         for t in client.list_tasks():
             print(f"{t['id']}  {t['state']:<10}  {t['turn']:<5}  {t['slug'] or '-'}")
+    else:  # default / "dashboard"
+        from panopticon.terminal.dashboard import run
+
+        run(client)
     return 0
 
 
