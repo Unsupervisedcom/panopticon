@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from panopticon.core.artifacts import ArtifactStore
+from panopticon.core.git import GitWorktrees, Worktree
 from panopticon.core.models import Actor, Repo, Status, Task
 from panopticon.core.store import NotFound, Store
 from panopticon.core.workflow import Workflow
@@ -54,12 +55,14 @@ class TaskService:
         *,
         clock: Callable[[], str] = _utc_now_iso,
         id_factory: Callable[[], str] = _uuid_hex,
+        git: GitWorktrees | None = None,
     ) -> None:
         self._store = store
         self._workflows = dict(workflows)
         self._artifacts = artifacts
         self._clock = clock
         self._id = id_factory
+        self._git = git or GitWorktrees()
         self._registrations: dict[str, Registration] = {}
 
     # -- repos --------------------------------------------------------------------
@@ -191,6 +194,29 @@ class TaskService:
         task.blocked = blocked
         self._store.save_task(task)
         return task
+
+    # -- provisioning (local git is core; the worktree precedes workflow provisioning) ----
+
+    def provision_task(self, task_id: str, *, repo_path: str, worktrees_root: str) -> Worktree:
+        """Create the task's slug-named branch/worktree (core, agnostic), then run the active
+        workflow's provisioning (ADR 0004 / ARCHITECTURE §9).
+
+        Slug-gated: raises if the slug is unset (the worktree is named from it). ``repo_path``
+        (the local clone) and ``worktrees_root`` are supplied by the caller; persistent
+        clone-path management + auto-triggering this on slug-set is the remaining wiring
+        (docs/BACKLOG.md).
+        """
+        task = self.get_task(task_id)
+        base = self.get_repo(task.repo_id).default_base
+        worktree = self._git.create(
+            repo_path=repo_path,
+            worktrees_root=worktrees_root,
+            repo_id=task.repo_id,
+            slug=task.slug,
+            base=base,
+        )
+        self._workflow(task.workflow).provision(task, branch=worktree.branch, worktree_path=worktree.path)
+        return worktree
 
     # -- artifacts ----------------------------------------------------------------
 

@@ -14,6 +14,7 @@ from panopticon.core import (
     State,
     Workflow,
 )
+from panopticon.core.git import Worktree
 from panopticon.core.models import Actor, Repo, Responsibility, Status
 from panopticon.core.store import NotFound
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
@@ -118,6 +119,48 @@ def test_blocked_marker_survives_turn_flips(tmp_path: Path) -> None:
     assert reloaded.turn is Actor.USER
     assert reloaded.blocked is True
     assert svc.set_blocked(task.id, False).blocked is False  # cleared only explicitly
+
+
+# -- provisioning: local git worktree (slug-gated) then workflow provisioning --------
+
+
+class _FakeGit:
+    def __init__(self) -> None:
+        self.created: list[dict[str, object]] = []
+
+    def create(self, *, repo_path: str, worktrees_root: str, repo_id: str, slug: str | None, base: str):  # type: ignore[no-untyped-def]
+        if not slug:
+            raise ValueError("cannot create a worktree before the task's slug is set")
+        self.created.append({"repo_path": repo_path, "repo_id": repo_id, "slug": slug, "base": base})
+        return Worktree(branch=f"panopticon/{slug}", path=f"{worktrees_root}/{repo_id}/panopticon/{slug}")
+
+
+def _service_with_git(tmp_path: Path, git: _FakeGit) -> TaskService:
+    svc = TaskService(
+        SqlAlchemyStore(), {"spike": Spike(), "parity": Parity()},
+        FilesystemArtifactStore(tmp_path), git=git,  # type: ignore[arg-type]
+    )
+    svc.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git", default_base="trunk"))
+    return svc
+
+
+def test_provision_task_creates_worktree_off_repo_default_base(tmp_path: Path) -> None:
+    git = _FakeGit()
+    svc = _service_with_git(tmp_path, git)
+    task = svc.create_task("r1", "parity")
+    svc.set_slug(task.id, "fix-widget")
+    wt = svc.provision_task(task.id, repo_path="/repos/r1", worktrees_root="/wt")
+    assert wt.branch == "panopticon/fix-widget"
+    assert git.created == [{"repo_path": "/repos/r1", "repo_id": "r1", "slug": "fix-widget", "base": "trunk"}]
+
+
+def test_provision_task_is_slug_gated(tmp_path: Path) -> None:
+    git = _FakeGit()
+    svc = _service_with_git(tmp_path, git)
+    task = svc.create_task("r1", "parity")  # no slug yet
+    with pytest.raises(ValueError, match="slug"):
+        svc.provision_task(task.id, repo_path="/repos/r1", worktrees_root="/wt")
+    assert git.created == []
 
 
 def test_illegal_transition_rejected(tmp_path: Path) -> None:

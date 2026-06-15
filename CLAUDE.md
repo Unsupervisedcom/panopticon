@@ -19,7 +19,8 @@ If you add a package that orchestrates or renders, keep it LLM-free.
 src/panopticon/
   core/            # domain models, state classes, the Workflow interface (the state
                    # machine: resolution, queries, start_task/apply_transition),
-                   # store & artifact interfaces — pure, no I/O
+                   # store & artifact interfaces — pure, no I/O EXCEPT git.py (local
+                   # branch/worktree ops; LLM-free, behind an injectable command-runner)
   workflows/       # built-in Workflow subclasses (Spike seed; Parity = cloude-cade lifecycle)
   taskservice/     # control plane: TaskService, FastAPI REST API, the SQLAlchemy store
                    # adapter (in-memory or on-disk SQLite), filesystem artifact store, MCP
@@ -71,6 +72,8 @@ CI (`.github/workflows/ci.yml`) runs `uv sync`, `mypy`, and `pytest` on every PR
   flow.
 - `tests/test_store.py` — store **contract tests run against in-memory and on-disk SQLite**,
   proving the interface is backend-agnostic (and that rows/domain models stay in sync).
+- `tests/test_git.py` — local branch/worktree ops: unit tests pin the emitted `git` commands
+  and slug-gating (fake runner); a `skipif` integration test creates a real worktree.
 - `tests/test_skeleton.py` — the end-to-end walking skeleton (create → register → slug →
   transition → history) over the REST API, no Docker.
 - `tests/test_local_runner.py` / `tests/test_entrypoint.py` — the runner's emitted docker/tmux

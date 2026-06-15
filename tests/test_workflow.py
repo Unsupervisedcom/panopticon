@@ -263,6 +263,25 @@ def test_history_entry_transition_facts_are_frozen() -> None:
         task.history[0].to_state = "WORKING"  # type: ignore[misc]
 
 
+# -- provisioning seam --------------------------------------------------------------
+
+
+def test_provision_defaults_to_noop_and_is_overridable() -> None:
+    task = WF.start_task("t1", "r1", at="t0")
+    WF.provision(task, branch="panopticon/x", worktree_path="/wt/x")  # base no-op: does nothing
+
+    calls: list[tuple[str, str]] = []
+
+    class Provisioning(GatedWorkflow):
+        name = "provisioning"
+
+        def provision(self, task: object, *, branch: str, worktree_path: str) -> None:  # type: ignore[override]
+            calls.append((branch, worktree_path))
+
+    Provisioning().provision(task, branch="panopticon/x", worktree_path="/wt/x")
+    assert calls == [("panopticon/x", "/wt/x")]
+
+
 # -- workflow validation (lazy: on first use, then cached) --------------------------
 
 

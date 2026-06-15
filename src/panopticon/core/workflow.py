@@ -240,6 +240,17 @@ class Workflow(ABC):
         timestamps come from the task/history already stamped by the caller.
         """
 
+    def provision(self, task: Task, *, branch: str, worktree_path: str) -> None:
+        """Workflow provisioning, run **after** the core creates the task's slug-named worktree
+        (ADR 0004 / ARCHITECTURE §9). Default no-op.
+
+        *Local* git (the branch + worktree) is core and already done by the time this runs;
+        this seam is for workflow-specific *remote* setup that needs the branch — e.g. the
+        parity workflow opening its PR — which is forge integration and lands in a later slice.
+        Deterministic forge requests may run here; agent-driven forge work is an in-container
+        skill (the determinism split, ADR 0004).
+        """
+
     # -- task lifecycle (deterministic: no clock, no I/O; timestamps passed in) ---------
 
     def _promised(self, label: str) -> list[Responsibility]:
