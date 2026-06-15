@@ -10,6 +10,9 @@ dependencies = [
     "httpx>=0.27",
 ]
 
+[project.scripts]
+panopticon = "panopticon.terminal.__main__:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8",
