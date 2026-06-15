@@ -32,6 +32,9 @@ class TaskServiceClient:
     def list_workflows(self) -> list[str]:
         return cast("list[str]", self._json(self._http.get("/workflows")))
 
+    def get_repo(self, repo_id: str) -> JsonObj:
+        return cast(JsonObj, self._json(self._http.get(f"/repos/{repo_id}")))
+
     def list_repos(self) -> list[JsonObj]:
         return cast("list[JsonObj]", self._json(self._http.get("/repos")))
 

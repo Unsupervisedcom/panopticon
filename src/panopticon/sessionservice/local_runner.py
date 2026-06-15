@@ -30,6 +30,10 @@ HOST_GATEWAY = "host.docker.internal:host-gateway"
 #: operator's own tmux and gives the terminal controller a known place to `tmux attach`.
 TMUX_SOCKET = "panopticon"
 
+#: Where a repo's OAuth credential volume is mounted in the task container (ADR 0007). The
+#: agent layer points its CLI's config dir here (Slice 6); kept generic so it isn't CLI-specific.
+CREDS_MOUNT = "/creds"
+
 
 class CommandRunner(Protocol):
     """Runs an external command and returns its stdout; ``check`` raises on non-zero exit."""
@@ -67,7 +71,9 @@ class LocalRunner(Runner):
         prefix = ["tmux", *(["-L", self._tmux_socket] if self._tmux_socket else [])]
         return [*prefix, *args]
 
-    def spawn(self, task_id: str) -> str:
+    def spawn(self, task_id: str, *, env_file: str | None = None, creds_volume: str | None = None) -> str:
+        """Spawn the task container. ``env_file``/``creds_volume`` are the task's repo's secret
+        references (ADR 0007), injected at launch — never baked into the image."""
         # The container name doubles as the tmux session name, so stop() needs only the id.
         container = f"panopticon-{task_id}"
         env = {
@@ -83,6 +89,10 @@ class LocalRunner(Runner):
             "--label", f"panopticon.task={task_id}",
             "--add-host", HOST_GATEWAY,
         ]
+        if env_file:  # per-repo API-key secrets, injected at run (not in the image)
+            docker_run += ["--env-file", env_file]
+        if creds_volume:  # per-repo OAuth creds volume, mounted at a generic path
+            docker_run += ["-v", f"{creds_volume}:{CREDS_MOUNT}"]
         for key, value in env.items():
             docker_run += ["-e", f"{key}={value}"]
         docker_run.append(self._image)  # the image's entrypoint runs (no command override)

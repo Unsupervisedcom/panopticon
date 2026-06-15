@@ -59,6 +59,22 @@ def test_extra_env_is_forwarded() -> None:
     assert "PANOPTICON_HEARTBEAT_INTERVAL=0.5" in rec.calls[0][0]
 
 
+def test_spawn_injects_repo_env_file_and_creds_mount() -> None:
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).spawn(
+        "t1", env_file="/secrets/r1.env", creds_volume="panopticon-creds-r1"
+    )
+    docker_run = rec.calls[0][0]
+    assert docker_run[docker_run.index("--env-file") + 1] == "/secrets/r1.env"
+    assert "panopticon-creds-r1:/creds" in docker_run  # mounted at the generic creds path
+
+
+def test_spawn_omits_secret_flags_when_repo_has_none() -> None:
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).spawn("t1")
+    assert "--env-file" not in rec.calls[0][0] and "-v" not in rec.calls[0][0]
+
+
 def test_stop_kills_session_and_force_removes_container_idempotently() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", run=rec).stop("panopticon-t1")
@@ -123,12 +139,30 @@ def test_spawn_and_stop_real_container_and_session() -> None:
         subprocess.run(["docker", "rmi", "-f", image], capture_output=True)
 
 
-def test_cli_spawns_with_service_url_and_image() -> None:
+class _FakeClient:
+    """Stands in for TaskServiceClient: maps the task to its repo + that repo's secret refs."""
+
+    def __init__(self, repo: dict[str, object]) -> None:
+        self._repo = repo
+
+    def get_task(self, task_id: str) -> dict[str, object]:
+        return {"id": task_id, "repo_id": "r1"}
+
+    def get_repo(self, repo_id: str) -> dict[str, object]:
+        return self._repo
+
+
+def test_cli_spawns_with_service_url_and_image_and_injects_repo_secrets() -> None:
     from panopticon.sessionservice.__main__ import main as cli_main
 
     rec = _Recorder()
-    cid = cli_main(["t1", "--service-url", "http://svc:9", "--image", "img:2"], run=rec)
+    fake = _FakeClient({"id": "r1", "env_file": "/secrets/r1.env", "creds_volume": "creds-r1"})
+    cid = cli_main(
+        ["t1", "--service-url", "http://svc:9", "--image", "img:2"], run=rec, client=fake  # type: ignore[arg-type]
+    )
     assert cid == "panopticon-t1"
     docker_run = rec.calls[0][0]
     assert "PANOPTICON_SERVICE_URL=http://svc:9" in docker_run
     assert docker_run[-1] == "img:2"
+    assert docker_run[docker_run.index("--env-file") + 1] == "/secrets/r1.env"  # repo's secrets
+    assert "creds-r1:/creds" in docker_run
