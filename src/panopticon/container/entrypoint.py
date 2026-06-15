@@ -28,7 +28,7 @@ from collections.abc import Callable
 
 import httpx
 
-from panopticon.container.client import TaskServiceClient
+from panopticon.client import TaskServiceClient
 
 Work = Callable[[TaskServiceClient, str], None]
 
