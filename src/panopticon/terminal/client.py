@@ -41,6 +41,9 @@ class DashboardClient:
     def list_registrations(self, task_id: str) -> list[JsonObj]:
         return cast("list[JsonObj]", self._json(self._http.get(f"/tasks/{task_id}/registrations")))
 
+    def list_transitions(self, task_id: str) -> list[str]:
+        return cast("list[str]", self._json(self._http.get(f"/tasks/{task_id}/transitions")))
+
     # -- writes (drive the dashboard) ---------------------------------------------
 
     def create_repo(self, repo_id: str, name: str, git_url: str, default_base: str = "main") -> JsonObj:
