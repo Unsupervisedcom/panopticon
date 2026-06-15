@@ -19,15 +19,18 @@ out of PLANNING (the claude plan-accepted hook lands in Slice 6); and the termin
 bullets fall away because DB state replaces org-mode mechanics. cloude-cade's "A draft PR has
 been created" is **provisioning** here (ADR 0004's provision seam), not a responsibility. The
 forge-tied responsibilities (CI passing, PR updated/reviewed/merged) are the real DoD and gate
-now; the *skills* that help fulfil them — `babysit-ci`/`babysit-merge`, PR creation — are
-workflow-specific in-container skills that land in a later slice, so `skills()` is empty here.
+now; the *skills* that help fulfil them are this workflow's forge skills (`open-pr`,
+`babysit-ci`, `babysit-merge` — see :meth:`Parity.skills`), agent-driven in-container procedures
+(ADR 0004) the agent runs against `gh`/CI.
 """
 
 from __future__ import annotations
 
 from typing import ClassVar
 
-from panopticon.core.models import Actor, Responsibility
+from collections.abc import Sequence
+
+from panopticon.core.models import Actor, Responsibility, Skill
 from panopticon.core.state import Complete, State
 from panopticon.core.workflow import Workflow
 
@@ -79,3 +82,35 @@ class Parity(Workflow):
     def image_layer(self) -> str:
         """Parity's forge skills shell out to `gh`, so layer it onto the base image (ADR 0005)."""
         return "RUN apt-get update && apt-get install --yes --no-install-recommends gh"
+
+    def skills(self) -> Sequence[Skill]:
+        """The parity workflow's forge skills (ADR 0004 — remote VCS is workflow-specific). The
+        agent runs these in the container against `gh`/CI, calling back over MCP/REST."""
+        return (
+            Skill(
+                "open-pr",
+                "Open a draft PR for this task's branch.",
+                "Push the task's branch and open a **draft** PR against the repo's base branch with "
+                "`gh pr create --draft`. Title it for the change and reference the plan artifact.",
+            ),
+            Skill(
+                "babysit-ci",
+                "Watch the PR's CI and fix failures (and base conflicts) until green.",
+                "Watch the PR's checks (`gh pr checks --watch`). First resolve any merge conflict "
+                "against the base — fetch and merge the base, fix trivial conflicts and push, but "
+                "bail to the user on a non-trivial one (resolving conflicts is part of this skill, "
+                "not the user's job). Then, per failing check: rerun obvious flakes (don't count "
+                "them), else diagnose, fix in the worktree, and commit + push. Budget: ≤3 post-fix "
+                "retries per check and ~2h wall-clock. Stop when CI is green — report and hand back "
+                "to the user (don't auto-advance) — or when the budget is spent.",
+            ),
+            Skill(
+                "babysit-merge",
+                "Shepherd the PR through the merge queue.",
+                "Add the PR to the merge queue (`gh pr merge --squash --auto`, or the repo's "
+                "policy) and watch it, re-queuing on transient ejections within a ~2h budget. If "
+                "the merge is blocked — a failing required check, requested changes, or a conflict "
+                "— go back to coding (`set_state ITERATING`) with an explanation. Once the merge "
+                "has landed, advance to COMPLETE.",
+            ),
+        )
