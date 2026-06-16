@@ -7,8 +7,10 @@ so re-seeing an already-provisioned task is a no-op — the loop just calls it o
 each pass. Slug-set is a one-time transition per task, so the poll is cheap; the interval is the
 only latency knob (a long-poll variant can cut it later without changing the direction).
 
-The set of watched tasks is supplied by the host (the tasks it has spawned); a transient git/REST
-error on one task is logged and skipped so it can't stall the others. LLM-free.
+Once a task is provisioned it also repoints that task's workspace ``repo`` symlink to the worktree
+(ADR 0011 §2), so the agent's ``/workspace/repo`` resolves into it. The set of watched tasks is
+supplied by the host (the tasks it has spawned); a transient git/REST/FS error on one task is
+logged and skipped so it can't stall the others. LLM-free.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from collections.abc import Callable, Iterable
 from panopticon.client import TaskServiceClient
 from panopticon.core.git import Worktree
 from panopticon.sessionservice.provisioner import Provisioner
+from panopticon.sessionservice.workspace import TaskWorkspaces
 
 _log = logging.getLogger(__name__)
 
@@ -28,8 +31,10 @@ class ProvisionDaemon:
     """Polls the watched tasks and provisions each once it acquires a slug.
 
     ``tasks`` yields the task ids this host is running (re-read each pass, so the host can add or
-    retire tasks between passes). ``sleep``/``interval`` are injectable so the loop is testable
-    without real waiting.
+    retire tasks between passes). When ``workspaces`` is given, each pass also reconciles the task's
+    ``repo`` symlink to its recorded worktree (ADR 0011 §2) — idempotent, so a repoint that failed
+    once is retried next pass. ``sleep``/``interval`` are injectable so the loop is testable without
+    real waiting.
     """
 
     def __init__(
@@ -38,12 +43,14 @@ class ProvisionDaemon:
         provisioner: Provisioner,
         tasks: Callable[[], Iterable[str]],
         *,
+        workspaces: TaskWorkspaces | None = None,
         sleep: Callable[[float], None] = time.sleep,
         interval: float = 2.0,
     ) -> None:
         self._client = client
         self._provisioner = provisioner
         self._tasks = tasks
+        self._workspaces = workspaces
         self._sleep = sleep
         self._interval = interval
 
@@ -51,9 +58,16 @@ class ProvisionDaemon:
         """One pass over the watched tasks; returns the worktrees provisioned this pass."""
         provisioned: list[Worktree] = []
         for task_id in self._tasks():
+            worktree = None
             try:
-                worktree = self._provisioner.provision(self._client.get_task(task_id))
-            except Exception:  # a transient git/REST error on one task must not stall the others
+                task = self._client.get_task(task_id)
+                worktree = self._provisioner.provision(task)
+                # Reconcile the workspace symlink to the recorded worktree (whether we just created
+                # it or an earlier pass did) so the agent's /workspace/repo resolves into it.
+                target = worktree.path if worktree is not None else task.get("worktree")
+                if self._workspaces is not None and target:
+                    self._workspaces.repoint(task_id, target)
+            except Exception:  # a transient git/REST/FS error on one task must not stall the others
                 _log.warning("provisioning pass failed for task %s", task_id, exc_info=True)
                 continue
             if worktree is not None:

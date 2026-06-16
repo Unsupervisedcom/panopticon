@@ -1,9 +1,11 @@
-"""The observe-and-provision loop (ADR 0010): the session service polls the tasks it runs and
-provisions each once it acquires a slug. Unit tests drive the loop with fakes; an integration test
-runs it against the real task service over REST. No Docker, no LLM."""
+"""The observe-and-provision loop (ADR 0010/0011): the session service polls the tasks it runs,
+provisions each once it acquires a slug, and repoints its workspace `repo` symlink to the worktree.
+Unit tests drive the loop with fakes; an integration test runs it against the real task service
+over REST. No Docker, no LLM."""
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -14,6 +16,7 @@ from panopticon.core.models import Repo
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.daemon import ProvisionDaemon
 from panopticon.sessionservice.provisioner import Provisioner
+from panopticon.sessionservice.workspace import TaskWorkspaces
 from panopticon.taskservice.api import create_app
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 from panopticon.taskservice.service import TaskService
@@ -66,6 +69,31 @@ def test_tick_isolates_a_failing_task_from_the_others() -> None:
     assert provisioner.seen == ["t1", "t2"]
 
 
+def test_tick_repoints_the_workspace_to_the_new_worktree(tmp_path: Path) -> None:
+    wt = Worktree(branch="panopticon/a", path="/wt/r1/panopticon/a")
+    client = _FakeClient({"t1": {"id": "t1"}})
+    provisioner = _FakeProvisioner({"t1": wt})
+    workspaces = TaskWorkspaces(str(tmp_path / "tasks"))
+    workspaces.prepare("t1", base=str(tmp_path / "base"))  # starts on the read-only base
+    daemon = ProvisionDaemon(client, provisioner, lambda: ["t1"], workspaces=workspaces)  # type: ignore[arg-type]
+
+    daemon.tick()
+
+    assert os.readlink(workspaces.repo_link("t1")) == wt.path  # repo swapped base→worktree
+
+
+def test_tick_reconciles_the_symlink_for_an_already_provisioned_task(tmp_path: Path) -> None:
+    client = _FakeClient({"t1": {"id": "t1", "worktree": "/wt/r1/panopticon/a"}})
+    provisioner = _FakeProvisioner({"t1": None})  # provision is a no-op (already recorded)
+    workspaces = TaskWorkspaces(str(tmp_path / "tasks"))
+    workspaces.prepare("t1", base=str(tmp_path / "base"))
+    daemon = ProvisionDaemon(client, provisioner, lambda: ["t1"], workspaces=workspaces)  # type: ignore[arg-type]
+
+    daemon.tick()  # a repoint that didn't happen earlier is reconciled from the recorded worktree
+
+    assert os.readlink(workspaces.repo_link("t1")) == "/wt/r1/panopticon/a"
+
+
 def test_run_polls_until_the_stop_condition() -> None:
     client = _FakeClient({"t1": {"id": "t1"}})
     provisioner = _FakeProvisioner({"t1": None})
@@ -102,17 +130,24 @@ def test_daemon_against_the_real_service(tmp_path: Path) -> None:
             worktrees_root="/wt",
             git=GitWorktrees(run=fake_run),  # type: ignore[arg-type]
         )
-        daemon = ProvisionDaemon(client, provisioner, lambda: [task_id], sleep=lambda _s: None)
+        workspaces = TaskWorkspaces(str(tmp_path / "tasks"))
+        workspaces.prepare(task_id, base=str(tmp_path / "base"))  # agent starts on the base
+        daemon = ProvisionDaemon(
+            client, provisioner, lambda: [task_id], workspaces=workspaces, sleep=lambda _s: None
+        )
 
-        # Pass 1: no slug yet → nothing provisioned.
+        # Pass 1: no slug yet → nothing provisioned; repo still points at the base.
         assert daemon.tick() == []
         assert client.get_task(task_id)["worktree"] is None
+        assert os.readlink(workspaces.repo_link(task_id)) == str(tmp_path / "base")
 
-        # The agent sets the slug; the next pass observes it and provisions.
+        # The agent sets the slug; the next pass observes it, provisions, and repoints.
         client.set_slug(task_id, "fix-widget")
         provisioned = daemon.tick()
         assert [w.branch for w in provisioned] == ["panopticon/fix-widget"]
         assert client.get_task(task_id)["worktree"] == "/wt/r1/panopticon/fix-widget"
+        assert os.readlink(workspaces.repo_link(task_id)) == "/wt/r1/panopticon/fix-widget"
 
-        # Pass 3: already provisioned → no-op.
+        # Pass 3: already provisioned → no-op (symlink stays put).
         assert daemon.tick() == []
+        assert os.readlink(workspaces.repo_link(task_id)) == "/wt/r1/panopticon/fix-widget"

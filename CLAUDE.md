@@ -29,8 +29,9 @@ src/panopticon/
                    # (real Docker+tmux via the CLIs); images.py = ADR-0005 composed images
                    # (base→workflow→repo); provisioner.py = host-side worktree provisioning
                    # (ADR 0010: ensure clone → create slug-named worktree → record it back);
-                   # clones.py = per-repo clone cache; daemon.py = the observe-and-provision
-                   # pull loop (poll watched tasks, provision on slug);
+                   # clones.py = per-repo clone cache; workspace.py = per-task `repo` symlink
+                   # (repointed base→worktree, ADR 0011); daemon.py = the observe-and-provision
+                   # pull loop (poll watched tasks, provision on slug, repoint);
                    # `python -m panopticon.sessionservice`
   container/       # entrypoint (`python -m panopticon.container` = connect/register/slug/
                    # heartbeat liveness) + agent.py (`-m panopticon.container.agent` = the tmux
@@ -118,8 +119,12 @@ commands the Makefile wraps).
 - `tests/test_clones.py` — the per-repo clone cache: unit tests pin the clone-on-first-use vs
   fetch-when-present decision (fakes); a `skipif` integration test clones a real local repo.
 - `tests/test_daemon.py` — the observe-and-provision loop: unit tests drive `tick`/`run` with
-  fakes (provision watched tasks, isolate a failing one, poll until a stop condition); an
-  integration test runs it against the real task service over REST (slug-set → provisioned → no-op).
+  fakes (provision watched tasks, isolate a failing one, repoint the workspace, poll until a stop
+  condition); an integration test runs it against the real task service over REST (slug-set →
+  provisioned → repointed → no-op).
+- `tests/test_workspace.py` — per-task `repo` symlink (ADR 0011): real-filesystem tests that
+  `prepare` points at the base + makes the config dir, and `repoint` atomically swaps to the
+  worktree (idempotent, no leftover temp link).
 - `tests/test_mcp.py` — the MCP server surface, exercised **in-memory** via the MCP
   client (`create_connected_server_and_client_session`) — tools mutate the task, the artifact
   resource reads back. No LLM, no HTTP (HTTP hosting is the runnable server, Slice 7a).
