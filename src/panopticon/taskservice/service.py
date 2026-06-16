@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from panopticon.core.artifacts import ArtifactStore
-from panopticon.core.git import GitWorktrees, Worktree
 from panopticon.core.models import Actor, Repo, Skill, Status, Task
 from panopticon.core.store import NotFound, Store
 from panopticon.core.workflow import Workflow
@@ -55,14 +54,12 @@ class TaskService:
         *,
         clock: Callable[[], str] = _utc_now_iso,
         id_factory: Callable[[], str] = _uuid_hex,
-        git: GitWorktrees | None = None,
     ) -> None:
         self._store = store
         self._workflows = dict(workflows)
         self._artifacts = artifacts
         self._clock = clock
         self._id = id_factory
-        self._git = git or GitWorktrees()
         self._registrations: dict[str, Registration] = {}
 
     # -- repos --------------------------------------------------------------------
@@ -200,28 +197,26 @@ class TaskService:
         self._store.save_task(task)
         return task
 
-    # -- provisioning (local git is core; the worktree precedes workflow provisioning) ----
+    # -- provisioning (the session service does the host git; the service only records) ---
 
-    def provision_task(self, task_id: str, *, repo_path: str, worktrees_root: str) -> Worktree:
-        """Create the task's slug-named branch/worktree (core, agnostic), then run the active
-        workflow's provisioning (ADR 0004 / ARCHITECTURE §9).
+    def record_provisioning(self, task_id: str, *, branch: str, worktree: str) -> Task:
+        """Record the slug-named branch/worktree the session service created **on the host**
+        for this task, then run the active workflow's provisioning (ADR 0010 / ARCHITECTURE §9).
 
-        Slug-gated: raises if the slug is unset (the worktree is named from it). ``repo_path``
-        (the local clone) and ``worktrees_root`` are supplied by the caller; persistent
-        clone-path management + auto-triggering this on slug-set is the remaining wiring
-        (docs/BACKLOG.md).
+        The git itself happens on the runner's host (`core/git.py`), observed via the work-pull
+        loop; the task service never touches a filesystem, so this stays correct when the runner
+        is remote (ADR 0009). Slug-gated: the worktree is named from the slug, so we refuse to
+        record before one is set. The workflow's :meth:`provision` hook (a no-op by default) runs
+        last and may further mutate the task; we persist once afterwards.
         """
         task = self.get_task(task_id)
-        base = self.get_repo(task.repo_id).default_base
-        worktree = self._git.create(
-            repo_path=repo_path,
-            worktrees_root=worktrees_root,
-            repo_id=task.repo_id,
-            slug=task.slug,
-            base=base,
-        )
-        self._workflow(task.workflow).provision(task, branch=worktree.branch, worktree_path=worktree.path)
-        return worktree
+        if task.slug is None:
+            raise ValueError("cannot record provisioning before the task's slug is set")
+        task.branch = branch
+        task.worktree = worktree
+        self._workflow(task.workflow).provision(task, branch=branch, worktree_path=worktree)
+        self._store.save_task(task)
+        return task
 
     # -- artifacts ----------------------------------------------------------------
 

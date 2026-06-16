@@ -316,6 +316,8 @@ def _fully_populated_task() -> Task:
         turn=Actor.AGENT,
         blocked=True,
         slug="fix-the-widget",
+        branch="panopticon/fix-the-widget",
+        worktree="/wt/r1/panopticon/fix-the-widget",
         history=[
             HistoryEntry(
                 at="t0", from_state=None, to_state="PLAN", trigger="start", note="kickoff"

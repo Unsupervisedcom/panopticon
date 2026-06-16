@@ -14,7 +14,6 @@ from panopticon.core import (
     State,
     Workflow,
 )
-from panopticon.core.git import Worktree
 from panopticon.core.models import Actor, Repo, Responsibility, Status
 from panopticon.core.store import NotFound
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
@@ -143,46 +142,43 @@ def test_blocked_marker_survives_turn_flips(tmp_path: Path) -> None:
     assert svc.set_blocked(task.id, False).blocked is False  # cleared only explicitly
 
 
-# -- provisioning: local git worktree (slug-gated) then workflow provisioning --------
+# -- provisioning: the session service does the host git; the service only records it (ADR 0010) --
 
 
-class _FakeGit:
-    def __init__(self) -> None:
-        self.created: list[dict[str, object]] = []
+def test_record_provisioning_stores_refs_and_runs_workflow_provision(tmp_path: Path) -> None:
+    provisioned: list[tuple[str, str]] = []
 
-    def create(self, *, repo_path: str, worktrees_root: str, repo_id: str, slug: str | None, base: str):  # type: ignore[no-untyped-def]
-        if not slug:
-            raise ValueError("cannot create a worktree before the task's slug is set")
-        self.created.append({"repo_path": repo_path, "repo_id": repo_id, "slug": slug, "base": base})
-        return Worktree(branch=f"panopticon/{slug}", path=f"{worktrees_root}/{repo_id}/panopticon/{slug}")
+    class Provisioned(Workflow):
+        name = "provisioned"
 
+        class A(State):
+            label = "A"
+            transitions = (Complete,)
 
-def _service_with_git(tmp_path: Path, git: _FakeGit) -> TaskService:
-    svc = TaskService(
-        SqlAlchemyStore(), {"spike": Spike(), "parity": Parity()},
-        FilesystemArtifactStore(tmp_path), git=git,  # type: ignore[arg-type]
-    )
-    svc.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git", default_base="trunk"))
-    return svc
+        initial = A
 
+        def provision(self, task, *, branch, worktree_path):  # type: ignore[override]
+            provisioned.append((branch, worktree_path))
 
-def test_provision_task_creates_worktree_off_repo_default_base(tmp_path: Path) -> None:
-    git = _FakeGit()
-    svc = _service_with_git(tmp_path, git)
-    task = svc.create_task("r1", "parity")
+    svc = TaskService(SqlAlchemyStore(), {"provisioned": Provisioned()}, FilesystemArtifactStore(tmp_path))
+    svc.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
+    task = svc.create_task("r1", "provisioned")
     svc.set_slug(task.id, "fix-widget")
-    wt = svc.provision_task(task.id, repo_path="/repos/r1", worktrees_root="/wt")
-    assert wt.branch == "panopticon/fix-widget"
-    assert git.created == [{"repo_path": "/repos/r1", "repo_id": "r1", "slug": "fix-widget", "base": "trunk"}]
+    out = svc.record_provisioning(
+        task.id, branch="panopticon/fix-widget", worktree="/wt/r1/panopticon/fix-widget"
+    )
+    assert (out.branch, out.worktree) == ("panopticon/fix-widget", "/wt/r1/panopticon/fix-widget")
+    assert provisioned == [("panopticon/fix-widget", "/wt/r1/panopticon/fix-widget")]  # workflow hook ran
+    reloaded = svc.get_task(task.id)  # and it persisted
+    assert (reloaded.branch, reloaded.worktree) == ("panopticon/fix-widget", "/wt/r1/panopticon/fix-widget")
 
 
-def test_provision_task_is_slug_gated(tmp_path: Path) -> None:
-    git = _FakeGit()
-    svc = _service_with_git(tmp_path, git)
-    task = svc.create_task("r1", "parity")  # no slug yet
+def test_record_provisioning_is_slug_gated(tmp_path: Path) -> None:
+    svc = make_service(tmp_path)
+    task = svc.create_task("r1", "spike")  # no slug yet — the worktree is named from the slug
     with pytest.raises(ValueError, match="slug"):
-        svc.provision_task(task.id, repo_path="/repos/r1", worktrees_root="/wt")
-    assert git.created == []
+        svc.record_provisioning(task.id, branch="panopticon/x", worktree="/wt/x")
+    assert svc.get_task(task.id).branch is None
 
 
 def test_illegal_transition_rejected(tmp_path: Path) -> None:

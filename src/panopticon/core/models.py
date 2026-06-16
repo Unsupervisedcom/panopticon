@@ -129,6 +129,12 @@ class Task:
     #: turn** and survives turn flips (cloude-cade's `:blocked:`), cleared only explicitly.
     blocked: bool = False
     slug: str | None = None
+    #: The git refs the session service provisions for this task once the slug is set (ADR
+    #: 0010): the slug-named branch and the path of the worktree it checks out **on the host
+    #: where the container runs**. The task service only records these — it does no git itself —
+    #: so this stays correct when the runner is remote. Both ``None`` until provisioning.
+    branch: str | None = None
+    worktree: str | None = None
     history: list[HistoryEntry] = field(default_factory=list)
 
     @property

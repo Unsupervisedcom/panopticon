@@ -56,6 +56,8 @@ class TaskOut(BaseModel):
     turn: Actor
     blocked: bool
     slug: str | None
+    branch: str | None
+    worktree: str | None
     history: list[HistoryOut]
 
 
@@ -102,6 +104,11 @@ class SlugIn(BaseModel):
 
 class StateIn(BaseModel):
     state: str
+
+
+class ProvisioningIn(BaseModel):
+    branch: str
+    worktree: str
 
 
 class SkillOut(BaseModel):
@@ -265,6 +272,16 @@ def create_app(service: TaskService) -> FastAPI:
     @app.put("/tasks/{task_id}/blocked")
     async def set_blocked(task_id: str, body: BlockedIn) -> TaskOut:
         return TaskOut.model_validate(service.set_blocked(task_id, body.blocked))
+
+    @app.put("/tasks/{task_id}/provisioning")
+    async def record_provisioning(task_id: str, body: ProvisioningIn) -> TaskOut:
+        try:  # the session service reports the host branch/worktree it created (ADR 0010)
+            task = service.record_provisioning(
+                task_id, branch=body.branch, worktree=body.worktree
+            )
+        except ValueError as exc:  # slug not set yet
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return TaskOut.model_validate(task)
 
     # -- artifacts ----------------------------------------------------------------
 

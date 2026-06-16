@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -67,6 +68,21 @@ def test_slug_hook_does_not_overwrite_existing_slug(client: TaskServiceClient) -
     client.set_slug(task_id, "chosen-by-user")
     StubRunner(client).spawn(task_id, proposed_slug="would-be-overwrite")
     assert client.get_task(task_id)["slug"] == "chosen-by-user"
+
+
+def test_record_provisioning_over_rest(client: TaskServiceClient) -> None:
+    task_id = client.create_task("r1", "spike")["id"]
+
+    # Slug-gated: the worktree is named from the slug, so the session service can't report
+    # provisioning before one is set. The REST layer surfaces that as a 400.
+    with pytest.raises(httpx.HTTPStatusError) as exc:
+        client.record_provisioning(task_id, "panopticon/x", "/wt/x")
+    assert exc.value.response.status_code == 400
+
+    client.set_slug(task_id, "fix-widget")
+    out = client.record_provisioning(task_id, "panopticon/fix-widget", "/wt/r1/panopticon/fix-widget")
+    assert (out["branch"], out["worktree"]) == ("panopticon/fix-widget", "/wt/r1/panopticon/fix-widget")
+    assert client.get_task(task_id)["branch"] == "panopticon/fix-widget"  # persisted
 
 
 def test_registration_active_during_work(client: TaskServiceClient) -> None:
