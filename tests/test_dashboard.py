@@ -101,25 +101,29 @@ async def test_dashboard_with_no_tasks() -> None:
         assert str(app.query_one("#detail", Static).render()) == "no tasks"
 
 
-async def test_pressing_t_exits_returning_the_running_container_session() -> None:
-    # The dashboard hands the session back to the supervisor (which attaches); it doesn't
-    # attach itself. Switching is always detach→attach, never switch-client (ADR 0009).
+async def test_pressing_t_signals_the_pick_and_keeps_the_dashboard_running() -> None:
+    # The dashboard records the pick via on_switch (the supervisor detaches + attaches the task)
+    # and stays alive, so returning lands on this same live dashboard (ADR 0009 §6).
+    picked: list[str] = []
     regs = {"task-abcdef0123": [{"container_id": "panopticon-task-abcdef0123"}]}
-    app = Dashboard(_FakeClient([_TASK], regs))  # type: ignore[arg-type]
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("t")
-    assert app.return_value == "panopticon-task-abcdef0123"  # session == container id
-
-
-async def test_pressing_t_with_no_running_container_does_not_exit() -> None:
-    app = Dashboard(_FakeClient([_TASK], {}))  # type: ignore[arg-type]
+    app = Dashboard(_FakeClient([_TASK], regs), on_switch=picked.append)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("t")
         await pilot.pause()
-        assert app.is_running  # stayed in the dashboard
-    assert app.return_value is None
+        assert picked == ["panopticon-task-abcdef0123"]  # session == container id
+        assert app.is_running  # did NOT exit — the dashboard session persists
+
+
+async def test_pressing_t_with_no_running_container_does_not_signal() -> None:
+    picked: list[str] = []
+    app = Dashboard(_FakeClient([_TASK], {}), on_switch=picked.append)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("t")
+        await pilot.pause()
+        assert picked == []
+        assert app.is_running
 
 
 async def test_pressing_n_creates_a_task_via_repo_then_workflow_picker() -> None:

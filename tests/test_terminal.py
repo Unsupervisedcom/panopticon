@@ -3,6 +3,8 @@ test_client.py; the dashboard in test_dashboard.py."""
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from panopticon.terminal import __main__ as cli
@@ -55,3 +57,23 @@ def test_cli_login_errors_without_creds_volume() -> None:
         runner=runner,  # type: ignore[arg-type]
     )
     assert rc == 1 and runner.calls == []
+
+
+def test_dashboard_under_supervisor_gets_an_on_switch_hook(monkeypatch: pytest.MonkeyPatch) -> None:
+    # With --switch-file (set by the supervisor, ADR 0009 §6) the dashboard is wired with an
+    # on_switch hook that reports the operator's `t` pick; the dashboard itself stays running.
+    from panopticon.terminal import dashboard
+
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(dashboard, "run", lambda _c, *, on_switch=None: seen.update(on_switch=on_switch))
+    cli.main(["dashboard", "--switch-file", "/tmp/x"], client=_FakeClient())  # type: ignore[arg-type]
+    assert seen["on_switch"] is not None
+
+
+def test_standalone_dashboard_has_no_on_switch_hook(monkeypatch: pytest.MonkeyPatch) -> None:
+    from panopticon.terminal import dashboard
+
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(dashboard, "run", lambda _c, *, on_switch=None: seen.update(on_switch=on_switch))
+    cli.main(["dashboard"], client=_FakeClient())  # type: ignore[arg-type]
+    assert seen["on_switch"] is None

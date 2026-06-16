@@ -6,14 +6,16 @@ creates a task (pick repo → workflow), and `x` **drops** it. Drop is the only 
 the dashboard drives: every other transition starts a new agentic turn, so it's triggered by an
 in-container agent skill (advance/iterate over REST/MCP), not the operator (ADR 0004).
 
-The dashboard does not attach to tmux itself: on `t` it **exits, returning the chosen task's
-session**, and the terminal supervisor (ADR 0009, :mod:`panopticon.terminal.console`) performs
-the attach and re-runs the dashboard on detach. Network calls are synchronous (small, local);
-moving them to Textual workers is a refinement (docs/BACKLOG.md).
+The dashboard does not attach to tmux itself: on `t` it calls ``on_switch`` (the terminal
+supervisor, ADR 0009 §6, records the chosen session and detaches this client) and **keeps
+running**, so when the supervisor re-attaches after the operator detaches the task, it is the
+same live dashboard — cursor and all. Network calls are synchronous (small, local); moving them
+to Textual workers is a refinement (docs/BACKLOG.md).
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -78,8 +80,9 @@ class ChoiceScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
-class Dashboard(App[str | None]):
-    """The task view. ``run()`` returns the session to attach to (`t`), or ``None`` on quit."""
+class Dashboard(App[None]):
+    """The task view. On `t` it calls ``on_switch`` with the task's session and stays running;
+    the supervisor handles the attach/detach (ADR 0009)."""
 
     CSS = "#tasks { width: 3fr; } #detail { width: 2fr; padding: 0 1; }"
     BINDINGS = [
@@ -91,9 +94,12 @@ class Dashboard(App[str | None]):
     ]
     TITLE = "panopticon"
 
-    def __init__(self, client: TaskServiceClient) -> None:
+    def __init__(
+        self, client: TaskServiceClient, *, on_switch: Callable[[str], None] | None = None
+    ) -> None:
         super().__init__()
         self._client = client
+        self._on_switch = on_switch  # supervisor hook: record the pick + detach (None standalone)
         self._tasks: dict[str, JsonObj] = {}
         self._current: str | None = None
 
@@ -171,18 +177,22 @@ class Dashboard(App[str | None]):
     def action_attach(self) -> None:
         """`t`: hand off to the highlighted task's container tmux session, if it's running.
 
-        The dashboard doesn't attach; it **exits returning the session** so the supervisor can
-        attach the terminal and re-run the dashboard on detach (ADR 0009). Switching the operator
-        between sessions is always detach→attach, never `switch-client`."""
+        Calls ``on_switch`` (the supervisor records the session and detaches this client, then
+        attaches the task) and **keeps running**, so returning lands on this same live dashboard
+        (ADR 0009). Switching is always detach→attach, never `switch-client`. Standalone (no
+        supervisor) there is nothing to attach to."""
         if self._current is None:
+            return
+        if self._on_switch is None:
+            self.notify("Attach is available when run via `panopticon console`.", severity="warning")
             return
         registrations = self._client.list_registrations(self._current)
         if not registrations:
             self.notify("No running container for this task.", severity="warning")
             return
-        self.exit(registrations[0]["container_id"])  # session == container id (runner names it so)
+        self._on_switch(registrations[0]["container_id"])  # session == container id (runner names it)
 
 
-def run(client: TaskServiceClient) -> str | None:
-    """Run the dashboard once; return the task session to attach to, or ``None`` to quit."""
-    return Dashboard(client).run()
+def run(client: TaskServiceClient, *, on_switch: Callable[[str], None] | None = None) -> None:
+    """Run the dashboard. ``on_switch`` is the supervisor's `t` hook (ADR 0009); ``None`` standalone."""
+    Dashboard(client, on_switch=on_switch).run()

@@ -12,6 +12,7 @@ import argparse
 import os
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
@@ -38,7 +39,10 @@ def main(
     )
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("console", help="session supervisor: dashboard + attach loop (default)")
-    sub.add_parser("dashboard", help="run the dashboard once, without the attach loop")
+    dash = sub.add_parser("dashboard", help="run the dashboard once, without the attach loop")
+    # Set by the supervisor (ADR 0009): the dashboard runs inside tmux, so it reports the session
+    # the operator picked with `t` by writing it here instead of returning it in-process.
+    dash.add_argument("--switch-file", help=argparse.SUPPRESS)
     sub.add_parser("tasks", help="list tasks as plain text")
     login_p = sub.add_parser("login", help="populate a repo's creds volume interactively")
     login_p.add_argument("repo")
@@ -58,13 +62,18 @@ def main(
 
         (runner or LocalRunner(args.service_url)).login(creds, args.cmd or ["bash"])
     elif args.command == "dashboard":
+        from panopticon.terminal.console import switch_to
         from panopticon.terminal.dashboard import run
 
-        run(client)
+        on_switch = None
+        if args.switch_file:  # run under the supervisor: report `t` picks via the switch-file
+            switch_file = Path(args.switch_file)
+            on_switch = lambda session: switch_to(session, switch_file=switch_file)  # noqa: E731
+        run(client, on_switch=on_switch)
     else:  # default / "console"
-        from panopticon.terminal.console import run_console
+        from panopticon.terminal.console import run_console_local
 
-        run_console(client)
+        run_console_local(args.service_url)
     return 0
 
 

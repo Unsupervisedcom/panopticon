@@ -71,12 +71,15 @@ make clean       # remove the base + composed panopticon-* images
 `make serve` runs the control plane (`python -m panopticon.taskservice` — default on-disk
 SQLite + filesystem artifacts + the built-in workflows; `PANOPTICON_HOST/PORT/DB/ARTIFACTS`
 override). `make panopticon` runs the **terminal session supervisor** (`panopticon console`,
-ADR 0009): it owns the terminal, shows the dashboard, and on `t` hands the terminal to the
-task's tmux session on the dedicated `panopticon` server (`-L panopticon`), rejoining the
-dashboard when you detach (`C-b d`). Switching is always detach→attach (never `switch-client`),
-so the same loop reaches a remote task over ssh at M5. It runs the task service in the
-background (a `service` tmux session on the same server). `make dashboard` runs the dashboard
-once without the attach loop (it talks to a service at `PANOPTICON_SERVICE_URL`).
+ADR 0009): it owns the terminal and runs the dashboard in its own `dashboard` tmux session on
+the dedicated `panopticon` server (`-L panopticon`), beside the task sessions. On `t` the
+dashboard records the picked task to a switch-file and **detaches** (staying alive); the
+supervisor attaches the terminal to that task, then re-attaches the same live dashboard when you
+detach the task (`C-b d`). Switching is always detach→attach (never `switch-client`), so the same
+loop reaches a remote task over ssh at M5. It
+runs the task service in the background (a `service` tmux session on the same server). `make
+dashboard` runs the dashboard once without the attach loop (it talks to a service at
+`PANOPTICON_SERVICE_URL`).
 
 CI (`.github/workflows/ci.yml`) runs `uv sync`, `mypy`, and `pytest` on every PR (the same
 commands the Makefile wraps).
