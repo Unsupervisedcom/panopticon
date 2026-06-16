@@ -22,7 +22,7 @@ Two principles guide the ordering:
   slice's scope to handle them.
 
 Milestone 1 (parity + a free-form workflow + per-repo secrets) is decomposed into slices
-1–7. Milestones 2–5 are coarser entries, since each is largely "fill in an already-designed
+1–8. Milestones 2–5 are coarser entries, since each is largely "fill in an already-designed
 interface."
 
 ---
@@ -153,7 +153,31 @@ skills. (Real-agent/forge tests are `skipif`-gated; no LLM in CI.)
 
 ---
 
-### Slice 7 — Free-form workflow + multi-workflow proof
+### Slice 7 — Task provisioning (worktrees, session-service-owned)
+
+**Goal:** wire provisioning into the lifecycle (ADR 0010) so a task actually gets a working tree
+to operate in — the prerequisite for real end-to-end execution.
+
+**Delivers:** the **session-service daemon** fleshed out from today's one-shot spawn primitive
+into a long-lived per-host loop that **observes its tasks over REST (pull)**. On a task acquiring
+a slug it creates the slug-named **worktree/branch** on the host where the container runs
+(`core/git.py`), repoints the container's working path from the initial **read-only checkout** to
+the worktree (the agent `cd`s in), and runs the active workflow's host-side provisioning. The
+task service only **records** the result (branch/worktree refs) — it does no host filesystem
+work, so this stays correct when it's remote (ADR 0009). Plus per-repo **clone-cache** management
+on the host.
+
+**Acceptance:** a task spawned with no slug starts on a read-only checkout; once the agent sets
+its slug, a worktree named `panopticon/<slug>` appears, the agent works in it, and parity's PR is
+opened against it — with the task service never touching the host FS. (`skipif`-gated for real
+docker/git; no LLM in CI.)
+
+**Depends on:** Slices 2, 4, 6. **Resolves (JIT):** "wire provisioning into the lifecycle"
+(backlog); slug → worktree → provisioning, observed via pull (ADR 0010).
+
+---
+
+### Slice 8 — Free-form workflow + multi-workflow proof
 
 **Goal:** prove the lifecycle is genuinely configurable (the Milestone 1 thesis).
 
@@ -165,7 +189,7 @@ path-based registration of multiple workflows.
 per workflow; adding a workflow class on a registered path makes it selectable with no core
 change.
 
-**Depends on:** Slices 1–6.
+**Depends on:** Slices 1–7.
 
 ---
 
@@ -206,7 +230,8 @@ service's MCP/REST (ADR 0003).
 | Artifact concurrency / drift (0003) | Slice 4 (simple) |
 | Declarative/imperative discipline in workflows (0004) | Slice 1 (ABC shape) + 4 |
 | Image layer order / rebuild triggers (0005) | Slice 2 (base) → M3 (layers) |
-| Workflow skill enumeration per workflow (0004) | Slice 7 |
+| Wire provisioning into the lifecycle; slug → worktree, observed via pull (0010) | Slice 7 |
+| Workflow skill enumeration per workflow (0004) | Slice 8 |
 | Inter-process auth & transport (0006/0008) | M4 (networked) / M5 (remote) |
 | Runner registration/discovery, full (0008) | M5 |
 | Failure/restart reconciliation (0008) | M5 |
