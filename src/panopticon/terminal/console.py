@@ -32,6 +32,8 @@ from panopticon.terminal.attach import attach_command
 
 #: tmux session name the dashboard runs in (on the panopticon socket, beside the task sessions).
 DASHBOARD_SESSION = "dashboard"
+#: tmux session name the task service runs in under `make panopticon` (beside the dashboard).
+SERVICE_SESSION = "service"
 
 #: Show the dashboard and return the task session the operator picked, or ``None`` to quit.
 Selector = Callable[[], "str | None"]
@@ -51,6 +53,34 @@ def switch_to(
     process keeps running (detached), so returning to it shows the same live view."""
     switch_file.write_text(session)
     detach()
+
+
+def service_session_exists(*, socket: str = TMUX_SOCKET) -> bool:
+    """Whether the task-service tmux session is running on the panopticon socket."""
+    return subprocess.run(
+        ["tmux", "-L", socket, "has-session", "-t", SERVICE_SESSION], capture_output=True
+    ).returncode == 0
+
+
+def make_service_switch(
+    switch_file: Path,
+    *,
+    socket: str = TMUX_SOCKET,
+    exists: Callable[[], bool] | None = None,
+    detach: Callable[[], None] = _tmux_detach,
+) -> Callable[[], bool]:
+    """Build the dashboard's `s` hook: switch to the task-service session **when one exists**,
+    returning whether it did. Like the `t` hook it records the pick + detaches (:func:`switch_to`);
+    with no service session it does nothing (no detach), so the dashboard can report it."""
+    is_running = exists or (lambda: service_session_exists(socket=socket))
+
+    def switch() -> bool:
+        if not is_running():
+            return False
+        switch_to(SERVICE_SESSION, switch_file=switch_file, detach=detach)
+        return True
+
+    return switch
 
 
 def run_console(*, show_dashboard: Selector, attach: Attacher) -> None:

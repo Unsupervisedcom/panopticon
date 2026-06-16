@@ -126,6 +126,33 @@ async def test_pressing_t_with_no_running_container_does_not_signal() -> None:
         assert app.is_running
 
 
+async def test_pressing_s_switches_to_the_service_session_when_one_exists() -> None:
+    # `s` switches to the task-service tmux session via on_service (record + detach, like `t`),
+    # and the dashboard stays alive; on_service returns True when a service session exists.
+    calls: list[str] = []
+
+    def on_service() -> bool:
+        calls.append("service")
+        return True
+
+    app = Dashboard(_FakeClient([_TASK]), on_service=on_service)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("s")
+        await pilot.pause()
+        assert calls == ["service"]
+        assert app.is_running
+
+
+async def test_pressing_s_with_no_service_session_does_nothing() -> None:
+    app = Dashboard(_FakeClient([_TASK]), on_service=lambda: False)  # no service session
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("s")
+        await pilot.pause()
+        assert app.is_running  # reported "none running"; stayed on the dashboard
+
+
 async def test_pressing_n_creates_a_task_via_repo_then_workflow_picker() -> None:
     fake = _FakeClient([], repos=["r1", "r2"], workflows=["spike"])
     app = Dashboard(fake)  # type: ignore[arg-type]

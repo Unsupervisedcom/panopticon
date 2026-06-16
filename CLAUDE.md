@@ -76,9 +76,9 @@ the dedicated `panopticon` server (`-L panopticon`), beside the task sessions. O
 dashboard records the picked task to a switch-file and **detaches** (staying alive); the
 supervisor attaches the terminal to that task, then re-attaches the same live dashboard when you
 detach the task (`C-b d`). Switching is always detach→attach (never `switch-client`), so the same
-loop reaches a remote task over ssh at M5. It
-runs the task service in the background (a `service` tmux session on the same server). `make
-dashboard` runs the dashboard once without the attach loop (it talks to a service at
+loop reaches a remote task over ssh at M5. It runs the task service in the background (a `service`
+tmux session on the same server), which the dashboard's `s` key switches to when it's running.
+`make dashboard` runs the dashboard once without the attach loop (it talks to a service at
 `PANOPTICON_SERVICE_URL`).
 
 CI (`.github/workflows/ci.yml`) runs `uv sync`, `mypy`, and `pytest` on every PR (the same

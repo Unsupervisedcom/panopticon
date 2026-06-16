@@ -59,21 +59,27 @@ def test_cli_login_errors_without_creds_volume() -> None:
     assert rc == 1 and runner.calls == []
 
 
-def test_dashboard_under_supervisor_gets_an_on_switch_hook(monkeypatch: pytest.MonkeyPatch) -> None:
-    # With --switch-file (set by the supervisor, ADR 0009 §6) the dashboard is wired with an
-    # on_switch hook that reports the operator's `t` pick; the dashboard itself stays running.
+def test_dashboard_under_supervisor_wires_the_switch_hooks(monkeypatch: pytest.MonkeyPatch) -> None:
+    # With --switch-file (set by the supervisor, ADR 0009 §6) the dashboard is wired with the
+    # `t` (on_switch) and `s` (on_service) hooks; the dashboard itself stays running.
     from panopticon.terminal import dashboard
 
     seen: dict[str, Any] = {}
-    monkeypatch.setattr(dashboard, "run", lambda _c, *, on_switch=None: seen.update(on_switch=on_switch))
+    monkeypatch.setattr(
+        dashboard, "run",
+        lambda _c, *, on_switch=None, on_service=None: seen.update(on_switch=on_switch, on_service=on_service),
+    )
     cli.main(["dashboard", "--switch-file", "/tmp/x"], client=_FakeClient())  # type: ignore[arg-type]
-    assert seen["on_switch"] is not None
+    assert seen["on_switch"] is not None and seen["on_service"] is not None
 
 
-def test_standalone_dashboard_has_no_on_switch_hook(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_standalone_dashboard_has_no_switch_hooks(monkeypatch: pytest.MonkeyPatch) -> None:
     from panopticon.terminal import dashboard
 
     seen: dict[str, Any] = {}
-    monkeypatch.setattr(dashboard, "run", lambda _c, *, on_switch=None: seen.update(on_switch=on_switch))
+    monkeypatch.setattr(
+        dashboard, "run",
+        lambda _c, *, on_switch=None, on_service=None: seen.update(on_switch=on_switch, on_service=on_service),
+    )
     cli.main(["dashboard"], client=_FakeClient())  # type: ignore[arg-type]
-    assert seen["on_switch"] is None
+    assert seen["on_switch"] is None and seen["on_service"] is None

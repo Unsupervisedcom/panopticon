@@ -81,8 +81,9 @@ class ChoiceScreen(ModalScreen[str | None]):
 
 
 class Dashboard(App[None]):
-    """The task view. On `t` it calls ``on_switch`` with the task's session and stays running;
-    the supervisor handles the attach/detach (ADR 0009)."""
+    """The task view. On `t` it calls ``on_switch`` with the task's session (and `s` calls
+    ``on_service`` for the task-service session) and stays running; the supervisor handles the
+    attach/detach (ADR 0009)."""
 
     CSS = "#tasks { width: 3fr; } #detail { width: 2fr; padding: 0 1; }"
     BINDINGS = [
@@ -90,16 +91,22 @@ class Dashboard(App[None]):
         ("n", "new_task", "New task"),
         ("x", "drop", "Drop"),
         ("t", "attach", "Attach tmux"),
+        ("s", "service", "Service"),
         ("q", "quit", "Quit"),
     ]
     TITLE = "panopticon"
 
     def __init__(
-        self, client: TaskServiceClient, *, on_switch: Callable[[str], None] | None = None
+        self,
+        client: TaskServiceClient,
+        *,
+        on_switch: Callable[[str], None] | None = None,
+        on_service: Callable[[], bool] | None = None,
     ) -> None:
         super().__init__()
         self._client = client
         self._on_switch = on_switch  # supervisor hook: record the pick + detach (None standalone)
+        self._on_service = on_service  # `s` hook: switch to the service session; True if one exists
         self._tasks: dict[str, JsonObj] = {}
         self._current: str | None = None
 
@@ -192,7 +199,25 @@ class Dashboard(App[None]):
             return
         self._on_switch(registrations[0]["container_id"])  # session == container id (runner names it)
 
+    def action_service(self) -> None:
+        """`s`: switch to the task-service tmux session, when one is running (ADR 0009).
 
-def run(client: TaskServiceClient, *, on_switch: Callable[[str], None] | None = None) -> None:
-    """Run the dashboard. ``on_switch`` is the supervisor's `t` hook (ADR 0009); ``None`` standalone."""
-    Dashboard(client, on_switch=on_switch).run()
+        The service is a sibling tmux session under `panopticon console`; ``on_service`` switches
+        to it the same way `t` switches to a task (record + detach), returning whether a service
+        session existed. Standalone (no supervisor) there is nothing to switch to."""
+        if self._on_service is None:
+            self.notify("Service shortcut is available when run via `panopticon console`.", severity="warning")
+            return
+        if not self._on_service():
+            self.notify("No task-service session is running.", severity="warning")
+
+
+def run(
+    client: TaskServiceClient,
+    *,
+    on_switch: Callable[[str], None] | None = None,
+    on_service: Callable[[], bool] | None = None,
+) -> None:
+    """Run the dashboard. ``on_switch``/``on_service`` are the supervisor's `t`/`s` hooks
+    (ADR 0009); both ``None`` standalone."""
+    Dashboard(client, on_switch=on_switch, on_service=on_service).run()
