@@ -27,7 +27,9 @@ src/panopticon/
                    # server (mcp.py: operations=tools, artifacts=resources; FastMCP)
   sessionservice/  # the runner: Runner ABC + StubRunner (in-process) + LocalRunner
                    # (real Docker+tmux via the CLIs); images.py = ADR-0005 composed images
-                   # (base→workflow→repo); `python -m panopticon.sessionservice`
+                   # (base→workflow→repo); provisioner.py = host-side provisioning
+                   # (ADR 0011: branch the per-task clone on slug, record it back);
+                   # `python -m panopticon.sessionservice`
   container/       # entrypoint (`python -m panopticon.container` = connect/register/slug/
                    # heartbeat liveness) + agent.py (`-m panopticon.container.agent` = the tmux
                    # pane's launcher: render skills → exec `claude`) — the ONLY LLM-bearing pkg
@@ -106,8 +108,13 @@ commands the Makefile wraps).
   flow.
 - `tests/test_store.py` — store **contract tests run against in-memory and on-disk SQLite**,
   proving the interface is backend-agnostic (and that rows/domain models stay in sync).
-- `tests/test_git.py` — local branch/worktree ops: unit tests pin the emitted `git` commands
-  and slug-gating (fake runner); a `skipif` integration test creates a real worktree.
+- `tests/test_git.py` — local git ops: unit tests pin the emitted `git` commands and slug-gating
+  for `GitWorktrees` and the per-task-clone ops `GitClones` (clone/branch/set-origin, ADR 0011);
+  a `skipif` integration test creates a real worktree.
+- `tests/test_provisioner.py` — host-side provisioning (ADR 0011): unit tests pin the emitted
+  `git` (branch the per-task clone + point origin at the forge) and the slug/already-branched
+  gating (fakes), plus an end-to-end pass against the real task service over REST proving the
+  branch + clone path are recorded and a second pass is a no-op (idempotent).
 - `tests/test_mcp.py` — the MCP server surface, exercised **in-memory** via the MCP
   client (`create_connected_server_and_client_session`) — tools mutate the task, the artifact
   resource reads back. No LLM, no HTTP (HTTP hosting is the runnable server, Slice 7a).
@@ -168,11 +175,15 @@ commands the Makefile wraps).
   fulfils each one at a time (`MET`, or `FAILED` with a comment) — mutating that entry — and a
   later advance is gated on all being resolved. Agent-only.
 - **Registration / liveness** — a container's standing claim that it is working on a task.
-- **Provisioning** — the slug-named branch + per-task `clone` a task works in (ADR 0010/0011).
-  The **host git happens on the session service** (where the container runs), so it stays correct
-  when the runner is remote; the **task service only records the result** — `record_provisioning`
-  / `PUT /tasks/{id}/provisioning` writes `Task.branch`/`Task.clone` (slug-gated), a pure
-  recorded-fact write touching no filesystem. The session-service git lands in later Slice 7 PRs.
+- **Provisioning** — the writable per-task clone + slug-named branch a task works in (ADR
+  0010/0011). Each task gets a self-contained `git clone --local` at spawn, mounted at
+  `/workspace`; on slug the session service **branches whatever's there** (`checkout -b
+  panopticon/<slug>`) and points `origin` at the forge. The **host git happens on the session
+  service** (where the container runs), so it stays correct when the runner is remote; the **task
+  service only records the result** — `record_provisioning` / `PUT /tasks/{id}/provisioning`
+  writes `Task.branch`/`Task.clone` (the clone path), slug-gated, a pure recorded-fact write
+  touching no filesystem. `core/git.py` `GitClones` is the LLM-free primitive the session service
+  drives (`GitWorktrees` remains for non-task local-git use).
 - **Task service** — the deterministic control plane (sole DB authority).
 - **Session service / runner** — spawns task containers (stubbed for now).
 - **Terminal controller** — the user-facing CLI/dashboard (Slice 3).

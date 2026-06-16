@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from panopticon.core.git import GitWorktrees, Worktree, branch_name, worktree_path
+from panopticon.core.git import GitClones, GitWorktrees, Worktree, branch_name, worktree_path
 
 
 class _Recorder:
@@ -57,6 +57,24 @@ def test_remove_force_tier_and_idempotent() -> None:
     assert rec.calls[0] == (["git", "-C", "/r", "worktree", "remove", "/wt/r1/panopticon/fix-it"], False)
     assert rec.calls[1][0][-1] == "--force"
     assert rec.calls[1][1] is False  # idempotent: never raises on an already-gone worktree
+
+
+# -- per-task local clones (ADR 0011) -----------------------------------------------
+
+
+def test_clone_local_emits_self_contained_clone() -> None:
+    rec = _Recorder()
+    GitClones(run=rec).clone_local(cache_path="/clones/r1", dest="/tasks/t1")
+    assert rec.calls[0][0] == ["git", "clone", "--local", "/clones/r1", "/tasks/t1"]
+
+
+def test_create_branch_and_set_origin() -> None:
+    rec = _Recorder()
+    git = GitClones(run=rec)
+    git.create_branch(repo_path="/tasks/t1", branch="panopticon/fix-it")
+    git.set_origin(repo_path="/tasks/t1", url="https://forge/r1.git")
+    assert rec.calls[0][0] == ["git", "-C", "/tasks/t1", "checkout", "-b", "panopticon/fix-it"]
+    assert rec.calls[1][0] == ["git", "-C", "/tasks/t1", "remote", "set-url", "origin", "https://forge/r1.git"]
 
 
 # -- integration: a real git repo ---------------------------------------------------
