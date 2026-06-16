@@ -48,6 +48,12 @@ docker/Dockerfile  # minimal base task-container image (ADR 0005 base layer)
 - **Docker/tmux via the CLIs.** The runner shells out to `docker`/`tmux` (the interactive
   surface — container TTY in a tmux pane, operator `tmux attach` — is inherently CLI; the
   Python SDKs don't serve it) behind an **injectable command-runner** so it's unit-testable.
+- **Long options when shelling out.** Spell external-program flags in full (`docker run
+  --detach --volume … --env …`, `docker rm --force`, `apt-get install --yes`, `grep
+  --extended-regexp`) — they're self-documenting and grep-able. This applies anywhere we emit a
+  command: runner/CLI code, the `Makefile`, the base `Dockerfile`, composed `image_layer`s, and
+  tests. Use a short flag **only** where the tool has no long form — `tmux` (single-letter
+  options only), `ssh -t`, `git -C` / `git worktree add -b`, and `python -m`.
 - **No LLMs in tests.** Automated tests never call a real LLM/agent; the entrypoint's agent
   step is a stay-alive placeholder, and real-infra tests are `skipif`-gated.
 
