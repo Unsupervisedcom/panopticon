@@ -2,9 +2,15 @@
 
 It prepares the agent CLI's surface from the active workflow, then `exec`s the agent. This is
 the only LLM-bearing path (the determinism invariant): the **bootstrap** (render the workflow's
-skills to the CLI, point it at the repo's creds) is deterministic and unit-tested with fakes;
-the **launch** (real `claude`) is injectable and only runs for real in a `skipif`-gated
-integration / a live container — never in CI.
+skills + hooks to the CLI's config dir, link in the repo's credentials) is deterministic and
+unit-tested with fakes; the **launch** (real `claude`) is injectable and only runs for real in a
+`skipif`-gated integration / a live container — never in CI.
+
+**Config-dir layout.** ``CLAUDE_CONFIG_DIR`` is the agent CLI's *whole* state dir (settings,
+rendered skills, session transcripts, …), so it must be **container-local** — pointing it at the
+per-repo creds volume would share/clobber that state across every task on the repo. Only the
+*credentials* are per-repo: we symlink just `.credentials.json` in from the creds volume (so the
+repo's OAuth token is used and token refreshes write back to the shared, persistent volume).
 
 The container's entrypoint (`python -m panopticon.container`) stays the liveness/heartbeat loop;
 this runs alongside it in the tmux pane, so `tmux attach` reaches the live agent.
@@ -23,15 +29,31 @@ from panopticon.container.hooks import write_settings
 from panopticon.container.skills import write_commands
 from panopticon.core.models import Skill
 
-#: The agent CLI's config/creds dir inside the container — the repo's OAuth creds volume mount
-#: (matches the runner's CREDS_MOUNT). claude reads/writes its credentials here.
+#: The repo's OAuth creds volume mount inside the container (matches the runner's CREDS_MOUNT).
+#: Per-repo and persistent — it holds *only* the credentials, not claude's other state.
 CREDS_DIR = "/creds"
+#: claude's credential file, relative to a config dir; linked in from the creds volume.
+CREDS_FILE = ".credentials.json"
 
 
 def render_skills(client: TaskServiceClient, task_id: str, home: Path) -> list[Path]:
     """Render the active workflow's skills to the agent CLI surface (`.claude/commands/`)."""
     skills = [Skill(**s) for s in client.list_skills(task_id)]
     return write_commands(skills, home)
+
+
+def link_credentials(config_dir: Path, *, creds_dir: Path = Path(CREDS_DIR)) -> None:
+    """Point the container-local config dir at the repo's shared OAuth credentials.
+
+    Symlink *only* ``.credentials.json`` from the per-repo creds volume into ``config_dir``, so
+    the repo's token is used and refreshes write through to the persistent volume — while
+    sessions/settings/skills stay container-local (not shared across the repo's tasks). Best
+    effort: if the volume has no credentials yet (no `panopticon login`), leave it to claude to
+    complain at launch."""
+    config_dir.mkdir(parents=True, exist_ok=True)
+    src, link = creds_dir / CREDS_FILE, config_dir / CREDS_FILE
+    if src.exists() and not link.exists():
+        link.symlink_to(src)
 
 
 def build_prefill(task: JsonObj) -> str:
@@ -60,10 +82,10 @@ def _claude_argv(config_dir: Path, cwd: Path, prefill: str) -> list[str]:
     return ["claude", prefill]
 
 
-def _exec_claude(prefill: str) -> None:  # pragma: no cover - real LLM; skipif-gated / live only
-    """Replace this process with `claude` (resumed, or fresh + prefilled), pointed at the creds."""
-    argv = _claude_argv(Path(CREDS_DIR), Path.cwd(), prefill)
-    os.execvpe(argv[0], argv, {**os.environ, "CLAUDE_CONFIG_DIR": CREDS_DIR})
+def _exec_claude(prefill: str, config_dir: Path) -> None:  # pragma: no cover - real LLM; skipif/live only
+    """Replace this process with `claude` (resumed, or fresh + prefilled), with its config dir."""
+    argv = _claude_argv(config_dir, Path.cwd(), prefill)
+    os.execvpe(argv[0], argv, {**os.environ, "CLAUDE_CONFIG_DIR": str(config_dir)})
 
 
 def _default_client(service_url: str) -> TaskServiceClient:
@@ -74,17 +96,19 @@ def main(
     *,
     client_factory: Callable[[str], TaskServiceClient] = _default_client,
     home: Path | None = None,
-    launch: Callable[[str], None] = _exec_claude,
+    launch: Callable[[str, Path], None] = _exec_claude,
 ) -> None:
-    """Bootstrap the agent CLI from the active workflow (skills + turn-flip hooks), then launch
-    the agent with a prefilled prompt."""
+    """Bootstrap the agent CLI from the active workflow (skills + turn-flip hooks + credentials),
+    then launch the agent with a prefilled prompt. The CLI config dir is container-local
+    (`<home>/.claude`); only the credentials are linked in from the per-repo creds volume."""
     env = os.environ
     client = client_factory(env["PANOPTICON_SERVICE_URL"])
     task_id = env["PANOPTICON_TASK_ID"]
-    home = home or Path.home()
-    render_skills(client, task_id, home)
-    write_settings(home)  # turn-flip hooks (Slice 4 contract)
-    launch(build_prefill(client.get_task(task_id)))
+    config_dir = (home or Path.home()) / ".claude"
+    render_skills(client, task_id, config_dir.parent)  # writes <home>/.claude/commands/
+    write_settings(config_dir.parent)  # turn-flip hooks → <home>/.claude/settings.json
+    link_credentials(config_dir)
+    launch(build_prefill(client.get_task(task_id)), config_dir)
 
 
 if __name__ == "__main__":  # pragma: no cover
