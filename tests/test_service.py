@@ -145,31 +145,15 @@ def test_blocked_marker_survives_turn_flips(tmp_path: Path) -> None:
 # -- provisioning: the session service does the host git; the service only records it (ADR 0010) --
 
 
-def test_record_provisioning_stores_refs_and_runs_workflow_provision(tmp_path: Path) -> None:
-    provisioned: list[tuple[str, str]] = []
-
-    class Provisioned(Workflow):
-        name = "provisioned"
-
-        class A(State):
-            label = "A"
-            transitions = (Complete,)
-
-        initial = A
-
-        def provision(self, task, *, branch, worktree_path):  # type: ignore[override]
-            provisioned.append((branch, worktree_path))
-
-    svc = TaskService(SqlAlchemyStore(), {"provisioned": Provisioned()}, FilesystemArtifactStore(tmp_path))
-    svc.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
-    task = svc.create_task("r1", "provisioned")
+def test_record_provisioning_records_the_refs(tmp_path: Path) -> None:
+    svc = make_service(tmp_path)
+    task = svc.create_task("r1", "spike")
     svc.set_slug(task.id, "fix-widget")
     out = svc.record_provisioning(
         task.id, branch="panopticon/fix-widget", worktree="/wt/r1/panopticon/fix-widget"
     )
     assert (out.branch, out.worktree) == ("panopticon/fix-widget", "/wt/r1/panopticon/fix-widget")
-    assert provisioned == [("panopticon/fix-widget", "/wt/r1/panopticon/fix-widget")]  # workflow hook ran
-    reloaded = svc.get_task(task.id)  # and it persisted
+    reloaded = svc.get_task(task.id)  # a pure recorded-fact write; it persisted
     assert (reloaded.branch, reloaded.worktree) == ("panopticon/fix-widget", "/wt/r1/panopticon/fix-widget")
 
 

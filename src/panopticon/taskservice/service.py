@@ -201,20 +201,23 @@ class TaskService:
 
     def record_provisioning(self, task_id: str, *, branch: str, worktree: str) -> Task:
         """Record the slug-named branch/worktree the session service created **on the host**
-        for this task, then run the active workflow's provisioning (ADR 0010 / ARCHITECTURE §9).
+        for this task (ADR 0010 / ARCHITECTURE §9).
 
         The git itself happens on the runner's host (`core/git.py`), observed via the work-pull
         loop; the task service never touches a filesystem, so this stays correct when the runner
         is remote (ADR 0009). Slug-gated: the worktree is named from the slug, so we refuse to
-        record before one is set. The workflow's :meth:`provision` hook (a no-op by default) runs
-        last and may further mutate the task; we persist once afterwards.
+        record before one is set.
+
+        This is a pure recorded-fact write — it does **not** run ``Workflow.provision``. ADR 0010
+        §1 moves provisioning's host-touching work to the session service and leaves the
+        host-side-vs-recorded-fact split of that hook an open question; until it's designed (and a
+        workflow needs it), ``Workflow.provision`` stays a declared seam, unwired here.
         """
         task = self.get_task(task_id)
         if task.slug is None:
             raise ValueError("cannot record provisioning before the task's slug is set")
         task.branch = branch
         task.worktree = worktree
-        self._workflow(task.workflow).provision(task, branch=branch, worktree_path=worktree)
         self._store.save_task(task)
         return task
 
