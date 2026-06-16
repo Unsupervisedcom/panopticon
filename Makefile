@@ -15,7 +15,7 @@ test:  ## Run the test suite
 	uv run pytest
 
 typecheck:  ## Type-check (mypy, strict)
-	uv run mypy -p panopticon
+	uv run mypy --package panopticon
 
 check: typecheck test  ## Type-check + tests (what CI runs)
 

@@ -58,7 +58,7 @@ A `Makefile` wraps the `uv` commands (`make help` lists targets):
 ```sh
 make sync        # uv sync — venv + deps
 make test        # uv run pytest
-make typecheck   # uv run mypy -p panopticon (strict)
+make typecheck   # uv run mypy --package panopticon (strict)
 make check       # typecheck + test (what CI runs)
 make serve       # run the task service over HTTP (python -m panopticon.taskservice)
 make dashboard   # launch the dashboard in the foreground (no tmux)
