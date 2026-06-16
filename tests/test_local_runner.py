@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import time
 from collections.abc import Sequence
+from pathlib import Path
 
 import pytest
 
@@ -76,6 +77,14 @@ def test_spawn_omits_secret_flags_when_repo_has_none() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", run=rec).spawn("t1")
     assert "--env-file" not in rec.calls[0][0] and "--volume" not in rec.calls[0][0]
+
+
+def test_spawn_mounts_the_per_task_clone_as_the_workspace() -> None:
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).spawn("t1", workspace="/tasks/t1")
+    docker_run = rec.calls[0][0]
+    assert "/tasks/t1:/workspace" in docker_run  # the per-task clone, read-write (ADR 0011)
+    assert docker_run[docker_run.index("--workdir") + 1] == "/workspace"  # the agent's working dir
 
 
 def test_stop_kills_session_and_force_removes_container_idempotently() -> None:
@@ -167,17 +176,26 @@ class _FakeClient:
         return self._repo
 
 
-def test_cli_spawns_with_service_url_and_image_and_injects_repo_secrets() -> None:
+def test_cli_preps_the_workspace_then_spawns_with_secrets_and_mount(tmp_path: Path) -> None:
     from panopticon.sessionservice.__main__ import main as cli_main
 
     rec = _Recorder()
-    fake = _FakeClient({"id": "r1", "env_file": "/secrets/r1.env", "creds_volume": "creds-r1"})
+    fake = _FakeClient(
+        {"id": "r1", "git_url": "https://forge/r1.git", "env_file": "/secrets/r1.env", "creds_volume": "creds-r1"}
+    )
+    cache_root, tasks_root = tmp_path / "cache", tmp_path / "tasks"
     cid = cli_main(
-        ["t1", "--service-url", "http://svc:9", "--image", "img:2"], run=rec, client=fake  # type: ignore[arg-type]
+        ["t1", "--service-url", "http://svc:9", "--image", "img:2",
+         "--cache-root", str(cache_root), "--tasks-root", str(tasks_root)],
+        run=rec, client=fake,  # type: ignore[arg-type]
     )
     assert cid == "panopticon-t1"
-    docker_run = rec.calls[0][0]
+    cmds = [c for c, _ in rec.calls]
+    # spawn-prep cloned the per-task checkout (ADR 0011) before launching the container
+    assert ["git", "clone", "--local", str(cache_root / "r1"), str(tasks_root / "t1")] in cmds
+    docker_run = next(c for c in cmds if c[:2] == ["docker", "run"])
     assert "PANOPTICON_SERVICE_URL=http://svc:9" in docker_run
     assert docker_run[-1] == "img:2"
     assert docker_run[docker_run.index("--env-file") + 1] == "/secrets/r1.env"  # repo's secrets
     assert "creds-r1:/creds" in docker_run
+    assert f"{tasks_root}/t1:/workspace" in docker_run  # the per-task clone mounted as /workspace

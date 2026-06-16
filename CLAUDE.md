@@ -29,9 +29,10 @@ src/panopticon/
                    # (real Docker+tmux via the CLIs); images.py = ADR-0005 composed images
                    # (base→workflow→repo); provisioner.py = host-side provisioning
                    # (ADR 0011: branch the per-task clone on slug, record it back); clones.py =
-                   # per-repo clone cache; daemon.py = the observe-and-provision pull loop
-                   # (poll watched tasks, branch on slug);
-                   # `python -m panopticon.sessionservice`
+                   # per-repo clone cache; spawn.py = spawn-prep (clone --local the per-task
+                   # checkout, mounted rw at /workspace); daemon.py = the observe-and-provision
+                   # pull loop (poll watched tasks, branch on slug);
+                   # `python -m panopticon.sessionservice` (spawn-prep + spawn one task)
   container/       # entrypoint (`python -m panopticon.container` = connect/register/slug/
                    # heartbeat liveness) + agent.py (`-m panopticon.container.agent` = the tmux
                    # pane's launcher: render skills → exec `claude`) — the ONLY LLM-bearing pkg
@@ -128,8 +129,10 @@ commands the Makefile wraps).
 - `tests/test_skeleton.py` — the end-to-end walking skeleton (create → register → slug →
   transition → history) over the REST API, no Docker.
 - `tests/test_local_runner.py` / `tests/test_entrypoint.py` — the runner's emitted docker/tmux
-  commands and the container entrypoint loop (fakes; no Docker/LLM), plus a `skipif` docker
-  integration test.
+  commands (incl. the ADR 0011 `/workspace` mount + the CLI's spawn-prep→spawn flow) and the
+  container entrypoint loop (fakes; no Docker/LLM), plus a `skipif` docker integration test.
+- `tests/test_spawn.py` — spawn-prep (ADR 0011): unit tests pin the `clone --local` of the
+  per-task checkout and the idempotency gate (skips when the checkout already exists).
 - `tests/test_acceptance.py` — Slice 2 acceptance (`skipif` no docker/tmux): builds the base
   image and a real container connects back to an in-process task service, registers,
   heartbeats, and loses liveness on kill. No LLM.

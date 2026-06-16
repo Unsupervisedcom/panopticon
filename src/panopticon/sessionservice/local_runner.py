@@ -34,6 +34,10 @@ TMUX_SOCKET = "panopticon"
 #: agent layer points its CLI's config dir here (Slice 6); kept generic so it isn't CLI-specific.
 CREDS_MOUNT = "/creds"
 
+#: Where a task's per-task clone is mounted — the one stable, writable path the agent works in
+#: for the whole task (ADR 0011): planning, then coding on its branch once provisioned.
+WORKSPACE_MOUNT = "/workspace"
+
 
 class CommandRunner(Protocol):
     """Runs an external command and returns its stdout; ``check`` raises on non-zero exit."""
@@ -73,9 +77,18 @@ class LocalRunner(Runner):
         prefix = ["tmux", *(["-L", self._tmux_socket] if self._tmux_socket else [])]
         return [*prefix, *args]
 
-    def spawn(self, task_id: str, *, env_file: str | None = None, creds_volume: str | None = None) -> str:
+    def spawn(
+        self,
+        task_id: str,
+        *,
+        env_file: str | None = None,
+        creds_volume: str | None = None,
+        workspace: str | None = None,
+    ) -> str:
         """Spawn the task container. ``env_file``/``creds_volume`` are the task's repo's secret
-        references (ADR 0007), injected at launch — never baked into the image."""
+        references (ADR 0007), injected at launch — never baked into the image. ``workspace`` is the
+        task's per-task clone on the host (ADR 0011), bind-mounted read-write at ``/workspace`` as
+        the agent's working dir."""
         # The container name doubles as the tmux session name, so stop() needs only the id.
         container = f"panopticon-{task_id}"
         env = {
@@ -95,6 +108,8 @@ class LocalRunner(Runner):
             docker_run += ["--env-file", env_file]
         if creds_volume:  # per-repo OAuth creds volume, mounted at a generic path
             docker_run += ["--volume", f"{creds_volume}:{CREDS_MOUNT}"]
+        if workspace:  # the per-task clone — the agent's writable working dir (ADR 0011)
+            docker_run += ["--volume", f"{workspace}:{WORKSPACE_MOUNT}", "--workdir", WORKSPACE_MOUNT]
         for key, value in env.items():
             docker_run += ["--env", f"{key}={value}"]
         docker_run.append(self._image)  # the image's entrypoint runs (no command override)
