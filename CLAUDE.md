@@ -29,7 +29,8 @@ src/panopticon/
                    # (real Docker+tmux via the CLIs); images.py = ADR-0005 composed images
                    # (base→workflow→repo); provisioner.py = host-side provisioning
                    # (ADR 0011: branch the per-task clone on slug, record it back); clones.py =
-                   # per-repo clone cache (one local clone per repo per host);
+                   # per-repo clone cache; daemon.py = the observe-and-provision pull loop
+                   # (poll watched tasks, branch on slug);
                    # `python -m panopticon.sessionservice`
   container/       # entrypoint (`python -m panopticon.container` = connect/register/slug/
                    # heartbeat liveness) + agent.py (`-m panopticon.container.agent` = the tmux
@@ -118,6 +119,9 @@ commands the Makefile wraps).
   branch + clone path are recorded and a second pass is a no-op (idempotent).
 - `tests/test_clones.py` — the per-repo clone cache: unit tests pin the clone-on-first-use vs
   fetch-when-present decision (fakes); a `skipif` integration test clones a real local repo.
+- `tests/test_daemon.py` — the observe-and-provision loop: unit tests drive `tick`/`run` with
+  fakes (branch watched tasks, isolate a failing one, poll until a stop condition); an integration
+  test runs it against the real task service over REST (slug-set → branched → no-op).
 - `tests/test_mcp.py` — the MCP server surface, exercised **in-memory** via the MCP
   client (`create_connected_server_and_client_session`) — tools mutate the task, the artifact
   resource reads back. No LLM, no HTTP (HTTP hosting is the runnable server, Slice 7a).
