@@ -71,8 +71,8 @@ def test_create_and_remove_a_real_worktree(tmp_path: Path) -> None:
     run("git", "config", "user.email", "t@example.com")
     run("git", "config", "user.name", "t")
     (repo / "README").write_text("hi")
-    run("git", "add", "-A")
-    run("git", "commit", "-m", "init")
+    run("git", "add", "--all")
+    run("git", "commit", "--message", "init")
 
     git = GitWorktrees()
     wt = git.create(
