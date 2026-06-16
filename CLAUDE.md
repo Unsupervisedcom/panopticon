@@ -61,8 +61,8 @@ make test        # uv run pytest
 make typecheck   # uv run mypy --package panopticon (strict)
 make check       # typecheck + test (what CI runs)
 make serve       # run the task service over HTTP (python -m panopticon.taskservice)
-make dashboard   # launch the dashboard in the foreground (no tmux)
-make panopticon  # task service + dashboard in the panopticon tmux server (the switcher)
+make dashboard   # run the dashboard once (no attach loop)
+make panopticon  # run the session supervisor (dashboard + task attach); service in background
 make login REPO=<id>  # populate a repo's creds volume interactively (panopticon login)
 make build       # docker build the base task-container image (panopticon-base)
 make clean       # remove the base + composed panopticon-* images
@@ -70,12 +70,13 @@ make clean       # remove the base + composed panopticon-* images
 
 `make serve` runs the control plane (`python -m panopticon.taskservice` — default on-disk
 SQLite + filesystem artifacts + the built-in workflows; `PANOPTICON_HOST/PORT/DB/ARTIFACTS`
-override). `make panopticon` brings up the whole local environment — the task service and the dashboard
-as two windows of a single `panopticon` session on the dedicated `panopticon` tmux server
-(socket `-L panopticon`), the same server the runner puts task panes on — then attaches, so
-the dashboard's switch key moves between the dashboard, the service, and live tasks. `make
-dashboard` just runs the dashboard in the foreground (it talks to a service at
-`PANOPTICON_SERVICE_URL`).
+override). `make panopticon` runs the **terminal session supervisor** (`panopticon console`,
+ADR 0009): it owns the terminal, shows the dashboard, and on `t` hands the terminal to the
+task's tmux session on the dedicated `panopticon` server (`-L panopticon`), rejoining the
+dashboard when you detach (`C-b d`). Switching is always detach→attach (never `switch-client`),
+so the same loop reaches a remote task over ssh at M5. It runs the task service in the
+background (a `service` tmux session on the same server). `make dashboard` runs the dashboard
+once without the attach loop (it talks to a service at `PANOPTICON_SERVICE_URL`).
 
 CI (`.github/workflows/ci.yml`) runs `uv sync`, `mypy`, and `pytest` on every PR (the same
 commands the Makefile wraps).

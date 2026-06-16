@@ -101,23 +101,25 @@ async def test_dashboard_with_no_tasks() -> None:
         assert str(app.query_one("#detail", Static).render()) == "no tasks"
 
 
-async def test_pressing_t_attaches_to_the_running_container() -> None:
-    attached: list[str] = []
+async def test_pressing_t_exits_returning_the_running_container_session() -> None:
+    # The dashboard hands the session back to the supervisor (which attaches); it doesn't
+    # attach itself. Switching is always detach→attach, never switch-client (ADR 0009).
     regs = {"task-abcdef0123": [{"container_id": "panopticon-task-abcdef0123"}]}
-    app = Dashboard(_FakeClient([_TASK], regs), attach=attached.append)  # type: ignore[arg-type]
+    app = Dashboard(_FakeClient([_TASK], regs))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("t")
-        assert attached == ["panopticon-task-abcdef0123"]  # session == container id
+    assert app.return_value == "panopticon-task-abcdef0123"  # session == container id
 
 
-async def test_pressing_t_with_no_running_container_does_not_attach() -> None:
-    attached: list[str] = []
-    app = Dashboard(_FakeClient([_TASK], {}), attach=attached.append)  # type: ignore[arg-type]
+async def test_pressing_t_with_no_running_container_does_not_exit() -> None:
+    app = Dashboard(_FakeClient([_TASK], {}))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("t")
-        assert attached == []
+        await pilot.pause()
+        assert app.is_running  # stayed in the dashboard
+    assert app.return_value is None
 
 
 async def test_pressing_n_creates_a_task_via_repo_then_workflow_picker() -> None:

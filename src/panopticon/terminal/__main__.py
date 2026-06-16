@@ -1,8 +1,9 @@
 """``panopticon`` / ``python -m panopticon.terminal`` — the operator CLI.
 
-`panopticon` (or `panopticon dashboard`) launches the Textual dashboard; `panopticon tasks`
-lists tasks as plain text over REST; `panopticon login <repo> [cmd...]` populates a repo's
-creds volume interactively (ADR 0007).
+`panopticon` (or `panopticon console`) runs the session supervisor (ADR 0009): the dashboard,
+plus handing the terminal to a task's tmux on `t` and rejoining on detach. `panopticon dashboard`
+runs the dashboard once without the attach loop; `panopticon tasks` lists tasks as plain text;
+`panopticon login <repo> [cmd...]` populates a repo's creds volume interactively (ADR 0007).
 """
 
 from __future__ import annotations
@@ -36,7 +37,8 @@ def main(
         help="task service base URL",
     )
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser("dashboard", help="launch the dashboard (default)")
+    sub.add_parser("console", help="session supervisor: dashboard + attach loop (default)")
+    sub.add_parser("dashboard", help="run the dashboard once, without the attach loop")
     sub.add_parser("tasks", help="list tasks as plain text")
     login_p = sub.add_parser("login", help="populate a repo's creds volume interactively")
     login_p.add_argument("repo")
@@ -55,10 +57,14 @@ def main(
         from panopticon.sessionservice.local_runner import LocalRunner
 
         (runner or LocalRunner(args.service_url)).login(creds, args.cmd or ["bash"])
-    else:  # default / "dashboard"
+    elif args.command == "dashboard":
         from panopticon.terminal.dashboard import run
 
         run(client)
+    else:  # default / "console"
+        from panopticon.terminal.console import run_console
+
+        run_console(client)
     return 0
 
 

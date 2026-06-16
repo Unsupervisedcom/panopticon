@@ -25,12 +25,10 @@ serve:  ## Run the task service over HTTP (the control plane)
 dashboard:  ## Launch the dashboard (foreground; no tmux)
 	uv run panopticon dashboard
 
-panopticon:  ## Start the task service + dashboard in one panopticon tmux session (the switcher)
-	tmux -L panopticon has-session -t panopticon 2>/dev/null || { \
-		tmux -L panopticon new-session -d -s panopticon -n service 'uv run python -m panopticon.taskservice'; \
-		tmux -L panopticon new-window -t panopticon -n dashboard 'uv run panopticon dashboard'; \
-	}
-	tmux -L panopticon attach -t panopticon
+panopticon:  ## Run the session supervisor (dashboard + task attach); task service in the background
+	tmux -L panopticon has-session -t service 2>/dev/null || \
+		tmux -L panopticon new-session -d -s service 'uv run python -m panopticon.taskservice'
+	uv run panopticon console
 
 login:  ## Populate a repo's creds volume interactively (REPO=<id>)
 	uv run panopticon login $(REPO)
