@@ -57,7 +57,7 @@ class TaskOut(BaseModel):
     blocked: bool
     slug: str | None
     branch: str | None
-    worktree: str | None
+    clone: str | None
     history: list[HistoryOut]
 
 
@@ -108,7 +108,7 @@ class StateIn(BaseModel):
 
 class ProvisioningIn(BaseModel):
     branch: str
-    worktree: str
+    clone: str
 
 
 class SkillOut(BaseModel):
@@ -275,9 +275,9 @@ def create_app(service: TaskService) -> FastAPI:
 
     @app.put("/tasks/{task_id}/provisioning")
     async def record_provisioning(task_id: str, body: ProvisioningIn) -> TaskOut:
-        try:  # the session service reports the host branch/worktree it created (ADR 0010)
+        try:  # the session service reports the host branch + per-task clone it created (ADR 0011)
             task = service.record_provisioning(
-                task_id, branch=body.branch, worktree=body.worktree
+                task_id, branch=body.branch, clone=body.clone
             )
         except ValueError as exc:  # slug not set yet
             raise HTTPException(status_code=400, detail=str(exc)) from exc

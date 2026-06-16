@@ -317,7 +317,7 @@ def _fully_populated_task() -> Task:
         blocked=True,
         slug="fix-the-widget",
         branch="panopticon/fix-the-widget",
-        worktree="/wt/r1/panopticon/fix-the-widget",
+        clone="/clones/t-full",
         history=[
             HistoryEntry(
                 at="t0", from_state=None, to_state="PLAN", trigger="start", note="kickoff"

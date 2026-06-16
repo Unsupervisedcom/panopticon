@@ -82,7 +82,7 @@ class _TaskRow(_Base):
     blocked: Mapped[bool] = mapped_column(default=False)
     slug: Mapped[str | None]
     branch: Mapped[str | None] = mapped_column(default=None)
-    worktree: Mapped[str | None] = mapped_column(default=None)
+    clone: Mapped[str | None] = mapped_column(default=None)
     history: Mapped[list[_HistoryRow]] = relationship(
         order_by="_HistoryRow.seq",
         cascade="all, delete-orphan",
@@ -100,7 +100,7 @@ class _TaskRow(_Base):
             blocked=self.blocked,
             slug=self.slug,
             branch=self.branch,
-            worktree=self.worktree,
+            clone=self.clone,
             history=[h.to_domain() for h in self.history],
         )
 
@@ -115,7 +115,7 @@ class _TaskRow(_Base):
             blocked=task.blocked,
             slug=task.slug,
             branch=task.branch,
-            worktree=task.worktree,
+            clone=task.clone,
             history=[_HistoryRow.from_domain(e, seq) for seq, e in enumerate(task.history)],
         )
 
@@ -278,7 +278,7 @@ class SqlAlchemyStore(Store):
             row.blocked = task.blocked
             row.slug = task.slug
             row.branch = task.branch
-            row.worktree = task.worktree
+            row.clone = task.clone
             # The current (last stored) entry's promises may have been fulfilled in place.
             if stored:
                 _fulfil_current_promises(row.history[len(stored) - 1], task.history[len(stored) - 1])
