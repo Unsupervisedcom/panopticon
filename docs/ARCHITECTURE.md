@@ -25,28 +25,28 @@ Read the ADRs for *why*; read this for *what* and *how it fits together*.
 ## 2. System overview
 
 ```
-   user's terminal           TASK SERVICE  (control plane · deterministic · sole DB authority)
-  ┌────────────────┐  REST   ┌──────────────────────────────────────────────────────────┐
-  │ Terminal       │────────▶│  ┌───────────┐  ┌────────────┐  ┌──────────────────────┐  │
-  │ controller     │◀────────│  │Store      │  │  Workflow  │  │ Lifecycle engine:    │  │
-  │  └─ dashboard  │  REST/   │  │ (SQLite)  │  │  registry  │  │ state machine, turn, │  │
-  │     (Textual)  │  MCP     │  └───────────┘  └────────────┘  │ responsibility gating│  │
-  └───────┬────────┘         │     REST API  ·  MCP surface (artifacts + task tools)   │  │
-          │                   └───────▲─────────────────────────────▲──────────────────┘
-          │ tmux attach (local)       │ REST (register, pull work)   │ MCP (+ some REST)
-          │ ssh+attach (remote, M5)   │                              │
-          │                   ┌───────┴─────────┐          ┌─────────┴────────────────┐
-          └──────────────────▶│ SESSION SERVICE │  spawns  │     TASK CONTAINER(S)     │
-            (host tmux server) │   (runner)      │─────────▶│  agent (LLM) + workflow   │
-                              │  host process   │ on host  │  skills                   │
-                              │ · spawn/stop    │  daemon  │  entrypoint: connect &    │
-                              │   containers    │          │  stay connected (liveness)│
-                              │ · own host tmux │          │  hook: set slug if unset  │
-                              │ · inject secrets│          │  (M2: planner + impl-     │
-                              │ · run composed  │          │   ementer = 2 containers, │
-                              │   image         │          │   one tmux session)       │
-                              └─────────────────┘          └───────────────────────────┘
-        ── host processes, deterministic, no LLM ───────┘          └─ the only place LLMs run ─
+  ┌──────────────────┐          ┌──────────────────────────────────────────────────────────┐
+  │ Terminal         │          │ TASK SERVICE — control plane                             │
+  │ controller       │◀─ REST ─▶│ deterministic · sole DB authority                        │
+  │  └ dashboard     │          │                                                          │
+  │     (Textual)    │          │ Store (SQLite) · Workflow registry                       │
+  └───────┬──────────┘          │ Lifecycle engine: state machine,                         │
+          │                     │   turn, responsibility gating                            │
+          │ tmux attach (local) │ REST API · MCP surface (artifacts+tools)                 │
+          │ ssh+attach (M5)     └─────────▲─────────────────────────────────▲──────────────┘
+          │                               │                                 │
+          │                               │ REST: register, pull work       │
+          │                               │                                 │ MCP (+REST)
+          │                     ┌─────────┴────────────┐       ┌────────────┴──────────────┐
+          │                     │ SESSION SERVICE      │       │ TASK CONTAINER(S)         │
+          │                     │ (runner) — host      │       │ agent (LLM) + workflow    │
+          └────────────────────▶│ process. On host:    ├spawns─▶ skills; entrypoint:       │
+                                │ · spawn/stop ctrs    │       │ connect & stay (live-     │
+                                │ · own host tmux      │       │ ness); set-slug hook      │
+                                │ · inject secrets     │       │ (M2: planner+impl =       │
+                                │ · run composed img   │       │   2 ctrs, 1 session)      │
+                                └──────────────────────┘       └───────────────────────────┘
+  ── host processes · deterministic · no LLM ──                ── only LLMs run ──
 ```
 
 Three deterministic roles (ADR 0008), plus task containers where all LLM work lives:
@@ -117,6 +117,9 @@ The execution-backend ABC realized as a separate **host process** (ADR 0008). Pe
   shares one session;
 - **builds/selects the composed image** for a task (base → workflow → repo, ADR 0005);
 - **injects per-repo secrets** at launch (env vars + creds mount, ADR 0007);
+- **provisions the worktree** once the slug is set — observing the task over its pull loop, it
+  builds the slug-named worktree on its host and repoints the container into it, then runs the
+  workflow's provisioning (ADR 0010);
 - **registers with the task service** and reports session status.
 
 Concrete adapters behind the same interface, over time: local Docker+tmux (now), remote
@@ -128,9 +131,10 @@ The `panopticon` CLI the user runs (a host process). It owns the TTY and is a RE
 the task service. It:
 - ensures the task service + runner host processes are running, then runs the **dashboard**
   (Textual, the presentation adapter — ADR 0002) in a tmux session;
-- on **`t`**, attaches the terminal to the selected task's tmux session via plain
-  `tmux attach` (host tmux; remotely via ssh to that runner), and **on detach, rejoins the
-  dashboard** automatically;
+- runs as a **session supervisor** (ADR 0009): the dashboard lives in its own tmux session, and
+  on **`t`** it hands the terminal to the selected task's tmux via plain `tmux attach` (host
+  tmux; remotely via ssh to that runner), **rejoining the dashboard on detach**. Switching is
+  always detach→attach, never `switch-client`, so the same loop reaches a remote task over ssh;
 - the dashboard is also an **input surface** (idea capture, promotion, transitions) — all via
   REST (PARITY §5).
 
@@ -250,16 +254,20 @@ mounted creds. Values never enter the DB, artifacts, or image layers.
    initial state, with the turn assigned appropriately. No slug yet.
 2. **Assign & spawn.** The task service assigns the task to a session service (runner). The
    runner builds/selects the composed image (ADR 0005), injects the repo's secrets (ADR 0007),
-   creates the task container (sibling, DooD) and its tmux session, and starts the agent.
+   creates the task container (sibling, DooD) and its tmux session, and starts the agent. The
+   container begins on a **read-only checkout** of the repo (there's no slug, hence no worktree,
+   yet) for the agent to plan against; step 5 upgrades it to the writable worktree.
 3. **Connect & register.** The container entrypoint **connects to the task service and stays
    connected** — registering that this container is working on this task (liveness). It loads
    the workflow's in-container skills (from the active workflow) on top of the core operations.
 4. **Slug.** A hook notices the slug is unset and instructs the agent to set one via a task
    tool; the task service records it.
-5. **Worktree & provisioning.** With the slug known, the core creates the task's
-   **worktree/branch** — always required, and named from the slug, so this step cannot precede
-   step 4. The active workflow's **provisioning** then runs (e.g. the parity workflow opens its
-   PR); because it needs that branch, PR creation is transitively gated on the slug too.
+5. **Worktree & provisioning.** The **session service**, observing the task over its pull loop
+   (ADR 0010), sees the slug land and creates the task's **worktree/branch** on the host where
+   the container runs — always required, named from the slug, so it cannot precede step 4 — then
+   repoints the container's working path to it (the agent `cd`s in). The active workflow's
+   **provisioning** then runs (e.g. the parity workflow opens its PR); because it needs that
+   branch, PR creation is transitively gated on the slug too.
 6. **Work.** The agent plans/implements; artifacts (plan/notes) flow over MCP; the agent runs
    workflow skills (e.g. `babysit-ci`) that may use `gh`/git and call back over REST/MCP to
    request transitions. The task service deterministically enforces the workflow's state
@@ -309,8 +317,8 @@ may invoke an LLM; `core/`, `taskservice/`, `sessionservice/`, `terminal/` may n
 ## 13. Cross-cutting open questions (carried from the ADRs)
 
 - **Runner registration/discovery & work assignment** — how runners announce themselves,
-  report capacity/health, and get assigned tasks (likely runner-initiated/pull, NAT-friendly
-  for M5). (ADR 0008)
+  report capacity/health, and get assigned tasks (runner-initiated/pull, NAT-friendly for M5;
+  ADR 0010 commits the session service to *pull* for observing task state, e.g. the slug). (ADR 0008/0010)
 - **Process supervision** — with Compose gone, how the three host-process daemons are started
   and kept alive (terminal-controller-on-demand, systemd, or a small supervisor). (ADR 0008)
 - **Container → host-service addressing** — how a task container reaches the host task service
