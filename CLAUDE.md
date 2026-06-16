@@ -168,12 +168,11 @@ commands the Makefile wraps).
   fulfils each one at a time (`MET`, or `FAILED` with a comment) — mutating that entry — and a
   later advance is gated on all being resolved. Agent-only.
 - **Registration / liveness** — a container's standing claim that it is working on a task.
-- **Provisioning** — the slug-named branch + worktree a task works in (ADR 0010). The **host
-  git happens on the session service** (where the container runs), so it stays correct when the
-  runner is remote; the **task service only records the result** — `record_provisioning` /
-  `PUT /tasks/{id}/provisioning` writes `Task.branch`/`Task.worktree` (slug-gated) and runs the
-  workflow's `provision` hook. The control plane touches no filesystem. `core/git.py`
-  (`GitWorktrees`) is the LLM-free git primitive the session service will drive (Slice 7, later PRs).
+- **Provisioning** — the slug-named branch + per-task `clone` a task works in (ADR 0010/0011).
+  The **host git happens on the session service** (where the container runs), so it stays correct
+  when the runner is remote; the **task service only records the result** — `record_provisioning`
+  / `PUT /tasks/{id}/provisioning` writes `Task.branch`/`Task.clone` (slug-gated), a pure
+  recorded-fact write touching no filesystem. The session-service git lands in later Slice 7 PRs.
 - **Task service** — the deterministic control plane (sole DB authority).
 - **Session service / runner** — spawns task containers (stubbed for now).
 - **Terminal controller** — the user-facing CLI/dashboard (Slice 3).

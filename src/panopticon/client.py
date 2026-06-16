@@ -97,9 +97,9 @@ class TaskServiceClient:
         """Set/clear the deliberate `blocked` marker (survives turn flips)."""
         return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/blocked", json={"blocked": blocked})))
 
-    def record_provisioning(self, task_id: str, branch: str, worktree: str) -> JsonObj:
-        """Record the slug-named branch/worktree the session service created on the host (ADR 0010)."""
-        body: JsonObj = {"branch": branch, "worktree": worktree}
+    def record_provisioning(self, task_id: str, branch: str, clone: str) -> JsonObj:
+        """Record the slug-named branch + per-task clone the session service created (ADR 0011)."""
+        body: JsonObj = {"branch": branch, "clone": clone}
         return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/provisioning", json=body)))
 
     def request_transition(
