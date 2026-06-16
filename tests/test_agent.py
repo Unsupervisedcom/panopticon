@@ -1,5 +1,5 @@
 """The in-container agent launcher: the deterministic bootstrap (render the workflow's skills +
-turn-flip hooks) then launch. No LLM — the real `claude` exec is a fake here."""
+turn-flip hooks, link credentials) then launch. No LLM — the real `claude` exec is a fake here."""
 
 from __future__ import annotations
 
@@ -35,15 +35,38 @@ def test_claude_argv_continues_an_existing_session(tmp_path: Path) -> None:
     assert agent._claude_argv(tmp_path, Path("/work/repo")) == ["claude", "--continue"]
 
 
-def test_main_bootstraps_skills_and_hooks_then_launches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_link_credentials_symlinks_only_the_credential_file(tmp_path: Path) -> None:
+    # The per-repo creds volume holds only `.credentials.json`; it's symlinked into the
+    # container-local config dir so the token is shared but other claude state is not.
+    creds_dir = tmp_path / "creds"
+    creds_dir.mkdir()
+    (creds_dir / ".credentials.json").write_text("{token}")
+    config_dir = tmp_path / "home" / ".claude"
+
+    agent.link_credentials(config_dir, creds_dir=creds_dir)
+
+    link = config_dir / ".credentials.json"
+    assert link.is_symlink() and link.resolve() == (creds_dir / ".credentials.json").resolve()
+    assert link.read_text() == "{token}"  # refreshes write through to the shared volume
+
+
+def test_link_credentials_is_a_noop_without_a_logged_in_volume(tmp_path: Path) -> None:
+    config_dir = tmp_path / ".claude"
+    agent.link_credentials(config_dir, creds_dir=tmp_path / "empty")  # no creds yet
+    assert config_dir.is_dir() and not (config_dir / ".credentials.json").exists()
+
+
+def test_main_bootstraps_into_a_container_local_config_dir_then_launches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("PANOPTICON_SERVICE_URL", "http://svc")
     monkeypatch.setenv("PANOPTICON_TASK_ID", "t1")
-    launched: list[bool] = []
+    launched: list[Path] = []
     agent.main(
         client_factory=lambda url: _FakeClient([{"name": "s", "description": "d", "instructions": "i"}]),  # type: ignore[arg-type,return-value]
         home=tmp_path,
-        launch=lambda: launched.append(True),
+        launch=launched.append,
     )
     assert (tmp_path / ".claude" / "commands" / "s.md").exists()  # skills rendered...
     assert (tmp_path / ".claude" / "settings.json").exists()  # ...turn-flip hooks written...
-    assert launched == [True]  # ...then launched
+    assert launched == [tmp_path / ".claude"]  # ...then launched with the container-local config dir
