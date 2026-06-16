@@ -71,7 +71,7 @@ def test_runner_spawns_real_container_that_registers_and_loses_liveness(
 ) -> None:
     service, port = served
     subprocess.run(
-        ["docker", "build", "-t", _IMAGE, "-f", "docker/Dockerfile", "."],
+        ["docker", "build", "--tag", _IMAGE, "--file", "docker/Dockerfile", "."],
         check=True, capture_output=True,
     )
     service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
@@ -116,12 +116,12 @@ def test_runner_spawns_real_container_that_registers_and_loses_liveness(
         assert service.registrations(task_id)[0].last_seen != before, "no heartbeats"
 
         # 5. killing the container freezes liveness (no deregister, last_seen stops advancing)
-        subprocess.run(["docker", "rm", "-f", container], check=True, capture_output=True)
+        subprocess.run(["docker", "rm", "--force", container], check=True, capture_output=True)
         time.sleep(0.5)
         frozen = service.registrations(task_id)[0].last_seen
         time.sleep(1.5)
         assert service.registrations(task_id)[0].last_seen == frozen, "heartbeats continued after kill"
     finally:
-        subprocess.run(["docker", "rm", "-f", container], capture_output=True)
+        subprocess.run(["docker", "rm", "--force", container], capture_output=True)
         subprocess.run(["tmux", "-L", _TMUX_SOCKET, "kill-server"], capture_output=True)
-        subprocess.run(["docker", "rmi", "-f", _IMAGE], capture_output=True)
+        subprocess.run(["docker", "rmi", "--force", _IMAGE], capture_output=True)
