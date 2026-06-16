@@ -27,7 +27,9 @@ src/panopticon/
                    # server (mcp.py: operations=tools, artifacts=resources; FastMCP)
   sessionservice/  # the runner: Runner ABC + StubRunner (in-process) + LocalRunner
                    # (real Docker+tmux via the CLIs); images.py = ADR-0005 composed images
-                   # (base→workflow→repo); `python -m panopticon.sessionservice`
+                   # (base→workflow→repo); provisioner.py = host-side worktree provisioning
+                   # (ADR 0010: create the slug-named worktree, record it back);
+                   # `python -m panopticon.sessionservice`
   container/       # entrypoint (`python -m panopticon.container` = connect/register/slug/
                    # heartbeat liveness) + agent.py (`-m panopticon.container.agent` = the tmux
                    # pane's launcher: render skills → exec `claude`) — the ONLY LLM-bearing pkg
@@ -108,6 +110,9 @@ commands the Makefile wraps).
   proving the interface is backend-agnostic (and that rows/domain models stay in sync).
 - `tests/test_git.py` — local branch/worktree ops: unit tests pin the emitted `git` commands
   and slug-gating (fake runner); a `skipif` integration test creates a real worktree.
+- `tests/test_provisioner.py` — host-side provisioning (ADR 0010): unit tests pin the emitted
+  `git` and the slug/already-provisioned gating (fakes), plus an end-to-end pass against the real
+  task service over REST proving the worktree is recorded and a second pass is a no-op (idempotent).
 - `tests/test_mcp.py` — the MCP server surface, exercised **in-memory** via the MCP
   client (`create_connected_server_and_client_session`) — tools mutate the task, the artifact
   resource reads back. No LLM, no HTTP (HTTP hosting is the runnable server, Slice 7a).
