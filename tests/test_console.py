@@ -38,3 +38,20 @@ def test_switch_to_records_the_pick_then_detaches(tmp_path: Path) -> None:
 
     assert switch.read_text() == "panopticon-t1"
     assert detached == [True]
+
+
+def test_make_service_switch_only_switches_when_a_service_session_exists(tmp_path: Path) -> None:
+    from panopticon.terminal.console import SERVICE_SESSION, make_service_switch
+
+    switch = tmp_path / "switch"
+
+    # Service running → records the service session + detaches, reports True.
+    switched = make_service_switch(switch, exists=lambda: True, detach=lambda: None)
+    assert switched() is True
+    assert switch.read_text() == SERVICE_SESSION
+
+    # No service session → does nothing (no write, no detach), reports False.
+    switch.write_text("")
+    absent = make_service_switch(switch, exists=lambda: False, detach=lambda: None)
+    assert absent() is False
+    assert switch.read_text() == ""

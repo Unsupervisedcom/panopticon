@@ -62,14 +62,16 @@ def main(
 
         (runner or LocalRunner(args.service_url)).login(creds, args.cmd or ["bash"])
     elif args.command == "dashboard":
-        from panopticon.terminal.console import switch_to
+        from panopticon.terminal.console import make_service_switch, switch_to
         from panopticon.terminal.dashboard import run
 
         on_switch = None
-        if args.switch_file:  # run under the supervisor: report `t` picks via the switch-file
+        on_service = None
+        if args.switch_file:  # run under the supervisor: report `t`/`s` picks via the switch-file
             switch_file = Path(args.switch_file)
             on_switch = lambda session: switch_to(session, switch_file=switch_file)  # noqa: E731
-        run(client, on_switch=on_switch)
+            on_service = make_service_switch(switch_file)
+        run(client, on_switch=on_switch, on_service=on_service)
     else:  # default / "console"
         from panopticon.terminal.console import run_console_local
 
