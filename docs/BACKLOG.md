@@ -26,6 +26,11 @@ in the ADRs; this file is for the smaller stuff that doesn't have a home there y
 - [ ] **No schema migrations** — the SQLAlchemy adapter creates tables with
   `metadata.create_all`; there's no versioning/upgrade path. Add Alembic (or equivalent)
   before the schema ships anywhere with data to preserve. _(Slice 1, P2)_
+- [ ] **Factor the polling loops** — coordination is moving to pull/poll: the session service
+  observing slug-set + assigned work (ADR 0010), the agent waiting for "provisioned", dashboard
+  refresh, the container heartbeat. Before they multiply, see whether they can share one
+  observe/poll abstraction — a single place to set intervals/backoff, batch reads, and later swap
+  poll → long-poll/SSE uniformly. _(ADR 0010, P3)_
 
 ## Deferred features (not yet scheduled, or scheduled but flagged here)
 
