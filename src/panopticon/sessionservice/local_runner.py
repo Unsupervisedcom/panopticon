@@ -84,7 +84,7 @@ class LocalRunner(Runner):
             **self._extra_env,
         }
         docker_run = [
-            "docker", "run", "-d",
+            "docker", "run", "--detach",
             "--name", container,
             "--label", f"panopticon.task={task_id}",
             "--add-host", HOST_GATEWAY,
@@ -92,16 +92,16 @@ class LocalRunner(Runner):
         if env_file:  # per-repo API-key secrets, injected at run (not in the image)
             docker_run += ["--env-file", env_file]
         if creds_volume:  # per-repo OAuth creds volume, mounted at a generic path
-            docker_run += ["-v", f"{creds_volume}:{CREDS_MOUNT}"]
+            docker_run += ["--volume", f"{creds_volume}:{CREDS_MOUNT}"]
         for key, value in env.items():
-            docker_run += ["-e", f"{key}={value}"]
+            docker_run += ["--env", f"{key}={value}"]
         docker_run.append(self._image)  # the image's entrypoint runs (no command override)
         self._run(docker_run)
-        # `docker run -d` returns once the container is running, so the pane can exec into it.
+        # `docker run --detach` returns once the container is running, so the pane can exec in.
         self._run(
             self._tmux(
                 "new-session", "-d", "-s", container,
-                "docker", "exec", "-it", container, self._shell,
+                "docker", "exec", "--interactive", "--tty", container, self._shell,
             )
         )
         return container
@@ -109,4 +109,4 @@ class LocalRunner(Runner):
     def stop(self, container_id: str) -> None:
         # Idempotent: tolerate an already-gone session/container.
         self._run(self._tmux("kill-session", "-t", container_id), check=False)
-        self._run(["docker", "rm", "-f", container_id], check=False)
+        self._run(["docker", "rm", "--force", container_id], check=False)

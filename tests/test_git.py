@@ -67,7 +67,7 @@ def test_create_and_remove_a_real_worktree(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     run = lambda *a: subprocess.run(a, cwd=repo, check=True, capture_output=True)
-    run("git", "init", "-b", "main")
+    run("git", "init", "--initial-branch", "main")
     run("git", "config", "user.email", "t@example.com")
     run("git", "config", "user.name", "t")
     (repo / "README").write_text("hi")

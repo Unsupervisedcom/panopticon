@@ -37,7 +37,7 @@ def test_spawn_runs_detached_container_then_tmux_pane_execing_in() -> None:
 
     assert container_id == "panopticon-t1"
     (docker_run, _), (tmux_new, _) = rec.calls
-    assert docker_run[:3] == ["docker", "run", "-d"]
+    assert docker_run[:3] == ["docker", "run", "--detach"]
     assert docker_run[-1] == "img:1"  # the image is the final positional arg (its entrypoint runs)
     assert ["--name", "panopticon-t1"] == docker_run[3:5]
     assert "PANOPTICON_SERVICE_URL=http://svc:8000" in docker_run
@@ -50,7 +50,7 @@ def test_spawn_runs_detached_container_then_tmux_pane_execing_in() -> None:
     # pane execs an interactive shell in
     assert tmux_new[:4] == ["tmux", "-L", "panopticon", "new-session"]
     assert tmux_new[tmux_new.index("-s") + 1] == "panopticon-t1"
-    assert tmux_new[-5:] == ["docker", "exec", "-it", "panopticon-t1", "bash"]
+    assert tmux_new[-6:] == ["docker", "exec", "--interactive", "--tty", "panopticon-t1", "bash"]
 
 
 def test_extra_env_is_forwarded() -> None:
@@ -72,14 +72,14 @@ def test_spawn_injects_repo_env_file_and_creds_mount() -> None:
 def test_spawn_omits_secret_flags_when_repo_has_none() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", run=rec).spawn("t1")
-    assert "--env-file" not in rec.calls[0][0] and "-v" not in rec.calls[0][0]
+    assert "--env-file" not in rec.calls[0][0] and "--volume" not in rec.calls[0][0]
 
 
 def test_stop_kills_session_and_force_removes_container_idempotently() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", run=rec).stop("panopticon-t1")
     assert (["tmux", "-L", "panopticon", "kill-session", "-t", "panopticon-t1"], False) in rec.calls
-    assert (["docker", "rm", "-f", "panopticon-t1"], False) in rec.calls
+    assert (["docker", "rm", "--force", "panopticon-t1"], False) in rec.calls
 
 
 def test_tmux_socket_can_be_overridden() -> None:
@@ -104,7 +104,7 @@ def test_spawn_and_stop_real_container_and_session() -> None:
     image = "panopticon-itest:latest"
     socket = "panopticon-itest"
     subprocess.run(
-        ["docker", "build", "-t", image, "-"],
+        ["docker", "build", "--tag", image, "-"],
         input='FROM alpine\nENTRYPOINT ["sleep", "3600"]\n',
         text=True, check=True, capture_output=True,
     )
@@ -117,7 +117,7 @@ def test_spawn_and_stop_real_container_and_session() -> None:
         running = ""
         for _ in range(50):  # `docker run -d` returns once running; poll defensively
             running = subprocess.run(
-                ["docker", "inspect", "-f", "{{.State.Running}}", cid],
+                ["docker", "inspect", "--format", "{{.State.Running}}", cid],
                 capture_output=True, text=True,
             ).stdout.strip()
             if running == "true":
@@ -134,9 +134,9 @@ def test_spawn_and_stop_real_container_and_session() -> None:
             ["tmux", "-L", socket, "has-session", "-t", cid], capture_output=True
         ).returncode != 0
     finally:
-        subprocess.run(["docker", "rm", "-f", cid], capture_output=True)
+        subprocess.run(["docker", "rm", "--force", cid], capture_output=True)
         subprocess.run(["tmux", "-L", socket, "kill-server"], capture_output=True)
-        subprocess.run(["docker", "rmi", "-f", image], capture_output=True)
+        subprocess.run(["docker", "rmi", "--force", image], capture_output=True)
 
 
 class _FakeClient:
