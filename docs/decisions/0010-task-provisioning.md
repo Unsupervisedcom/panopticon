@@ -131,8 +131,10 @@ container restarts, not just within one container's life.
 
 ## Related
 
-- ADR 0011 — resolves this ADR's open container-side mechanics: path-mirrored mounts, the
-  `/workspace/repo` symlink repoint, the read-only base, per-task config dir, and teardown order.
+- ADR 0011 — resolves this ADR's open container-side mechanics with a **writable per-task local
+  clone branched on slug** (no read-only base, no worktree, no symlink/repoint); it supersedes
+  §3–§4's read-only-checkout-the-agent-moves-into, while this ADR's ownership / pull-observation /
+  control-plane-records decisions still hold.
 - ADR 0008 — session service as a host process; "runner registration/discovery … runner-initiated/
   pull, NAT-friendly" (this ADR commits to pull for slug observation too).
 - ADR 0009 — remote execution; runner-per-host that pulls; the task service may be remote.
