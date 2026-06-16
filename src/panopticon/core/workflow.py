@@ -234,6 +234,12 @@ class Workflow(ABC):
         """
         return ()
 
+    def image_layer(self) -> str:
+        """The workflow's Docker image layer (ADR 0005): a Dockerfile fragment appended on top of
+        the base image with what this workflow's skills need (e.g. `gh` for forge). Default none;
+        the runner composes base → workflow → repo into the task's image."""
+        return ""
+
     # -- lifecycle hooks (deterministic; run in the control plane, no LLM) ---------------
 
     def on_transition(

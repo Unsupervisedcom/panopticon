@@ -75,3 +75,7 @@ class Parity(Workflow):
         transitions = (Complete,)  # the happy path; `advance` derives → COMPLETE
 
     initial = Planning
+
+    def image_layer(self) -> str:
+        """Parity's forge skills shell out to `gh`, so layer it onto the base image (ADR 0005)."""
+        return "RUN apt-get update && apt-get install --yes --no-install-recommends gh"

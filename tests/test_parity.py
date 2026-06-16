@@ -71,6 +71,10 @@ def test_parity_has_no_forge_skills_yet() -> None:
     assert tuple(WF.skills()) == ()  # babysit-* are in-container skills, a later slice
 
 
+def test_parity_image_layer_installs_gh() -> None:
+    assert "gh" in WF.image_layer()  # forge skills need gh layered onto the base image
+
+
 def test_core_operations_per_state() -> None:
     assert WF.operations("PLANNING") == {"advance": "ITERATING", "drop": "DROPPED"}
     assert WF.operations("ITERATING") == {"advance": "REVIEW", "drop": "DROPPED"}

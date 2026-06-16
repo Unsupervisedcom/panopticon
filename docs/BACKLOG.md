@@ -50,6 +50,13 @@ in the ADRs; this file is for the smaller stuff that doesn't have a home there y
   it needs **repo clone-path management** (where each repo's local clone lives) plus a
   `worktrees_root` config — both passed in by the caller today. Wire this through the runner/
   spawn flow per ARCHITECTURE §9 (slug → worktree → provisioning). _(Slice 4, P2)_
+- [ ] **Declarative image composition vs. hand-rolled Dockerfile fragments** —
+  `sessionservice/images.py` composes the base→workflow→repo image by string-concatenating
+  Dockerfile fragments and `docker build`ing them. Evaluate purpose-built tooling for
+  layer composition/ordering, caching, and reproducibility before this scales: Cloud Native
+  Buildpacks (`pack`/Paketo), Chainguard `apko` (declarative package-list images), or
+  `docker buildx bake` (target inheritance, which maps cleanly onto base→workflow→repo). Not
+  needed now; the fragment approach is the minimal thing that works. _(Slice 6, P3)_
 
 ## Tracked elsewhere (pointers, do not duplicate)
 

@@ -49,3 +49,7 @@ def test_cannot_leave_terminal() -> None:
     WF.apply_transition(task, "COMPLETE", at="t1")
     with pytest.raises(IllegalTransition):
         WF.apply_transition(task, "DROPPED", at="t2")
+
+
+def test_image_layer_is_empty() -> None:
+    assert WF.image_layer() == ""  # forge-less seed adds no image layer

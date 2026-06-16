@@ -26,7 +26,8 @@ src/panopticon/
                    # adapter (in-memory or on-disk SQLite), filesystem artifact store, MCP
                    # server (mcp.py: operations=tools, artifacts=resources; FastMCP)
   sessionservice/  # the runner: Runner ABC + StubRunner (in-process) + LocalRunner
-                   # (real Docker+tmux via the CLIs); `python -m panopticon.sessionservice`
+                   # (real Docker+tmux via the CLIs); images.py = ADR-0005 composed images
+                   # (base→workflow→repo); `python -m panopticon.sessionservice`
   container/       # in-container client + entrypoint (`python -m panopticon.container`,
                    # the real connect/register/slug/heartbeat loop) — the ONLY LLM-bearing pkg
 docker/Dockerfile  # minimal base task-container image (ADR 0005 base layer)
