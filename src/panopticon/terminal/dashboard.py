@@ -1,19 +1,19 @@
 """The Textual dashboard (ADR 0002 presentation adapter): the operator's view of tasks.
 
 A task table on the left, the highlighted task's state/turn/history on the right. Keys: `r`
-refreshes from the task service over REST, `t` attaches to the task's container tmux, `n`
+refreshes from the task service over REST, `t` hands off to the task's container tmux, `n`
 creates a task (pick repo → workflow), and `x` **drops** it. Drop is the only state transition
 the dashboard drives: every other transition starts a new agentic turn, so it's triggered by an
-in-container agent skill (advance/iterate over REST/MCP), not the operator (ADR 0004). Network
-calls are synchronous (small, local); moving them to Textual workers is a refinement
-(docs/BACKLOG.md).
+in-container agent skill (advance/iterate over REST/MCP), not the operator (ADR 0004).
+
+The dashboard does not attach to tmux itself: on `t` it **exits, returning the chosen task's
+session**, and the terminal supervisor (ADR 0009, :mod:`panopticon.terminal.console`) performs
+the attach and re-runs the dashboard on detach. Network calls are synchronous (small, local);
+moving them to Textual workers is a refinement (docs/BACKLOG.md).
 """
 
 from __future__ import annotations
 
-import os
-import subprocess
-from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -23,8 +23,6 @@ from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Label, OptionList, Static
 
 from panopticon.client import JsonObj, TaskServiceClient
-from panopticon.sessionservice.local_runner import TMUX_SOCKET
-from panopticon.terminal.attach import attach_command
 
 
 def _short(task_id: str) -> str:
@@ -80,7 +78,9 @@ class ChoiceScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
-class Dashboard(App[None]):
+class Dashboard(App[str | None]):
+    """The task view. ``run()`` returns the session to attach to (`t`), or ``None`` on quit."""
+
     CSS = "#tasks { width: 3fr; } #detail { width: 2fr; padding: 0 1; }"
     BINDINGS = [
         ("r", "refresh", "Refresh"),
@@ -91,12 +91,11 @@ class Dashboard(App[None]):
     ]
     TITLE = "panopticon"
 
-    def __init__(self, client: TaskServiceClient, *, attach: Callable[[str], None] | None = None) -> None:
+    def __init__(self, client: TaskServiceClient) -> None:
         super().__init__()
         self._client = client
         self._tasks: dict[str, JsonObj] = {}
         self._current: str | None = None
-        self._attacher = attach or self._attach_session  # injectable for tests
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -170,25 +169,20 @@ class Dashboard(App[None]):
         self.action_refresh()
 
     def action_attach(self) -> None:
-        """`t`: switch into the highlighted task's container tmux session, if it's running."""
+        """`t`: hand off to the highlighted task's container tmux session, if it's running.
+
+        The dashboard doesn't attach; it **exits returning the session** so the supervisor can
+        attach the terminal and re-run the dashboard on detach (ADR 0009). Switching the operator
+        between sessions is always detach→attach, never `switch-client`."""
         if self._current is None:
             return
         registrations = self._client.list_registrations(self._current)
         if not registrations:
             self.notify("No running container for this task.", severity="warning")
             return
-        self._attacher(registrations[0]["container_id"])  # session == container id (runner names it so)
-
-    def _attach_session(self, session: str) -> None:
-        inside_tmux = bool(os.environ.get("TMUX"))
-        command = attach_command(session, socket=TMUX_SOCKET, inside_tmux=inside_tmux)
-        if inside_tmux:
-            subprocess.run(command, check=False)  # switch this client; no terminal handover
-        else:
-            with self.suspend():  # hand the terminal to tmux, resume on detach
-                subprocess.run(command, check=False)
+        self.exit(registrations[0]["container_id"])  # session == container id (runner names it so)
 
 
-def run(client: TaskServiceClient) -> None:
-    """Launch the interactive dashboard."""
-    Dashboard(client).run()
+def run(client: TaskServiceClient) -> str | None:
+    """Run the dashboard once; return the task session to attach to, or ``None`` to quit."""
+    return Dashboard(client).run()
