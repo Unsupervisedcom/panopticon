@@ -33,10 +33,10 @@ src/panopticon/
                    # (ADR 0011: branch the per-task clone on slug, record it back); clones.py =
                    # per-repo clone cache; spawn.py = spawn-prep (clone --local the per-task
                    # checkout, mounted rw at /workspace); spawner.py = the spawn loop (claim an
-                   # unclaimed task → spawn its container); daemon.py = the observe-and-provision
-                   # pull loop (poll unprovisioned tasks, branch on slug;
-                   # `python -m panopticon.sessionservice.daemon` runs it);
-                   # `python -m panopticon.sessionservice` (spawn-prep + spawn one task)
+                   # unclaimed task → spawn its container); daemon.py = the provision-only pull loop;
+                   # host.py = the unified per-host daemon (spawn + provision each pass;
+                   # `python -m panopticon.sessionservice.host`); `python -m panopticon.sessionservice`
+                   # spawns one task
   container/       # entrypoint (`python -m panopticon.container` = connect/register/slug/
                    # heartbeat liveness) + agent.py (`-m panopticon.container.agent` = the tmux
                    # pane's launcher: render skills + operations → exec `claude`) — the ONLY LLM pkg
@@ -130,6 +130,9 @@ commands the Makefile wraps).
 - `tests/test_spawner.py` — the spawn loop (ADR 0008): unit tests pin `spawn_one` (claim → spawn,
   skip terminal/claimed, skip on a 409 lost claim) and the `spawnable_tasks` filter; an integration
   test claims + spawns against the real task service over REST (fake git/runner).
+- `tests/test_host.py` — the unified per-host daemon (ADR 0008/0011): a unit test isolates a
+  failing task; an integration test drives spawn → set slug → provision against the real task
+  service over REST (claimed + spawned, then branched, no re-spawn).
 - `tests/test_daemon.py` — the observe-and-provision loop + its launch: unit tests drive
   `tick`/`run` with fakes (branch watched tasks, skip a provisioned one, isolate a failing one,
   poll until a stop condition); integration tests over REST cover the loop (slug-set → branched →

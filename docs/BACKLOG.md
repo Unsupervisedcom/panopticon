@@ -14,6 +14,12 @@ in the ADRs; this file is for the smaller stuff that doesn't have a home there y
 
 ## Cleanups / tech debt
 
+- [ ] **Short-circuit already-handled tasks in the host loop** — `HostDaemon.tick` calls
+  `spawn_one` + `provision` on **every** task each pass and relies on each sub-step's self-gating
+  (spawn skips claimed/terminal; provision skips unslugged/already-branched). That's correct but
+  costs a `get_repo`/REST round-trip per already-spawned/provisioned task every pass. Pre-filter to
+  spawnable + unprovisioned tasks (or track handled ids across passes) before the per-task work.
+  _(Self-host host daemon, P2; pairs with the server-side spawnable-tasks query below.)_
 - [ ] **Move the spawnable-tasks query into the task service** — the session service's spawn loop
   filters `list_tasks()` client-side for unclaimed + non-terminal tasks (`spawner.spawnable_tasks`),
   matching the built-in terminal labels (`core.state.TERMINAL_LABELS`). A server-side endpoint —
