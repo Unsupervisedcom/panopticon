@@ -135,6 +135,9 @@ commands the Makefile wraps).
   container entrypoint loop (fakes; no Docker/LLM), plus a `skipif` docker integration test.
 - `tests/test_spawn.py` — spawn-prep (ADR 0011): unit tests pin the `clone --local` of the
   per-task checkout and the idempotency gate (skips when the checkout already exists).
+- `tests/test_provisioning_acceptance.py` — Slice 7 acceptance (`skipif` no git): the host-side
+  provisioning path with **real git** — clone --local the per-task checkout → set slug → the daemon
+  branches it (`panopticon/<slug>`) + repoints origin → the task service records branch + clone path.
 - `tests/test_acceptance.py` — Slice 2 acceptance (`skipif` no docker/tmux): builds the base
   image and a real container connects back to an in-process task service, registers,
   heartbeats, and loses liveness on kill. No LLM.
