@@ -16,7 +16,7 @@ from panopticon.core.artifacts import ArtifactError
 from panopticon.core.models import Actor, Repo, Status
 from panopticon.core.store import AlreadyExists, NotFound, StoreError
 from panopticon.core.workflow import IllegalTransition, InvalidWorkflow, ResponsibilitiesNotMet
-from panopticon.taskservice.service import TaskService, UnknownWorkflow
+from panopticon.taskservice.service import AlreadyClaimed, TaskService, UnknownWorkflow
 
 # -- wire schemas -------------------------------------------------------------------
 
@@ -58,6 +58,7 @@ class TaskOut(BaseModel):
     slug: str | None
     branch: str | None
     clone: str | None
+    claimed_by: str | None  # the runner that owns this task (the spawn gate), or None
     provisioned: bool  # computed (Task.provisioned): branch + clone recorded
     history: list[HistoryOut]
 
@@ -126,6 +127,10 @@ class TurnIn(BaseModel):
 
 class BlockedIn(BaseModel):
     blocked: bool
+
+
+class ClaimIn(BaseModel):
+    runner_id: str
 
 
 class RegisterIn(BaseModel):
@@ -273,6 +278,18 @@ def create_app(service: TaskService) -> FastAPI:
     @app.put("/tasks/{task_id}/blocked")
     async def set_blocked(task_id: str, body: BlockedIn) -> TaskOut:
         return TaskOut.model_validate(service.set_blocked(task_id, body.blocked))
+
+    @app.put("/tasks/{task_id}/claim")
+    async def claim(task_id: str, body: ClaimIn) -> TaskOut:
+        try:  # a runner claims an unclaimed task before spawning its container (ADR 0008)
+            task = service.claim(task_id, body.runner_id)
+        except AlreadyClaimed as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return TaskOut.model_validate(task)
+
+    @app.delete("/tasks/{task_id}/claim")
+    async def release(task_id: str) -> TaskOut:
+        return TaskOut.model_validate(service.release(task_id))
 
     @app.put("/tasks/{task_id}/provisioning")
     async def record_provisioning(task_id: str, body: ProvisioningIn) -> TaskOut:

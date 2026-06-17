@@ -148,6 +148,21 @@ def test_set_turn_and_blocked(client: TestClient) -> None:
     assert blocked.json()["turn"] == "user"  # flip-independent: the block left the turn alone
 
 
+def test_claim_release_over_rest(client: TestClient) -> None:
+    task_id = _new_task(client)
+    assert client.get(f"/tasks/{task_id}").json()["claimed_by"] is None
+
+    claimed = client.put(f"/tasks/{task_id}/claim", json={"runner_id": "host-1"})
+    assert claimed.status_code == 200 and claimed.json()["claimed_by"] == "host-1"
+
+    # a different runner is refused with 409 while it's held
+    assert client.put(f"/tasks/{task_id}/claim", json={"runner_id": "host-2"}).status_code == 409
+
+    # release frees it; another runner can then claim
+    assert client.delete(f"/tasks/{task_id}/claim").json()["claimed_by"] is None
+    assert client.put(f"/tasks/{task_id}/claim", json={"runner_id": "host-2"}).json()["claimed_by"] == "host-2"
+
+
 # -- artifacts ----------------------------------------------------------------------
 
 

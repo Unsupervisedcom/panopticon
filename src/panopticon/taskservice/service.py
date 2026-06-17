@@ -34,6 +34,10 @@ class UnknownWorkflow(Exception):
     """Raised when a task references a workflow the service hasn't loaded."""
 
 
+class AlreadyClaimed(Exception):
+    """Raised when a task is claimed by a different runner than the one claiming."""
+
+
 @dataclass
 class Registration:
     """An active container's claim that it is working on a task (liveness)."""
@@ -196,6 +200,29 @@ class TaskService:
         """Set/clear the task's deliberate ``blocked`` marker (orthogonal to the turn)."""
         task = self.get_task(task_id)
         task.blocked = blocked
+        self._store.save_task(task)
+        return task
+
+    # -- claim (a runner owns the task; the spawn gate, ADR 0008) --------------------------
+
+    def claim(self, task_id: str, runner_id: str) -> Task:
+        """Claim an unclaimed task for ``runner_id`` (a session service claims before spawning).
+
+        Compare-and-set: succeeds if the task is unclaimed (idempotent if this runner already holds
+        it); raises :class:`AlreadyClaimed` if a different runner does. The store is the single
+        writer, so the check-and-set is serialized.
+        """
+        task = self.get_task(task_id)
+        if task.claimed_by not in (None, runner_id):
+            raise AlreadyClaimed(f"task {task_id!r} is already claimed by {task.claimed_by!r}")
+        task.claimed_by = runner_id
+        self._store.save_task(task)
+        return task
+
+    def release(self, task_id: str) -> Task:
+        """Release a task's claim (back to unclaimed) so it can be re-claimed / respawned."""
+        task = self.get_task(task_id)
+        task.claimed_by = None
         self._store.save_task(task)
         return task
 

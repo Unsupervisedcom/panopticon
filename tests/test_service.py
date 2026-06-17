@@ -18,7 +18,7 @@ from panopticon.core.models import Actor, Repo, Responsibility, Status
 from panopticon.core.store import NotFound
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 from panopticon.taskservice.store_sqlalchemy import SqlAlchemyStore
-from panopticon.taskservice.service import TaskService, UnknownWorkflow
+from panopticon.taskservice.service import AlreadyClaimed, TaskService, UnknownWorkflow
 from panopticon.workflows import Parity, Spike
 
 
@@ -147,6 +147,35 @@ def test_blocked_marker_survives_turn_flips(tmp_path: Path) -> None:
     assert reloaded.turn is Actor.USER
     assert reloaded.blocked is True
     assert svc.set_blocked(task.id, False).blocked is False  # cleared only explicitly
+
+
+# -- claim: a runner owns the task (the spawn gate) ---------------------------------
+
+
+def test_claim_is_compare_and_set_and_idempotent_for_the_holder(tmp_path: Path) -> None:
+    svc = make_service(tmp_path)
+    task = svc.create_task("r1", "spike")
+    assert task.claimed_by is None
+    assert svc.claim(task.id, "host-1").claimed_by == "host-1"
+    assert svc.claim(task.id, "host-1").claimed_by == "host-1"  # idempotent for the same runner
+    assert svc.get_task(task.id).claimed_by == "host-1"  # persisted
+
+
+def test_claim_rejects_a_different_runner(tmp_path: Path) -> None:
+    svc = make_service(tmp_path)
+    task = svc.create_task("r1", "spike")
+    svc.claim(task.id, "host-1")
+    with pytest.raises(AlreadyClaimed):
+        svc.claim(task.id, "host-2")
+    assert svc.get_task(task.id).claimed_by == "host-1"  # unchanged
+
+
+def test_release_returns_the_task_to_unclaimed(tmp_path: Path) -> None:
+    svc = make_service(tmp_path)
+    task = svc.create_task("r1", "spike")
+    svc.claim(task.id, "host-1")
+    assert svc.release(task.id).claimed_by is None
+    assert svc.claim(task.id, "host-2").claimed_by == "host-2"  # now another runner can claim
 
 
 # -- provisioning: the session service does the host git; the service only records it (ADR 0010) --

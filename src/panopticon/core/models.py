@@ -135,6 +135,12 @@ class Task:
     #: itself — so this stays correct when the runner is remote. Both ``None`` until provisioning.
     branch: str | None = None
     clone: str | None = None
+    #: The runner that has **claimed** this task (its ``runner_id``), or ``None`` if unclaimed. A
+    #: session service claims an unclaimed task before spawning its container, so exactly one host
+    #: owns it; the claim is the spawn gate (ADR 0008). Released (back to ``None``) to hand it off
+    #: or have it respawned. Distinct from liveness — a claimed task whose container died is
+    #: "claimed but down".
+    claimed_by: str | None = None
     history: list[HistoryEntry] = field(default_factory=list)
 
     @property

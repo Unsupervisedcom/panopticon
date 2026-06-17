@@ -202,6 +202,11 @@ commands the Makefile wraps).
   fulfils each one at a time (`MET`, or `FAILED` with a comment) — mutating that entry — and a
   later advance is gated on all being resolved. Agent-only.
 - **Registration / liveness** — a container's standing claim that it is working on a task.
+- **Claim** — `Task.claimed_by` (a runner's id, nullable): which session service *owns* a task.
+  A runner **claims** an unclaimed task (`PUT …/claim`, compare-and-set, 409 if another holds it)
+  before spawning its container — the spawn gate so exactly one host runs it (ADR 0008). **Release**
+  (`DELETE …/claim`) returns it to unclaimed for hand-off or respawn. Distinct from liveness: a
+  claimed task whose container died is "claimed but down".
 - **Provisioning** — the writable per-task clone + slug-named branch a task works in (ADR
   0010/0011). Each task gets a self-contained `git clone --local` at spawn, mounted at
   `/workspace`; on slug the session service **branches whatever's there** (`checkout -b

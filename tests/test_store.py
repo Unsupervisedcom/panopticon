@@ -318,6 +318,7 @@ def _fully_populated_task() -> Task:
         slug="fix-the-widget",
         branch="panopticon/fix-the-widget",
         clone="/clones/t-full",
+        claimed_by="local",
         history=[
             HistoryEntry(
                 at="t0", from_state=None, to_state="PLAN", trigger="start", note="kickoff"

@@ -102,6 +102,14 @@ class TaskServiceClient:
         body: JsonObj = {"branch": branch, "clone": clone}
         return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/provisioning", json=body)))
 
+    def claim(self, task_id: str, runner_id: str) -> JsonObj:
+        """Claim an unclaimed task for `runner_id` (the spawn gate); 409 if another runner holds it."""
+        return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/claim", json={"runner_id": runner_id})))
+
+    def release(self, task_id: str) -> JsonObj:
+        """Release a task's claim (back to unclaimed) so it can be re-claimed / respawned."""
+        return cast(JsonObj, self._json(self._http.delete(f"/tasks/{task_id}/claim")))
+
     def request_transition(
         self, task_id: str, to_state: str, *, trigger: str | None = None, note: str | None = None
     ) -> JsonObj:
