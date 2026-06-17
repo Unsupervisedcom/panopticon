@@ -4,6 +4,11 @@ claude's Stop / UserPromptSubmit hooks invoke this to flip the live turn (the Sl
 It reads the task from the container's env and POSTs `set_turn`. claude-specific wiring (M3);
 the deterministic turn mechanism it calls lives in the task service. It sets only the turn, so a
 deliberate `blocked` marker survives.
+
+On the **user's turn** (UserPromptSubmit → ``agent``) it also checks whether the task has a slug
+yet; if not, it prints the provisioning nudge (ADR 0011 §3) — claude adds a UserPromptSubmit hook's
+stdout to the agent's context — reminding the agent to run the `provision` skill once it knows
+enough to name the task.
 """
 
 from __future__ import annotations
@@ -15,6 +20,7 @@ from collections.abc import Sequence
 import httpx
 
 from panopticon.client import TaskServiceClient
+from panopticon.core.provisioning import PROVISION_NUDGE
 
 
 def main(argv: Sequence[str] | None = None, *, client: TaskServiceClient | None = None) -> int:
@@ -23,8 +29,12 @@ def main(argv: Sequence[str] | None = None, *, client: TaskServiceClient | None 
         print("usage: python -m panopticon.container.hook <user|agent>", file=sys.stderr)
         return 2
     env = os.environ
+    actor, task_id = args[0], env["PANOPTICON_TASK_ID"]
     client = client or TaskServiceClient(httpx.Client(base_url=env["PANOPTICON_SERVICE_URL"]))
-    client.set_turn(env["PANOPTICON_TASK_ID"], args[0])
+    client.set_turn(task_id, actor)
+    # UserPromptSubmit (actor == "agent"): nudge toward provisioning while the task is unslugged.
+    if actor == "agent" and client.get_task(task_id).get("slug") is None:
+        print(PROVISION_NUDGE)
     return 0
 
 

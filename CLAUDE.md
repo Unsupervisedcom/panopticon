@@ -174,12 +174,16 @@ commands the Makefile wraps).
   `turn=agent`. The claude wiring is `container/hooks.py` (renders `.claude/settings.json`) +
   `container/hook.py` (the callback the events invoke), rendered by the agent launcher. `Task.blocked`
   (`PUT …/blocked`) is a deliberate "waiting" marker the agent sets; it's **orthogonal to the
-  turn and survives flips** (cloude-cade's `:blocked:`), cleared only explicitly.
-- **Skill** — a workflow-specific, agent-driven procedure exposed *in the container* (ADR 0004),
-  on top of the core operations. Declared **CLI-agnostically** as a `Skill(name, description,
-  instructions)` spec from `Workflow.skills()`; the in-container harness renders it to the active
-  CLI surface (`container/skills.py` → claude `.claude/commands/<name>.md`; other CLIs in M3).
-  Exposed over REST (`GET /tasks/{id}/skills`); only workflows that define them have any.
+  turn and survives flips** (cloude-cade's `:blocked:`), cleared only explicitly. The user-prompt
+  hook also **nudges toward provisioning** (ADR 0011 §3): while the task has no slug it prints the
+  `provision` reminder, which claude adds to the agent's context (`core/provisioning.py`).
+- **Skill** — an agent-driven procedure exposed *in the container* (ADR 0004), on top of the core
+  operations. Declared **CLI-agnostically** as a `Skill(name, description, instructions)` spec; the
+  in-container harness renders it to the active CLI surface (`container/skills.py` → claude
+  `.claude/commands/<name>.md`; other CLIs in M3). Exposed over REST (`GET /tasks/{id}/skills`).
+  The agnostic **`provision`** skill (`core/provisioning.py`) is exposed on **every** task (name
+  the task → set its slug → the session service branches the clone, ADR 0011); workflow-specific
+  skills (e.g. parity's forge skills) follow it, and a workflow may define none.
 - **Responsibility / Status** — an agent obligation for a state. Entering a state seeds its
   responsibilities onto that entry's history record, all `PENDING` (a promise); the agent
   fulfils each one at a time (`MET`, or `FAILED` with a comment) — mutating that entry — and a

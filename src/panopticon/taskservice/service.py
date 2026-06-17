@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 
 from panopticon.core.artifacts import ArtifactStore
 from panopticon.core.models import Actor, Repo, Skill, Status, Task
+from panopticon.core.provisioning import PROVISION_SKILL
 from panopticon.core.store import NotFound, Store
 from panopticon.core.workflow import Workflow
 
@@ -122,9 +123,10 @@ class TaskService:
         return self._workflow(task.workflow).operations(task.state)
 
     def skills(self, task_id: str) -> list[Skill]:
-        """The active workflow's in-container skills (rendered to the agent CLI in the container)."""
+        """The in-container skills for a task: the agnostic `provision` skill (every task names
+        itself to get a branch, ADR 0011) followed by the active workflow's own skills."""
         task = self.get_task(task_id)
-        return list(self._workflow(task.workflow).skills())
+        return [PROVISION_SKILL, *self._workflow(task.workflow).skills()]
 
     def apply_operation(self, task_id: str, operation: str, *, note: str | None = None) -> Task:
         """Apply a named core operation (advance/drop) — a gated move along the declared graph."""

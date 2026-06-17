@@ -94,7 +94,14 @@ def test_skills_exposes_the_active_workflows_skills(tmp_path: Path) -> None:
     svc.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
     task = svc.create_task("r1", "skilled")
     skills = svc.skills(task.id)
-    assert [(s.name, s.description) for s in skills] == [("babysit-ci", "Watch CI.")]
+    # The agnostic `provision` skill is exposed first, then the workflow's own skills.
+    assert [s.name for s in skills] == ["provision", "babysit-ci"]
+
+
+def test_provision_skill_is_exposed_even_for_skill_less_workflows(tmp_path: Path) -> None:
+    svc = make_service(tmp_path)
+    task = svc.create_task("r1", "spike")  # the seed workflow declares no skills of its own
+    assert [s.name for s in svc.skills(task.id)] == ["provision"]
 
 
 def test_on_transition_hook_fires_through_the_service(tmp_path: Path) -> None:
