@@ -185,8 +185,9 @@ commands the Makefile wraps).
   service** (where the container runs), so it stays correct when the runner is remote; the **task
   service only records the result** — `record_provisioning` / `PUT /tasks/{id}/provisioning`
   writes `Task.branch`/`Task.clone` (the clone path), slug-gated, a pure recorded-fact write
-  touching no filesystem. `core/git.py` `GitClones` is the LLM-free primitive the session service
-  drives (`GitWorktrees` remains for non-task local-git use).
+  touching no filesystem. `Task.provisioned` (computed: branch recorded) is what the provisioner
+  and the daemon's watch-set gate on. `core/git.py` `GitClones` is the LLM-free primitive the
+  session service drives (`GitWorktrees` remains for non-task local-git use).
 - **Task service** — the deterministic control plane (sole DB authority).
 - **Session service / runner** — spawns task containers (stubbed for now).
 - **Terminal controller** — the user-facing CLI/dashboard (Slice 3).

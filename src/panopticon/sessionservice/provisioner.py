@@ -43,12 +43,12 @@ class Provisioner:
     def provision(self, task: JsonObj) -> str | None:
         """Provision ``task`` if it is ready, returning the created branch (else ``None``).
 
-        Ready means it has a slug but isn't branched yet; otherwise this no-ops (idempotent, so the
-        pull loop can call it on every task). Branches the per-task clone off its current HEAD,
+        Ready means it has a slug but isn't provisioned yet; otherwise this no-ops (idempotent, so
+        the pull loop can call it on every task). Branches the per-task clone off its current HEAD,
         points ``origin`` at the repo's forge, then records the branch + clone path on the task
         service.
         """
-        if not task.get("slug") or task.get("branch"):
+        if not task.get("slug") or task.get("provisioned"):
             return None
         clone = f"{self._clones_root}/{task['id']}"
         branch = branch_name(task["slug"])

@@ -46,6 +46,13 @@ def test_blocked_defaults_false() -> None:
     assert _working_task().blocked is False  # the deliberate marker starts clear
 
 
+def test_provisioned_reflects_the_branch() -> None:
+    task = _working_task()
+    assert task.provisioned is False  # no branch yet
+    task.branch = "panopticon/fix-widget"
+    assert task.provisioned is True  # provisioned once the branch is recorded
+
+
 def test_resolve_responsibility_fulfils_in_place() -> None:
     task = _working_task()
     entry = task.current_entry

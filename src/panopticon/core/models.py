@@ -138,6 +138,13 @@ class Task:
     history: list[HistoryEntry] = field(default_factory=list)
 
     @property
+    def provisioned(self) -> bool:
+        """True once the session service has provisioned this task — its branch (and per-task
+        clone) are recorded (ADR 0011). Until then the task has at most a slug, no working branch.
+        """
+        return self.branch is not None
+
+    @property
     def current_entry(self) -> HistoryEntry:
         """The latest history entry — the one recorded on entering the current state."""
         return self.history[-1]

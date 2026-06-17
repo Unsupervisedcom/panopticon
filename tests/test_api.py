@@ -62,6 +62,7 @@ def test_create_and_get_task(client: TestClient) -> None:
     assert body["state"] == "ITERATING"
     assert body["turn"] == "agent"
     assert body["slug"] is None
+    assert body["provisioned"] is False  # no branch yet (computed Task.provisioned)
     assert [h["to_state"] for h in body["history"]] == ["ITERATING"]
 
 
