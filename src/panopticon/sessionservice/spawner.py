@@ -1,0 +1,79 @@
+"""Host-side spawn loop (ADR 0008): claim an unclaimed task, then spawn its container.
+
+The session service is the per-host runner. Each pass it considers the tasks the task service knows
+that are **unclaimed** and **non-terminal**, **claims** one for this host (the claim is the spawn
+gate — exactly one runner owns it; a lost race is a 409 we skip), prepares its writable per-task
+clone (`prepare_workspace`), and spawns the container via the runner with the repo's secrets + the
+``/workspace`` mount. Provisioning (slug → branch) is the sibling loop (`ProvisionDaemon`); the
+unified host daemon runs both. LLM-free.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+
+import httpx
+
+from panopticon.client import JsonObj, TaskServiceClient
+from panopticon.core.state import TERMINAL_LABELS
+from panopticon.sessionservice.clones import CloneCache
+from panopticon.sessionservice.local_runner import LocalRunner
+from panopticon.sessionservice.spawn import prepare_workspace
+
+
+class Spawner:
+    """Claims an unclaimed task for ``runner_id`` and spawns its container (the per-host runner)."""
+
+    def __init__(
+        self,
+        client: TaskServiceClient,
+        runner: LocalRunner,
+        *,
+        runner_id: str,
+        cache: CloneCache,
+        tasks_root: str,
+        git: object | None = None,
+    ) -> None:
+        self._client = client
+        self._runner = runner
+        self._runner_id = runner_id
+        self._cache = cache
+        self._tasks_root = tasks_root
+        self._git = git
+
+    def spawn_one(self, task: JsonObj) -> str | None:
+        """Claim + spawn ``task`` if it's a fresh unclaimed, non-terminal task; else ``None``.
+
+        Claiming is compare-and-set on the task service — if another runner wins it (409) we skip.
+        On a successful claim, prepare the per-task clone and spawn the container with the repo's
+        secrets + the ``/workspace`` mount; returns the container id.
+        """
+        if task["state"] in TERMINAL_LABELS or task.get("claimed_by"):
+            return None
+        try:
+            self._client.claim(task["id"], self._runner_id)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 409:
+                return None  # another runner claimed it first
+            raise
+        repo = self._client.get_repo(task["repo_id"])
+        workspace = prepare_workspace(
+            task["id"], repo, cache=self._cache, tasks_root=self._tasks_root, git=self._git  # type: ignore[arg-type]
+        )
+        return self._runner.spawn(
+            task["id"],
+            env_file=repo.get("env_file"),
+            creds_volume=repo.get("creds_volume"),
+            workspace=workspace,
+        )
+
+
+def spawnable_tasks(client: TaskServiceClient) -> Callable[[], list[JsonObj]]:
+    """This host's spawn candidates: unclaimed, non-terminal tasks (the runner claims-then-spawns).
+
+    For M1 (single host) that's every such task the service knows; scoping to this runner's own
+    assignments is an M5 refinement.
+    """
+    return lambda: [
+        t for t in client.list_tasks() if not t["claimed_by"] and t["state"] not in TERMINAL_LABELS
+    ]
