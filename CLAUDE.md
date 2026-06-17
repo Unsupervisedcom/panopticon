@@ -146,6 +146,9 @@ commands the Makefile wraps).
 - `tests/test_acceptance.py` — Slice 2 acceptance (`skipif` no docker/tmux): builds the base
   image and a real container connects back to an in-process task service, registers,
   heartbeats, and loses liveness on kill. No LLM.
+- `tests/test_multi_workflow_acceptance.py` — Slice 8 acceptance: over REST (via `build_app`), a
+  path-discovered workflow is selectable with no core change, and Parity + the free-form (spike)
+  workflow run concurrently with workflow-specific skills. No Docker, no LLM.
 
 ## Glossary
 
