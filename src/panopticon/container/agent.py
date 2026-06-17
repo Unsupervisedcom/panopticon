@@ -26,7 +26,7 @@ import httpx
 
 from panopticon.client import TaskServiceClient
 from panopticon.container.hooks import write_settings
-from panopticon.container.skills import write_commands
+from panopticon.container.skills import write_commands, write_operation_commands
 from panopticon.core.models import Skill
 
 #: The repo's OAuth creds volume mount inside the container (matches the runner's CREDS_MOUNT).
@@ -40,6 +40,15 @@ def render_skills(client: TaskServiceClient, task_id: str, home: Path) -> list[P
     """Render the active workflow's skills to the agent CLI surface (`.claude/commands/`)."""
     skills = [Skill(**s) for s in client.list_skills(task_id)]
     return write_commands(skills, home)
+
+
+def render_operations(client: TaskServiceClient, task_id: str, home: Path) -> list[Path]:
+    """Render the active workflow's available core operations (advance/drop/…) as slash-commands.
+
+    Reflects the *active workflow's* declared moves (ADR 0004), so a parity and a free-form
+    container expose different operation commands — not a fixed global menu.
+    """
+    return write_operation_commands(client.list_operations(task_id), home)
 
 
 def link_credentials(config_dir: Path, *, creds_dir: Path = Path(CREDS_DIR)) -> None:
@@ -94,7 +103,9 @@ def main(
     env = os.environ
     client = client_factory(env["PANOPTICON_SERVICE_URL"])
     config_dir = (home or Path.home()) / ".claude"
-    render_skills(client, env["PANOPTICON_TASK_ID"], config_dir.parent)
+    task_id = env["PANOPTICON_TASK_ID"]
+    render_skills(client, task_id, config_dir.parent)
+    render_operations(client, task_id, config_dir.parent)  # advance/drop/… as slash-commands
     write_settings(config_dir.parent)  # turn-flip hooks → <home>/.claude/settings.json
     link_credentials(config_dir)
     launch(config_dir)

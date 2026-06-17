@@ -38,7 +38,7 @@ src/panopticon/
                    # `python -m panopticon.sessionservice` (spawn-prep + spawn one task)
   container/       # entrypoint (`python -m panopticon.container` = connect/register/slug/
                    # heartbeat liveness) + agent.py (`-m panopticon.container.agent` = the tmux
-                   # pane's launcher: render skills → exec `claude`) — the ONLY LLM-bearing pkg
+                   # pane's launcher: render skills + operations → exec `claude`) — the ONLY LLM pkg
 docker/Dockerfile  # minimal base task-container image (ADR 0005 base layer)
 ```
 

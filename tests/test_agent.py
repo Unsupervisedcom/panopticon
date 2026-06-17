@@ -11,17 +11,32 @@ from panopticon.container import agent
 
 
 class _FakeClient:
-    def __init__(self, skills: list[dict[str, str]]) -> None:
+    def __init__(
+        self, skills: list[dict[str, str]], operations: dict[str, str] | None = None
+    ) -> None:
         self._skills = skills
+        self._operations = operations or {}
 
     def list_skills(self, task_id: str) -> list[dict[str, str]]:
         return self._skills
+
+    def list_operations(self, task_id: str) -> dict[str, str]:
+        return self._operations
 
 
 def test_render_skills_writes_command_files(tmp_path: Path) -> None:
     client = _FakeClient([{"name": "babysit-ci", "description": "Watch CI.", "instructions": "loop"}])
     agent.render_skills(client, "t1", tmp_path)  # type: ignore[arg-type]
     assert (tmp_path / ".claude" / "commands" / "babysit-ci.md").read_text().startswith("---\ndescription: Watch CI.")
+
+
+def test_render_operations_writes_a_command_per_operation(tmp_path: Path) -> None:
+    client = _FakeClient([], {"advance": "COMPLETE", "drop": "DROPPED"})
+    agent.render_operations(client, "t1", tmp_path)  # type: ignore[arg-type]
+    commands = tmp_path / ".claude" / "commands"
+    assert {p.name for p in commands.glob("*.md")} == {"advance.md", "drop.md"}
+    body = (commands / "advance.md").read_text()
+    assert "apply_operation" in body and "COMPLETE" in body  # tells the agent how + the target
 
 
 def test_claude_argv_starts_fresh_without_a_session(tmp_path: Path) -> None:
@@ -63,10 +78,14 @@ def test_main_bootstraps_into_a_container_local_config_dir_then_launches(
     monkeypatch.setenv("PANOPTICON_TASK_ID", "t1")
     launched: list[Path] = []
     agent.main(
-        client_factory=lambda url: _FakeClient([{"name": "s", "description": "d", "instructions": "i"}]),  # type: ignore[arg-type,return-value]
+        client_factory=lambda url: _FakeClient(  # type: ignore[arg-type,return-value]
+            [{"name": "s", "description": "d", "instructions": "i"}], {"advance": "COMPLETE"}
+        ),
         home=tmp_path,
         launch=launched.append,
     )
-    assert (tmp_path / ".claude" / "commands" / "s.md").exists()  # skills rendered...
+    commands = tmp_path / ".claude" / "commands"
+    assert (commands / "s.md").exists()  # skills rendered...
+    assert (commands / "advance.md").exists()  # ...operations rendered...
     assert (tmp_path / ".claude" / "settings.json").exists()  # ...turn-flip hooks written...
     assert launched == [tmp_path / ".claude"]  # ...then launched with the container-local config dir
