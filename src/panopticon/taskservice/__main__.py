@@ -5,8 +5,9 @@ filesystem artifact store + the built-in workflows — into :func:`create_app` a
 uvicorn. This is the LLM-free control plane's process entry point; runners and the terminal
 controller are its clients (they reach it at ``PANOPTICON_SERVICE_URL``).
 
-This is the minimal "it runs" seam: path-based workflow registration and the mounted MCP HTTP
-app are the fuller Slice 7a. Config comes from flags or ``PANOPTICON_*`` env, with on-disk
+Workflows are **discovered**, not hardcoded: the built-in :mod:`panopticon.workflows` package plus
+an optional ``--workflows-path`` directory (ADR 0004, Slice 8) — so adding a workflow is just
+dropping a module on a scanned path. Config comes from flags or ``PANOPTICON_*`` env, with on-disk
 defaults so a bare ``python -m panopticon.taskservice`` persists across restarts.
 """
 
@@ -23,17 +24,22 @@ from panopticon.taskservice.api import create_app
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 from panopticon.taskservice.service import TaskService
 from panopticon.taskservice.store_sqlalchemy import SqlAlchemyStore
-from panopticon.workflows import Parity, Spike
+from panopticon.workflows.discovery import discover_workflows
 
 DEFAULT_DB = "sqlite:///panopticon.db"
 DEFAULT_ARTIFACTS = "./artifacts"
 
 
-def build_app(*, db: str = DEFAULT_DB, artifacts_root: str = DEFAULT_ARTIFACTS) -> FastAPI:
-    """Build the task-service app around the default control-plane wiring (no LLM)."""
+def build_app(
+    *, db: str = DEFAULT_DB, artifacts_root: str = DEFAULT_ARTIFACTS, workflows_path: str | None = None
+) -> FastAPI:
+    """Build the task-service app around the default control-plane wiring (no LLM).
+
+    Workflows are discovered from the built-in package plus an optional ``workflows_path`` dir.
+    """
     service = TaskService(
         SqlAlchemyStore(db),
-        {wf.name: wf for wf in (Spike(), Parity())},
+        discover_workflows(path=workflows_path),
         FilesystemArtifactStore(artifacts_root),
     )
     return create_app(service)
@@ -51,8 +57,14 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument(
         "--artifacts", default=os.environ.get("PANOPTICON_ARTIFACTS", DEFAULT_ARTIFACTS)
     )
+    parser.add_argument(
+        "--workflows-path",
+        default=os.environ.get("PANOPTICON_WORKFLOWS_PATH"),
+        help="extra directory to discover Workflow subclasses in (beyond the built-ins)",
+    )
     args = parser.parse_args(argv)
-    uvicorn.run(build_app(db=args.db, artifacts_root=args.artifacts), host=args.host, port=args.port)
+    app = build_app(db=args.db, artifacts_root=args.artifacts, workflows_path=args.workflows_path)
+    uvicorn.run(app, host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

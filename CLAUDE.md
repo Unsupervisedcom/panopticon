@@ -21,7 +21,9 @@ src/panopticon/
                    # machine: resolution, queries, start_task/apply_transition),
                    # store & artifact interfaces — pure, no I/O EXCEPT git.py (local
                    # branch/worktree ops; LLM-free, behind an injectable command-runner)
-  workflows/       # built-in Workflow subclasses (Spike seed; Parity = cloude-cade lifecycle)
+  workflows/       # built-in Workflow subclasses (Spike seed; Parity = cloude-cade lifecycle) +
+                   # discovery.py = scan the package + an optional path for Workflow subclasses
+                   # (the registry build_app runs on; drop a module in → registered, ADR 0004)
   taskservice/     # control plane: TaskService, FastAPI REST API, the SQLAlchemy store
                    # adapter (in-memory or on-disk SQLite), filesystem artifact store, MCP
                    # server (mcp.py: operations=tools, artifacts=resources; FastMCP)
@@ -112,6 +114,9 @@ commands the Makefile wraps).
   flow.
 - `tests/test_store.py` — store **contract tests run against in-memory and on-disk SQLite**,
   proving the interface is backend-agnostic (and that rows/domain models stay in sync).
+- `tests/test_discovery.py` — workflow discovery (Slice 8): the built-in package + an optional
+  path are scanned for `Workflow` subclasses; a dropped-in module registers with no core change;
+  underscored/non-workflow files are ignored; duplicate names are rejected.
 - `tests/test_git.py` — local git ops: unit tests pin the emitted `git` commands and slug-gating
   for `GitWorktrees` and the per-task-clone ops `GitClones` (clone/branch/set-origin, ADR 0011);
   a `skipif` integration test creates a real worktree.
