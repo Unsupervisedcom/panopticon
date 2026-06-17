@@ -55,7 +55,7 @@ def test_provisions_a_ready_task_by_branching_the_clone() -> None:
     client = _FakeClient()
     provisioner = _provisioner(client, run)
 
-    branch = provisioner.provision({"id": "t1", "repo_id": "r1", "slug": "fix-widget", "branch": None})
+    branch = provisioner.provision({"id": "t1", "repo_id": "r1", "slug": "fix-widget", "provisioned": False})
 
     assert branch == "panopticon/fix-widget"
     assert calls == [
@@ -70,18 +70,18 @@ def test_skips_a_task_without_a_slug() -> None:
     client = _FakeClient()
     provisioner = _provisioner(client, run)
 
-    assert provisioner.provision({"id": "t1", "repo_id": "r1", "slug": None, "branch": None}) is None
+    assert provisioner.provision({"id": "t1", "repo_id": "r1", "slug": None, "provisioned": False}) is None
     assert calls == []  # no git
     assert client.recorded == []  # nothing recorded
 
 
-def test_skips_an_already_branched_task() -> None:
+def test_skips_an_already_provisioned_task() -> None:
     calls, run = _recording_runner()
     client = _FakeClient()
     provisioner = _provisioner(client, run)
 
-    already = {"id": "t1", "repo_id": "r1", "slug": "fix-widget", "branch": "panopticon/fix-widget"}
-    assert provisioner.provision(already) is None  # idempotent: already branched
+    already = {"id": "t1", "repo_id": "r1", "slug": "fix-widget", "provisioned": True}
+    assert provisioner.provision(already) is None  # idempotent: already provisioned
     assert calls == []
     assert client.recorded == []
 

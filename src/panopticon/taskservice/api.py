@@ -58,6 +58,7 @@ class TaskOut(BaseModel):
     slug: str | None
     branch: str | None
     clone: str | None
+    provisioned: bool  # computed (Task.provisioned): branch + clone recorded
     history: list[HistoryOut]
 
 
