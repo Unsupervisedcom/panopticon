@@ -14,6 +14,7 @@ from panopticon.core.models import (
     Task,
 )
 from panopticon.core.state import (
+    TERMINAL_LABELS,
     BaseState,
     Complete,
     Dropped,
@@ -41,6 +42,7 @@ __all__ = [
     "Skill",
     "State",
     "Status",
+    "TERMINAL_LABELS",
     "Task",
     "TerminalState",
     "Workflow",

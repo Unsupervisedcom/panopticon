@@ -14,6 +14,12 @@ in the ADRs; this file is for the smaller stuff that doesn't have a home there y
 
 ## Cleanups / tech debt
 
+- [ ] **Move the spawnable-tasks query into the task service** — the session service's spawn loop
+  filters `list_tasks()` client-side for unclaimed + non-terminal tasks (`spawner.spawnable_tasks`),
+  matching the built-in terminal labels (`core.state.TERMINAL_LABELS`). A server-side endpoint —
+  "tasks needing a runner" — would let the task service compute terminal-ness from each workflow's
+  graph (so custom workflows' terminal states are honored) and scope to a runner, instead of the
+  runner hardcoding labels. _(Self-host spawn loop, P2; pairs with runner registration, ADR 0008/M5.)_
 - [ ] **Starlette/httpx TestClient deprecation warning** — tests emit "Using `httpx` with
   `starlette.testclient` is deprecated; install `httpx2` instead." Harmless, but noisy.
   Pin/upgrade once the ecosystem settles. _(Slice 1, P3)_

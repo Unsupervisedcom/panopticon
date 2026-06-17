@@ -61,6 +61,12 @@ class Dropped(TerminalState):
     label: ClassVar[str] = "DROPPED"
 
 
+#: The built-in terminal state labels — a task in one of these has finished (no container needed).
+#: The one central definition for the cross-cutting "is this task done?" check (e.g. the runner's
+#: spawn loop). Per-workflow terminal states beyond these are a server-side refinement (BACKLOG).
+TERMINAL_LABELS: frozenset[str] = frozenset({Complete.label, Dropped.label})
+
+
 class State(BaseState):
     """A non-terminal state.
 

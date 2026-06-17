@@ -32,7 +32,8 @@ src/panopticon/
                    # (base→workflow→repo); provisioner.py = host-side provisioning
                    # (ADR 0011: branch the per-task clone on slug, record it back); clones.py =
                    # per-repo clone cache; spawn.py = spawn-prep (clone --local the per-task
-                   # checkout, mounted rw at /workspace); daemon.py = the observe-and-provision
+                   # checkout, mounted rw at /workspace); spawner.py = the spawn loop (claim an
+                   # unclaimed task → spawn its container); daemon.py = the observe-and-provision
                    # pull loop (poll unprovisioned tasks, branch on slug;
                    # `python -m panopticon.sessionservice.daemon` runs it);
                    # `python -m panopticon.sessionservice` (spawn-prep + spawn one task)
@@ -126,6 +127,9 @@ commands the Makefile wraps).
   branch + clone path are recorded and a second pass is a no-op (idempotent).
 - `tests/test_clones.py` — the per-repo clone cache: unit tests pin the clone-on-first-use vs
   fetch-when-present decision (fakes); a `skipif` integration test clones a real local repo.
+- `tests/test_spawner.py` — the spawn loop (ADR 0008): unit tests pin `spawn_one` (claim → spawn,
+  skip terminal/claimed, skip on a 409 lost claim) and the `spawnable_tasks` filter; an integration
+  test claims + spawns against the real task service over REST (fake git/runner).
 - `tests/test_daemon.py` — the observe-and-provision loop + its launch: unit tests drive
   `tick`/`run` with fakes (branch watched tasks, skip a provisioned one, isolate a failing one,
   poll until a stop condition); integration tests over REST cover the loop (slug-set → branched →
