@@ -82,7 +82,7 @@ make typecheck   # uv run mypy --package panopticon (strict)
 make check       # typecheck + test (what CI runs)
 make serve       # run the task service over HTTP (python -m panopticon.taskservice)
 make dashboard   # run the dashboard once (no attach loop)
-make panopticon  # run the session supervisor (dashboard + task attach); service in background
+make panopticon  # bring up everything: task service + session-service runner + dashboard supervisor
 make login REPO=<id>  # populate a repo's creds volume interactively (panopticon login)
 make build       # docker build the base task-container image (panopticon-base)
 make clean       # remove the base + composed panopticon-* images
@@ -90,15 +90,21 @@ make clean       # remove the base + composed panopticon-* images
 
 `make serve` runs the control plane (`python -m panopticon.taskservice` — default on-disk
 SQLite + filesystem artifacts + the built-in workflows; `PANOPTICON_HOST/PORT/DB/ARTIFACTS`
-override). `make panopticon` runs the **terminal session supervisor** (`panopticon console`,
-ADR 0009): it owns the terminal and runs the dashboard in its own `dashboard` tmux session on
-the dedicated `panopticon` server (`-L panopticon`), beside the task sessions. On `t` the
-dashboard records the picked task to a switch-file and **detaches** (staying alive); the
-supervisor attaches the terminal to that task, then re-attaches the same live dashboard when you
-detach the task (`C-b d`). Switching is always detach→attach (never `switch-client`), so the same
-loop reaches a remote task over ssh at M5. It runs the task service in the background (a `service`
-tmux session on the same server), which the dashboard's `s` key switches to when it's running.
-`make dashboard` runs the dashboard once without the attach loop (it talks to a service at
+override). **`make panopticon` brings up the whole system** on the dedicated `panopticon` tmux
+server (`-L panopticon`): three background sessions — `service` (task service), `runner`
+(`python -m panopticon.sessionservice.host` — the per-host session service: spawns a container per
+new task and provisions each on slug, ADR 0008/0011), and `dashboard` — then runs the **terminal
+session supervisor** (`panopticon console`, ADR 0009) in the terminal. End to end: create a task in
+the dashboard → the runner claims + spawns its container → the agent plans and sets its slug → the
+runner branches the per-task clone → the agent works; a **down** task (claimed, no container) is
+respawned from the dashboard with `R`. The supervisor loop is unchanged — on `t` the dashboard
+records the picked task to a switch-file and **detaches** (staying alive); the supervisor attaches
+the terminal to that task's session, then re-attaches the same live dashboard on detach (`C-b d`).
+Crucially the runner spawns task sessions on the **same** `-L panopticon` socket, so `t` reaches
+them. Switching is always detach→attach (never `switch-client`), so the same loop reaches a remote
+task over ssh at M5; `s` jumps to the `service` session. The background sessions persist after `q`
+(stop them with `tmux -L panopticon kill-server`). Spawning needs the base image — `make build`
+first. `make dashboard` runs the dashboard once without the attach loop (talks to
 `PANOPTICON_SERVICE_URL`).
 
 CI (`.github/workflows/ci.yml`) runs `uv sync`, `mypy`, and `pytest` on every PR (the same
