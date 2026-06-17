@@ -14,14 +14,23 @@ skipped so it can't stall the others. LLM-free.
 
 from __future__ import annotations
 
+import argparse
 import logging
+import os
 import time
 from collections.abc import Callable, Iterable
 
+import httpx
+
 from panopticon.client import TaskServiceClient
+from panopticon.core.git import GitClones
 from panopticon.sessionservice.provisioner import Provisioner
 
 _log = logging.getLogger(__name__)
+
+#: Per-task clones root (matches the spawn entrypoint's ``--tasks-root``); each task's clone is
+#: ``<tasks_root>/<task_id>`` (ADR 0011).
+DEFAULT_TASKS_ROOT = os.path.expanduser("~/.panopticon/tasks")
 
 
 class ProvisionDaemon:
@@ -68,3 +77,50 @@ class ProvisionDaemon:
         while not (until and until()):
             self.tick()
             self._sleep(self._interval)
+
+
+def watched_tasks(client: TaskServiceClient) -> Callable[[], list[str]]:
+    """A watch-set provider: this host's **unprovisioned** task ids — those still needing a branch.
+
+    For M1 (single host) that's every not-yet-provisioned task the service knows; a task drops out
+    of the set once `Task.provisioned` is true. Scoping to this runner's own tasks (via
+    registrations) is an M5 refinement.
+    """
+    return lambda: [t["id"] for t in client.list_tasks() if not t["provisioned"]]
+
+
+def run_daemon(
+    client: TaskServiceClient,
+    *,
+    tasks_root: str,
+    interval: float = 2.0,
+    git: GitClones | None = None,
+    until: Callable[[], bool] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Build the provisioner + daemon over this host's tasks and run the loop (ADR 0010/0011)."""
+    provisioner = Provisioner(client, clones_root=tasks_root, git=git)
+    daemon = ProvisionDaemon(client, provisioner, watched_tasks(client), interval=interval, sleep=sleep)
+    daemon.run(until=until)
+
+
+def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = None) -> None:  # pragma: no cover - thin wiring + endless loop
+    """``python -m panopticon.sessionservice.daemon`` — watch this host's tasks and provision them."""
+    parser = argparse.ArgumentParser(
+        prog="python -m panopticon.sessionservice.daemon",
+        description="Observe tasks and provision each once it acquires a slug (ADR 0010/0011).",
+    )
+    parser.add_argument(
+        "--service-url",
+        default=os.environ.get("PANOPTICON_SERVICE_URL", "http://localhost:8000"),
+        help="task service URL to pull task state from",
+    )
+    parser.add_argument("--tasks-root", default=os.environ.get("PANOPTICON_TASKS_ROOT", DEFAULT_TASKS_ROOT))
+    parser.add_argument("--interval", type=float, default=2.0, help="poll interval, seconds")
+    args = parser.parse_args(argv)
+    client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
+    run_daemon(client, tasks_root=args.tasks_root, interval=args.interval)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()

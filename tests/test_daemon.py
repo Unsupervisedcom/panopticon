@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.git import GitClones
 from panopticon.core.models import Repo
-from panopticon.sessionservice.daemon import ProvisionDaemon
+from panopticon.sessionservice.daemon import ProvisionDaemon, run_daemon, watched_tasks
 from panopticon.sessionservice.provisioner import Provisioner
 from panopticon.taskservice.api import create_app
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
@@ -118,3 +118,44 @@ def test_daemon_against_the_real_service(tmp_path: Path) -> None:
 
         # Pass 3: already branched → no-op.
         assert daemon.tick() == []
+
+
+def test_watched_tasks_lists_only_unprovisioned(tmp_path: Path) -> None:
+    service = TaskService(SqlAlchemyStore(), {"spike": Spike()}, FilesystemArtifactStore(tmp_path))
+    service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://forge/r1.git"))
+    with TestClient(create_app(service)) as http:
+        client = TaskServiceClient(http)
+        unprovisioned = client.create_task("r1", "spike")["id"]
+        done = client.create_task("r1", "spike")["id"]
+        client.set_slug(done, "fix-widget")
+        client.record_provisioning(done, "panopticon/fix-widget", f"/clones/{done}")
+        # the provisioned task drops out of the watch set; only the unprovisioned one remains
+        assert watched_tasks(client)() == [unprovisioned]
+
+
+def test_run_daemon_provisions_a_slugged_task_over_one_pass(tmp_path: Path) -> None:
+    """The launch path (`run_daemon`) wires the provisioner + watch-set and branches a slugged
+    task — end to end over REST, `git` faked, stopped after one pass."""
+    service = TaskService(SqlAlchemyStore(), {"spike": Spike()}, FilesystemArtifactStore(tmp_path))
+    service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://forge/r1.git", default_base="trunk"))
+    with TestClient(create_app(service)) as http:
+        client = TaskServiceClient(http)
+        task_id = client.create_task("r1", "spike")["id"]
+        client.set_slug(task_id, "fix-widget")
+
+        def fake_run(args: object, *, check: bool = True) -> str:
+            return ""
+
+        passes = {"n": 0}
+
+        def until() -> bool:  # one pass, then stop
+            done = passes["n"] >= 1
+            passes["n"] += 1
+            return done
+
+        run_daemon(
+            client, tasks_root="/clones", git=GitClones(run=fake_run), until=until, sleep=lambda _s: None
+        )
+        got = client.get_task(task_id)
+        assert got["branch"] == "panopticon/fix-widget"
+        assert got["clone"] == f"/clones/{task_id}"
