@@ -44,6 +44,7 @@ class _FakeClient:
         self._operations = operations or {}
         self.created: list[tuple[str, str]] = []
         self.applied: list[tuple[str, str]] = []
+        self.released: list[str] = []
 
     def list_tasks(self) -> list[dict[str, Any]]:
         return self._tasks
@@ -67,6 +68,11 @@ class _FakeClient:
     def apply_operation(self, task_id: str, operation: str) -> dict[str, Any]:
         self.applied.append((task_id, operation))
         return {"id": task_id}
+
+    def release(self, task_id: str) -> dict[str, Any]:
+        self.released.append(task_id)
+        self._registrations.pop(task_id, None)
+        return {"id": task_id, "claimed_by": None}
 
 
 def test_render_detail_shows_state_turn_and_history() -> None:
@@ -177,3 +183,38 @@ async def test_dashboard_drives_drop() -> None:
         await pilot.press("x")
         await pilot.pause()
         assert fake.applied == [("task-abcdef0123", "drop")]
+
+
+def test_render_detail_shows_the_claim() -> None:
+    assert "claimed:" not in render_detail(_TASK)
+    assert "claimed: host-1" in render_detail({**_TASK, "claimed_by": "host-1"})
+
+
+def test_run_status_reflects_claim_and_liveness() -> None:
+    fake = _FakeClient([], {"t-live": [{"container_id": "c"}]})
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    assert app._run_status({"id": "t-x"}) == "–"  # unclaimed → not spawned
+    assert app._run_status({"id": "t-live", "claimed_by": "h"}) == "live"  # claimed + registered
+    assert app._run_status({"id": "t-down", "claimed_by": "h"}) == "down"  # claimed, no container
+
+
+async def test_respawn_releases_a_down_tasks_claim() -> None:
+    task = {**_TASK, "claimed_by": "host-1"}  # claimed but no registration → down
+    fake = _FakeClient([task], {})
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("R")
+        await pilot.pause()
+        assert fake.released == [task["id"]]  # released → the runner re-spawns it
+
+
+async def test_respawn_refuses_a_live_task() -> None:
+    task = {**_TASK, "claimed_by": "host-1"}
+    fake = _FakeClient([task], {task["id"]: [{"container_id": "c"}]})  # live
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("R")
+        await pilot.pause()
+        assert fake.released == []  # live container → respawn refused (would double-spawn)

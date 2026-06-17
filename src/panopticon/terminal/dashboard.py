@@ -2,9 +2,13 @@
 
 A task table on the left, the highlighted task's state/turn/history on the right. Keys: `r`
 refreshes from the task service over REST, `t` hands off to the task's container tmux, `n`
-creates a task (pick repo → workflow), and `x` **drops** it. Drop is the only state transition
-the dashboard drives: every other transition starts a new agentic turn, so it's triggered by an
-in-container agent skill (advance/iterate over REST/MCP), not the operator (ADR 0004).
+creates a task (pick repo → workflow), `x` **drops** it, and `R` **respawns** a down task (releases
+its claim so the host runner re-spawns it). Drop is the only state *transition* the dashboard
+drives: every other transition starts a new agentic turn, so it's triggered by an in-container
+agent skill (advance/iterate over REST/MCP), not the operator (ADR 0004).
+
+The `run` column shows each task's container status: `live` (an active registration), `down`
+(claimed by a runner but no container — respawn with `R`), or `–` (unclaimed/not spawned yet).
 
 The dashboard does not attach to tmux itself: on `t` it calls ``on_switch`` (the terminal
 supervisor, ADR 0009 §6, records the chosen session and detaches this client) and **keeps
@@ -34,9 +38,10 @@ def _short(task_id: str) -> str:
 def render_detail(task: JsonObj) -> str:
     """The right-pane text for one task: identity, state/turn, and history."""
     turn = f"{task['turn']}{' (blocked)' if task.get('blocked') else ''}"
+    claim = f"    claimed: {task['claimed_by']}" if task.get("claimed_by") else ""
     lines = [
         f"[b]{task.get('slug') or task['id']}[/b]",
-        f"state: {task['state']}    turn: {turn}    workflow: {task['workflow']}",
+        f"state: {task['state']}    turn: {turn}    workflow: {task['workflow']}{claim}",
         "",
         "history:",
     ]
@@ -90,6 +95,7 @@ class Dashboard(App[None]):
         ("r", "refresh", "Refresh"),
         ("n", "new_task", "New task"),
         ("x", "drop", "Drop"),
+        ("R", "respawn", "Respawn"),
         ("t", "attach", "Attach tmux"),
         ("s", "service", "Service"),
         ("q", "quit", "Quit"),
@@ -120,8 +126,14 @@ class Dashboard(App[None]):
     def on_mount(self) -> None:
         table = self.query_one("#tasks", DataTable)
         table.cursor_type = "row"
-        table.add_columns("id", "slug", "state", "turn")
+        table.add_columns("id", "slug", "state", "turn", "run")
         self.action_refresh()
+
+    def _run_status(self, task: JsonObj) -> str:
+        """A task's container status: `live` (registered), `down` (claimed but no container), or `–`."""
+        if not task.get("claimed_by"):
+            return "–"
+        return "live" if self._client.list_registrations(task["id"]) else "down"
 
     def action_refresh(self) -> None:
         table = self.query_one("#tasks", DataTable)
@@ -130,7 +142,7 @@ class Dashboard(App[None]):
         for task in self._tasks.values():
             turn = f"{task['turn']} ⚠" if task.get("blocked") else task["turn"]
             table.add_row(
-                _short(task["id"]), task["slug"] or "-", task["state"], turn,
+                _short(task["id"]), task["slug"] or "-", task["state"], turn, self._run_status(task),
                 key=task["id"],
             )
         self._update_detail(next(iter(self._tasks), None))
@@ -179,6 +191,25 @@ class Dashboard(App[None]):
             detail = exc.response.json().get("detail", str(exc))
             self.notify(f"Can't drop: {detail}", severity="error")
             return
+        self.action_refresh()
+
+    def action_respawn(self) -> None:
+        """`R`: respawn a **down** task — release its claim so the host runner re-spawns it.
+
+        Only for a task claimed by a runner with no live container; releasing a live task would
+        double-spawn it, so that's refused. Unclaimed tasks have nothing to respawn."""
+        task_id = self._current
+        if task_id is None:
+            return
+        task = self._tasks.get(task_id)
+        if not task or not task.get("claimed_by"):
+            self.notify("Task isn't claimed by a runner — nothing to respawn.", severity="warning")
+            return
+        if self._client.list_registrations(task_id):
+            self.notify("Container is live; drop it or let it finish.", severity="warning")
+            return
+        self._client.release(task_id)  # back to unclaimed → the host runner re-claims + re-spawns
+        self.notify("Released the claim; the runner will respawn it.")
         self.action_refresh()
 
     def action_attach(self) -> None:
