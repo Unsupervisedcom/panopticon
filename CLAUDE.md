@@ -42,7 +42,9 @@ src/panopticon/
                    # pane's launcher: render skills + operations, point claude at the /mcp server
                    # → exec `claude`) — the ONLY LLM pkg
 docker/Dockerfile  # base task-container image (ADR 0005 base layer): python + git + bash +
-                   # the panopticon package + the `claude` CLI the agent execs
+                   # the panopticon package + the `claude` CLI the agent execs; runs as the
+                   # unprivileged `panopticon` user. docker/entrypoint.sh = remap that user to the
+                   # invoking host uid/gid (PANOPTICON_PUID/PGID) then drop via gosu
 ```
 
 ## Conventions

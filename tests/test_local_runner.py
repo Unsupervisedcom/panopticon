@@ -52,8 +52,9 @@ def test_spawn_runs_detached_container_then_tmux_pane_execing_in() -> None:
     # pane execs the in-container agent launcher (so `tmux attach` reaches the live agent)
     assert tmux_new[:4] == ["tmux", "-L", "panopticon", "new-session"]
     assert tmux_new[tmux_new.index("-s") + 1] == "panopticon-t1"
-    assert tmux_new[-8:] == [
-        "docker", "exec", "--interactive", "--tty", "panopticon-t1",
+    # the pane execs in as the unprivileged `panopticon` user (so the agent's whoami isn't root)
+    assert tmux_new[-10:] == [
+        "docker", "exec", "--interactive", "--tty", "--user", "panopticon", "panopticon-t1",
         "python", "-m", "panopticon.container.agent",
     ]
 
@@ -62,15 +63,17 @@ def test_spawn_runs_container_unprivileged_as_the_invoking_user() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", run=rec).spawn("t1")
     docker_run = rec.calls[0][0]
-    # the container adopts the invoking host process's uid:gid (no root in the container)
-    assert docker_run[docker_run.index("--user") + 1] == f"{os.getuid()}:{os.getgid()}"
+    # the entrypoint adopts these and drops to the `panopticon` user (no root, no bare numeric uid)
+    assert f"PANOPTICON_PUID={os.getuid()}" in docker_run
+    assert f"PANOPTICON_PGID={os.getgid()}" in docker_run
+    assert "--user" not in docker_run  # adoption happens in the entrypoint, not via docker --user
 
 
 def test_spawn_user_can_be_overridden() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", user="1234:5678", run=rec).spawn("t1")
     docker_run = rec.calls[0][0]
-    assert docker_run[docker_run.index("--user") + 1] == "1234:5678"
+    assert "PANOPTICON_PUID=1234" in docker_run and "PANOPTICON_PGID=5678" in docker_run
 
 
 def test_extra_env_is_forwarded() -> None:
@@ -127,12 +130,12 @@ def test_login_runs_interactive_container_with_creds_volume() -> None:
     cmd, check = rec.calls[0]
     assert cmd == [
         "docker", "run", "--interactive", "--tty", "--rm",
-        "--user", "1234:5678",  # same unprivileged uid the task container reads the creds as
+        # the entrypoint adopts this user, chowns /creds to it, then drops to it before running the
+        # command — so the OAuth creds claude writes are owned by the uid the task reads them as
+        "--env", "PANOPTICON_PUID=1234", "--env", "PANOPTICON_PGID=5678",
         "--volume", "creds-r1:/creds",
         "--env", "CLAUDE_CONFIG_DIR=/creds",
-        # the command replaces the task entrypoint (else `python -m panopticon.container` would
-        # intercept it and demand the task env); its tail is passed as the program's args
-        "--entrypoint", "claude", "img:1", "login",
+        "img:1", "claude", "login",  # passed through the entrypoint (no --entrypoint override)
     ]
     assert check is False  # interactive; tolerate non-zero exit
 
@@ -160,7 +163,8 @@ def test_spawn_and_stop_real_container_and_session() -> None:
     socket = "panopticon-itest"
     subprocess.run(
         ["docker", "build", "--tag", image, "-"],
-        input='FROM alpine\nENTRYPOINT ["sleep", "3600"]\n',
+        # a `panopticon` user so the agent pane's `docker exec --user panopticon` resolves
+        input='FROM alpine\nRUN adduser -D -u 1000 panopticon\nENTRYPOINT ["sleep", "3600"]\n',
         text=True, check=True, capture_output=True,
     )
     runner = LocalRunner(
