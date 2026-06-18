@@ -101,7 +101,10 @@ def test_login_runs_interactive_container_with_creds_volume() -> None:
     assert cmd == [
         "docker", "run", "--interactive", "--tty", "--rm",
         "--volume", "creds-r1:/creds",
-        "--env", "CLAUDE_CONFIG_DIR=/creds", "img:1", "claude", "login",
+        "--env", "CLAUDE_CONFIG_DIR=/creds",
+        # the command replaces the task entrypoint (else `python -m panopticon.container` would
+        # intercept it and demand the task env); its tail is passed as the program's args
+        "--entrypoint", "claude", "img:1", "login",
     ]
     assert check is False  # interactive; tolerate non-zero exit
 
