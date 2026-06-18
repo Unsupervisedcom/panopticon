@@ -88,6 +88,31 @@ def test_link_credentials_is_a_noop_without_a_logged_in_volume(tmp_path: Path) -
     assert config_dir.is_dir() and not (config_dir / ".credentials.json").exists()
 
 
+def test_seed_account_copies_only_identity_fields(tmp_path: Path) -> None:
+    import json
+
+    creds_dir = tmp_path / "creds"
+    creds_dir.mkdir()
+    (creds_dir / ".claude.json").write_text(json.dumps({
+        "oauthAccount": {"uuid": "acc-1"}, "userID": "u-1", "hasCompletedOnboarding": True,
+        "projects": {"/creds": {}}, "mcpServers": {"x": {}},  # container-local cruft, must NOT leak
+    }))
+    config_dir = tmp_path / ".claude"
+
+    agent.seed_account(config_dir, creds_dir=creds_dir)
+
+    seeded = json.loads((config_dir / ".claude.json").read_text())
+    assert seeded["oauthAccount"] == {"uuid": "acc-1"} and seeded["userID"] == "u-1"
+    assert seeded["hasCompletedOnboarding"] is True
+    assert "projects" not in seeded and "mcpServers" not in seeded  # only identity is shared
+
+
+def test_seed_account_is_a_noop_without_a_logged_in_volume(tmp_path: Path) -> None:
+    config_dir = tmp_path / ".claude"
+    agent.seed_account(config_dir, creds_dir=tmp_path / "empty")  # no creds config
+    assert not (config_dir / ".claude.json").exists()  # nothing seeded → claude handles login
+
+
 def test_main_bootstraps_into_a_container_local_config_dir_then_launches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
