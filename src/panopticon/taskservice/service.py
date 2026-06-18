@@ -106,10 +106,12 @@ class TaskService:
 
     # -- tasks --------------------------------------------------------------------
 
-    def create_task(self, repo_id: str, workflow_name: str) -> Task:
+    def create_task(
+        self, repo_id: str, workflow_name: str, *, description: str | None = None
+    ) -> Task:
         self.get_repo(repo_id)  # ensure exists (raises NotFound)
         wf = self._workflow(workflow_name)
-        task = wf.start_task(self._id(), repo_id, at=self._clock())
+        task = wf.start_task(self._id(), repo_id, at=self._clock(), description=description)
         self._store.create_task(task)
         return task
 

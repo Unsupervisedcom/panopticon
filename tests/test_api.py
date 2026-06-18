@@ -83,8 +83,19 @@ def test_create_and_get_task(client: TestClient) -> None:
     assert body["state"] == "ITERATING"
     assert body["turn"] == "agent"
     assert body["slug"] is None
+    assert body["description"] is None  # none given at creation
     assert body["provisioned"] is False  # no branch yet (computed Task.provisioned)
     assert [h["to_state"] for h in body["history"]] == ["ITERATING"]
+
+
+def test_create_task_records_the_description(client: TestClient) -> None:
+    resp = client.post(
+        "/tasks", json={"repo_id": "r1", "workflow": "spike", "description": "make it green"}
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["description"] == "make it green"
+    got = client.get(f"/tasks/{resp.json()['id']}")  # and it survives a reload
+    assert got.json()["description"] == "make it green"
 
 
 def test_get_missing_task_404(client: TestClient) -> None:

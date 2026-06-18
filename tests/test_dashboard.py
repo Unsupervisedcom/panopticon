@@ -42,7 +42,7 @@ class _FakeClient:
         self._repos = repos or []
         self._workflows = workflows or []
         self._operations = operations or {}
-        self.created: list[tuple[str, str]] = []
+        self.created: list[tuple[str, str, str | None]] = []
         self.applied: list[tuple[str, str]] = []
         self.released: list[str] = []
 
@@ -61,8 +61,10 @@ class _FakeClient:
     def list_operations(self, task_id: str) -> dict[str, str]:
         return self._operations
 
-    def create_task(self, repo_id: str, workflow: str) -> dict[str, Any]:
-        self.created.append((repo_id, workflow))
+    def create_task(
+        self, repo_id: str, workflow: str, description: str | None = None
+    ) -> dict[str, Any]:
+        self.created.append((repo_id, workflow, description))
         return {"id": "new"}
 
     def apply_operation(self, task_id: str, operation: str) -> dict[str, Any]:
@@ -85,6 +87,12 @@ def test_render_detail_shows_state_turn_and_history() -> None:
     assert "∅ → PLAN (start)" in text
     assert "PLAN → WORKING (advance)" in text
     assert "tests-pass=pending" in text
+
+
+def test_render_detail_shows_the_description() -> None:
+    assert "make the widget green" not in render_detail(_TASK)
+    text = render_detail({**_TASK, "description": "make the widget green"})
+    assert "make the widget green" in text
 
 
 def test_render_detail_marks_blocked() -> None:
@@ -218,7 +226,7 @@ async def test_pressing_s_with_no_service_session_does_nothing() -> None:
         assert app.is_running  # reported "none running"; stayed on the dashboard
 
 
-async def test_pressing_n_creates_a_task_via_repo_then_workflow_picker() -> None:
+async def test_pressing_n_creates_a_task_via_repo_workflow_then_description() -> None:
     fake = _FakeClient([], repos=["r1", "r2"], workflows=["spike"])
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
@@ -229,7 +237,26 @@ async def test_pressing_n_creates_a_task_via_repo_then_workflow_picker() -> None
         await pilot.pause()
         await pilot.press("enter")  # first (only) workflow: spike
         await pilot.pause()
-        assert fake.created == [("r1", "spike")]
+        await pilot.press("f", "i", "x")  # type a description into the prompt
+        await pilot.press("enter")  # submit
+        await pilot.pause()
+        assert fake.created == [("r1", "spike", "fix")]
+
+
+async def test_pressing_n_with_a_blank_description_creates_with_none() -> None:
+    fake = _FakeClient([], repos=["r1"], workflows=["spike"])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")  # repo
+        await pilot.pause()
+        await pilot.press("enter")  # workflow
+        await pilot.pause()
+        await pilot.press("enter")  # submit an empty description
+        await pilot.pause()
+        assert fake.created == [("r1", "spike", None)]
 
 
 async def test_dashboard_drives_drop() -> None:

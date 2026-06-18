@@ -139,6 +139,10 @@ class Task:
     #: A deliberate "waiting on something" marker the agent sets; it is **orthogonal to the
     #: turn** and survives turn flips (cloude-cade's `:blocked:`), cleared only explicitly.
     blocked: bool = False
+    #: A free-text description of the work, collected when the task is created (shown in the
+    #: dashboard's task summary). A human label of *intent*, distinct from the ``slug`` (a short
+    #: identifier the agent sets later); ``None`` when the creator gave none.
+    description: str | None = None
     slug: str | None = None
     #: The git refs the session service provisions for this task once the slug is set (ADR
     #: 0010/0011): the slug-named branch and the path of the per-task ``clone`` it works in **on

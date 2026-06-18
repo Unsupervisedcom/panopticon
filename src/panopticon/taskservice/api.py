@@ -60,6 +60,7 @@ class TaskOut(BaseModel):
     state: str
     turn: Actor
     blocked: bool
+    description: str | None  # free-text intent collected at creation (shown in the summary)
     slug: str | None
     branch: str | None
     clone: str | None
@@ -95,6 +96,7 @@ class RepoOut(BaseModel):
 class CreateTaskIn(BaseModel):
     repo_id: str
     workflow: str
+    description: str | None = None
 
 
 class ResponsibilityIn(BaseModel):
@@ -245,7 +247,9 @@ def create_app(service: TaskService) -> FastAPI:
 
     @app.post("/tasks", status_code=201)
     async def create_task(body: CreateTaskIn) -> TaskOut:
-        return TaskOut.model_validate(service.create_task(body.repo_id, body.workflow))
+        return TaskOut.model_validate(
+            service.create_task(body.repo_id, body.workflow, description=body.description)
+        )
 
     @app.get("/tasks")
     async def list_tasks() -> list[TaskOut]:

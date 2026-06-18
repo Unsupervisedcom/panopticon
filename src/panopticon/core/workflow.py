@@ -269,10 +269,13 @@ class Workflow(ABC):
         """A fresh PENDING responsibility list to seed the history entry for entering ``label``."""
         return list(self.responsibilities(label))
 
-    def start_task(self, task_id: str, repo_id: str, *, at: str) -> Task:
+    def start_task(
+        self, task_id: str, repo_id: str, *, at: str, description: str | None = None
+    ) -> Task:
         """Create a task in this workflow's initial state, with turn and seed history set.
 
         The seed history entry carries the initial state's responsibilities (all ``PENDING``).
+        ``description`` is the optional free-text intent collected at creation.
         """
         state = self.initial_label
         return Task(
@@ -281,6 +284,7 @@ class Workflow(ABC):
             workflow=self.name,
             state=state,
             turn=self.turn_on_enter(state),
+            description=description,
             history=[
                 HistoryEntry(
                     at=at,

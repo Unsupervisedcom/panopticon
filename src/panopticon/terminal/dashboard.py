@@ -4,7 +4,7 @@ A task table on the left, the highlighted task's state/turn/history on the right
 auto-refreshes from the task service every ``REFRESH_INTERVAL`` seconds (preserving the
 highlighted row across the rebuild); `r` forces a refresh now. Keys: `r`
 refreshes from the task service over REST, `t` hands off to the task's container tmux, `n`
-creates a task (pick repo → workflow), `x` **drops** it, and `R` **respawns** a down task (releases
+creates a task (pick repo → workflow → describe the work), `x` **drops** it, and `R` **respawns** a down task (releases
 its claim so the host runner re-spawns it). Drop is the only state *transition* the dashboard
 drives: every other transition starts a new agentic turn, so it's triggered by an in-container
 agent skill (advance/iterate over REST/MCP), not the operator (ADR 0004).
@@ -30,7 +30,7 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Footer, Header, Label, OptionList, Static
+from textual.widgets import DataTable, Footer, Header, Input, Label, OptionList, Static
 
 from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.state import TERMINAL_LABELS
@@ -67,9 +67,10 @@ def render_detail(task: JsonObj) -> str:
     lines = [
         f"[b]{task.get('slug') or task['id']}[/b]",
         f"state: {task['state']}    turn: {turn}    workflow: {task['workflow']}{claim}",
-        "",
-        "history:",
     ]
+    if task.get("description"):
+        lines += ["", task["description"]]
+    lines += ["", "history:"]
     for entry in task["history"]:
         line = f"  {entry['from_state'] or '∅'} → {entry['to_state']}"
         if entry.get("trigger"):
@@ -105,6 +106,37 @@ class ChoiceScreen(ModalScreen[str | None]):
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         self.dismiss(str(event.option.prompt))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class InputScreen(ModalScreen[str | None]):
+    """A modal free-text prompt: submit the text (Enter) or cancel (Escape).
+
+    Dismisses the entered string (empty string if blank) on submit, or ``None`` on cancel — so
+    a caller can tell "left it empty" apart from "backed out"."""
+
+    CSS = """
+    InputScreen { align: center middle; }
+    #input-box { width: 64; height: auto; padding: 1 2; border: round $accent; background: $surface; }
+    """
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def __init__(self, title: str) -> None:
+        super().__init__()
+        self._title = title
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="input-box"):
+            yield Label(self._title)
+            yield Input()
+
+    def on_mount(self) -> None:
+        self.query_one(Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -197,7 +229,7 @@ class Dashboard(App[None]):
         self.query_one("#detail", Static).update(render_detail(task) if task else "no tasks")
 
     def action_new_task(self) -> None:
-        """`n`: create a task — pick a repo, then a workflow, then POST it and refresh."""
+        """`n`: create a task — pick a repo, a workflow, describe the work, then POST it."""
         repos = [str(r["id"]) for r in self._client.list_repos()]
         workflows = self._client.list_workflows()
         if not repos or not workflows:
@@ -208,13 +240,19 @@ class Dashboard(App[None]):
             if repo is None:
                 return
 
-            def create(workflow: str | None) -> None:
+            def describe(workflow: str | None) -> None:
                 if workflow is None:
                     return
-                self._client.create_task(repo, workflow)
-                self.action_refresh()
 
-            self.push_screen(ChoiceScreen("workflow", workflows), create)
+                def create(description: str | None) -> None:
+                    if description is None:  # backed out of the prompt
+                        return
+                    self._client.create_task(repo, workflow, description.strip() or None)
+                    self.action_refresh()
+
+                self.push_screen(InputScreen("description"), create)
+
+            self.push_screen(ChoiceScreen("workflow", workflows), describe)
 
         self.push_screen(ChoiceScreen("repo", repos), pick_workflow)
 

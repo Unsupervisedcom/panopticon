@@ -321,6 +321,7 @@ def _fully_populated_task() -> Task:
         state="WORKING",
         turn=Actor.AGENT,
         blocked=True,
+        description="make the widget green",
         slug="fix-the-widget",
         branch="panopticon/fix-the-widget",
         clone="/clones/t-full",
