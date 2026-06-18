@@ -68,17 +68,19 @@ class Spawner:
             env_file=repo.get("env_file"),
             creds_volume=repo.get("creds_volume"),
             workspace=workspace,
-            image=self._compose_image(task["workflow"], task["repo_id"]),
+            image=self._compose_image(task["workflow"], repo),
         )
 
-    def _compose_image(self, workflow: str, repo_id: str) -> str | None:
-        """Compose the task's image (base → workflow layer, ADR 0005) and return its tag; ``None``
-        when the workflow needs no layer (the runner falls back to the base image). E.g. parity
-        layers `gh` on for its forge skills. Docker layer-caches, so this is a no-op once built."""
-        layer = self._client.workflow_image_layer(workflow)
-        if not layer.strip():
+    def _compose_image(self, workflow: str, repo: JsonObj) -> str | None:
+        """Compose the task's image (base → workflow → repo layers, ADR 0005) and return its tag;
+        ``None`` when neither tier contributes a layer (the runner falls back to the base image).
+        E.g. parity layers `gh` for its forge skills, then the repo layers its toolchain (`uv`,
+        `make`). Docker layer-caches, so this is a no-op once built."""
+        layers = [self._client.workflow_image_layer(workflow), repo.get("image_layer") or ""]
+        layers = [layer for layer in layers if layer.strip()]
+        if not layers:
             return None
-        return self._images.build(workflow, repo_id, [layer])
+        return self._images.build(workflow, repo["id"], layers)
 
 
 def spawnable_tasks(client: TaskServiceClient) -> Callable[[], list[JsonObj]]:

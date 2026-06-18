@@ -174,7 +174,9 @@ commands the Makefile wraps).
   (ADR 0007) — `env_file` (API-key env-file path) and `creds_volume` (OAuth creds volume) —
   never the values; the runner injects them at launch (`--env-file` + `-v <vol>:/creds`,
   Slice 5), so a task gets only its own repo's secrets. `panopticon login <repo> [cmd]`
-  populates the creds volume interactively (the claude OAuth command arrives in Slice 6).
+  populates the creds volume interactively (the claude OAuth command arrives in Slice 6). Also holds
+  `image_layer` — the repo's Dockerfile fragment (ADR 0005's repo tier) the runner composes onto
+  base → workflow → **repo** for the task image (e.g. the repo's `uv`/`make` toolchain).
 - **Workflow** — a `Workflow` subclass whose **states are nested `State` classes**
   (declarative). It declares `initial`; states are discovered and their transitions
   (class refs or label strings) resolved + validated when the workflow is instantiated.

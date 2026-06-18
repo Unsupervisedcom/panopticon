@@ -79,6 +79,10 @@ class Repo:
     host path to an env-file of API-key-style secrets, and ``creds_volume`` names a persisted
     volume of OAuth credential files. Both are injected into the task container at launch (the
     runner), so secrets stay out of the DB, artifacts, and image layers.
+
+    ``image_layer`` is the repo's Dockerfile fragment (ADR 0005's repo tier): the runner composes
+    base → workflow → **repo** into the task image, so a repo can layer on its toolchain (e.g. `uv`,
+    `make`). Empty/None = no repo layer.
     """
 
     id: str
@@ -87,6 +91,7 @@ class Repo:
     default_base: str = "main"
     env_file: str | None = None
     creds_volume: str | None = None
+    image_layer: str | None = None
 
 
 @dataclass(frozen=True)

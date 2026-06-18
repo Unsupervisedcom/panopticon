@@ -108,6 +108,21 @@ def test_spawn_one_composes_the_workflow_image_when_it_has_a_layer() -> None:
     assert runner.spawned[0]["image"] == "panopticon-parity-r1"  # spawned on the composed image
 
 
+def test_spawn_one_composes_workflow_then_repo_layers() -> None:
+    # base → workflow (gh) → repo (toolchain), in that order (ADR 0005 tiers).
+    repo = {**_REPO, "image_layer": "RUN pip install uv"}
+    client = _FakeClient(repo=repo, image_layer="RUN apt-get install --yes gh")
+    runner, images = _FakeRunner(), _FakeImageBuilder()
+    cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True)  # type: ignore[arg-type]
+    spawner = Spawner(
+        client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
+        git=GitClones(run=_no_op_run), images=images,  # type: ignore[arg-type]
+    )
+    spawner.spawn_one({"id": "t1", "repo_id": "r1", "workflow": "parity", "state": "PLANNING", "claimed_by": None})
+    assert images.built == [("parity", "r1", ["RUN apt-get install --yes gh", "RUN pip install uv"])]
+    assert runner.spawned[0]["image"] == "panopticon-parity-r1"
+
+
 def test_spawn_one_skips_terminal_and_already_claimed_tasks() -> None:
     client, runner = _FakeClient(repo=_REPO), _FakeRunner()
     spawner = _spawner(client, runner)
