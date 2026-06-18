@@ -35,6 +35,12 @@ from panopticon.core.models import Skill
 CREDS_DIR = "/creds"
 #: claude's credential file, relative to a config dir; linked in from the creds volume.
 CREDS_FILE = ".credentials.json"
+#: claude's main config file. Holds (besides per-container state) the logged-in *account*, which
+#: claude keys "logged in" on — separately from the token in ``.credentials.json``.
+CONFIG_FILE = ".claude.json"
+#: The account/identity fields seeded from the creds volume's config into the container-local one,
+#: so a task is authenticated (the token alone isn't enough — claude also wants the account).
+ACCOUNT_KEYS = ("oauthAccount", "userID", "hasCompletedOnboarding", "lastOnboardingVersion")
 
 
 #: Filename of the rendered MCP client config in the config dir; claude is pointed at it via
@@ -82,6 +88,32 @@ def link_credentials(config_dir: Path, *, creds_dir: Path = Path(CREDS_DIR)) -> 
     src, link = creds_dir / CREDS_FILE, config_dir / CREDS_FILE
     if src.exists() and not link.exists():
         link.symlink_to(src)
+
+
+def seed_account(config_dir: Path, *, creds_dir: Path = Path(CREDS_DIR)) -> None:
+    """Seed the logged-in account into the container-local config so the task is authenticated.
+
+    The token is shared via :func:`link_credentials`, but claude also keys "logged in" on the
+    account record (``oauthAccount``/``userID``) in ``.claude.json`` — which is container-local and
+    fresh, so a task would have the token yet still be prompted to log in. Copy just the identity
+    fields from the creds volume's ``.claude.json`` (written by ``panopticon login``); claude fills
+    in the rest. Best effort: skipped if the volume has no config (never logged in) or it's
+    unreadable. ``.claude.json`` itself stays container-local — only these fields are shared."""
+    src = creds_dir / CONFIG_FILE
+    try:
+        shared = json.loads(src.read_text())
+    except (OSError, ValueError):
+        return
+    account = {key: shared[key] for key in ACCOUNT_KEYS if key in shared}
+    if not account:
+        return
+    config_dir.mkdir(parents=True, exist_ok=True)
+    dest = config_dir / CONFIG_FILE
+    try:
+        existing = json.loads(dest.read_text())
+    except (OSError, ValueError):
+        existing = {}
+    dest.write_text(json.dumps({**existing, **account}, indent=2))
 
 
 def _claude_argv(config_dir: Path, cwd: Path) -> list[str]:
@@ -132,6 +164,7 @@ def main(
     write_settings(config_dir.parent)  # turn-flip hooks → <home>/.claude/settings.json
     write_mcp_config(config_dir, service_url)  # point claude at the task service's MCP server
     link_credentials(config_dir)
+    seed_account(config_dir)  # + the logged-in account, so the token alone isn't a login prompt
     launch(config_dir)
 
 
