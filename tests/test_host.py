@@ -56,6 +56,34 @@ def test_tick_isolates_a_failing_task_from_the_others() -> None:
     assert seen == ["t1", "t2"]  # t1's error is logged + skipped; t2 still processed
 
 
+def test_run_survives_a_whole_pass_failure() -> None:
+    # `list_tasks()` raising (a service blip, or the service not yet listening at startup) must not
+    # kill the daemon: the pass is logged + retried, so the loop keeps polling until `until()`.
+    passes = {"n": 0}
+
+    class _Spawner:
+        def spawn_one(self, task: JsonObj) -> None:
+            return None
+
+    class _Provisioner:
+        def provision(self, task: JsonObj) -> None:
+            return None
+
+    class _FlakyClient:
+        def list_tasks(self) -> list[JsonObj]:
+            passes["n"] += 1
+            if passes["n"] == 1:
+                raise RuntimeError("connection refused")  # first poll fails (startup race)
+            return []
+
+    def until() -> bool:
+        return passes["n"] >= 3  # let it tick a few times after the failure
+
+    daemon = HostDaemon(_FlakyClient(), _Spawner(), _Provisioner(), sleep=lambda _s: None)  # type: ignore[arg-type]
+    daemon.run(until=until)
+    assert passes["n"] >= 3  # did not die on the first pass's error; kept polling
+
+
 def test_run_host_spawns_then_provisions_end_to_end(tmp_path: Path) -> None:
     service = TaskService(SqlAlchemyStore(), {"spike": Spike()}, FilesystemArtifactStore(tmp_path))
     service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://forge/r1.git", default_base="trunk"))

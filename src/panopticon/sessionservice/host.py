@@ -63,9 +63,18 @@ class HostDaemon:
                 continue
 
     def run(self, *, until: Callable[[], bool] | None = None) -> None:
-        """Poll until ``until()`` is true (``None`` = forever)."""
+        """Poll until ``until()`` is true (``None`` = forever).
+
+        A whole-pass failure — ``list_tasks()`` raising on a service blip or before the service is
+        listening (the ``make panopticon`` startup race) — is logged and retried next interval, so a
+        transient error never kills the long-lived daemon (and its tmux session) with it. Per-task
+        errors are already isolated inside :meth:`tick`; this is the outer net for everything else.
+        """
         while not (until and until()):
-            self.tick()
+            try:
+                self.tick()
+            except Exception:
+                _log.warning("host pass failed; retrying next interval", exc_info=True)
             self._sleep(self._interval)
 
 
