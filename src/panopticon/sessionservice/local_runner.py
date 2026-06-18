@@ -84,11 +84,13 @@ class LocalRunner(Runner):
         env_file: str | None = None,
         creds_volume: str | None = None,
         workspace: str | None = None,
+        image: str | None = None,
     ) -> str:
         """Spawn the task container. ``env_file``/``creds_volume`` are the task's repo's secret
         references (ADR 0007), injected at launch — never baked into the image. ``workspace`` is the
         task's per-task clone on the host (ADR 0011), bind-mounted read-write at ``/workspace`` as
-        the agent's working dir."""
+        the agent's working dir. ``image`` overrides the default base with the task's composed image
+        (base → workflow → repo, ADR 0005); ``None`` uses the configured base."""
         # The container name doubles as the tmux session name, so stop() needs only the id.
         container = f"panopticon-{task_id}"
         env = {
@@ -112,7 +114,7 @@ class LocalRunner(Runner):
             docker_run += ["--volume", f"{workspace}:{WORKSPACE_MOUNT}", "--workdir", WORKSPACE_MOUNT]
         for key, value in env.items():
             docker_run += ["--env", f"{key}={value}"]
-        docker_run.append(self._image)  # the image's entrypoint runs (no command override)
+        docker_run.append(image or self._image)  # composed image if given, else base; its entrypoint runs
         self._run(docker_run)
         # `docker run --detach` returns once the container is running, so the pane can exec in.
         self._run(

@@ -216,6 +216,11 @@ def create_app(service: TaskService) -> FastAPI:
     async def list_workflows() -> list[str]:
         return service.workflow_names()
 
+    @app.get("/workflows/{name}/image-layer")
+    async def workflow_image_layer(name: str) -> dict[str, str]:
+        """The workflow's Dockerfile layer (ADR 0005); the runner composes it onto the base."""
+        return {"layer": service.workflow_image_layer(name)}
+
     # -- repos --------------------------------------------------------------------
 
     @app.post("/repos", status_code=201)

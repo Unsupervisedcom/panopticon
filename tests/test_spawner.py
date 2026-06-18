@@ -33,18 +33,22 @@ class _FakeRunner:
     def __init__(self) -> None:
         self.spawned: list[dict[str, object]] = []
 
-    def spawn(self, task_id: str, *, env_file: str | None = None, creds_volume: str | None = None, workspace: str | None = None) -> str:
-        self.spawned.append({"task_id": task_id, "env_file": env_file, "creds_volume": creds_volume, "workspace": workspace})
+    def spawn(self, task_id: str, *, env_file: str | None = None, creds_volume: str | None = None, workspace: str | None = None, image: str | None = None) -> str:
+        self.spawned.append({"task_id": task_id, "env_file": env_file, "creds_volume": creds_volume, "workspace": workspace, "image": image})
         return f"panopticon-{task_id}"
 
 
 class _FakeClient:
     """Captures claims; serves one repo. `claim` 409s when already held by another runner."""
 
-    def __init__(self, *, repo: JsonObj) -> None:
+    def __init__(self, *, repo: JsonObj, image_layer: str = "") -> None:
         self._repo = repo
+        self._image_layer = image_layer
         self.claims: list[tuple[str, str]] = []
         self._held_by: dict[str, str] = {}
+
+    def workflow_image_layer(self, name: str) -> str:
+        return self._image_layer
 
     def claim(self, task_id: str, runner_id: str) -> JsonObj:
         holder = self._held_by.get(task_id)
@@ -72,11 +76,36 @@ _REPO: JsonObj = {"id": "r1", "git_url": "https://forge/r1.git", "env_file": "/s
 
 def test_spawn_one_claims_then_spawns_a_fresh_task() -> None:
     client, runner = _FakeClient(repo=_REPO), _FakeRunner()
-    cid = _spawner(client, runner).spawn_one({"id": "t1", "repo_id": "r1", "state": "ITERATING", "claimed_by": None})
+    cid = _spawner(client, runner).spawn_one({"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": None})
     assert cid == "panopticon-t1"
     assert client.claims == [("t1", "host-1")]  # claimed for this host first
     assert runner.spawned[0]["workspace"] == "/tasks/t1"  # per-task clone mounted
     assert runner.spawned[0]["env_file"] == "/sec/r1.env" and runner.spawned[0]["creds_volume"] == "creds-r1"
+    assert runner.spawned[0]["image"] is None  # spike has no image layer → runner uses the base
+
+
+class _FakeImageBuilder:
+    """Records compose calls; stands in for ImageBuilder (no docker)."""
+
+    def __init__(self) -> None:
+        self.built: list[tuple[str, str, list[str]]] = []
+
+    def build(self, workflow: str, repo_id: str, layers: list[str]) -> str:
+        self.built.append((workflow, repo_id, layers))
+        return f"panopticon-{workflow}-{repo_id}"
+
+
+def test_spawn_one_composes_the_workflow_image_when_it_has_a_layer() -> None:
+    client, runner = _FakeClient(repo=_REPO, image_layer="RUN apt-get install --yes gh"), _FakeRunner()
+    images = _FakeImageBuilder()
+    cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True)  # type: ignore[arg-type]
+    spawner = Spawner(
+        client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
+        git=GitClones(run=_no_op_run), images=images,  # type: ignore[arg-type]
+    )
+    spawner.spawn_one({"id": "t1", "repo_id": "r1", "workflow": "parity", "state": "PLANNING", "claimed_by": None})
+    assert images.built == [("parity", "r1", ["RUN apt-get install --yes gh"])]  # composed base → layer
+    assert runner.spawned[0]["image"] == "panopticon-parity-r1"  # spawned on the composed image
 
 
 def test_spawn_one_skips_terminal_and_already_claimed_tasks() -> None:

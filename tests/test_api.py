@@ -54,6 +54,19 @@ def test_health_and_workflows(client: TestClient) -> None:
     assert client.get("/workflows").json() == ["spike"]
 
 
+def test_workflow_image_layer_endpoint(client: TestClient) -> None:
+    # spike needs no layer (empty); the runner composes this onto the base image (ADR 0005).
+    assert client.get("/workflows/spike/image-layer").json() == {"layer": ""}
+
+
+def test_workflow_image_layer_surfaces_paritys_gh_layer(tmp_path: Path) -> None:
+    from panopticon.workflows import Parity
+
+    svc = TaskService(SqlAlchemyStore(), {"parity": Parity()}, FilesystemArtifactStore(tmp_path))
+    with TestClient(create_app(svc)) as c:
+        assert "gh" in c.get("/workflows/parity/image-layer").json()["layer"]  # forge skills need gh
+
+
 def test_mcp_is_mounted(client: TestClient) -> None:
     # The MCP streamable-HTTP app is mounted at /mcp (in-container agents connect there); it must
     # be a mount, not a REST route, and reachable (i.e. not a REST 404).

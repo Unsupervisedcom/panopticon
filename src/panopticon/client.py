@@ -32,6 +32,11 @@ class TaskServiceClient:
     def list_workflows(self) -> list[str]:
         return cast("list[str]", self._json(self._http.get("/workflows")))
 
+    def workflow_image_layer(self, name: str) -> str:
+        """The workflow's Dockerfile layer (ADR 0005); empty when it needs none."""
+        body = cast(JsonObj, self._json(self._http.get(f"/workflows/{name}/image-layer")))
+        return cast(str, body["layer"])
+
     def get_repo(self, repo_id: str) -> JsonObj:
         return cast(JsonObj, self._json(self._http.get(f"/repos/{repo_id}")))
 

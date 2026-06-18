@@ -17,6 +17,7 @@ import httpx
 from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.state import TERMINAL_LABELS
 from panopticon.sessionservice.clones import CloneCache
+from panopticon.sessionservice.images import ImageBuilder
 from panopticon.sessionservice.local_runner import LocalRunner
 from panopticon.sessionservice.spawn import prepare_workspace
 
@@ -33,6 +34,7 @@ class Spawner:
         cache: CloneCache,
         tasks_root: str,
         git: object | None = None,
+        images: ImageBuilder | None = None,
     ) -> None:
         self._client = client
         self._runner = runner
@@ -40,6 +42,7 @@ class Spawner:
         self._cache = cache
         self._tasks_root = tasks_root
         self._git = git
+        self._images = images or ImageBuilder()
 
     def spawn_one(self, task: JsonObj) -> str | None:
         """Claim + spawn ``task`` if it's a fresh unclaimed, non-terminal task; else ``None``.
@@ -65,7 +68,17 @@ class Spawner:
             env_file=repo.get("env_file"),
             creds_volume=repo.get("creds_volume"),
             workspace=workspace,
+            image=self._compose_image(task["workflow"], task["repo_id"]),
         )
+
+    def _compose_image(self, workflow: str, repo_id: str) -> str | None:
+        """Compose the task's image (base → workflow layer, ADR 0005) and return its tag; ``None``
+        when the workflow needs no layer (the runner falls back to the base image). E.g. parity
+        layers `gh` on for its forge skills. Docker layer-caches, so this is a no-op once built."""
+        layer = self._client.workflow_image_layer(workflow)
+        if not layer.strip():
+            return None
+        return self._images.build(workflow, repo_id, [layer])
 
 
 def spawnable_tasks(client: TaskServiceClient) -> Callable[[], list[JsonObj]]:

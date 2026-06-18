@@ -87,6 +87,15 @@ def test_spawn_mounts_the_per_task_clone_as_the_workspace() -> None:
     assert docker_run[docker_run.index("--workdir") + 1] == "/workspace"  # the agent's working dir
 
 
+def test_spawn_uses_the_composed_image_when_given_else_the_base() -> None:
+    rec = _Recorder()
+    runner = LocalRunner("http://svc", image="panopticon-base", run=rec)
+    runner.spawn("t1")  # no override → base
+    assert rec.calls[0][0][-1] == "panopticon-base"
+    runner.spawn("t2", image="panopticon-parity-r1")  # composed image (ADR 0005)
+    assert rec.calls[2][0][-1] == "panopticon-parity-r1"  # calls[2] = t2's docker run (calls[1]=t1 tmux)
+
+
 def test_stop_kills_session_and_force_removes_container_idempotently() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", run=rec).stop("panopticon-t1")
