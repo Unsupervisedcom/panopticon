@@ -3,6 +3,7 @@ turn-flip hooks, link credentials) then launch. No LLM — the real `claude` exe
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -71,6 +72,31 @@ def test_link_credentials_is_a_noop_without_a_logged_in_volume(tmp_path: Path) -
     assert config_dir.is_dir() and not (config_dir / ".credentials.json").exists()
 
 
+def test_pre_accept_dialogs_seeds_onboarding_and_workspace_trust(tmp_path: Path) -> None:
+    # A fresh container has no human to dismiss claude's first-run onboarding or the folder-trust
+    # prompt; both are pre-accepted in the CLI config so the unattended agent lands on the prompt.
+    config_dir = tmp_path / ".claude"
+    config_dir.mkdir()
+
+    agent.pre_accept_dialogs(config_dir, Path("/workspace"))
+
+    config = json.loads((config_dir / ".claude.json").read_text())
+    assert config["hasCompletedOnboarding"] is True
+    assert config["projects"]["/workspace"]["hasTrustDialogAccepted"] is True
+
+
+def test_pre_accept_dialogs_preserves_existing_config(tmp_path: Path) -> None:
+    config_dir = tmp_path / ".claude"
+    config_dir.mkdir()
+    (config_dir / ".claude.json").write_text('{"oauthAccount": "keep me"}')
+
+    agent.pre_accept_dialogs(config_dir, Path("/workspace"))
+
+    config = json.loads((config_dir / ".claude.json").read_text())
+    assert config["oauthAccount"] == "keep me"  # merged, not clobbered
+    assert config["hasCompletedOnboarding"] is True
+
+
 def test_main_bootstraps_into_a_container_local_config_dir_then_launches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -88,4 +114,5 @@ def test_main_bootstraps_into_a_container_local_config_dir_then_launches(
     assert (commands / "s.md").exists()  # skills rendered...
     assert (commands / "advance.md").exists()  # ...operations rendered...
     assert (tmp_path / ".claude" / "settings.json").exists()  # ...turn-flip hooks written...
+    assert (tmp_path / ".claude" / ".claude.json").exists()  # ...first-run dialogs pre-accepted...
     assert launched == [tmp_path / ".claude"]  # ...then launched with the container-local config dir

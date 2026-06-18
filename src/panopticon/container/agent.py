@@ -18,6 +18,7 @@ this runs alongside it in the tmux pane, so `tmux attach` reaches the live agent
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -34,6 +35,8 @@ from panopticon.core.models import Skill
 CREDS_DIR = "/creds"
 #: claude's credential file, relative to a config dir; linked in from the creds volume.
 CREDS_FILE = ".credentials.json"
+#: claude's mutable CLI config (first-run/onboarding + per-project state), under CLAUDE_CONFIG_DIR.
+CONFIG_FILE = ".claude.json"
 
 
 def render_skills(client: TaskServiceClient, task_id: str, home: Path) -> list[Path]:
@@ -63,6 +66,26 @@ def link_credentials(config_dir: Path, *, creds_dir: Path = Path(CREDS_DIR)) -> 
     src, link = creds_dir / CREDS_FILE, config_dir / CREDS_FILE
     if src.exists() and not link.exists():
         link.symlink_to(src)
+
+
+def pre_accept_dialogs(config_dir: Path, cwd: Path) -> Path:
+    """Pre-accept claude's interactive first-run gates so the user reaches the prompt right away.
+
+    On a fresh container two dialogs sit between launch and the input prompt: the **first-run
+    onboarding** (theme picker, gated on ``hasCompletedOnboarding``) and the **folder-trust** prompt
+    for the per-task ``/workspace`` clone (gated on a project's ``hasTrustDialogAccepted``). Neither
+    is a decision worth making the user click through — the clone is one we created for this task —
+    so we seed both as accepted. They live in the CLI's mutable config (``<config>/.claude.json``,
+    where ``config`` is ``CLAUDE_CONFIG_DIR``). Permissions are untouched: tool calls still prompt
+    normally; this only removes startup friction, it does not make the agent act on its own.
+    """
+    config = config_dir / CONFIG_FILE
+    data = json.loads(config.read_text()) if config.exists() else {}
+    data["hasCompletedOnboarding"] = True  # skip the theme/onboarding flow
+    projects = data.setdefault("projects", {})
+    projects.setdefault(str(cwd), {})["hasTrustDialogAccepted"] = True  # trust the workspace clone
+    config.write_text(json.dumps(data, indent=2))
+    return config
 
 
 def _claude_argv(config_dir: Path, cwd: Path) -> list[str]:
@@ -97,9 +120,10 @@ def main(
     home: Path | None = None,
     launch: Callable[[Path], None] = _exec_claude,
 ) -> None:
-    """Bootstrap the agent CLI from the active workflow (skills + turn-flip hooks + credentials),
-    then launch the agent. The CLI config dir is container-local (`<home>/.claude`); only the
-    credentials are linked in from the per-repo creds volume."""
+    """Bootstrap the agent CLI from the active workflow (skills + turn-flip hooks + credentials,
+    plus pre-accepted first-run dialogs so the user reaches the prompt right away), then launch the
+    agent. The CLI config dir is container-local (`<home>/.claude`); only the credentials are linked
+    in from the per-repo creds volume."""
     env = os.environ
     client = client_factory(env["PANOPTICON_SERVICE_URL"])
     config_dir = (home or Path.home()) / ".claude"
@@ -107,6 +131,7 @@ def main(
     render_skills(client, task_id, config_dir.parent)
     render_operations(client, task_id, config_dir.parent)  # advance/drop/… as slash-commands
     write_settings(config_dir.parent)  # turn-flip hooks → <home>/.claude/settings.json
+    pre_accept_dialogs(config_dir, Path.cwd())  # skip onboarding + workspace trust → straight to the prompt
     link_credentials(config_dir)
     launch(config_dir)
 
