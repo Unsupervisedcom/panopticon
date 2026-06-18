@@ -40,7 +40,8 @@ src/panopticon/
   container/       # entrypoint (`python -m panopticon.container` = connect/register/slug/
                    # heartbeat liveness) + agent.py (`-m panopticon.container.agent` = the tmux
                    # pane's launcher: render skills + operations → exec `claude`) — the ONLY LLM pkg
-docker/Dockerfile  # minimal base task-container image (ADR 0005 base layer)
+docker/Dockerfile  # base task-container image (ADR 0005 base layer): python + git + bash +
+                   # the panopticon package + the `claude` CLI the agent execs
 ```
 
 ## Conventions
