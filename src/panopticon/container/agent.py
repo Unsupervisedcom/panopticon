@@ -18,9 +18,11 @@ this runs alongside it in the tmux pane, so `tmux attach` reaches the live agent
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -34,6 +36,8 @@ from panopticon.core.models import Skill
 CREDS_DIR = "/creds"
 #: claude's credential file, relative to a config dir; linked in from the creds volume.
 CREDS_FILE = ".credentials.json"
+#: claude's top-level config file (per-project state, incl. trust), inside the config dir.
+CONFIG_FILE = ".claude.json"
 
 
 def render_skills(client: TaskServiceClient, task_id: str, home: Path) -> list[Path]:
@@ -63,6 +67,27 @@ def link_credentials(config_dir: Path, *, creds_dir: Path = Path(CREDS_DIR)) -> 
     src, link = creds_dir / CREDS_FILE, config_dir / CREDS_FILE
     if src.exists() and not link.exists():
         link.symlink_to(src)
+
+
+def trust_workspace(config_dir: Path, cwd: Path) -> Path:
+    """Pre-accept claude's "Do you trust the files in this folder?" dialog for ``cwd``.
+
+    The trust dialog is **separate** from the permission prompts ``--dangerously-skip-permissions``
+    skips (cf. claude issue #45298): it blocks on startup until accepted, and there's no operator in
+    the container to accept it. claude records acceptance per-project in ``<config>/.claude.json``
+    under ``projects[<cwd>].hasTrustDialogAccepted``; we seed exactly that (and mark onboarding done,
+    the other first-run blocker). Merge-in-place so we don't clobber config claude writes itself, and
+    idempotent. The path encoding is undocumented internals — a safe degradation if it ever drifts is
+    that the dialog reappears, which only matters in an (already attended) interactive re-attach.
+    """
+    config = config_dir / CONFIG_FILE
+    config.parent.mkdir(parents=True, exist_ok=True)
+    data: dict[str, Any] = json.loads(config.read_text()) if config.exists() else {}
+    data["hasCompletedOnboarding"] = True
+    projects = data.setdefault("projects", {})
+    projects.setdefault(str(cwd), {})["hasTrustDialogAccepted"] = True
+    config.write_text(json.dumps(data, indent=2))
+    return config
 
 
 def _claude_argv(config_dir: Path, cwd: Path) -> list[str]:
@@ -110,6 +135,7 @@ def main(
     render_skills(client, task_id, config_dir.parent)
     render_operations(client, task_id, config_dir.parent)  # advance/drop/… as slash-commands
     write_settings(config_dir.parent)  # turn-flip hooks → <home>/.claude/settings.json
+    trust_workspace(config_dir, Path.cwd())  # pre-accept the trust dialog (no operator to)
     link_credentials(config_dir)
     launch(config_dir)
 

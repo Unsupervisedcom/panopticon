@@ -76,6 +76,33 @@ def test_link_credentials_is_a_noop_without_a_logged_in_volume(tmp_path: Path) -
     assert config_dir.is_dir() and not (config_dir / ".credentials.json").exists()
 
 
+def test_trust_workspace_seeds_acceptance_for_a_fresh_config(tmp_path: Path) -> None:
+    import json
+
+    config_dir = tmp_path / ".claude"
+    agent.trust_workspace(config_dir, Path("/workspace"))
+    data = json.loads((config_dir / ".claude.json").read_text())
+    assert data["projects"]["/workspace"]["hasTrustDialogAccepted"] is True
+    assert data["hasCompletedOnboarding"] is True  # the other first-run blocker
+
+
+def test_trust_workspace_merges_and_is_idempotent(tmp_path: Path) -> None:
+    import json
+
+    config_dir = tmp_path / ".claude"
+    config_dir.mkdir()
+    # claude already wrote config (incl. an existing project) — we must not clobber it.
+    (config_dir / ".claude.json").write_text(
+        json.dumps({"userID": "u", "projects": {"/other": {"history": []}}})
+    )
+    agent.trust_workspace(config_dir, Path("/workspace"))
+    agent.trust_workspace(config_dir, Path("/workspace"))  # idempotent
+    data = json.loads((config_dir / ".claude.json").read_text())
+    assert data["userID"] == "u"  # preserved
+    assert data["projects"]["/other"] == {"history": []}  # preserved
+    assert data["projects"]["/workspace"]["hasTrustDialogAccepted"] is True
+
+
 def test_main_bootstraps_into_a_container_local_config_dir_then_launches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -93,4 +120,8 @@ def test_main_bootstraps_into_a_container_local_config_dir_then_launches(
     assert (commands / "s.md").exists()  # skills rendered...
     assert (commands / "advance.md").exists()  # ...operations rendered...
     assert (tmp_path / ".claude" / "settings.json").exists()  # ...turn-flip hooks written...
+    import json
+
+    trust = json.loads((tmp_path / ".claude" / ".claude.json").read_text())
+    assert trust["projects"][str(Path.cwd())]["hasTrustDialogAccepted"] is True  # ...trust seeded...
     assert launched == [tmp_path / ".claude"]  # ...then launched with the container-local config dir
