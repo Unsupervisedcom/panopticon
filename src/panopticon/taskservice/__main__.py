@@ -9,11 +9,18 @@ Workflows are **discovered**, not hardcoded: the built-in :mod:`panopticon.workf
 an optional ``--workflows-path`` directory (ADR 0004, Slice 8) — so adding a workflow is just
 dropping a module on a scanned path. Config comes from flags or ``PANOPTICON_*`` env, with on-disk
 defaults so a bare ``python -m panopticon.taskservice`` persists across restarts.
+
+**Networking.** The service binds a TCP host/port by default. Pass ``--socket <path>`` (or set
+``PANOPTICON_SOCKET``) to bind a **Unix-domain socket** instead — no port is provisioned. That's
+what ``make panopticon`` uses: the whole system shares one host, the runner bind-mounts the socket
+into each task container, and every client reaches it via a ``unix://<path>`` service URL (see
+:mod:`panopticon.transport`).
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 from collections.abc import Sequence
 
@@ -53,6 +60,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument(
         "--port", type=int, default=int(os.environ.get("PANOPTICON_PORT", "8000"))
     )
+    parser.add_argument(
+        "--socket",
+        default=os.environ.get("PANOPTICON_SOCKET"),
+        help="bind a Unix-domain socket at this path instead of host/port (no port provisioned)",
+    )
     parser.add_argument("--db", default=os.environ.get("PANOPTICON_DB", DEFAULT_DB))
     parser.add_argument(
         "--artifacts", default=os.environ.get("PANOPTICON_ARTIFACTS", DEFAULT_ARTIFACTS)
@@ -64,7 +76,13 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
     app = build_app(db=args.db, artifacts_root=args.artifacts, workflows_path=args.workflows_path)
-    uvicorn.run(app, host=args.host, port=args.port)
+    if args.socket:  # bind a Unix socket (make panopticon); no port provisioned
+        # Clear a stale socket file left by an unclean prior shutdown so the rebind succeeds.
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(args.socket)
+        uvicorn.run(app, uds=args.socket)
+    else:
+        uvicorn.run(app, host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

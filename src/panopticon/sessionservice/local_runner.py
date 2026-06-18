@@ -18,12 +18,14 @@ from typing import Protocol
 from collections.abc import Mapping
 
 from panopticon.sessionservice.runner import Runner
+from panopticon.transport import is_socket_url, socket_path
 
 #: Default composed image (base layer, ADR 0005); built in a later PR of this slice.
 DEFAULT_IMAGE = "panopticon-base"
 
-#: Lets the container reach the host task service (container→host addressing, ADR 0008).
-#: ``host-gateway`` maps to the host's gateway IP; the service binds 0.0.0.0.
+#: Lets the container reach the host task service over TCP (container→host addressing, ADR 0008).
+#: ``host-gateway`` maps to the host's gateway IP; the service binds 0.0.0.0. Not used when the
+#: service is on a Unix socket — the socket is bind-mounted in instead (no host networking).
 HOST_GATEWAY = "host.docker.internal:host-gateway"
 
 #: Dedicated tmux server socket for panopticon's task sessions — isolates them from the
@@ -102,8 +104,14 @@ class LocalRunner(Runner):
             "docker", "run", "--detach",
             "--name", container,
             "--label", f"panopticon.task={task_id}",
-            "--add-host", HOST_GATEWAY,
         ]
+        if is_socket_url(self._service_url):
+            # Socket mode: bind-mount the service socket in at the *same* path, so the injected
+            # `unix://<path>` URL resolves in-container exactly as it does on the host (ADR 0008).
+            sock = socket_path(self._service_url)
+            docker_run += ["--volume", f"{sock}:{sock}"]
+        else:  # TCP: let the container reach the host's task service via the host gateway
+            docker_run += ["--add-host", HOST_GATEWAY]
         if env_file:  # per-repo API-key secrets, injected at run (not in the image)
             docker_run += ["--env-file", env_file]
         if creds_volume:  # per-repo OAuth creds volume, mounted at a generic path

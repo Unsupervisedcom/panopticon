@@ -27,9 +27,8 @@ import signal
 import time
 from collections.abc import Callable
 
-import httpx
-
 from panopticon.client import TaskServiceClient
+from panopticon.transport import make_http_client
 
 Work = Callable[[TaskServiceClient, str], None]
 
@@ -103,7 +102,7 @@ def _until_signalled() -> Callable[[], bool]:
 
 
 def _make_client(service_url: str) -> TaskServiceClient:
-    return TaskServiceClient(httpx.Client(base_url=service_url))
+    return TaskServiceClient(make_http_client(service_url))
 
 
 def main(

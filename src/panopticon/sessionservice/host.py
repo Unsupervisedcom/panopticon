@@ -8,7 +8,10 @@ so calling both on every task each pass is safe. A transient error on one task i
 
 **Two URLs.** The daemon *polls* the task service at ``--service-url`` (the host's own view, e.g.
 ``localhost:8000``), but spawns containers pointed at ``--container-service-url`` (the in-container
-view, e.g. ``host.docker.internal:8000``). LLM-free.
+view, e.g. ``host.docker.internal:8000``). Over a Unix socket (``unix://<path>``, ``make
+panopticon``) the two collapse: the socket is bind-mounted into each container at the same path,
+so containers reach the *same* URL the daemon polls — :func:`container_service_url` derives that.
+LLM-free.
 """
 
 from __future__ import annotations
@@ -19,19 +22,34 @@ import os
 import time
 from collections.abc import Callable
 
-import httpx
-
 from panopticon.client import TaskServiceClient
 from panopticon.core.git import GitClones
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.local_runner import DEFAULT_IMAGE, LocalRunner
 from panopticon.sessionservice.provisioner import Provisioner
 from panopticon.sessionservice.spawner import Spawner
+from panopticon.transport import is_socket_url, make_http_client
 
 _log = logging.getLogger(__name__)
 
 DEFAULT_CACHE_ROOT = os.path.expanduser("~/.panopticon/cache")
 DEFAULT_TASKS_ROOT = os.path.expanduser("~/.panopticon/tasks")
+
+#: Where a container reaches a TCP task service: the host gateway, not the host's own localhost.
+DEFAULT_CONTAINER_SERVICE_URL = "http://host.docker.internal:8000"
+
+
+def container_service_url(host_service_url: str, explicit: str | None = None) -> str:
+    """The task service URL spawned containers call back to.
+
+    An explicit ``--container-service-url`` always wins. Otherwise: over a Unix socket the
+    container reaches the **same** socket the daemon polls (bind-mounted in at the same path), so
+    we reuse ``host_service_url``; over TCP the container can't use the host's ``localhost`` and
+    needs the host-gateway address instead.
+    """
+    if explicit:
+        return explicit
+    return host_service_url if is_socket_url(host_service_url) else DEFAULT_CONTAINER_SERVICE_URL
 
 
 class HostDaemon:
@@ -99,8 +117,9 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
     )
     parser.add_argument(
         "--container-service-url",
-        default=os.environ.get("PANOPTICON_CONTAINER_SERVICE_URL", "http://host.docker.internal:8000"),
-        help="task service URL spawned containers call back to (the in-container view)",
+        default=os.environ.get("PANOPTICON_CONTAINER_SERVICE_URL"),
+        help="task service URL spawned containers call back to (the in-container view); "
+        "defaults to the host gateway over TCP, or the same socket URL over a unix:// socket",
     )
     parser.add_argument("--runner-id", default=os.environ.get("PANOPTICON_RUNNER_ID", "local"))
     parser.add_argument("--image", default=DEFAULT_IMAGE)
@@ -108,8 +127,11 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
     parser.add_argument("--tasks-root", default=os.environ.get("PANOPTICON_TASKS_ROOT", DEFAULT_TASKS_ROOT))
     parser.add_argument("--interval", type=float, default=2.0, help="poll interval, seconds")
     args = parser.parse_args(argv)
-    client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
-    runner = LocalRunner(args.container_service_url, image=args.image, runner_id=args.runner_id)
+    client = client or TaskServiceClient(make_http_client(args.service_url))
+    runner = LocalRunner(
+        container_service_url(args.service_url, args.container_service_url),
+        image=args.image, runner_id=args.runner_id,
+    )
     run_host(
         client, runner,
         runner_id=args.runner_id, tasks_root=args.tasks_root,

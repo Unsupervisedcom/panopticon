@@ -13,7 +13,7 @@ from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.git import GitClones
 from panopticon.core.models import Repo
 from panopticon.sessionservice.clones import CloneCache
-from panopticon.sessionservice.host import HostDaemon, run_host
+from panopticon.sessionservice.host import HostDaemon, container_service_url, run_host
 from panopticon.taskservice.api import create_app
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 from panopticon.taskservice.service import TaskService
@@ -32,6 +32,15 @@ class _FakeRunner:
     def spawn(self, task_id: str, *, env_file: str | None = None, creds_volume: str | None = None, workspace: str | None = None) -> str:
         self.spawned.append(task_id)
         return f"panopticon-{task_id}"
+
+
+def test_container_service_url_picks_host_gateway_over_tcp_but_the_same_socket() -> None:
+    # TCP: the container can't use the host's own localhost, so it gets the host gateway.
+    assert container_service_url("http://localhost:8000") == "http://host.docker.internal:8000"
+    # Socket: bind-mounted in at the same path, so the container reaches the very same URL.
+    assert container_service_url("unix:///run/panopticon.sock") == "unix:///run/panopticon.sock"
+    # An explicit override always wins, regardless of the host URL's shape.
+    assert container_service_url("unix:///run/p.sock", "http://elsewhere:9") == "http://elsewhere:9"
 
 
 def test_tick_isolates_a_failing_task_from_the_others() -> None:

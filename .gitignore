@@ -19,3 +19,5 @@ panopticon.db
 panopticon.db-shm
 panopticon.db-wal
 /artifacts/
+# The task service's Unix socket under `make panopticon` (PANOPTICON_SOCKET, socket mode).
+panopticon.sock
