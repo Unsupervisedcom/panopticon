@@ -3,6 +3,7 @@ exercises a real container + tmux session (skipped when docker/tmux are unavaila
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import time
@@ -55,6 +56,21 @@ def test_spawn_runs_detached_container_then_tmux_pane_execing_in() -> None:
         "docker", "exec", "--interactive", "--tty", "panopticon-t1",
         "python", "-m", "panopticon.container.agent",
     ]
+
+
+def test_spawn_runs_container_unprivileged_as_the_invoking_user() -> None:
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).spawn("t1")
+    docker_run = rec.calls[0][0]
+    # the container adopts the invoking host process's uid:gid (no root in the container)
+    assert docker_run[docker_run.index("--user") + 1] == f"{os.getuid()}:{os.getgid()}"
+
+
+def test_spawn_user_can_be_overridden() -> None:
+    rec = _Recorder()
+    LocalRunner("http://svc", user="1234:5678", run=rec).spawn("t1")
+    docker_run = rec.calls[0][0]
+    assert docker_run[docker_run.index("--user") + 1] == "1234:5678"
 
 
 def test_extra_env_is_forwarded() -> None:
