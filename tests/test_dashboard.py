@@ -99,6 +99,22 @@ async def test_dashboard_mounts_lists_tasks_and_shows_detail() -> None:
         assert "WORKING" in str(detail.render())
 
 
+async def test_tasks_are_sorted_by_state_with_terminal_states_last() -> None:
+    tasks = [
+        {**_TASK, "id": "t-done", "slug": "z", "state": "COMPLETE"},
+        {**_TASK, "id": "t-work", "slug": "m", "state": "WORKING"},
+        {**_TASK, "id": "t-drop", "slug": "a", "state": "DROPPED"},
+        {**_TASK, "id": "t-plan", "slug": "b", "state": "PLANNING"},
+    ]
+    app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        order = [str(k.value) for k in table.rows]
+        # non-terminal first (PLANNING < WORKING), then terminal (COMPLETE < DROPPED)
+        assert order == ["t-plan", "t-work", "t-done", "t-drop"]
+
+
 async def test_dashboard_with_no_tasks() -> None:
     app = Dashboard(_FakeClient([]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:

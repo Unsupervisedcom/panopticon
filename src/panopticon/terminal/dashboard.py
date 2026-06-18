@@ -29,6 +29,17 @@ from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Label, OptionList, Static
 
 from panopticon.client import JsonObj, TaskServiceClient
+from panopticon.core.state import TERMINAL_LABELS
+
+
+def _sort_key(task: JsonObj) -> tuple[bool, str, str]:
+    """Order rows by state, sinking terminal states (COMPLETE/DROPPED) to the bottom.
+
+    Active work sorts to the top (alphabetically by state); finished tasks settle below it.
+    Ties break on slug (then id) for a stable, readable order.
+    """
+    state = task["state"]
+    return (state in TERMINAL_LABELS, state, task["slug"] or task["id"])
 
 
 def _short(task_id: str) -> str:
@@ -138,8 +149,9 @@ class Dashboard(App[None]):
     def action_refresh(self) -> None:
         table = self.query_one("#tasks", DataTable)
         table.clear()
-        self._tasks = {t["id"]: t for t in self._client.list_tasks()}
-        for task in self._tasks.values():
+        ordered = sorted(self._client.list_tasks(), key=_sort_key)  # state asc, terminal last
+        self._tasks = {t["id"]: t for t in ordered}
+        for task in ordered:
             turn = f"{task['turn']} ⚠" if task.get("blocked") else task["turn"]
             table.add_row(
                 _short(task["id"]), task["slug"] or "-", task["state"], turn, self._run_status(task),
