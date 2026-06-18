@@ -11,6 +11,7 @@ daemon. LLM-free — the agent runs inside the container.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from collections.abc import Sequence
 from typing import Protocol
@@ -49,6 +50,14 @@ def _subprocess_run(args: Sequence[str], *, check: bool = True) -> str:
     return subprocess.run(list(args), check=check, capture_output=True, text=True).stdout
 
 
+def _invoking_user() -> str:
+    """The ``uid:gid`` of the host process invoking the runner — what the task container adopts
+    (``docker run --user``) so it runs **unprivileged** and the files it writes to the bind-mounted
+    ``/workspace`` (the per-task clone) are owned by the operator, not root. Matching the workspace
+    owner's uid also sidesteps git's "dubious ownership" guard on the mounted checkout."""
+    return f"{os.getuid()}:{os.getgid()}"
+
+
 class LocalRunner(Runner):
     """Runs task containers + host tmux on the local Docker daemon (one host)."""
 
@@ -61,11 +70,15 @@ class LocalRunner(Runner):
         agent_command: Sequence[str] = ("python", "-m", "panopticon.container.agent"),
         tmux_socket: str | None = TMUX_SOCKET,
         extra_env: Mapping[str, str] | None = None,
+        user: str | None = None,
         run: CommandRunner = _subprocess_run,
     ) -> None:
         self._service_url = service_url
         self._image = image
         self._runner_id = runner_id
+        # Run the task container unprivileged as the invoking user (uid:gid), so it can't act as
+        # root on the host and its writes to the mounted workspace are owned by the operator.
+        self._user = user if user is not None else _invoking_user()
         # What the tmux pane execs into the container: the in-container agent launcher (it
         # bootstraps the CLI then runs `claude`). `tmux attach` therefore reaches the live agent.
         self._agent_command = list(agent_command)
@@ -105,6 +118,7 @@ class LocalRunner(Runner):
             "--name", container,
             "--label", f"panopticon.task={task_id}",
             "--add-host", HOST_GATEWAY,
+            "--user", self._user,  # unprivileged: adopt the invoking user's uid:gid
         ]
         if env_file:  # per-repo API-key secrets, injected at run (not in the image)
             docker_run += ["--env-file", env_file]

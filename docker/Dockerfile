@@ -19,6 +19,13 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 RUN pip install --no-cache-dir .
 
+# The runner spawns this as the invoking user (`docker run --user <uid>:<gid>`), an arbitrary
+# uid with no /etc/passwd entry. Give that user a writable HOME so `~` resolves and the agent can
+# create its container-local `$HOME/.claude` config dir (Path.home() would otherwise raise). The
+# dir is world-writable because the uid isn't known until run time.
+ENV HOME=/home/panopticon
+RUN mkdir --parents /home/panopticon && chmod 0777 /home/panopticon
+
 # The runner spawns this detached; it connects back to the task service (PANOPTICON_* env),
 # registers for liveness, runs the slug hook, and heartbeats until stopped.
 ENTRYPOINT ["python", "-m", "panopticon.container"]
