@@ -37,6 +37,7 @@ def test_render_operations_writes_a_command_per_operation(tmp_path: Path) -> Non
     assert {p.name for p in commands.glob("*.md")} == {"advance.md", "drop.md"}
     body = (commands / "advance.md").read_text()
     assert "apply_operation" in body and "COMPLETE" in body  # tells the agent how + the target
+    assert 'task_id="t1"' in body  # the container's task id, injected for the MCP tool call
 
 
 def test_claude_argv_starts_fresh_without_a_session(tmp_path: Path) -> None:
@@ -48,6 +49,22 @@ def test_claude_argv_continues_an_existing_session(tmp_path: Path) -> None:
     project.mkdir(parents=True)
     (project / "session.jsonl").write_text("{}")
     assert agent._claude_argv(tmp_path, Path("/work/repo")) == ["claude", "--continue"]
+
+
+def test_write_mcp_config_points_claude_at_the_task_service_mcp(tmp_path: Path) -> None:
+    import json
+
+    path = agent.write_mcp_config(tmp_path, "http://host.docker.internal:8000")
+    assert path == tmp_path / agent.MCP_CONFIG_FILE
+    cfg = json.loads(path.read_text())
+    server = cfg["mcpServers"]["panopticon"]
+    assert server == {"type": "http", "url": "http://host.docker.internal:8000/mcp"}
+
+
+def test_claude_argv_adds_strict_mcp_config_when_present(tmp_path: Path) -> None:
+    agent.write_mcp_config(tmp_path, "http://svc:8000")
+    argv = agent._claude_argv(tmp_path, Path("/work/repo"))
+    assert argv == ["claude", "--mcp-config", str(tmp_path / agent.MCP_CONFIG_FILE), "--strict-mcp-config"]
 
 
 def test_link_credentials_symlinks_only_the_credential_file(tmp_path: Path) -> None:
@@ -88,4 +105,5 @@ def test_main_bootstraps_into_a_container_local_config_dir_then_launches(
     assert (commands / "s.md").exists()  # skills rendered...
     assert (commands / "advance.md").exists()  # ...operations rendered...
     assert (tmp_path / ".claude" / "settings.json").exists()  # ...turn-flip hooks written...
+    assert (tmp_path / ".claude" / agent.MCP_CONFIG_FILE).exists()  # ...MCP server wired...
     assert launched == [tmp_path / ".claude"]  # ...then launched with the container-local config dir

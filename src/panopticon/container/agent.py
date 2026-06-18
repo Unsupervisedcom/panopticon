@@ -18,6 +18,7 @@ this runs alongside it in the tmux pane, so `tmux attach` reaches the live agent
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -36,10 +37,15 @@ CREDS_DIR = "/creds"
 CREDS_FILE = ".credentials.json"
 
 
+#: Filename of the rendered MCP client config in the config dir; claude is pointed at it via
+#: ``--mcp-config`` so it connects to the task service's MCP server (task operations as tools).
+MCP_CONFIG_FILE = "panopticon-mcp.json"
+
+
 def render_skills(client: TaskServiceClient, task_id: str, home: Path) -> list[Path]:
     """Render the active workflow's skills to the agent CLI surface (`.claude/commands/`)."""
     skills = [Skill(**s) for s in client.list_skills(task_id)]
-    return write_commands(skills, home)
+    return write_commands(skills, home, task_id)
 
 
 def render_operations(client: TaskServiceClient, task_id: str, home: Path) -> list[Path]:
@@ -48,7 +54,20 @@ def render_operations(client: TaskServiceClient, task_id: str, home: Path) -> li
     Reflects the *active workflow's* declared moves (ADR 0004), so a parity and a free-form
     container expose different operation commands — not a fixed global menu.
     """
-    return write_operation_commands(client.list_operations(task_id), home)
+    return write_operation_commands(client.list_operations(task_id), home, task_id)
+
+
+def write_mcp_config(config_dir: Path, service_url: str) -> Path:
+    """Write claude's MCP client config so it connects to the task service's MCP server.
+
+    A single ``panopticon`` HTTP server at ``<service_url>/mcp`` — the same control plane the
+    container already polls (``PANOPTICON_SERVICE_URL``, the in-container view). Returns the path,
+    which the launcher passes to ``claude --mcp-config``."""
+    config_dir.mkdir(parents=True, exist_ok=True)
+    path = config_dir / MCP_CONFIG_FILE
+    server = {"type": "http", "url": f"{service_url.rstrip('/')}/mcp"}
+    path.write_text(json.dumps({"mcpServers": {"panopticon": server}}, indent=2))
+    return path
 
 
 def link_credentials(config_dir: Path, *, creds_dir: Path = Path(CREDS_DIR)) -> None:
@@ -75,6 +94,9 @@ def _claude_argv(config_dir: Path, cwd: Path) -> list[str]:
     path encoding ever misses claude's, we simply start fresh — a safe degradation.
     """
     argv = ["claude"]
+    mcp_config = config_dir / MCP_CONFIG_FILE
+    if mcp_config.exists():  # connect to the task service's MCP server, and *only* it
+        argv += ["--mcp-config", str(mcp_config), "--strict-mcp-config"]
     project = config_dir / "projects" / str(cwd).replace("/", "-")
     if any(project.glob("*.jsonl")):
         argv.append("--continue")
@@ -101,12 +123,14 @@ def main(
     then launch the agent. The CLI config dir is container-local (`<home>/.claude`); only the
     credentials are linked in from the per-repo creds volume."""
     env = os.environ
-    client = client_factory(env["PANOPTICON_SERVICE_URL"])
+    service_url = env["PANOPTICON_SERVICE_URL"]
+    client = client_factory(service_url)
     config_dir = (home or Path.home()) / ".claude"
     task_id = env["PANOPTICON_TASK_ID"]
     render_skills(client, task_id, config_dir.parent)
     render_operations(client, task_id, config_dir.parent)  # advance/drop/… as slash-commands
     write_settings(config_dir.parent)  # turn-flip hooks → <home>/.claude/settings.json
+    write_mcp_config(config_dir, service_url)  # point claude at the task service's MCP server
     link_credentials(config_dir)
     launch(config_dir)
 

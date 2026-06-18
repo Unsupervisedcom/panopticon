@@ -54,6 +54,14 @@ def test_health_and_workflows(client: TestClient) -> None:
     assert client.get("/workflows").json() == ["spike"]
 
 
+def test_mcp_is_mounted(client: TestClient) -> None:
+    # The MCP streamable-HTTP app is mounted at /mcp (in-container agents connect there); it must
+    # be a mount, not a REST route, and reachable (i.e. not a REST 404).
+    assert any(getattr(r, "path", None) == "/mcp" for r in client.app.routes)
+    resp = client.get("/mcp/", headers={"Accept": "text/event-stream"})
+    assert resp.status_code != 404
+
+
 def test_create_and_get_task(client: TestClient) -> None:
     task_id = _new_task(client)
     got = client.get(f"/tasks/{task_id}")

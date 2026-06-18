@@ -1,12 +1,16 @@
 """The task service REST API (FastAPI).
 
-The dashboard, the runner, and in-container skills are clients of this API. (Agents also
-reach artifacts/tools over MCP — see :mod:`panopticon.taskservice.mcp` — but the walking
-skeleton uses REST.) ``create_app`` builds an app around an injected
+The dashboard, the runner, and in-container skills are clients of this API. In-container
+agents also reach task operations/artifacts over **MCP**: ``create_app`` mounts the MCP
+streamable-HTTP app (see :mod:`panopticon.taskservice.mcp`) at ``/mcp``, so the same control
+plane serves REST and MCP. ``create_app`` builds an app around an injected
 :class:`~panopticon.taskservice.service.TaskService`, so tests can wire a deterministic one.
 """
 
 from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
@@ -150,7 +154,23 @@ class RegistrationOut(BaseModel):
 
 
 def create_app(service: TaskService) -> FastAPI:
-    app = FastAPI(title="panopticon task service", version="0.0.1")
+    # MCP over streamable HTTP, mounted at /mcp on the same control plane (operations=tools,
+    # artifacts=resources). Its path is set to "/" so the mount point *is* the endpoint (/mcp).
+    # The session manager must run for the app's lifetime, so its context is driven by the
+    # parent FastAPI lifespan (a mounted sub-app's own lifespan isn't run by the parent).
+    # Imported here, not at module scope: mcp.py imports our ``*Out`` schemas (would cycle).
+    from panopticon.taskservice.mcp import build_mcp_server
+
+    mcp = build_mcp_server(service)
+    mcp.settings.streamable_http_path = "/"
+    mcp_app = mcp.streamable_http_app()
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        async with mcp.session_manager.run():
+            yield
+
+    app = FastAPI(title="panopticon task service", version="0.0.1", lifespan=lifespan)
 
     # -- error mapping: domain exceptions -> HTTP status --------------------------
 
@@ -341,4 +361,5 @@ def create_app(service: TaskService) -> FastAPI:
         service.deregister(registration_id)
         return Response(status_code=204)
 
+    app.mount("/mcp", mcp_app)  # in-container agents connect here for task operations + artifacts
     return app
