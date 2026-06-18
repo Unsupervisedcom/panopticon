@@ -11,10 +11,11 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from panopticon.core.artifacts import ArtifactError
 from panopticon.core.models import Actor, Repo, Status
@@ -75,6 +76,7 @@ class RepoIn(BaseModel):
     env_file: str | None = None
     creds_volume: str | None = None
     image_layer: str | None = None
+    capabilities: dict[str, Any] = Field(default_factory=dict)
 
 
 class RepoOut(BaseModel):
@@ -87,6 +89,7 @@ class RepoOut(BaseModel):
     env_file: str | None = None
     creds_volume: str | None = None
     image_layer: str | None = None
+    capabilities: dict[str, Any] = Field(default_factory=dict)
 
 
 class CreateTaskIn(BaseModel):

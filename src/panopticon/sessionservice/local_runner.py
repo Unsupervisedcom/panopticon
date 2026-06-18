@@ -111,12 +111,15 @@ class LocalRunner(Runner):
         creds_volume: str | None = None,
         workspace: str | None = None,
         image: str | None = None,
+        docker_in_docker: bool = False,
     ) -> str:
         """Spawn the task container. ``env_file``/``creds_volume`` are the task's repo's secret
         references (ADR 0007), injected at launch — never baked into the image. ``workspace`` is the
         task's per-task clone on the host (ADR 0011), bind-mounted read-write at ``/workspace`` as
         the agent's working dir. ``image`` overrides the default base with the task's composed image
-        (base → workflow → repo, ADR 0005); ``None`` uses the configured base."""
+        (base → workflow → repo, ADR 0005); ``None`` uses the configured base. ``docker_in_docker``
+        (the repo's ``capabilities``) runs the container ``--privileged`` and tells the entrypoint to
+        start a nested Docker daemon — a trust escalation, opt-in per repo."""
         # The container name doubles as the tmux session name, so stop() needs only the id.
         container = f"panopticon-{task_id}"
         puid, _, pgid = self._user.partition(":")
@@ -137,6 +140,9 @@ class LocalRunner(Runner):
             "--label", f"panopticon.task={task_id}",
             "--add-host", HOST_GATEWAY,
         ]
+        if docker_in_docker:  # privileged nested Docker daemon (repo capability); entrypoint starts it
+            docker_run.append("--privileged")
+            env["PANOPTICON_DOCKER_IN_DOCKER"] = "1"
         if env_file:  # per-repo API-key secrets, injected at run (not in the image)
             docker_run += ["--env-file", env_file]
         if creds_volume:  # per-repo OAuth creds volume, mounted at a generic path

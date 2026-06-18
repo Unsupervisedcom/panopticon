@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 
 class Actor(str, Enum):
@@ -83,6 +84,10 @@ class Repo:
     ``image_layer`` is the repo's Dockerfile fragment (ADR 0005's repo tier): the runner composes
     base → workflow → **repo** into the task image, so a repo can layer on its toolchain (e.g. `uv`,
     `make`). Empty/None = no repo layer.
+
+    ``capabilities`` is a per-repo opt-in map for elevated container privileges the runner grants at
+    spawn. ``docker_in_docker`` (a privileged nested Docker daemon) is the first — off by default,
+    since it's a trust escalation (a privileged container ≈ host root).
     """
 
     id: str
@@ -92,6 +97,7 @@ class Repo:
     env_file: str | None = None
     creds_volume: str | None = None
     image_layer: str | None = None
+    capabilities: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

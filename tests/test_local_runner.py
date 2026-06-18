@@ -78,6 +78,22 @@ def test_spawn_user_can_be_overridden() -> None:
     assert "PANOPTICON_PUID=1234" in docker_run and "PANOPTICON_PGID=5678" in docker_run
 
 
+def test_spawn_without_docker_in_docker_is_not_privileged() -> None:
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).spawn("t1")
+    docker_run = rec.calls[0][0]
+    assert "--privileged" not in docker_run
+    assert "PANOPTICON_DOCKER_IN_DOCKER=1" not in docker_run
+
+
+def test_spawn_with_docker_in_docker_runs_privileged_and_flags_the_entrypoint() -> None:
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).spawn("t1", docker_in_docker=True)
+    docker_run = rec.calls[0][0]
+    assert "--privileged" in docker_run  # nested daemon needs it (repo capability, ADR 0005)
+    assert "PANOPTICON_DOCKER_IN_DOCKER=1" in docker_run  # entrypoint starts dockerd
+
+
 def test_extra_env_is_forwarded() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", extra_env={"PANOPTICON_HEARTBEAT_INTERVAL": "0.5"}, run=rec).spawn("t1")

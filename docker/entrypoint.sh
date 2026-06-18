@@ -26,4 +26,19 @@ fi
 # container). Best-effort: /creds may be absent (a task with no creds volume).
 chown --recursive "$puid:$pgid" /creds 2>/dev/null || true
 
+# docker_in_docker capability (ADR-0005 repo capability): a privileged container running a nested
+# Docker daemon. dockerd needs root, so start it here — before we drop privileges — and put the
+# adopted user in the `docker` group so it can reach the socket. Requires the image to ship the
+# Docker engine (the repo's image_layer); we warn and carry on if it doesn't.
+if [ "${PANOPTICON_DOCKER_IN_DOCKER:-0}" = "1" ]; then
+    if command -v dockerd >/dev/null 2>&1; then
+        groupadd --force docker
+        usermod --append --groups docker panopticon
+        dockerd >/var/log/dockerd.log 2>&1 &
+        for _ in $(seq 1 50); do [ -S /var/run/docker.sock ] && break; sleep 0.2; done
+    else
+        echo "PANOPTICON_DOCKER_IN_DOCKER=1 but dockerd is not installed (add it in the repo's image_layer)" >&2
+    fi
+fi
+
 exec gosu panopticon "$@"

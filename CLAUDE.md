@@ -176,7 +176,10 @@ commands the Makefile wraps).
   Slice 5), so a task gets only its own repo's secrets. `panopticon login <repo> [cmd]`
   populates the creds volume interactively (the claude OAuth command arrives in Slice 6). Also holds
   `image_layer` — the repo's Dockerfile fragment (ADR 0005's repo tier) the runner composes onto
-  base → workflow → **repo** for the task image (e.g. the repo's `uv`/`make` toolchain).
+  base → workflow → **repo** for the task image (e.g. the repo's `uv`/`make` toolchain) — and
+  `capabilities`, a JSON opt-in map for elevated container privileges (`docker_in_docker` → the
+  runner spawns `--privileged` and the entrypoint starts a nested Docker daemon; a trust escalation,
+  off by default).
 - **Workflow** — a `Workflow` subclass whose **states are nested `State` classes**
   (declarative). It declares `initial`; states are discovered and their transitions
   (class refs or label strings) resolved + validated when the workflow is instantiated.

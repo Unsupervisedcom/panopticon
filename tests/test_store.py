@@ -63,18 +63,21 @@ def test_create_and_get_repo(store: Store) -> None:
     assert got.default_base == "main"
     assert got.env_file is None and got.creds_volume is None  # references default to unset
     assert got.image_layer is None  # no repo image layer by default
+    assert got.capabilities == {}  # no elevated capabilities by default
 
 
 def test_repo_secret_references_round_trip(store: Store) -> None:
     store.create_repo(
         Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git",
              env_file="/secrets/r1.env", creds_volume="panopticon-creds-r1",
-             image_layer="RUN pip install uv")
+             image_layer="RUN pip install uv", capabilities={"docker_in_docker": True})
     )
     got = store.get_repo("r1")
     assert got is not None
     assert got.env_file == "/secrets/r1.env"
     assert got.creds_volume == "panopticon-creds-r1"
+    assert got.image_layer == "RUN pip install uv"
+    assert got.capabilities == {"docker_in_docker": True}  # JSON capabilities round-trip
     assert got.image_layer == "RUN pip install uv"  # ADR 0005 repo tier round-trips
 
 

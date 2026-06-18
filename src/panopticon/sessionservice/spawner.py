@@ -69,6 +69,7 @@ class Spawner:
             creds_volume=repo.get("creds_volume"),
             workspace=workspace,
             image=self._compose_image(task["workflow"], repo),
+            docker_in_docker=bool((repo.get("capabilities") or {}).get("docker_in_docker")),
         )
 
     def _compose_image(self, workflow: str, repo: JsonObj) -> str | None:
