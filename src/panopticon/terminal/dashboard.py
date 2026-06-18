@@ -126,7 +126,7 @@ class Dashboard(App[None]):
     def on_mount(self) -> None:
         table = self.query_one("#tasks", DataTable)
         table.cursor_type = "row"
-        table.add_columns("id", "slug", "state", "turn", "run")
+        table.add_columns("id", "state", "turn", "run", "slug")
         self.action_refresh()
 
     def _run_status(self, task: JsonObj) -> str:
@@ -142,7 +142,7 @@ class Dashboard(App[None]):
         for task in self._tasks.values():
             turn = f"{task['turn']} ⚠" if task.get("blocked") else task["turn"]
             table.add_row(
-                _short(task["id"]), task["slug"] or "-", task["state"], turn, self._run_status(task),
+                _short(task["id"]), task["state"], turn, self._run_status(task), task["slug"] or "-",
                 key=task["id"],
             )
         self._update_detail(next(iter(self._tasks), None))
