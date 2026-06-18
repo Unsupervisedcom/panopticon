@@ -19,8 +19,11 @@ if [ "$(id --user panopticon)" != "$puid" ]; then
     usermod --uid "$puid" --gid "$pgid" panopticon
     chown --recursive "$puid:$pgid" /home/panopticon
 fi
-# The creds volume's root is root-owned on first mount; hand it to the adopted user so claude can
-# read/refresh its OAuth token there. Best-effort: it may be absent (a task with no creds volume).
-chown "$puid:$pgid" /creds 2>/dev/null || true
+# Hand the whole creds volume to the adopted user so claude can read/refresh its OAuth token.
+# Recursive on purpose: the *files* must be owned too (a fresh volume is root-owned, and creds
+# written by an earlier root/other-uid `login` would otherwise be unreadable — the unprivileged
+# user can't read a root-owned 0600 .credentials.json, so claude would prompt to log in every
+# container). Best-effort: /creds may be absent (a task with no creds volume).
+chown --recursive "$puid:$pgid" /creds 2>/dev/null || true
 
 exec gosu panopticon "$@"
