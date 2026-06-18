@@ -132,11 +132,17 @@ class LocalRunner(Runner):
         """Run an interactive container with a repo's creds volume mounted, to populate it
         (ADR 0007's generalized `login`). ``command`` is the CLI's login invocation (e.g.
         ``claude``); `CLAUDE_CONFIG_DIR` points claude at the mounted volume so its OAuth creds
-        land there. The named volume is created on first use and persists across task restarts."""
+        land there. The named volume is created on first use and persists across task restarts.
+
+        ``command`` replaces the image entrypoint (the task entrypoint, ``python -m
+        panopticon.container``, which would otherwise intercept it and demand the task env) via
+        ``--entrypoint``; its tail becomes the program's args."""
+        program, *cmd_args = command
         self._run(
             ["docker", "run", "--interactive", "--tty", "--rm",
              "--volume", f"{creds_volume}:{CREDS_MOUNT}",
              "--env", f"CLAUDE_CONFIG_DIR={CREDS_MOUNT}",
-             self._image, *command],
+             "--entrypoint", program,
+             self._image, *cmd_args],
             check=False,
         )
