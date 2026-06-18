@@ -152,10 +152,15 @@ class LocalRunner(Runner):
 
         ``command`` replaces the image entrypoint (the task entrypoint, ``python -m
         panopticon.container``, which would otherwise intercept it and demand the task env) via
-        ``--entrypoint``; its tail becomes the program's args."""
+        ``--entrypoint``; its tail becomes the program's args. Runs **unprivileged** as the same
+        invoking user as the task container (see `spawn`), so the creds it writes are owned by that
+        uid — the task container, running as the same uid, can then read and refresh them. The
+        image's `/creds` mountpoint is world-writable, so a fresh named volume (which inherits the
+        image directory's ownership/permissions on first use) is writable by that uid."""
         program, *cmd_args = command
         self._run(
             ["docker", "run", "--interactive", "--tty", "--rm",
+             "--user", self._user,  # same unprivileged uid:gid the task container reads creds as
              "--volume", f"{creds_volume}:{CREDS_MOUNT}",
              "--env", f"CLAUDE_CONFIG_DIR={CREDS_MOUNT}",
              "--entrypoint", program,

@@ -121,10 +121,13 @@ def test_stop_kills_session_and_force_removes_container_idempotently() -> None:
 
 def test_login_runs_interactive_container_with_creds_volume() -> None:
     rec = _Recorder()
-    LocalRunner("http://svc", image="img:1", run=rec).login("creds-r1", ["claude", "login"])
+    LocalRunner("http://svc", image="img:1", user="1234:5678", run=rec).login(
+        "creds-r1", ["claude", "login"]
+    )
     cmd, check = rec.calls[0]
     assert cmd == [
         "docker", "run", "--interactive", "--tty", "--rm",
+        "--user", "1234:5678",  # same unprivileged uid the task container reads the creds as
         "--volume", "creds-r1:/creds",
         "--env", "CLAUDE_CONFIG_DIR=/creds",
         # the command replaces the task entrypoint (else `python -m panopticon.container` would
