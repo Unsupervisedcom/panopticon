@@ -46,12 +46,19 @@ CONTAINER_USER = "panopticon"
 
 
 class CommandRunner(Protocol):
-    """Runs an external command and returns its stdout; ``check`` raises on non-zero exit."""
+    """Runs an external command and returns its stdout; ``check`` raises on non-zero exit.
 
-    def __call__(self, args: Sequence[str], *, check: bool = True) -> str: ...
+    ``interactive`` attaches the caller's terminal (stdin/stdout/stderr) instead of capturing — for
+    ``docker run -it`` (the ``login`` shell), where capturing would leave its TTY with no real input
+    and hang."""
+
+    def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False) -> str: ...
 
 
-def _subprocess_run(args: Sequence[str], *, check: bool = True) -> str:
+def _subprocess_run(args: Sequence[str], *, check: bool = True, interactive: bool = False) -> str:
+    if interactive:  # inherit the terminal so the container's TTY is the operator's (no capture)
+        subprocess.run(list(args), check=check)
+        return ""
     return subprocess.run(list(args), check=check, capture_output=True, text=True).stdout
 
 
@@ -175,4 +182,5 @@ class LocalRunner(Runner):
              "--env", f"CLAUDE_CONFIG_DIR={CREDS_MOUNT}",
              self._image, *command],
             check=False,
+            interactive=True,  # attach the operator's terminal to the container's TTY (else it hangs)
         )

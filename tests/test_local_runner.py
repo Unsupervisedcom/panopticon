@@ -21,9 +21,11 @@ class _Recorder:
 
     def __init__(self) -> None:
         self.calls: list[tuple[list[str], bool]] = []
+        self.interactive: list[bool] = []
 
-    def __call__(self, args: Sequence[str], *, check: bool = True) -> str:
+    def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False) -> str:
         self.calls.append((list(args), check))
+        self.interactive.append(interactive)
         return ""
 
 
@@ -138,6 +140,7 @@ def test_login_runs_interactive_container_with_creds_volume() -> None:
         "img:1", "claude", "login",  # passed through the entrypoint (no --entrypoint override)
     ]
     assert check is False  # interactive; tolerate non-zero exit
+    assert rec.interactive[0] is True  # attaches the operator's terminal (no output capture)
 
 
 def test_tmux_socket_can_be_overridden() -> None:
