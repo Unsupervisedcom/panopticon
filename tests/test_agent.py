@@ -156,13 +156,14 @@ def test_main_bootstraps_into_a_container_local_config_dir_then_launches(
 ) -> None:
     monkeypatch.setenv("PANOPTICON_SERVICE_URL", "http://svc")
     monkeypatch.setenv("PANOPTICON_TASK_ID", "t1")
-    launched: list[Path] = []
+    events: list[str] = []
     agent.main(
         client_factory=lambda url: _FakeClient(  # type: ignore[arg-type,return-value]
             [{"name": "s", "description": "d", "instructions": "i"}], {"advance": "COMPLETE"}
         ),
         home=tmp_path,
-        launch=launched.append,
+        launch=lambda cfg: events.append(f"launch:{cfg}"),
+        on_exit=lambda: events.append("on_exit"),
     )
     commands = tmp_path / ".claude" / "commands"
     assert (commands / "s.md").exists()  # skills rendered...
@@ -173,4 +174,5 @@ def test_main_bootstraps_into_a_container_local_config_dir_then_launches(
 
     trust = json.loads((tmp_path / ".claude" / ".claude.json").read_text())
     assert trust["projects"][str(Path.cwd())]["hasTrustDialogAccepted"] is True  # ...trust seeded...
-    assert launched == [tmp_path / ".claude"]  # ...then launched with the container-local config dir
+    # ...launched with the container-local config dir, then the container is stopped on agent exit
+    assert events == [f"launch:{tmp_path / '.claude'}", "on_exit"]
