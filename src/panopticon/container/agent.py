@@ -21,7 +21,6 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 import httpx
 
@@ -80,12 +79,12 @@ def pre_accept_dialogs(config_dir: Path, cwd: Path) -> Path:
     where ``config`` is ``CLAUDE_CONFIG_DIR``). Permissions are untouched: tool calls still prompt
     normally; this only removes startup friction, it does not make the agent act on its own.
     """
-    def accept(data: dict[str, Any]) -> None:
+    path = config_dir / CONFIG_FILE
+    with update_json_config(path) as data:
         data["hasCompletedOnboarding"] = True  # skip the theme/onboarding flow
         projects = data.setdefault("projects", {})
         projects.setdefault(str(cwd), {})["hasTrustDialogAccepted"] = True  # trust the workspace clone
-
-    return update_json_config(config_dir / CONFIG_FILE, accept)
+    return path
 
 
 def _claude_argv(config_dir: Path, cwd: Path) -> list[str]:

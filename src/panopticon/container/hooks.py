@@ -30,4 +30,7 @@ def settings() -> dict[str, Any]:
 
 def write_settings(home: Path) -> Path:
     """Merge the turn-flip hooks into ``<home>/.claude/settings.json``; return the path."""
-    return update_json_config(home / ".claude" / "settings.json", lambda data: data.update(settings()))
+    path = home / ".claude" / "settings.json"
+    with update_json_config(path) as data:
+        data.update(settings())
+    return path
