@@ -25,6 +25,10 @@ fi
 # user can't read a root-owned 0600 .credentials.json, so claude would prompt to log in every
 # container). Best-effort: /creds may be absent (a task with no creds volume).
 chown --recursive "$puid:$pgid" /creds 2>/dev/null || true
+# Same for the per-task config volume at the agent's config dir (claude's history lives here): a
+# fresh volume is root-owned, and one written by a different uid before would be unreadable.
+# Best-effort — it may not be a mount (a task without the config volume).
+chown --recursive "$puid:$pgid" /home/panopticon/.claude 2>/dev/null || true
 
 # docker_in_docker capability (ADR-0005 repo capability): a privileged container running a nested
 # Docker daemon. dockerd needs root, so start it here — before we drop privileges — and put the

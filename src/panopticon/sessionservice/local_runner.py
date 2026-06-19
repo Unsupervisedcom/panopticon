@@ -44,6 +44,12 @@ WORKSPACE_MOUNT = "/workspace"
 #: names it so the pane runs as that same user (ADR 0008 / the unprivileged-user work).
 CONTAINER_USER = "panopticon"
 
+#: The agent CLI's config dir inside the container (matches the image's HOME + `agent.py`'s
+#: ``Path.home()/.claude``). A **per-task** named volume is mounted here so claude's history
+#: (its session transcripts) survives respawn/recreate — the container layer is thrown away each
+#: spawn, but the volume persists. Per-task (not per-repo) so concurrent tasks don't share state.
+CONFIG_MOUNT = "/home/panopticon/.claude"
+
 
 class CommandRunner(Protocol):
     """Runs an external command and returns its stdout; ``check`` raises on non-zero exit.
@@ -149,6 +155,9 @@ class LocalRunner(Runner):
             docker_run += ["--volume", f"{creds_volume}:{CREDS_MOUNT}"]
         if workspace:  # the per-task clone — the agent's writable working dir (ADR 0011)
             docker_run += ["--volume", f"{workspace}:{WORKSPACE_MOUNT}", "--workdir", WORKSPACE_MOUNT]
+        # Per-task config volume: persists claude's session history across respawn/recreate (the
+        # transcripts live in the config dir, which is otherwise thrown away with the container).
+        docker_run += ["--volume", f"panopticon-config-{task_id}:{CONFIG_MOUNT}"]
         for key, value in env.items():
             docker_run += ["--env", f"{key}={value}"]
         docker_run.append(image or self._image)  # composed image if given, else base; its entrypoint runs

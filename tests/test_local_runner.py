@@ -114,7 +114,10 @@ def test_spawn_injects_repo_env_file_and_creds_mount() -> None:
 def test_spawn_omits_secret_flags_when_repo_has_none() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", run=rec).spawn("t1")
-    assert "--env-file" not in rec.calls[1][0] and "--volume" not in rec.calls[1][0]
+    docker_run = rec.calls[1][0]
+    assert "--env-file" not in docker_run  # no API-key env-file
+    assert not any(v.endswith(":/creds") for v in docker_run)  # no creds volume
+    # (the per-task config volume is always mounted — that's not a per-repo secret)
 
 
 def test_spawn_mounts_the_per_task_clone_as_the_workspace() -> None:
@@ -123,6 +126,14 @@ def test_spawn_mounts_the_per_task_clone_as_the_workspace() -> None:
     docker_run = rec.calls[1][0]
     assert "/tasks/t1:/workspace" in docker_run  # the per-task clone, read-write (ADR 0011)
     assert docker_run[docker_run.index("--workdir") + 1] == "/workspace"  # the agent's working dir
+
+
+def test_spawn_mounts_a_per_task_config_volume_for_claude_history() -> None:
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).spawn("t1")
+    docker_run = rec.calls[1][0]
+    # a task-scoped named volume at the config dir → claude's transcripts survive respawn/recreate
+    assert "panopticon-config-t1:/home/panopticon/.claude" in docker_run
 
 
 def test_spawn_uses_the_composed_image_when_given_else_the_base() -> None:
