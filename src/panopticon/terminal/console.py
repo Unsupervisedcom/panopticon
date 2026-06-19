@@ -24,8 +24,11 @@ from __future__ import annotations
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable
 from pathlib import Path
+
+import httpx
 
 from panopticon.sessionservice.local_runner import TMUX_SOCKET
 from panopticon.terminal.attach import attach_command
@@ -83,6 +86,34 @@ def make_service_switch(
     return switch
 
 
+def _service_ready(service_url: str) -> bool:
+    """Whether the task service answers its health check (gates the dashboard on startup)."""
+    try:
+        return httpx.get(f"{service_url.rstrip('/')}/healthz", timeout=1.0).status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
+def wait_for_service(
+    service_url: str,
+    *,
+    ready: Callable[[str], bool] = _service_ready,
+    sleep: Callable[[float], None] = time.sleep,
+    attempts: int = 150,
+    interval: float = 0.2,
+) -> bool:
+    """Poll the task service until it answers, returning whether it came up within ``attempts``.
+
+    `make panopticon` starts the service, runner, and console near-simultaneously; without this the
+    console would start the dashboard before the service is listening, the dashboard would crash on
+    its first REST read, and its tmux session would vanish ("can't find session: dashboard")."""
+    for _ in range(attempts):
+        if ready(service_url):
+            return True
+        sleep(interval)
+    return False
+
+
 def run_console(*, show_dashboard: Selector, attach: Attacher) -> None:
     """Loop: dashboard → (pick a task) → attach → (detach) → dashboard, until the operator quits.
 
@@ -95,6 +126,11 @@ def run_console(*, show_dashboard: Selector, attach: Attacher) -> None:
 def run_console_local(service_url: str, *, socket: str = TMUX_SOCKET) -> None:
     """Wire :func:`run_console` to local tmux: a persistent `dashboard` session, and the task
     attach on the panopticon socket. The dashboard reports its pick via a switch-file."""
+    # Don't show the dashboard until the service is up, else it crashes on its first read (and its
+    # session vanishes) — the `make panopticon` startup race.
+    if not wait_for_service(service_url):
+        print(f"task service not reachable at {service_url}; is it running?", file=sys.stderr)
+        return
     switch_file = Path(tempfile.mkdtemp(prefix="panopticon-console-")) / "switch"
     dashboard = [
         sys.executable, "-m", "panopticon.terminal",

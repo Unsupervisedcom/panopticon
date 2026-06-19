@@ -26,7 +26,7 @@ src/panopticon/
                    # (the registry build_app runs on; drop a module in → registered, ADR 0004)
   taskservice/     # control plane: TaskService, FastAPI REST API, the SQLAlchemy store
                    # adapter (in-memory or on-disk SQLite), filesystem artifact store, MCP
-                   # server (mcp.py: operations=tools, artifacts=resources; FastMCP)
+                   # server (mcp.py: operations=tools, artifacts=resources; FastMCP) mounted at /mcp
   sessionservice/  # the runner: Runner ABC + StubRunner (in-process) + LocalRunner
                    # (real Docker+tmux via the CLIs); images.py = ADR-0005 composed images
                    # (base→workflow→repo); provisioner.py = host-side provisioning
@@ -39,8 +39,12 @@ src/panopticon/
                    # spawns one task
   container/       # entrypoint (`python -m panopticon.container` = connect/register/slug/
                    # heartbeat liveness) + agent.py (`-m panopticon.container.agent` = the tmux
-                   # pane's launcher: render skills + operations → exec `claude`) — the ONLY LLM pkg
-docker/Dockerfile  # minimal base task-container image (ADR 0005 base layer)
+                   # pane's launcher: render skills + operations, point claude at the /mcp server
+                   # → exec `claude`) — the ONLY LLM pkg
+docker/Dockerfile  # base task-container image (ADR 0005 base layer): python + git + bash +
+                   # the panopticon package + the `claude` CLI the agent execs; runs as the
+                   # unprivileged `panopticon` user. docker/entrypoint.sh = remap that user to the
+                   # invoking host uid/gid (PANOPTICON_PUID/PGID) then drop via gosu
 ```
 
 ## Conventions
@@ -86,7 +90,16 @@ make panopticon  # bring up everything: task service + session-service runner + 
 make login REPO=<id>  # populate a repo's creds volume interactively (panopticon login)
 make build       # docker build the base task-container image (panopticon-base)
 make clean       # remove the base + composed panopticon-* images
+make migrate     # alembic upgrade head (uses $PANOPTICON_DB; override DB=<url>)
+make migrate-revision MSG="…"  # autogenerate a migration from ORM schema changes
 ```
+
+Schema is managed by **Alembic** (`migrations/`, `alembic.ini`; ADR 0001 §3). The SQLAlchemy
+adapter still `create_all`s a fresh/in-memory DB for zero-config dev + tests; Alembic owns
+versioned evolution of any persistent DB (`make migrate` to apply, `make migrate-revision` after
+changing the ORM rows — then commit the generated `migrations/versions/*.py`). The two are guarded
+against drift by `tests/test_migrations.py`; `alembic stamp head` aligns a dev DB that `create_all`
+already bootstrapped.
 
 `make serve` runs the control plane (`python -m panopticon.taskservice` — default on-disk
 SQLite + filesystem artifacts + the built-in workflows; `PANOPTICON_HOST/PORT/DB/ARTIFACTS`
@@ -103,7 +116,7 @@ the terminal to that task's session, then re-attaches the same live dashboard on
 Crucially the runner spawns task sessions on the **same** `-L panopticon` socket, so `t` reaches
 them. Switching is always detach→attach (never `switch-client`), so the same loop reaches a remote
 task over ssh at M5; `s` jumps to the `service` session. The background sessions persist after `q`
-(stop them with `tmux -L panopticon kill-server`). Spawning needs the base image — `make build`
+(stop them with `make panopticon-down`, which kills the `-L panopticon` server). Spawning needs the base image — `make build`
 first. `make dashboard` runs the dashboard once without the attach loop (talks to
 `PANOPTICON_SERVICE_URL`).
 
@@ -115,6 +128,10 @@ commands the Makefile wraps).
 - `tests/test_workflow.py` — the **golden harness**: every legal/illegal transition, turn
   derivation, responsibility gating, and workflow validation. Extend it when you touch the
   state machine.
+- `tests/test_migrations.py` — the **migration drift guard**: `alembic upgrade head` on an empty
+  DB must reflect the same schema as `metadata.create_all`, the migrations round-trip
+  (upgrade→downgrade→upgrade), and there's a single head. Regenerate the migration
+  (`make migrate-revision`) when you change the ORM rows and this holds the line.
 - `tests/test_parity.py` — the golden spec for the **Parity workflow** (cloude-cade's
   lifecycle): the full `PLANNING→…→COMPLETE` path, the fg/bg `advanced_by` policy, per-stage
   gating, going back to coding as an ungated free move (`set_state`), and drop. Extend it when you touch the parity
@@ -170,7 +187,12 @@ commands the Makefile wraps).
   (ADR 0007) — `env_file` (API-key env-file path) and `creds_volume` (OAuth creds volume) —
   never the values; the runner injects them at launch (`--env-file` + `-v <vol>:/creds`,
   Slice 5), so a task gets only its own repo's secrets. `panopticon login <repo> [cmd]`
-  populates the creds volume interactively (the claude OAuth command arrives in Slice 6).
+  populates the creds volume interactively (the claude OAuth command arrives in Slice 6). Also holds
+  `image_layer` — the repo's Dockerfile fragment (ADR 0005's repo tier) the runner composes onto
+  base → workflow → **repo** for the task image (e.g. the repo's `uv`/`make` toolchain) — and
+  `capabilities`, a JSON opt-in map for elevated container privileges (`docker_in_docker` → the
+  runner spawns `--privileged` and the entrypoint starts a nested Docker daemon; a trust escalation,
+  off by default).
 - **Workflow** — a `Workflow` subclass whose **states are nested `State` classes**
   (declarative). It declares `initial`; states are discovered and their transitions
   (class refs or label strings) resolved + validated when the workflow is instantiated.

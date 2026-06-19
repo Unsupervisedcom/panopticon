@@ -3,6 +3,7 @@ exercises a real container + tmux session (skipped when docker/tmux are unavaila
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import time
@@ -20,9 +21,11 @@ class _Recorder:
 
     def __init__(self) -> None:
         self.calls: list[tuple[list[str], bool]] = []
+        self.interactive: list[bool] = []
 
-    def __call__(self, args: Sequence[str], *, check: bool = True) -> str:
+    def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False) -> str:
         self.calls.append((list(args), check))
+        self.interactive.append(interactive)
         return ""
 
 
@@ -37,7 +40,8 @@ def test_spawn_runs_detached_container_then_tmux_pane_execing_in() -> None:
     container_id = runner.spawn("t1")
 
     assert container_id == "panopticon-t1"
-    (docker_run, _), (tmux_new, _) = rec.calls
+    (rm, _), (docker_run, _), (tmux_new, _) = rec.calls
+    assert rm == ["docker", "rm", "--force", "panopticon-t1"]  # clear a stale container first
     assert docker_run[:3] == ["docker", "run", "--detach"]
     assert docker_run[-1] == "img:1"  # the image is the final positional arg (its entrypoint runs)
     assert ["--name", "panopticon-t1"] == docker_run[3:5]
@@ -51,16 +55,50 @@ def test_spawn_runs_detached_container_then_tmux_pane_execing_in() -> None:
     # pane execs the in-container agent launcher (so `tmux attach` reaches the live agent)
     assert tmux_new[:4] == ["tmux", "-L", "panopticon", "new-session"]
     assert tmux_new[tmux_new.index("-s") + 1] == "panopticon-t1"
-    assert tmux_new[-8:] == [
-        "docker", "exec", "--interactive", "--tty", "panopticon-t1",
+    # the pane execs in as the unprivileged `panopticon` user (so the agent's whoami isn't root)
+    assert tmux_new[-10:] == [
+        "docker", "exec", "--interactive", "--tty", "--user", "panopticon", "panopticon-t1",
         "python", "-m", "panopticon.container.agent",
     ]
+
+
+def test_spawn_runs_container_unprivileged_as_the_invoking_user() -> None:
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).spawn("t1")
+    docker_run = rec.calls[1][0]
+    # the entrypoint adopts these and drops to the `panopticon` user (no root, no bare numeric uid)
+    assert f"PANOPTICON_PUID={os.getuid()}" in docker_run
+    assert f"PANOPTICON_PGID={os.getgid()}" in docker_run
+    assert "--user" not in docker_run  # adoption happens in the entrypoint, not via docker --user
+
+
+def test_spawn_user_can_be_overridden() -> None:
+    rec = _Recorder()
+    LocalRunner("http://svc", user="1234:5678", run=rec).spawn("t1")
+    docker_run = rec.calls[1][0]
+    assert "PANOPTICON_PUID=1234" in docker_run and "PANOPTICON_PGID=5678" in docker_run
+
+
+def test_spawn_without_docker_in_docker_is_not_privileged() -> None:
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).spawn("t1")
+    docker_run = rec.calls[1][0]
+    assert "--privileged" not in docker_run
+    assert "PANOPTICON_DOCKER_IN_DOCKER=1" not in docker_run
+
+
+def test_spawn_with_docker_in_docker_runs_privileged_and_flags_the_entrypoint() -> None:
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).spawn("t1", docker_in_docker=True)
+    docker_run = rec.calls[1][0]
+    assert "--privileged" in docker_run  # nested daemon needs it (repo capability, ADR 0005)
+    assert "PANOPTICON_DOCKER_IN_DOCKER=1" in docker_run  # entrypoint starts dockerd
 
 
 def test_extra_env_is_forwarded() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", extra_env={"PANOPTICON_HEARTBEAT_INTERVAL": "0.5"}, run=rec).spawn("t1")
-    assert "PANOPTICON_HEARTBEAT_INTERVAL=0.5" in rec.calls[0][0]
+    assert "PANOPTICON_HEARTBEAT_INTERVAL=0.5" in rec.calls[1][0]
 
 
 def test_spawn_injects_repo_env_file_and_creds_mount() -> None:
@@ -68,7 +106,7 @@ def test_spawn_injects_repo_env_file_and_creds_mount() -> None:
     LocalRunner("http://svc", run=rec).spawn(
         "t1", env_file="/secrets/r1.env", creds_volume="panopticon-creds-r1"
     )
-    docker_run = rec.calls[0][0]
+    docker_run = rec.calls[1][0]
     assert docker_run[docker_run.index("--env-file") + 1] == "/secrets/r1.env"
     assert "panopticon-creds-r1:/creds" in docker_run  # mounted at the generic creds path
 
@@ -76,15 +114,36 @@ def test_spawn_injects_repo_env_file_and_creds_mount() -> None:
 def test_spawn_omits_secret_flags_when_repo_has_none() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", run=rec).spawn("t1")
-    assert "--env-file" not in rec.calls[0][0] and "--volume" not in rec.calls[0][0]
+    docker_run = rec.calls[1][0]
+    assert "--env-file" not in docker_run  # no API-key env-file
+    assert not any(v.endswith(":/creds") for v in docker_run)  # no creds volume
+    # (the per-task config volume is always mounted — that's not a per-repo secret)
 
 
 def test_spawn_mounts_the_per_task_clone_as_the_workspace() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", run=rec).spawn("t1", workspace="/tasks/t1")
-    docker_run = rec.calls[0][0]
+    docker_run = rec.calls[1][0]
     assert "/tasks/t1:/workspace" in docker_run  # the per-task clone, read-write (ADR 0011)
     assert docker_run[docker_run.index("--workdir") + 1] == "/workspace"  # the agent's working dir
+
+
+def test_spawn_mounts_a_per_task_config_volume_for_claude_history() -> None:
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).spawn("t1")
+    docker_run = rec.calls[1][0]
+    # a task-scoped named volume at the config dir → claude's transcripts survive respawn/recreate
+    assert "panopticon-config-t1:/home/panopticon/.claude" in docker_run
+
+
+def test_spawn_uses_the_composed_image_when_given_else_the_base() -> None:
+    rec = _Recorder()
+    runner = LocalRunner("http://svc", image="panopticon-base", run=rec)
+    runner.spawn("t1")  # no override → base
+    assert rec.calls[1][0][-1] == "panopticon-base"
+    runner.spawn("t2", image="panopticon-parity-r1")  # composed image (ADR 0005)
+    # each spawn emits 3 calls (rm, run, tmux); t2's docker run is calls[4]
+    assert rec.calls[4][0][-1] == "panopticon-parity-r1"
 
 
 def test_stop_kills_session_and_force_removes_container_idempotently() -> None:
@@ -96,20 +155,27 @@ def test_stop_kills_session_and_force_removes_container_idempotently() -> None:
 
 def test_login_runs_interactive_container_with_creds_volume() -> None:
     rec = _Recorder()
-    LocalRunner("http://svc", image="img:1", run=rec).login("creds-r1", ["claude", "login"])
+    LocalRunner("http://svc", image="img:1", user="1234:5678", run=rec).login(
+        "creds-r1", ["claude", "login"]
+    )
     cmd, check = rec.calls[0]
     assert cmd == [
         "docker", "run", "--interactive", "--tty", "--rm",
+        # the entrypoint adopts this user, chowns /creds to it, then drops to it before running the
+        # command — so the OAuth creds claude writes are owned by the uid the task reads them as
+        "--env", "PANOPTICON_PUID=1234", "--env", "PANOPTICON_PGID=5678",
         "--volume", "creds-r1:/creds",
-        "--env", "CLAUDE_CONFIG_DIR=/creds", "img:1", "claude", "login",
+        "--env", "CLAUDE_CONFIG_DIR=/creds",
+        "img:1", "claude", "login",  # passed through the entrypoint (no --entrypoint override)
     ]
     assert check is False  # interactive; tolerate non-zero exit
+    assert rec.interactive[0] is True  # attaches the operator's terminal (no output capture)
 
 
 def test_tmux_socket_can_be_overridden() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", tmux_socket="panopt", run=rec).spawn("t1")
-    assert rec.calls[1][0][:4] == ["tmux", "-L", "panopt", "new-session"]
+    assert rec.calls[2][0][:4] == ["tmux", "-L", "panopt", "new-session"]  # rm, run, tmux
 
 
 # -- integration: real docker + tmux ------------------------------------------------
@@ -129,7 +195,8 @@ def test_spawn_and_stop_real_container_and_session() -> None:
     socket = "panopticon-itest"
     subprocess.run(
         ["docker", "build", "--tag", image, "-"],
-        input='FROM alpine\nENTRYPOINT ["sleep", "3600"]\n',
+        # a `panopticon` user so the agent pane's `docker exec --user panopticon` resolves
+        input='FROM alpine\nRUN adduser -D -u 1000 panopticon\nENTRYPOINT ["sleep", "3600"]\n',
         text=True, check=True, capture_output=True,
     )
     runner = LocalRunner(

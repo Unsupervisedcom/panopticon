@@ -8,7 +8,28 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from panopticon.terminal.console import run_console, switch_to
+from panopticon.terminal.console import run_console, switch_to, wait_for_service
+
+
+def test_wait_for_service_polls_until_ready() -> None:
+    # Gates the dashboard on the service being up (the `make panopticon` startup race): poll until
+    # the health check passes, then proceed.
+    calls = {"n": 0}
+
+    def ready(_url: str) -> bool:
+        calls["n"] += 1
+        return calls["n"] >= 3  # up on the third poll
+
+    assert wait_for_service("http://svc", ready=ready, sleep=lambda _s: None, attempts=10) is True
+    assert calls["n"] == 3
+
+
+def test_wait_for_service_gives_up_after_attempts() -> None:
+    polled: list[bool] = []
+    ok = wait_for_service(
+        "http://svc", ready=lambda _u: polled.append(True) or False, sleep=lambda _s: None, attempts=5
+    )
+    assert ok is False and len(polled) == 5  # bounded; reports failure rather than blocking forever
 
 
 def test_loop_attaches_each_picked_session_then_stops_on_quit() -> None:

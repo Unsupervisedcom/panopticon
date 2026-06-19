@@ -14,6 +14,15 @@ in the ADRs; this file is for the smaller stuff that doesn't have a home there y
 
 ## Cleanups / tech debt
 
+- [ ] **Per-task secret authorizes task mutations** — the task service trusts any caller: a request
+  names a `task_id` and mutates it, over REST or MCP. Now that in-container agents reach the shared
+  MCP server (operations as tools, `task_id` injected into the rendered skills), nothing stops one
+  task's container from passing another task's id. Issue a **per-task secret** at create/spawn,
+  inject it into the container (env + the rendered MCP config), and require it on the
+  state-mutating tools/endpoints — scoping a container to *its own* task. Pairs with disabling MCP
+  DNS-rebinding protection (`taskservice/mcp.py`) and runner inter-process auth (ADR 0008/M5).
+  _(MCP-in-container, P1.)_
+
 - [ ] **Short-circuit already-handled tasks in the host loop** — `HostDaemon.tick` calls
   `spawn_one` + `provision` on **every** task each pass and relies on each sub-step's self-gating
   (spawn skips claimed/terminal; provision skips unslugged/already-branched). That's correct but
@@ -35,9 +44,11 @@ in the ADRs; this file is for the smaller stuff that doesn't have a home there y
   (`USER`/`AGENT`) is queryable metadata; the engine doesn't yet use it to decide who
   may trigger a transition, nor is there a per-*transition* auto-advance flag. Wire it when
   the agent runtime needs it (around the parity workflow, Slice 4). _(Slice 1, P2)_
-- [ ] **No schema migrations** — the SQLAlchemy adapter creates tables with
-  `metadata.create_all`; there's no versioning/upgrade path. Add Alembic (or equivalent)
-  before the schema ships anywhere with data to preserve. _(Slice 1, P2)_
+- [x] **No schema migrations** — ~~the SQLAlchemy adapter creates tables with
+  `metadata.create_all`; there's no versioning/upgrade path.~~ Done: Alembic now owns versioned
+  evolution (`migrations/`, `alembic.ini`, `make migrate`). `create_all` remains the zero-config
+  bootstrap for fresh/in-memory DBs; `tests/test_migrations.py` guards the two against drift.
+  _(Slice 1, P2)_
 - [ ] **Factor the polling loops** — coordination is moving to pull/poll: the session service
   observing slug-set + assigned work (ADR 0010), the agent waiting for "provisioned", dashboard
   refresh, the container heartbeat. Before they multiply, see whether they can share one
@@ -51,9 +62,6 @@ in the ADRs; this file is for the smaller stuff that doesn't have a home there y
   in-process. Needed before Slice 2/3 can run for real. _(Slice 1, P1)_
 - [ ] **Workflow path-based registration** — workflows are injected as a dict today; ADR
   0004/0006 specify loading from a registered path at startup (ROADMAP Slice 7). _(Slice 1, P2)_
-- [ ] **Liveness staleness/expiry** — registrations track `last_seen` but nothing expires
-  stale ones or detects a lost container (heartbeat timeout/TTL). Needs a small design.
-  _(Slice 1, P2)_
 - [ ] **Registrations are in-memory** — lost on task-service restart; no reconciliation with
   live containers on reconnect (relates to ADR 0008 failure-handling). _(Slice 1, P2)_
 - [ ] **Slug-addressable artifacts** — once a task has a `slug`, both

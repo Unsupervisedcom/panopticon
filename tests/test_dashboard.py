@@ -9,7 +9,7 @@ from typing import Any
 
 from textual.widgets import DataTable, Static
 
-from panopticon.terminal.dashboard import Dashboard, render_detail
+from panopticon.terminal.dashboard import Dashboard, _turn_cell, render_detail
 
 _TASK: dict[str, Any] = {
     "id": "task-abcdef0123",
@@ -17,6 +17,7 @@ _TASK: dict[str, Any] = {
     "state": "WORKING",
     "turn": "agent",
     "workflow": "spike",
+    "provisioned": True,
     "history": [
         {"from_state": None, "to_state": "PLAN", "trigger": "start", "responsibilities": []},
         {
@@ -42,7 +43,7 @@ class _FakeClient:
         self._repos = repos or []
         self._workflows = workflows or []
         self._operations = operations or {}
-        self.created: list[tuple[str, str]] = []
+        self.created: list[tuple[str, str, str | None]] = []
         self.applied: list[tuple[str, str]] = []
         self.released: list[str] = []
 
@@ -61,8 +62,10 @@ class _FakeClient:
     def list_operations(self, task_id: str) -> dict[str, str]:
         return self._operations
 
-    def create_task(self, repo_id: str, workflow: str) -> dict[str, Any]:
-        self.created.append((repo_id, workflow))
+    def create_task(
+        self, repo_id: str, workflow: str, description: str | None = None
+    ) -> dict[str, Any]:
+        self.created.append((repo_id, workflow, description))
         return {"id": "new"}
 
     def apply_operation(self, task_id: str, operation: str) -> dict[str, Any]:
@@ -72,6 +75,9 @@ class _FakeClient:
     def release(self, task_id: str) -> dict[str, Any]:
         self.released.append(task_id)
         self._registrations.pop(task_id, None)
+        for t in self._tasks:  # reflect the unclaim in list_tasks (as the real service does)
+            if t["id"] == task_id:
+                t["claimed_by"] = None
         return {"id": task_id, "claimed_by": None}
 
 
@@ -84,9 +90,25 @@ def test_render_detail_shows_state_turn_and_history() -> None:
     assert "tests-pass=pending" in text
 
 
+def test_render_detail_shows_the_description() -> None:
+    assert "make the widget green" not in render_detail(_TASK)
+    text = render_detail({**_TASK, "description": "make the widget green"})
+    assert "make the widget green" in text
+
+
 def test_render_detail_marks_blocked() -> None:
     assert "(blocked)" not in render_detail(_TASK)
     assert "turn: agent (blocked)" in render_detail({**_TASK, "blocked": True})
+
+
+def test_turn_cell_color_codes_like_cloude_cade() -> None:
+    # cloude-cade: agent=green, user=yellow, blocked=red (blocked wins).
+    agent = _turn_cell(_TASK)
+    assert agent.plain == "agent" and agent.style == "green"
+    user = _turn_cell({**_TASK, "turn": "user"})
+    assert user.plain == "user" and user.style == "yellow"
+    blocked = _turn_cell({**_TASK, "blocked": True})
+    assert blocked.plain == "agent ⚠" and blocked.style == "red"
 
 
 async def test_dashboard_mounts_lists_tasks_and_shows_detail() -> None:
@@ -97,6 +119,52 @@ async def test_dashboard_mounts_lists_tasks_and_shows_detail() -> None:
         assert table.row_count == 1
         detail = app.query_one("#detail", Static)
         assert "WORKING" in str(detail.render())
+
+
+async def test_tasks_are_sorted_by_state_with_terminal_states_last() -> None:
+    tasks = [
+        {**_TASK, "id": "t-done", "slug": "z", "state": "COMPLETE"},
+        {**_TASK, "id": "t-work", "slug": "m", "state": "WORKING"},
+        {**_TASK, "id": "t-drop", "slug": "a", "state": "DROPPED"},
+        {**_TASK, "id": "t-plan", "slug": "b", "state": "PLANNING"},
+    ]
+    app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        order = [str(k.value) for k in table.rows]
+        # non-terminal first (PLANNING < WORKING), then terminal (COMPLETE < DROPPED)
+        assert order == ["t-plan", "t-work", "t-done", "t-drop"]
+
+
+async def test_dashboard_auto_refreshes_on_the_interval() -> None:
+    # A short interval picks up task-list changes without an `r` keypress.
+    fake = _FakeClient([])
+    app = Dashboard(fake, refresh_interval=0.05)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        assert table.row_count == 0
+        fake._tasks = [_TASK]  # the service grew a task; the timer should pick it up
+        await pilot.pause(0.15)
+        assert table.row_count == 1
+
+
+async def test_auto_refresh_preserves_the_highlighted_task() -> None:
+    # Two tasks; highlight the second, then a refresh must keep the cursor on it (not snap to first).
+    other = {**_TASK, "id": "task-second9999", "slug": "other"}
+    fake = _FakeClient([_TASK, other])
+    app = Dashboard(fake, refresh_interval=0)  # manual refresh only — drive it explicitly
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        table.move_cursor(row=1)
+        await pilot.pause()
+        assert app._current == "task-second9999"
+        app.action_refresh()
+        await pilot.pause()
+        assert app._current == "task-second9999"  # highlight survived the rebuild
+        assert table.cursor_row == 1
 
 
 async def test_dashboard_with_no_tasks() -> None:
@@ -159,7 +227,7 @@ async def test_pressing_s_with_no_service_session_does_nothing() -> None:
         assert app.is_running  # reported "none running"; stayed on the dashboard
 
 
-async def test_pressing_n_creates_a_task_via_repo_then_workflow_picker() -> None:
+async def test_pressing_n_creates_a_task_via_repo_workflow_then_description() -> None:
     fake = _FakeClient([], repos=["r1", "r2"], workflows=["spike"])
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
@@ -170,7 +238,26 @@ async def test_pressing_n_creates_a_task_via_repo_then_workflow_picker() -> None
         await pilot.pause()
         await pilot.press("enter")  # first (only) workflow: spike
         await pilot.pause()
-        assert fake.created == [("r1", "spike")]
+        await pilot.press("f", "i", "x")  # type a description into the prompt
+        await pilot.press("enter")  # submit
+        await pilot.pause()
+        assert fake.created == [("r1", "spike", "fix")]
+
+
+async def test_pressing_n_with_a_blank_description_creates_with_none() -> None:
+    fake = _FakeClient([], repos=["r1"], workflows=["spike"])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")  # repo
+        await pilot.pause()
+        await pilot.press("enter")  # workflow
+        await pilot.pause()
+        await pilot.press("enter")  # submit an empty description
+        await pilot.pause()
+        assert fake.created == [("r1", "spike", None)]
 
 
 async def test_dashboard_drives_drop() -> None:
@@ -190,12 +277,28 @@ def test_render_detail_shows_the_claim() -> None:
     assert "claimed: host-1" in render_detail({**_TASK, "claimed_by": "host-1"})
 
 
-def test_run_status_reflects_claim_and_liveness() -> None:
+def test_run_status_reflects_claim_liveness_and_provisioning() -> None:
     fake = _FakeClient([], {"t-live": [{"container_id": "c"}]})
     app = Dashboard(fake)  # type: ignore[arg-type]
+    live = {"id": "t-live", "claimed_by": "h", "provisioned": True}
+    down = {"id": "t-down", "claimed_by": "h", "provisioned": True}
+    starting = {"id": "t-start", "claimed_by": "h", "provisioned": False}
     assert app._run_status({"id": "t-x"}) == "–"  # unclaimed → not spawned
-    assert app._run_status({"id": "t-live", "claimed_by": "h"}) == "live"  # claimed + registered
-    assert app._run_status({"id": "t-down", "claimed_by": "h"}) == "down"  # claimed, no container
+    assert app._run_status(live) == "live"  # claimed + provisioned + registered
+    assert app._run_status(down) == "down"  # claimed + provisioned, no container
+    assert app._run_status(starting) == "starting"  # claimed, not yet provisioned
+
+
+def test_run_status_shows_respawning_until_reclaimed() -> None:
+    fake = _FakeClient([], {"t1": [{"container_id": "c"}]})
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    app._respawning.add("t1")
+    # released by R (unclaimed) → "respawning", not the bare "–" that reads as a lost runner
+    assert app._run_status({"id": "t1"}) == "respawning"
+    # once the runner re-claims it, the flag clears and the normal down→live boot shows through
+    assert app._run_status({"id": "t1", "claimed_by": "h", "provisioned": True}) == "live"
+    assert "t1" not in app._respawning
+    assert app._run_status({"id": "t1"}) == "–"  # no longer respawning
 
 
 async def test_respawn_releases_a_down_tasks_claim() -> None:
@@ -207,6 +310,7 @@ async def test_respawn_releases_a_down_tasks_claim() -> None:
         await pilot.press("R")
         await pilot.pause()
         assert fake.released == [task["id"]]  # released → the runner re-spawns it
+        assert task["id"] in app._respawning  # marked respawning (shown instead of bare "–")
 
 
 async def test_respawn_refuses_a_live_task() -> None:

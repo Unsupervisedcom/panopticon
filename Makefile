@@ -1,6 +1,6 @@
 # panopticon — dev tasks. Thin wrappers over `uv`/`docker`; see CLAUDE.md for details.
 .DEFAULT_GOAL := help
-.PHONY: help sync test typecheck check serve dashboard panopticon login build clean
+.PHONY: help sync test typecheck check serve dashboard panopticon panopticon-down login build clean migrate migrate-revision
 
 #: The base task-container image (ADR 0005 base layer); must match DEFAULT_IMAGE.
 IMAGE ?= panopticon-base
@@ -19,6 +19,12 @@ typecheck:  ## Type-check (mypy, strict)
 
 check: typecheck test  ## Type-check + tests (what CI runs)
 
+migrate:  ## Apply DB migrations up to head (uses $PANOPTICON_DB; override with DB=<url>)
+	uv run alembic $(if $(DB),-x db=$(DB),) upgrade head
+
+migrate-revision:  ## Autogenerate a migration from ORM changes (MSG="describe the change")
+	uv run alembic revision --autogenerate -m "$(MSG)"
+
 serve:  ## Run the task service over HTTP (the control plane)
 	uv run python -m panopticon.taskservice
 
@@ -31,6 +37,9 @@ panopticon:  ## Run panopticon: task service + session-service runner (backgroun
 	tmux -L panopticon has-session -t runner 2>/dev/null || \
 		tmux -L panopticon new-session -d -s runner 'uv run python -m panopticon.sessionservice.host'
 	uv run panopticon console
+
+panopticon-down:  ## Stop everything `make panopticon` started (kills the -L panopticon tmux server)
+	-tmux -L panopticon kill-server 2>/dev/null
 
 login:  ## Populate a repo's creds volume interactively (REPO=<id>)
 	uv run panopticon login $(REPO)

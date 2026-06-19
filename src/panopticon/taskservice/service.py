@@ -22,6 +22,12 @@ from panopticon.core.store import NotFound, Store
 from panopticon.core.workflow import Workflow
 
 
+#: A registration is considered live only if heartbeated within this window (the container
+#: heartbeats every ~5s; a few missed beats means it's gone). Past it, the registration is reaped
+#: so a container that died without deregistering doesn't show as "live" forever.
+LIVENESS_TTL_SECONDS = 20.0
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -87,6 +93,11 @@ class TaskService:
     def workflow_names(self) -> list[str]:
         return sorted(self._workflows)
 
+    def workflow_image_layer(self, name: str) -> str:
+        """The workflow's Docker image layer (ADR 0005) — the Dockerfile fragment the runner
+        composes onto the base image (e.g. parity's `gh`). Empty when the workflow needs none."""
+        return self._workflow(name).image_layer()
+
     def _workflow(self, name: str) -> Workflow:
         try:
             return self._workflows[name]
@@ -95,10 +106,12 @@ class TaskService:
 
     # -- tasks --------------------------------------------------------------------
 
-    def create_task(self, repo_id: str, workflow_name: str) -> Task:
+    def create_task(
+        self, repo_id: str, workflow_name: str, *, description: str | None = None
+    ) -> Task:
         self.get_repo(repo_id)  # ensure exists (raises NotFound)
         wf = self._workflow(workflow_name)
-        task = wf.start_task(self._id(), repo_id, at=self._clock())
+        task = wf.start_task(self._id(), repo_id, at=self._clock(), description=description)
         self._store.create_task(task)
         return task
 
@@ -292,7 +305,21 @@ class TaskService:
     def deregister(self, registration_id: str) -> None:
         self._registrations.pop(registration_id, None)
 
+    def _stale(self, reg: Registration) -> bool:
+        """Whether a registration has gone too long without a heartbeat — its container died without
+        deregistering (SIGKILL / ``docker rm --force`` / crash). Defensive: a non-timestamp clock
+        (tests) never expires, so liveness behaviour is unchanged there."""
+        try:
+            age = (datetime.fromisoformat(self._clock()) - datetime.fromisoformat(reg.last_seen))
+        except ValueError:
+            return False
+        return age.total_seconds() > LIVENESS_TTL_SECONDS
+
     def registrations(self, task_id: str | None = None) -> list[Registration]:
+        # Reap stale registrations first, so liveness reflects reality — a container that died
+        # without deregistering otherwise lingers as "live" forever (no heartbeat to age it out).
+        for rid in [r.id for r in self._registrations.values() if self._stale(r)]:
+            del self._registrations[rid]
         return [
             r for r in self._registrations.values() if task_id is None or r.task_id == task_id
         ]

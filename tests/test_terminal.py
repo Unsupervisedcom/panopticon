@@ -49,6 +49,18 @@ def test_cli_login_runs_against_repo_creds_volume() -> None:
     assert runner.calls == [("creds-r1", ["claude", "login"])]
 
 
+def test_cli_login_defaults_to_claude() -> None:
+    # `make login REPO=<id>` passes no command → claude (so it drops straight into the login flow).
+    runner = _FakeRunner()
+    rc = cli.main(
+        ["login", "r1"],
+        client=_RepoClient({"id": "r1", "creds_volume": "creds-r1"}),  # type: ignore[arg-type]
+        runner=runner,  # type: ignore[arg-type]
+    )
+    assert rc == 0
+    assert runner.calls == [("creds-r1", ["claude"])]
+
+
 def test_cli_login_errors_without_creds_volume() -> None:
     runner = _FakeRunner()
     rc = cli.main(

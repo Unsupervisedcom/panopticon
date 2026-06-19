@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 
 class Actor(str, Enum):
@@ -79,6 +80,14 @@ class Repo:
     host path to an env-file of API-key-style secrets, and ``creds_volume`` names a persisted
     volume of OAuth credential files. Both are injected into the task container at launch (the
     runner), so secrets stay out of the DB, artifacts, and image layers.
+
+    ``image_layer`` is the repo's Dockerfile fragment (ADR 0005's repo tier): the runner composes
+    base → workflow → **repo** into the task image, so a repo can layer on its toolchain (e.g. `uv`,
+    `make`). Empty/None = no repo layer.
+
+    ``capabilities`` is a per-repo opt-in map for elevated container privileges the runner grants at
+    spawn. ``docker_in_docker`` (a privileged nested Docker daemon) is the first — off by default,
+    since it's a trust escalation (a privileged container ≈ host root).
     """
 
     id: str
@@ -87,6 +96,8 @@ class Repo:
     default_base: str = "main"
     env_file: str | None = None
     creds_volume: str | None = None
+    image_layer: str | None = None
+    capabilities: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -128,6 +139,10 @@ class Task:
     #: A deliberate "waiting on something" marker the agent sets; it is **orthogonal to the
     #: turn** and survives turn flips (cloude-cade's `:blocked:`), cleared only explicitly.
     blocked: bool = False
+    #: A free-text description of the work, collected when the task is created (shown in the
+    #: dashboard's task summary). A human label of *intent*, distinct from the ``slug`` (a short
+    #: identifier the agent sets later); ``None`` when the creator gave none.
+    description: str | None = None
     slug: str | None = None
     #: The git refs the session service provisions for this task once the slug is set (ADR
     #: 0010/0011): the slug-named branch and the path of the per-task ``clone`` it works in **on
