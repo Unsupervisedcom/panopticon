@@ -10,7 +10,8 @@ drives: every other transition starts a new agentic turn, so it's triggered by a
 agent skill (advance/iterate over REST/MCP), not the operator (ADR 0004).
 
 The `run` column shows each task's container status: `live` (an active registration), `down`
-(claimed by a runner but no container — respawn with `R`), or `–` (unclaimed/not spawned yet).
+(claimed by a runner but no container — respawn with `R`), `–` (unclaimed/not spawned yet), or
+`respawning` (just released by `R`, awaiting the runner's re-claim).
 
 The dashboard does not attach to tmux itself: on `t` it calls ``on_switch`` (the terminal
 supervisor, ADR 0009 §6, records the chosen session and detaches this client) and **keeps
@@ -131,6 +132,7 @@ class Dashboard(App[None]):
         self._refresh_interval = refresh_interval  # auto-refresh cadence (0/None → manual only)
         self._tasks: dict[str, JsonObj] = {}
         self._current: str | None = None
+        self._respawning: set[str] = set()  # tasks awaiting re-claim after `R` (shown "respawning")
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -148,10 +150,14 @@ class Dashboard(App[None]):
             self.set_interval(self._refresh_interval, self.action_refresh)
 
     def _run_status(self, task: JsonObj) -> str:
-        """A task's container status: `live` (registered), `down` (claimed but no container), or `–`."""
+        """A task's container status: `live` (registered), `down` (claimed, no container), `–`
+        (unclaimed), or `respawning` (just released by `R`, awaiting the runner's re-claim — shown
+        instead of the bare `–` so a respawn doesn't read as the task losing its runner)."""
+        tid = task["id"]
         if not task.get("claimed_by"):
-            return "–"
-        return "live" if self._client.list_registrations(task["id"]) else "down"
+            return "respawning" if tid in self._respawning else "–"
+        self._respawning.discard(tid)  # re-claimed → the normal down→live boot takes over
+        return "live" if self._client.list_registrations(tid) else "down"
 
     def action_refresh(self) -> None:
         table = self.query_one("#tasks", DataTable)
@@ -231,6 +237,7 @@ class Dashboard(App[None]):
         if self._client.list_registrations(task_id):
             self.notify("Container is live; drop it or let it finish.", severity="warning")
             return
+        self._respawning.add(task_id)  # show "respawning" until the runner re-claims it
         self._client.release(task_id)  # back to unclaimed → the host runner re-claims + re-spawns
         self.notify("Released the claim; the runner will respawn it.")
         self.action_refresh()
