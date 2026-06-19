@@ -152,6 +152,10 @@ class LocalRunner(Runner):
         for key, value in env.items():
             docker_run += ["--env", f"{key}={value}"]
         docker_run.append(image or self._image)  # composed image if given, else base; its entrypoint runs
+        # Clear any stale container of this name first — a prior run that exited, or a respawn
+        # (dashboard `R` releases the claim but doesn't stop the dead container) — so `--name`
+        # doesn't fail "name already in use". Makes spawn idempotent. (`stop()` also removes it.)
+        self._run(["docker", "rm", "--force", container], check=False)
         self._run(docker_run)
         # `docker run --detach` returns once the container is running (the entrypoint has remapped +
         # dropped), so the pane execs in as the unprivileged `panopticon` user — `tmux attach` and
