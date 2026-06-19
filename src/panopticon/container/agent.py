@@ -24,11 +24,11 @@ import signal
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 import httpx
 
 from panopticon.client import TaskServiceClient
+from panopticon.container.config import update_json_config
 from panopticon.container.hooks import write_settings
 from panopticon.container.skills import write_commands, write_operation_commands
 from panopticon.core.models import Skill
@@ -107,12 +107,10 @@ def trust_workspace(config_dir: Path, cwd: Path) -> Path:
     only matters in an (already attended) interactive re-attach.
     """
     config = config_dir / CONFIG_FILE
-    config.parent.mkdir(parents=True, exist_ok=True)
-    data: dict[str, Any] = json.loads(config.read_text()) if config.exists() else {}
-    data["hasCompletedOnboarding"] = True
-    projects = data.setdefault("projects", {})
-    projects.setdefault(str(cwd), {})["hasTrustDialogAccepted"] = True
-    config.write_text(json.dumps(data, indent=2))
+    with update_json_config(config) as data:
+        data["hasCompletedOnboarding"] = True
+        projects = data.setdefault("projects", {})
+        projects.setdefault(str(cwd), {})["hasTrustDialogAccepted"] = True
     return config
 
 
@@ -133,13 +131,8 @@ def seed_account(config_dir: Path, *, creds_dir: Path = Path(CREDS_DIR)) -> None
     account = {key: shared[key] for key in ACCOUNT_KEYS if key in shared}
     if not account:
         return
-    config_dir.mkdir(parents=True, exist_ok=True)
-    dest = config_dir / CONFIG_FILE
-    try:
-        existing = json.loads(dest.read_text())
-    except (OSError, ValueError):
-        existing = {}
-    dest.write_text(json.dumps({**existing, **account}, indent=2))
+    with update_json_config(config_dir / CONFIG_FILE) as existing:
+        existing.update(account)  # merge the identity fields in, leave the rest container-local
 
 
 def _claude_argv(config_dir: Path, cwd: Path) -> list[str]:
