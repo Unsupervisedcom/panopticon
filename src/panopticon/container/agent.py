@@ -146,11 +146,11 @@ def _claude_argv(config_dir: Path, cwd: Path) -> list[str]:
     The agent runs unattended in a throwaway container on a per-task clone, so it launches with
     ``--dangerously-skip-permissions`` — there's no operator to answer permission prompts, and the
     blast radius is the task's own checkout. claude keeps per-project transcripts under
-    ``<config>/projects/<cwd with '/' → '-'>``; when one is there (e.g. the pane or operator
-    re-attached) we ``--continue`` it instead of starting fresh. The config dir is container-local,
-    so this resumes within a container's life — not across re-creation (cross-restart persistence is
-    the per-task worktree, ADR 0010 §5). If our path encoding ever misses claude's, we simply start
-    fresh — a safe degradation.
+    ``<config>/projects/<cwd with '/' → '-'>``; when one is there we ``--continue`` it instead of
+    starting fresh. The config dir is a **per-task volume** (the runner mounts it; ``CONFIG_MOUNT``),
+    so this resumes both within a container's life and **across respawn/recreate** — claude history
+    persists even though the container layer is thrown away. If our path encoding ever misses
+    claude's, we simply start fresh — a safe degradation.
     """
     argv = ["claude", "--dangerously-skip-permissions"]
     mcp_config = config_dir / MCP_CONFIG_FILE
