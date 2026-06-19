@@ -23,6 +23,19 @@ def test_write_settings_writes_claude_settings(tmp_path: Path) -> None:
     assert "Stop" in json.loads(path.read_text())["hooks"]
 
 
+def test_write_settings_merges_without_clobbering_existing_keys(tmp_path: Path) -> None:
+    # Routed through the read-merge-write helper: any unrelated settings already on disk survive.
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text('{"model": "opus"}')
+
+    write_settings(tmp_path)
+
+    data = json.loads(settings_path.read_text())
+    assert data["model"] == "opus"  # preserved
+    assert "Stop" in data["hooks"]  # turn-flip hooks merged in
+
+
 class _FakeClient:
     def __init__(self, slug: str | None = None) -> None:
         self.calls: list[tuple[str, str]] = []

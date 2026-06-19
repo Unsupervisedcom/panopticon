@@ -18,14 +18,15 @@ this runs alongside it in the tmux pane, so `tmux attach` reaches the live agent
 
 from __future__ import annotations
 
-import json
 import os
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import httpx
 
 from panopticon.client import TaskServiceClient
+from panopticon.container.config import update_json_config
 from panopticon.container.hooks import write_settings
 from panopticon.container.skills import write_commands, write_operation_commands
 from panopticon.core.models import Skill
@@ -79,13 +80,12 @@ def pre_accept_dialogs(config_dir: Path, cwd: Path) -> Path:
     where ``config`` is ``CLAUDE_CONFIG_DIR``). Permissions are untouched: tool calls still prompt
     normally; this only removes startup friction, it does not make the agent act on its own.
     """
-    config = config_dir / CONFIG_FILE
-    data = json.loads(config.read_text()) if config.exists() else {}
-    data["hasCompletedOnboarding"] = True  # skip the theme/onboarding flow
-    projects = data.setdefault("projects", {})
-    projects.setdefault(str(cwd), {})["hasTrustDialogAccepted"] = True  # trust the workspace clone
-    config.write_text(json.dumps(data, indent=2))
-    return config
+    def accept(data: dict[str, Any]) -> None:
+        data["hasCompletedOnboarding"] = True  # skip the theme/onboarding flow
+        projects = data.setdefault("projects", {})
+        projects.setdefault(str(cwd), {})["hasTrustDialogAccepted"] = True  # trust the workspace clone
+
+    return update_json_config(config_dir / CONFIG_FILE, accept)
 
 
 def _claude_argv(config_dir: Path, cwd: Path) -> list[str]:
