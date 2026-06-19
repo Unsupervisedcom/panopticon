@@ -10,8 +10,9 @@ drives: every other transition starts a new agentic turn, so it's triggered by a
 agent skill (advance/iterate over REST/MCP), not the operator (ADR 0004).
 
 The `run` column shows each task's container status: `live` (an active registration), `down`
-(claimed by a runner but no container — respawn with `R`), `–` (unclaimed/not spawned yet), or
-`respawning` (just released by `R`, awaiting the runner's re-claim).
+(provisioned but no container — respawn with `R`), `starting` (claimed but not yet provisioned —
+its container is still coming up), `–` (unclaimed/not spawned yet), or `respawning` (just released
+by `R`, awaiting the runner's re-claim).
 
 The dashboard does not attach to tmux itself: on `t` it calls ``on_switch`` (the terminal
 supervisor, ADR 0009 §6, records the chosen session and detaches this client) and **keeps
@@ -193,13 +194,16 @@ class Dashboard(App[None]):
             self.set_interval(self._refresh_interval, self.action_refresh)
 
     def _run_status(self, task: JsonObj) -> str:
-        """A task's container status: `live` (registered), `down` (claimed, no container), `–`
-        (unclaimed), or `respawning` (just released by `R`, awaiting the runner's re-claim — shown
-        instead of the bare `–` so a respawn doesn't read as the task losing its runner)."""
+        """A task's container status: `live` (registered), `down` (provisioned but no container),
+        `starting` (claimed, not yet provisioned), `–` (unclaimed), or `respawning` (just released
+        by `R`, awaiting the runner's re-claim — shown instead of the bare `–` so a respawn doesn't
+        read as the task losing its runner)."""
         tid = task["id"]
         if not task.get("claimed_by"):
             return "respawning" if tid in self._respawning else "–"
         self._respawning.discard(tid)  # re-claimed → the normal down→live boot takes over
+        if not task.get("provisioned"):
+            return "starting"
         return "live" if self._client.list_registrations(tid) else "down"
 
     def action_refresh(self) -> None:
