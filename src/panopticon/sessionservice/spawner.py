@@ -17,6 +17,7 @@ import httpx
 from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.state import TERMINAL_LABELS
 from panopticon.sessionservice.clones import CloneCache
+from panopticon.sessionservice.images import ImageBuilder
 from panopticon.sessionservice.local_runner import LocalRunner
 from panopticon.sessionservice.spawn import prepare_workspace
 
@@ -33,6 +34,7 @@ class Spawner:
         cache: CloneCache,
         tasks_root: str,
         git: object | None = None,
+        images: ImageBuilder | None = None,
     ) -> None:
         self._client = client
         self._runner = runner
@@ -40,6 +42,7 @@ class Spawner:
         self._cache = cache
         self._tasks_root = tasks_root
         self._git = git
+        self._images = images or ImageBuilder()
 
     def spawn_one(self, task: JsonObj) -> str | None:
         """Claim + spawn ``task`` if it's a fresh unclaimed, non-terminal task; else ``None``.
@@ -65,7 +68,20 @@ class Spawner:
             env_file=repo.get("env_file"),
             creds_volume=repo.get("creds_volume"),
             workspace=workspace,
+            image=self._compose_image(task["workflow"], repo),
+            docker_in_docker=bool((repo.get("capabilities") or {}).get("docker_in_docker")),
         )
+
+    def _compose_image(self, workflow: str, repo: JsonObj) -> str | None:
+        """Compose the task's image (base → workflow → repo layers, ADR 0005) and return its tag;
+        ``None`` when neither tier contributes a layer (the runner falls back to the base image).
+        E.g. parity layers `gh` for its forge skills, then the repo layers its toolchain (`uv`,
+        `make`). Docker layer-caches, so this is a no-op once built."""
+        layers = [self._client.workflow_image_layer(workflow), repo.get("image_layer") or ""]
+        layers = [layer for layer in layers if layer.strip()]
+        if not layers:
+            return None
+        return self._images.build(workflow, repo["id"], layers)
 
 
 def spawnable_tasks(client: TaskServiceClient) -> Callable[[], list[JsonObj]]:

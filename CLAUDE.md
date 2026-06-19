@@ -27,7 +27,7 @@ src/panopticon/
                    # (the registry build_app runs on; drop a module in → registered, ADR 0004)
   taskservice/     # control plane: TaskService, FastAPI REST API, the SQLAlchemy store
                    # adapter (in-memory or on-disk SQLite), filesystem artifact store, MCP
-                   # server (mcp.py: operations=tools, artifacts=resources; FastMCP)
+                   # server (mcp.py: operations=tools, artifacts=resources; FastMCP) mounted at /mcp
   sessionservice/  # the runner: Runner ABC + StubRunner (in-process) + LocalRunner
                    # (real Docker+tmux via the CLIs); images.py = ADR-0005 composed images
                    # (base→workflow→repo); provisioner.py = host-side provisioning
@@ -40,12 +40,16 @@ src/panopticon/
                    # spawns one task
   container/       # entrypoint (`python -m panopticon.container` = connect/register/slug/
                    # heartbeat liveness) + agent.py (`-m panopticon.container.agent` = the tmux
-                   # pane's launcher: render skills + operations → exec `claude`) — the ONLY LLM pkg
+                   # pane's launcher: render skills + operations, point claude at the /mcp server
+                   # → exec `claude`) — the ONLY LLM pkg
   client.py        # the task service's REST client (TaskServiceClient), shared by every caller
   transport.py     # how a caller reaches the service: a TCP base URL, or a `unix://<path>` Unix
                    # socket (make_http_client builds the httpx client; `make panopticon` uses a
                    # socket so no port is provisioned) — LLM-free
-docker/Dockerfile  # minimal base task-container image (ADR 0005 base layer)
+docker/Dockerfile  # base task-container image (ADR 0005 base layer): python + git + bash +
+                   # the panopticon package + the `claude` CLI the agent execs; runs as the
+                   # unprivileged `panopticon` user. docker/entrypoint.sh = remap that user to the
+                   # invoking host uid/gid (PANOPTICON_PUID/PGID) then drop via gosu
 ```
 
 ## Conventions
@@ -109,7 +113,7 @@ the terminal to that task's session, then re-attaches the same live dashboard on
 Crucially the runner spawns task sessions on the **same** `-L panopticon` socket, so `t` reaches
 them. Switching is always detach→attach (never `switch-client`), so the same loop reaches a remote
 task over ssh at M5; `s` jumps to the `service` session. The background sessions persist after `q`
-(stop them with `tmux -L panopticon kill-server`). Spawning needs the base image — `make build`
+(stop them with `make panopticon-down`, which kills the `-L panopticon` server). Spawning needs the base image — `make build`
 first. `make dashboard` runs the dashboard once without the attach loop (talks to
 `PANOPTICON_SERVICE_URL`).
 
@@ -188,7 +192,12 @@ commands the Makefile wraps).
   (ADR 0007) — `env_file` (API-key env-file path) and `creds_volume` (OAuth creds volume) —
   never the values; the runner injects them at launch (`--env-file` + `-v <vol>:/creds`,
   Slice 5), so a task gets only its own repo's secrets. `panopticon login <repo> [cmd]`
-  populates the creds volume interactively (the claude OAuth command arrives in Slice 6).
+  populates the creds volume interactively (the claude OAuth command arrives in Slice 6). Also holds
+  `image_layer` — the repo's Dockerfile fragment (ADR 0005's repo tier) the runner composes onto
+  base → workflow → **repo** for the task image (e.g. the repo's `uv`/`make` toolchain) — and
+  `capabilities`, a JSON opt-in map for elevated container privileges (`docker_in_docker` → the
+  runner spawns `--privileged` and the entrypoint starts a nested Docker daemon; a trust escalation,
+  off by default).
 - **Workflow** — a `Workflow` subclass whose **states are nested `State` classes**
   (declarative). It declares `initial`; states are discovered and their transitions
   (class refs or label strings) resolved + validated when the workflow is instantiated.

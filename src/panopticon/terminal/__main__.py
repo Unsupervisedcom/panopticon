@@ -45,7 +45,7 @@ def main(
     sub.add_parser("tasks", help="list tasks as plain text")
     login_p = sub.add_parser("login", help="populate a repo's creds volume interactively")
     login_p.add_argument("repo")
-    login_p.add_argument("cmd", nargs="*", help="login command to run (default: bash)")
+    login_p.add_argument("cmd", nargs="*", help="login command to run (default: claude)")
     args = parser.parse_args(argv)
 
     client = client or TaskServiceClient(make_http_client(args.service_url))
@@ -59,7 +59,7 @@ def main(
             return 1
         from panopticon.sessionservice.local_runner import LocalRunner
 
-        (runner or LocalRunner(args.service_url)).login(creds, args.cmd or ["bash"])
+        (runner or LocalRunner(args.service_url)).login(creds, args.cmd or ["claude"])
     elif args.command == "dashboard":
         from panopticon.terminal.console import make_service_switch, switch_to
         from panopticon.terminal.dashboard import run

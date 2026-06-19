@@ -17,8 +17,9 @@ recorded history — rather than letting the unit-of-work write whatever is dirt
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 
-from sqlalchemy import ForeignKey, ForeignKeyConstraint, create_engine, select
+from sqlalchemy import JSON, ForeignKey, ForeignKeyConstraint, create_engine, select
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
@@ -56,18 +57,22 @@ class _RepoRow(_Base):
     default_base: Mapped[str]
     env_file: Mapped[str | None] = mapped_column(default=None)
     creds_volume: Mapped[str | None] = mapped_column(default=None)
+    image_layer: Mapped[str | None] = mapped_column(default=None)
+    capabilities: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
     def to_domain(self) -> Repo:
         return Repo(
             id=self.id, name=self.name, git_url=self.git_url, default_base=self.default_base,
-            env_file=self.env_file, creds_volume=self.creds_volume,
+            env_file=self.env_file, creds_volume=self.creds_volume, image_layer=self.image_layer,
+            capabilities=dict(self.capabilities or {}),
         )
 
     @classmethod
     def from_domain(cls, repo: Repo) -> _RepoRow:
         return cls(
             id=repo.id, name=repo.name, git_url=repo.git_url, default_base=repo.default_base,
-            env_file=repo.env_file, creds_volume=repo.creds_volume,
+            env_file=repo.env_file, creds_volume=repo.creds_volume, image_layer=repo.image_layer,
+            capabilities=dict(repo.capabilities),
         )
 
 
