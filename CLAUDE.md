@@ -90,7 +90,16 @@ make panopticon  # bring up everything: task service + session-service runner + 
 make login REPO=<id>  # populate a repo's creds volume interactively (panopticon login)
 make build       # docker build the base task-container image (panopticon-base)
 make clean       # remove the base + composed panopticon-* images
+make migrate     # alembic upgrade head (uses $PANOPTICON_DB; override DB=<url>)
+make migrate-revision MSG="…"  # autogenerate a migration from ORM schema changes
 ```
+
+Schema is managed by **Alembic** (`migrations/`, `alembic.ini`; ADR 0001 §3). The SQLAlchemy
+adapter still `create_all`s a fresh/in-memory DB for zero-config dev + tests; Alembic owns
+versioned evolution of any persistent DB (`make migrate` to apply, `make migrate-revision` after
+changing the ORM rows — then commit the generated `migrations/versions/*.py`). The two are guarded
+against drift by `tests/test_migrations.py`; `alembic stamp head` aligns a dev DB that `create_all`
+already bootstrapped.
 
 `make serve` runs the control plane (`python -m panopticon.taskservice` — default on-disk
 SQLite + filesystem artifacts + the built-in workflows; `PANOPTICON_HOST/PORT/DB/ARTIFACTS`
@@ -119,6 +128,10 @@ commands the Makefile wraps).
 - `tests/test_workflow.py` — the **golden harness**: every legal/illegal transition, turn
   derivation, responsibility gating, and workflow validation. Extend it when you touch the
   state machine.
+- `tests/test_migrations.py` — the **migration drift guard**: `alembic upgrade head` on an empty
+  DB must reflect the same schema as `metadata.create_all`, the migrations round-trip
+  (upgrade→downgrade→upgrade), and there's a single head. Regenerate the migration
+  (`make migrate-revision`) when you change the ORM rows and this holds the line.
 - `tests/test_parity.py` — the golden spec for the **Parity workflow** (cloude-cade's
   lifecycle): the full `PLANNING→…→COMPLETE` path, the fg/bg `advanced_by` policy, per-stage
   gating, going back to coding as an ungated free move (`set_state`), and drop. Extend it when you touch the parity

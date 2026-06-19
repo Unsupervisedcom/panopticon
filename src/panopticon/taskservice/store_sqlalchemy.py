@@ -10,8 +10,14 @@ writing one cascades — no hand-written load/insert code.
 The integrity checks are enforced by the base :class:`~panopticon.core.store.Store`
 template methods; this adapter implements the persistence primitives. ``_update_task`` only
 appends new entries and updates the current entry's promises in place — never rewriting
-recorded history — rather than letting the unit-of-work write whatever is dirty. Schema via
-``metadata.create_all``; Alembic deferred — see docs/BACKLOG.md.
+recorded history — rather than letting the unit-of-work write whatever is dirty.
+
+Schema management: ``__init__`` calls ``metadata.create_all`` to bootstrap a fresh database
+(zero-config dev + the ephemeral in-memory engine the tests use). Versioned evolution is owned
+by **Alembic** (``migrations/``, ADR 0001 §3) — the initial migration reproduces this exact
+schema, and ``tests/test_migrations.py`` guards the two against drift. On a persistent
+deployment, run ``alembic upgrade head`` to apply migrations; ``alembic stamp head`` aligns a
+dev database that ``create_all`` already bootstrapped.
 """
 
 from __future__ import annotations
@@ -46,6 +52,11 @@ _IN_MEMORY = ("sqlite://", "sqlite:///:memory:")
 
 class _Base(DeclarativeBase):
     pass
+
+
+#: The schema's table metadata — Alembic's autogenerate target (``migrations/env.py``) and the
+#: single source of truth migrations are checked against (``tests/test_migrations.py``).
+metadata = _Base.metadata
 
 
 class _RepoRow(_Base):

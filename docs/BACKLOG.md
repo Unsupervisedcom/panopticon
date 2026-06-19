@@ -44,9 +44,11 @@ in the ADRs; this file is for the smaller stuff that doesn't have a home there y
   (`USER`/`AGENT`) is queryable metadata; the engine doesn't yet use it to decide who
   may trigger a transition, nor is there a per-*transition* auto-advance flag. Wire it when
   the agent runtime needs it (around the parity workflow, Slice 4). _(Slice 1, P2)_
-- [ ] **No schema migrations** — the SQLAlchemy adapter creates tables with
-  `metadata.create_all`; there's no versioning/upgrade path. Add Alembic (or equivalent)
-  before the schema ships anywhere with data to preserve. _(Slice 1, P2)_
+- [x] **No schema migrations** — ~~the SQLAlchemy adapter creates tables with
+  `metadata.create_all`; there's no versioning/upgrade path.~~ Done: Alembic now owns versioned
+  evolution (`migrations/`, `alembic.ini`, `make migrate`). `create_all` remains the zero-config
+  bootstrap for fresh/in-memory DBs; `tests/test_migrations.py` guards the two against drift.
+  _(Slice 1, P2)_
 - [ ] **Factor the polling loops** — coordination is moving to pull/poll: the session service
   observing slug-set + assigned work (ADR 0010), the agent waiting for "provisioned", dashboard
   refresh, the container heartbeat. Before they multiply, see whether they can share one
