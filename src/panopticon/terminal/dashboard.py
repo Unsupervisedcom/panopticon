@@ -23,6 +23,7 @@ from collections.abc import Callable
 from typing import Any
 
 import httpx
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
@@ -33,6 +34,16 @@ from panopticon.client import JsonObj, TaskServiceClient
 
 def _short(task_id: str) -> str:
     return task_id[:8]
+
+
+# Turn-column colors, matching cloude-cade's dashboard ball tags: agent=green,
+# user=yellow, blocked=red. Blocked takes precedence (cloude-cade draws it as its own
+# red tag); here it keeps the turn value but appends ⚠ and colors the whole cell red.
+def _turn_cell(task: JsonObj) -> Text:
+    if task.get("blocked"):
+        return Text(f"{task['turn']} ⚠", style="red")
+    color = "green" if task["turn"] == "agent" else "yellow"
+    return Text(task["turn"], style=color)
 
 
 def render_detail(task: JsonObj) -> str:
@@ -140,9 +151,9 @@ class Dashboard(App[None]):
         table.clear()
         self._tasks = {t["id"]: t for t in self._client.list_tasks()}
         for task in self._tasks.values():
-            turn = f"{task['turn']} ⚠" if task.get("blocked") else task["turn"]
             table.add_row(
-                _short(task["id"]), task["slug"] or "-", task["state"], turn, self._run_status(task),
+                _short(task["id"]), task["slug"] or "-", task["state"], _turn_cell(task),
+                self._run_status(task),
                 key=task["id"],
             )
         self._update_detail(next(iter(self._tasks), None))

@@ -9,7 +9,7 @@ from typing import Any
 
 from textual.widgets import DataTable, Static
 
-from panopticon.terminal.dashboard import Dashboard, render_detail
+from panopticon.terminal.dashboard import Dashboard, _turn_cell, render_detail
 
 _TASK: dict[str, Any] = {
     "id": "task-abcdef0123",
@@ -87,6 +87,16 @@ def test_render_detail_shows_state_turn_and_history() -> None:
 def test_render_detail_marks_blocked() -> None:
     assert "(blocked)" not in render_detail(_TASK)
     assert "turn: agent (blocked)" in render_detail({**_TASK, "blocked": True})
+
+
+def test_turn_cell_color_codes_like_cloude_cade() -> None:
+    # cloude-cade: agent=green, user=yellow, blocked=red (blocked wins).
+    agent = _turn_cell(_TASK)
+    assert agent.plain == "agent" and agent.style == "green"
+    user = _turn_cell({**_TASK, "turn": "user"})
+    assert user.plain == "user" and user.style == "yellow"
+    blocked = _turn_cell({**_TASK, "blocked": True})
+    assert blocked.plain == "agent ⚠" and blocked.style == "red"
 
 
 async def test_dashboard_mounts_lists_tasks_and_shows_detail() -> None:
