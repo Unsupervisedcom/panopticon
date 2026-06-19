@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import json
 import os
+import signal
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -162,10 +164,22 @@ def _claude_argv(config_dir: Path, cwd: Path) -> list[str]:
     return argv
 
 
-def _exec_claude(config_dir: Path) -> None:  # pragma: no cover - real LLM; skipif-gated / live only
-    """Replace this process with `claude` (resuming the session if any), with its config dir."""
+def _run_claude(config_dir: Path) -> None:  # pragma: no cover - real LLM; skipif-gated / live only
+    """Run `claude` (resuming the session if any) in the foreground; return when it exits.
+
+    Unlike an ``exec``, this returns control to :func:`main` when claude exits, so it can stop the
+    container (the task → down → respawn). claude inherits this pane's TTY (it's the interactive
+    surface ``tmux attach`` reaches)."""
     argv = _claude_argv(config_dir, Path.cwd())
-    os.execvpe(argv[0], argv, {**os.environ, "CLAUDE_CONFIG_DIR": str(config_dir)})
+    subprocess.run(argv, env={**os.environ, "CLAUDE_CONFIG_DIR": str(config_dir)})
+
+
+def _stop_container() -> None:  # pragma: no cover - signals the real container's PID 1
+    """Stop the container by signalling the entrypoint (PID 1, the heartbeat). Both it and this
+    launcher run as the same unprivileged user, so the signal is permitted; PID 1 deregisters and
+    exits on SIGTERM, so the container stops → the task shows **down** → the operator respawns (`R`),
+    resuming from the per-task config volume."""
+    os.kill(1, signal.SIGTERM)
 
 
 def _default_client(service_url: str) -> TaskServiceClient:
@@ -176,11 +190,15 @@ def main(
     *,
     client_factory: Callable[[str], TaskServiceClient] = _default_client,
     home: Path | None = None,
-    launch: Callable[[Path], None] = _exec_claude,
+    launch: Callable[[Path], None] = _run_claude,
+    on_exit: Callable[[], None] = _stop_container,
 ) -> None:
     """Bootstrap the agent CLI from the active workflow (skills + turn-flip hooks + credentials),
-    then launch the agent. The CLI config dir is container-local (`<home>/.claude`); only the
-    credentials are linked in from the per-repo creds volume."""
+    run the agent, then stop the container when it exits. The CLI config dir is a per-task volume
+    (`<home>/.claude`); credentials are linked in from the per-repo creds volume.
+
+    When the agent (claude) exits, ``on_exit`` stops the container so the task goes **down** rather
+    than lingering live-but-unconnectable — the operator respawns it with `R` (history resumes)."""
     env = os.environ
     service_url = env["PANOPTICON_SERVICE_URL"]
     client = client_factory(service_url)
@@ -193,7 +211,8 @@ def main(
     trust_workspace(config_dir, Path.cwd())  # pre-accept the trust dialog (no operator to)
     link_credentials(config_dir)
     seed_account(config_dir)  # + the logged-in account, so the token alone isn't a login prompt
-    launch(config_dir)
+    launch(config_dir)  # the agent runs until it exits...
+    on_exit()  # ...then stop the container (task → down → respawn)
 
 
 if __name__ == "__main__":  # pragma: no cover
