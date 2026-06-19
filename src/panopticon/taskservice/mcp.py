@@ -3,8 +3,9 @@ task **operations as tools**, **artifacts as resources** — over the same task 
 clients use. Built on the official MCP SDK (FastMCP).
 
 LLM-free: this is the *surface* the agent calls; no LLM runs here (the determinism invariant).
-`build_mcp_server` returns the server (exercised in-memory in tests); `mcp_http_app` returns the
-ASGI app the runnable task-service server mounts to host it over HTTP (Slice 7a).
+`build_mcp_server` returns the server (exercised in-memory in tests); `create_app` mounts its
+streamable-HTTP app at ``/mcp`` so the same control plane serves REST and MCP, and the
+in-container agent launcher points claude at it (`container/agent.py`).
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
-from starlette.applications import Starlette
+from mcp.server.transport_security import TransportSecuritySettings
 
 from panopticon.core.artifacts import mcp_uri
 from panopticon.core.models import Actor, Status
@@ -30,7 +31,10 @@ def _task(task: object) -> dict[str, Any]:
 
 def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastMCP:
     """An MCP server exposing the task service's agent-facing operations + artifacts."""
-    mcp = FastMCP(name)
+    # Disable the SDK's DNS-rebinding (Host/Origin) guard: the agent reaches us across the
+    # container→host boundary (e.g. ``host.docker.internal``), not just localhost. The control
+    # plane is on a trusted network; per-task authorization is tracked separately (BACKLOG).
+    mcp = FastMCP(name, transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False))
 
     @mcp.tool(description="Fetch a task: state, turn, blocked, slug, and history.")
     def get_task(task_id: str) -> dict[str, Any]:
@@ -77,8 +81,3 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
         return data.decode()
 
     return mcp
-
-
-def mcp_http_app(service: TaskService) -> Starlette:
-    """The streamable-HTTP ASGI app for the MCP server — mounted by the runnable server (7a)."""
-    return build_mcp_server(service).streamable_http_app()

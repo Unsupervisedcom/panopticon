@@ -14,6 +14,15 @@ in the ADRs; this file is for the smaller stuff that doesn't have a home there y
 
 ## Cleanups / tech debt
 
+- [ ] **Per-task secret authorizes task mutations** — the task service trusts any caller: a request
+  names a `task_id` and mutates it, over REST or MCP. Now that in-container agents reach the shared
+  MCP server (operations as tools, `task_id` injected into the rendered skills), nothing stops one
+  task's container from passing another task's id. Issue a **per-task secret** at create/spawn,
+  inject it into the container (env + the rendered MCP config), and require it on the
+  state-mutating tools/endpoints — scoping a container to *its own* task. Pairs with disabling MCP
+  DNS-rebinding protection (`taskservice/mcp.py`) and runner inter-process auth (ADR 0008/M5).
+  _(MCP-in-container, P1.)_
+
 - [ ] **Short-circuit already-handled tasks in the host loop** — `HostDaemon.tick` calls
   `spawn_one` + `provision` on **every** task each pass and relies on each sub-step's self-gating
   (spawn skips claimed/terminal; provision skips unslugged/already-branched). That's correct but

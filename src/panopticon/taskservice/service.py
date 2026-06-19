@@ -87,6 +87,11 @@ class TaskService:
     def workflow_names(self) -> list[str]:
         return sorted(self._workflows)
 
+    def workflow_image_layer(self, name: str) -> str:
+        """The workflow's Docker image layer (ADR 0005) — the Dockerfile fragment the runner
+        composes onto the base image (e.g. parity's `gh`). Empty when the workflow needs none."""
+        return self._workflow(name).image_layer()
+
     def _workflow(self, name: str) -> Workflow:
         try:
             return self._workflows[name]

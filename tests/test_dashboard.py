@@ -99,6 +99,52 @@ async def test_dashboard_mounts_lists_tasks_and_shows_detail() -> None:
         assert "WORKING" in str(detail.render())
 
 
+async def test_tasks_are_sorted_by_state_with_terminal_states_last() -> None:
+    tasks = [
+        {**_TASK, "id": "t-done", "slug": "z", "state": "COMPLETE"},
+        {**_TASK, "id": "t-work", "slug": "m", "state": "WORKING"},
+        {**_TASK, "id": "t-drop", "slug": "a", "state": "DROPPED"},
+        {**_TASK, "id": "t-plan", "slug": "b", "state": "PLANNING"},
+    ]
+    app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        order = [str(k.value) for k in table.rows]
+        # non-terminal first (PLANNING < WORKING), then terminal (COMPLETE < DROPPED)
+        assert order == ["t-plan", "t-work", "t-done", "t-drop"]
+
+
+async def test_dashboard_auto_refreshes_on_the_interval() -> None:
+    # A short interval picks up task-list changes without an `r` keypress.
+    fake = _FakeClient([])
+    app = Dashboard(fake, refresh_interval=0.05)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        assert table.row_count == 0
+        fake._tasks = [_TASK]  # the service grew a task; the timer should pick it up
+        await pilot.pause(0.15)
+        assert table.row_count == 1
+
+
+async def test_auto_refresh_preserves_the_highlighted_task() -> None:
+    # Two tasks; highlight the second, then a refresh must keep the cursor on it (not snap to first).
+    other = {**_TASK, "id": "task-second9999", "slug": "other"}
+    fake = _FakeClient([_TASK, other])
+    app = Dashboard(fake, refresh_interval=0)  # manual refresh only — drive it explicitly
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        table.move_cursor(row=1)
+        await pilot.pause()
+        assert app._current == "task-second9999"
+        app.action_refresh()
+        await pilot.pause()
+        assert app._current == "task-second9999"  # highlight survived the rebuild
+        assert table.cursor_row == 1
+
+
 async def test_dashboard_with_no_tasks() -> None:
     app = Dashboard(_FakeClient([]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
