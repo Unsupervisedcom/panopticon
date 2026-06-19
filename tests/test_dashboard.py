@@ -72,6 +72,9 @@ class _FakeClient:
     def release(self, task_id: str) -> dict[str, Any]:
         self.released.append(task_id)
         self._registrations.pop(task_id, None)
+        for t in self._tasks:  # reflect the unclaim in list_tasks (as the real service does)
+            if t["id"] == task_id:
+                t["claimed_by"] = None
         return {"id": task_id, "claimed_by": None}
 
 
@@ -244,6 +247,18 @@ def test_run_status_reflects_claim_and_liveness() -> None:
     assert app._run_status({"id": "t-down", "claimed_by": "h"}) == "down"  # claimed, no container
 
 
+def test_run_status_shows_respawning_until_reclaimed() -> None:
+    fake = _FakeClient([], {"t1": [{"container_id": "c"}]})
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    app._respawning.add("t1")
+    # released by R (unclaimed) → "respawning", not the bare "–" that reads as a lost runner
+    assert app._run_status({"id": "t1"}) == "respawning"
+    # once the runner re-claims it, the flag clears and the normal down→live boot shows through
+    assert app._run_status({"id": "t1", "claimed_by": "h"}) == "live"
+    assert "t1" not in app._respawning
+    assert app._run_status({"id": "t1"}) == "–"  # no longer respawning
+
+
 async def test_respawn_releases_a_down_tasks_claim() -> None:
     task = {**_TASK, "claimed_by": "host-1"}  # claimed but no registration → down
     fake = _FakeClient([task], {})
@@ -253,6 +268,7 @@ async def test_respawn_releases_a_down_tasks_claim() -> None:
         await pilot.press("R")
         await pilot.pause()
         assert fake.released == [task["id"]]  # released → the runner re-spawns it
+        assert task["id"] in app._respawning  # marked respawning (shown instead of bare "–")
 
 
 async def test_respawn_refuses_a_live_task() -> None:
