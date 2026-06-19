@@ -62,9 +62,6 @@ in the ADRs; this file is for the smaller stuff that doesn't have a home there y
   in-process. Needed before Slice 2/3 can run for real. _(Slice 1, P1)_
 - [ ] **Workflow path-based registration** — workflows are injected as a dict today; ADR
   0004/0006 specify loading from a registered path at startup (ROADMAP Slice 7). _(Slice 1, P2)_
-- [ ] **Liveness staleness/expiry** — registrations track `last_seen` but nothing expires
-  stale ones or detects a lost container (heartbeat timeout/TTL). Needs a small design.
-  _(Slice 1, P2)_
 - [ ] **Registrations are in-memory** — lost on task-service restart; no reconciliation with
   live containers on reconnect (relates to ADR 0008 failure-handling). _(Slice 1, P2)_
 - [ ] **Slug-addressable artifacts** — once a task has a `slug`, both
