@@ -22,7 +22,8 @@ src/panopticon/
                    # store & artifact interfaces — pure, no I/O EXCEPT git.py (local
                    # branch/worktree ops; LLM-free, behind an injectable command-runner)
   workflows/       # built-in Workflow subclasses (Spike seed; GithubPeerReviewed [formerly Parity]
-                   # = cloude-cade lifecycle) +
+                   # = cloude-cade lifecycle; GithubSelfReviewed = same, sans the peer-review state,
+                   # the user self-reviews; both share the GithubForgeWorkflow base = gh tool/layer/skills) +
                    # discovery.py = scan the package + an optional path for Workflow subclasses
                    # (the registry build_app runs on; drop a module in → registered, ADR 0004)
   taskservice/     # control plane: TaskService, FastAPI REST API, the SQLAlchemy store
