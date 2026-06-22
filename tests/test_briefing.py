@@ -54,6 +54,8 @@ def test_workflow_overview_maps_the_ordered_phases() -> None:
     assert "advance it yourself" in text  # MERGING (agent-advanced)
     assert "terminal" in text  # COMPLETE
     assert "`advance`" in text and "`drop`" in text and "free move" in text  # the mechanics
+    # the Tools section names the workflow's expected tools (parity ships `gh`)
+    assert "## Tools" in text and "`gh`" in text and "GitHub CLI" in text
 
 
 def test_workflow_overview_handles_a_phase_with_no_responsibilities() -> None:
@@ -62,3 +64,4 @@ def test_workflow_overview_handles_a_phase_with_no_responsibilities() -> None:
     assert "ITERATING" in text
     assert "do the work, then hand back to the user, who advances it." in text
     assert "its responsibilities" not in text  # no "finish its responsibilities" with nothing under it
+    assert "## Tools" not in text  # spike declares no tools → the section is omitted

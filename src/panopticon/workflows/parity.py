@@ -30,7 +30,7 @@ from typing import ClassVar
 
 from collections.abc import Sequence
 
-from panopticon.core.models import Actor, Responsibility, Skill
+from panopticon.core.models import Actor, Responsibility, Skill, Tool
 from panopticon.core.state import Complete, State
 from panopticon.core.workflow import Workflow
 
@@ -78,6 +78,17 @@ class Parity(Workflow):
         transitions = (Complete,)  # the happy path; `advance` derives → COMPLETE
 
     initial = Planning
+
+    def tools(self) -> Sequence[Tool]:
+        """`gh` is in the image (see `image_layer`); name it so the agent reaches for it."""
+        return (
+            Tool(
+                "gh",
+                "the GitHub CLI — authenticated to the forge. Use it for all remote VCS: open and "
+                "update the PR (`gh pr ...`), watch CI (`gh pr checks`), and merge. The forge skills "
+                "drive it.",
+            ),
+        )
 
     def image_layer(self) -> str:
         """Parity's forge skills shell out to `gh`, so layer it onto the base image (ADR 0005)."""

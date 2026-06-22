@@ -77,6 +77,11 @@ def test_parity_image_layer_installs_gh() -> None:
     assert "gh" in WF.image_layer()  # forge skills need gh layered onto the base image
 
 
+def test_parity_declares_gh_as_a_tool() -> None:
+    names = {t.name for t in WF.tools()}  # named in the agent's system prompt (it ships in the image)
+    assert "gh" in names
+
+
 def test_core_operations_per_state() -> None:
     assert WF.operations("PLANNING") == {"advance": "ITERATING", "drop": "DROPPED"}
     assert WF.operations("ITERATING") == {"advance": "REVIEW", "drop": "DROPPED"}

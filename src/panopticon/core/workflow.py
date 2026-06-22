@@ -17,7 +17,7 @@ from functools import cached_property
 from typing import ClassVar
 
 from panopticon.core.artifacts import ArtifactStore
-from panopticon.core.models import Actor, HistoryEntry, Responsibility, Skill, Task
+from panopticon.core.models import Actor, HistoryEntry, Responsibility, Skill, Task, Tool
 from panopticon.core.state import BaseState, Complete, Dropped, State, TerminalState
 
 _ABSTRACT_BASES = (BaseState, State, TerminalState)
@@ -232,6 +232,12 @@ class Workflow(ABC):
         agent procedures a workflow wants to offer (parity's forge skills are one example, not a
         requirement), so the base default is none; a workflow overrides this to declare its own.
         """
+        return ()
+
+    def tools(self) -> Sequence[Tool]:
+        """Command-line tools this workflow's container provides beyond the base shell/git — named
+        so the agent's system prompt can tell it what to use (e.g. parity's `gh`). Declared as data;
+        the *install* is :meth:`image_layer`. Default none; a workflow overrides this."""
         return ()
 
     def image_layer(self) -> str:

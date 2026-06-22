@@ -70,6 +70,17 @@ def render_workflow_overview(workflow: Workflow) -> str:
         "user redirects you, you can move straight to any phase (a free move — e.g. back to an "
         "earlier phase to redo work).",
     ]
+
+    tools = list(workflow.tools())
+    if tools:
+        lines += [
+            "",
+            "## Tools",
+            "",
+            "Beyond the usual shell (git, bash, …), this workflow's container has:",
+        ]
+        lines += [f"- `{t.name}` — {t.description}" for t in tools]
+
     return "\n".join(lines)
 
 
