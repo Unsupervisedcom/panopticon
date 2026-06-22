@@ -94,6 +94,21 @@ class RepoOut(BaseModel):
     capabilities: dict[str, Any] = Field(default_factory=dict)
 
 
+class RepoPatchIn(BaseModel):
+    # All fields optional: a PATCH carries only what changes. ``model_dump(exclude_unset=True)``
+    # then tells "field omitted" from "field explicitly set to null", so a partial update can't
+    # null out a field the operator didn't touch. ``id`` is the key — present here only so a
+    # mismatched body is rejected (the path id is authoritative).
+    id: str | None = None
+    name: str | None = None
+    git_url: str | None = None
+    default_base: str | None = None
+    env_file: str | None = None
+    creds_volume: str | None = None
+    image_layer: str | None = None
+    capabilities: dict[str, Any] | None = None
+
+
 class CreateTaskIn(BaseModel):
     repo_id: str
     workflow: str
@@ -247,6 +262,17 @@ def create_app(service: TaskService) -> FastAPI:
     @app.get("/repos/{repo_id}")
     async def get_repo(repo_id: str) -> RepoOut:
         return RepoOut.model_validate(service.get_repo(repo_id))
+
+    @app.patch("/repos/{repo_id}")
+    async def update_repo(repo_id: str, body: RepoPatchIn) -> RepoOut:
+        # exclude_unset → only the fields the caller actually sent; the service merges them
+        # onto the stored repo (untouched fields, e.g. image_layer/capabilities, are preserved).
+        changes = body.model_dump(exclude_unset=True)
+        try:
+            repo = service.update_repo(repo_id, changes)
+        except ValueError as exc:  # e.g. attempting to change the id
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return RepoOut.model_validate(repo)
 
     # -- tasks --------------------------------------------------------------------
 

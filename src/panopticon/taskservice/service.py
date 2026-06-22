@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from typing import Any
 
 from panopticon.core.artifacts import ArtifactStore
 from panopticon.core.briefing import render_state_briefing, render_workflow_overview
@@ -88,6 +89,20 @@ class TaskService:
 
     def list_repos(self) -> list[Repo]:
         return self._store.list_repos()
+
+    def update_repo(self, repo_id: str, changes: Mapping[str, Any]) -> Repo:
+        """Apply a partial update to a repo: merge ``changes`` onto the stored repo and persist.
+
+        Read-modify-write, so any field not in ``changes`` (e.g. ``image_layer`` /
+        ``capabilities``, which the dashboard never sends) is preserved. ``id`` is the key and
+        can't be reassigned. Raises :class:`NotFound` if the repo is unknown.
+        """
+        existing = self.get_repo(repo_id)  # raises NotFound
+        if "id" in changes and changes["id"] != repo_id:
+            raise ValueError("a repo's id cannot be changed")
+        updated = replace(existing, **{k: v for k, v in changes.items() if k != "id"})
+        self._store.update_repo(updated)
+        return updated
 
     # -- workflows ----------------------------------------------------------------
 

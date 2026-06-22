@@ -267,6 +267,19 @@ class SqlAlchemyStore(Store):
         with self._session() as s:
             return [r.to_domain() for r in s.scalars(select(_RepoRow).order_by(_RepoRow.id))]
 
+    def _update_repo(self, repo: Repo) -> None:
+        with self._session.begin() as s:
+            row = s.get(_RepoRow, repo.id)
+            if row is None:
+                raise NotFound(f"repo {repo.id!r} does not exist")
+            row.name = repo.name
+            row.git_url = repo.git_url
+            row.default_base = repo.default_base
+            row.env_file = repo.env_file
+            row.creds_volume = repo.creds_volume
+            row.image_layer = repo.image_layer
+            row.capabilities = dict(repo.capabilities)
+
     # -- tasks: reads + persistence primitives (the base's template methods drive these) --
 
     def _get_task(self, task_id: str) -> Task | None:

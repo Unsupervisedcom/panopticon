@@ -5,8 +5,8 @@ auto-refreshes from the task service every ``REFRESH_INTERVAL`` seconds (preserv
 highlighted row across the rebuild); `r` forces a refresh now. Keys: `r`
 refreshes from the task service over REST, `t` hands off to the task's container tmux, `n`
 creates a task (pick repo → workflow → describe the work), `x` **drops** it, `R` **respawns** a down task (releases
-its claim so the host runner re-spawns it), and `p` opens the task's `url` in the browser
-(cloude-cade's `p` "open PR"). Drop is the only state *transition* the dashboard
+its claim so the host runner re-spawns it), `p` opens the task's `url` in the browser
+(cloude-cade's `p` "open PR"), and `g` opens the **repo config screen** (list / create / edit repos). Drop is the only state *transition* the dashboard
 drives: every other transition starts a new agentic turn, so it's triggered by an in-container
 agent skill (advance/iterate over REST/MCP), not the operator (ADR 0004).
 
@@ -182,6 +182,156 @@ class InputScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+class RepoFormScreen(ModalScreen["dict[str, str] | None"]):
+    """A modal form for a repo's core fields. Submits a ``{field: value}`` dict on save (Enter
+    or Ctrl+S), or ``None`` on cancel (Escape).
+
+    Create mode (no ``repo``): every field is an editable :class:`Input`, including ``id``.
+    Edit mode: ``id`` is shown read-only (the primary key can't change) and the rest are
+    pre-populated. Only the **core** fields are here; ``image_layer``/``capabilities`` aren't
+    edited in the TUI, and a PATCH update leaves them untouched."""
+
+    CSS = """
+    RepoFormScreen { align: center middle; }
+    #repo-form { width: 72; height: auto; padding: 1 2; border: round $accent; background: $surface; }
+    #repo-form Input { margin-bottom: 1; }
+    """
+    BINDINGS = [("escape", "cancel", "Cancel"), ("ctrl+s", "submit", "Save")]
+
+    FIELDS = ("name", "git_url", "default_base", "env_file", "creds_volume")
+
+    def __init__(self, title: str, repo: JsonObj | None = None) -> None:
+        super().__init__()
+        self._title = title
+        self._repo = repo or {}
+        self._editing = repo is not None
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="repo-form"):
+            yield Label(self._title)
+            if self._editing:
+                yield Label(f"id: {self._repo['id']}")
+            else:
+                yield Input(placeholder="id", id="field-id")
+            for name in self.FIELDS:
+                yield Input(value=str(self._repo.get(name) or ""), placeholder=name, id=f"field-{name}")
+
+    def on_mount(self) -> None:
+        self.query_one(Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.action_submit()
+
+    def action_submit(self) -> None:
+        values: dict[str, str] = {}
+        if not self._editing:
+            values["id"] = self.query_one("#field-id", Input).value.strip()
+        for name in self.FIELDS:
+            values[name] = self.query_one(f"#field-{name}", Input).value.strip()
+        self.dismiss(values)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ReposScreen(ModalScreen[None]):
+    """Repo management: list repos and create (`n`) / edit (`e`) them; Escape returns to the
+    task view. Mutations go through the task service over REST, then the table refreshes."""
+
+    CSS = """
+    ReposScreen { align: center middle; }
+    #repos-box { width: 90%; height: 80%; padding: 1 2; border: round $accent; background: $surface; }
+    """
+    BINDINGS = [
+        ("n", "new_repo", "New repo"),
+        ("e", "edit_repo", "Edit repo"),
+        ("escape", "close", "Close"),
+    ]
+
+    def __init__(self, client: TaskServiceClient) -> None:
+        super().__init__()
+        self._client = client
+        self._repos: dict[str, JsonObj] = {}
+        self._current: str | None = None
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="repos-box"):
+            yield Label("repos — n: new   e: edit   esc: close")
+            yield DataTable(id="repos")
+
+    def on_mount(self) -> None:
+        table = self.query_one("#repos", DataTable)
+        table.cursor_type = "row"
+        table.add_columns("id", "name", "git_url", "default_base")
+        table.focus()
+        self._refresh()
+
+    def _refresh(self) -> None:
+        table = self.query_one("#repos", DataTable)
+        table.clear()
+        self._repos = {str(r["id"]): r for r in self._client.list_repos()}
+        for repo in self._repos.values():
+            table.add_row(
+                repo["id"], repo["name"], repo["git_url"], repo["default_base"], key=str(repo["id"])
+            )
+        self._current = self._current if self._current in self._repos else next(iter(self._repos), None)
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        key = event.row_key.value
+        self._current = str(key) if key is not None else None
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def action_new_repo(self) -> None:
+        def create(values: dict[str, str] | None) -> None:
+            if values is None:  # backed out
+                return
+            if not (values["id"] and values["name"] and values["git_url"]):
+                self.notify("id, name and git_url are required.", severity="warning")
+                return
+            try:
+                self._client.create_repo(
+                    values["id"], values["name"], values["git_url"], values["default_base"] or "main",
+                    env_file=values["env_file"] or None, creds_volume=values["creds_volume"] or None,
+                )
+            except httpx.HTTPStatusError as exc:
+                self.notify(f"Can't create: {_detail(exc)}", severity="error")
+                return
+            self._refresh()
+
+        self.app.push_screen(RepoFormScreen("new repo"), create)
+
+    def action_edit_repo(self) -> None:
+        if self._current is None:
+            return
+        repo_id = self._current
+
+        def save(values: dict[str, str] | None) -> None:
+            if values is None:
+                return
+            try:  # PATCH: only the core fields move; image_layer/capabilities are left intact.
+                self._client.update_repo(
+                    repo_id, name=values["name"], git_url=values["git_url"],
+                    default_base=values["default_base"] or "main",
+                    env_file=values["env_file"] or None, creds_volume=values["creds_volume"] or None,
+                )
+            except httpx.HTTPStatusError as exc:
+                self.notify(f"Can't update: {_detail(exc)}", severity="error")
+                return
+            self._refresh()
+
+        self.app.push_screen(RepoFormScreen(f"edit {repo_id}", repo=self._repos[repo_id]), save)
+
+
+def _detail(exc: httpx.HTTPStatusError) -> str:
+    """The task service's error detail for a failed request (falls back to the bare error)."""
+    try:
+        return str(exc.response.json().get("detail", str(exc)))
+    except ValueError:
+        return str(exc)
+
+
 class Dashboard(App[None]):
     """The task view. On `t` it calls ``on_switch`` with the task's session (and `s` calls
     ``on_service`` for the task-service session) and stays running; the supervisor handles the
@@ -196,6 +346,7 @@ class Dashboard(App[None]):
         ("R", "respawn", "Respawn"),
         ("t", "attach", "Attach tmux"),
         ("p", "open_url", "Open URL"),
+        ("g", "repos", "Repos"),
         ("s", "service", "Service"),
         ("/", "search", "Search"),
         ("escape", "clear_search", "Clear search"),
@@ -377,6 +528,10 @@ class Dashboard(App[None]):
             return
         webbrowser.open(url)
         self.notify(f"opened {url}")
+
+    def action_repos(self) -> None:
+        """`g`: open the repo config screen — list repos and create/edit them (ADR 0002)."""
+        self.push_screen(ReposScreen(self._client))
 
     def action_service(self) -> None:
         """`s`: switch to the task-service tmux session, when one is running (ADR 0009).

@@ -77,3 +77,42 @@ def test_create_repo_with_secret_references(client: TaskServiceClient) -> None:
     )
     assert repo["env_file"] == "/secrets/r3.env"
     assert repo["creds_volume"] == "panopticon-creds-r3"
+
+
+def test_update_repo_patches_only_sent_fields(client: TaskServiceClient) -> None:
+    client.create_repo("r4", "acme/svc", "https://x/r4.git")
+    updated = client.update_repo("r4", name="renamed", git_url="https://x/r4-new.git")
+    assert updated["name"] == "renamed"
+    assert updated["git_url"] == "https://x/r4-new.git"
+    assert updated["default_base"] == "main"  # not sent → unchanged
+    assert client.get_repo("r4")["name"] == "renamed"  # persisted
+
+
+def test_update_repo_preserves_image_layer_and_capabilities(client: TaskServiceClient) -> None:
+    # POST the full repo (incl. extras), then PATCH only a core field: the extras must survive.
+    client._http.post(  # the client's create_repo doesn't carry extras; go raw for the seed
+        "/repos",
+        json={"id": "r5", "name": "svc", "git_url": "https://x/r5.git",
+              "image_layer": "RUN pip install uv", "capabilities": {"docker_in_docker": True}},
+    ).raise_for_status()
+    client.update_repo("r5", name="svc-2")
+    got = client.get_repo("r5")
+    assert got["name"] == "svc-2"
+    assert got["image_layer"] == "RUN pip install uv"  # the anti-footgun: PATCH left it intact
+    assert got["capabilities"] == {"docker_in_docker": True}
+
+
+def test_update_unknown_repo_404(client: TaskServiceClient) -> None:
+    import httpx
+
+    with pytest.raises(httpx.HTTPStatusError) as exc:
+        client.update_repo("ghost", name="x")
+    assert exc.value.response.status_code == 404
+
+
+def test_update_repo_rejects_id_change(client: TaskServiceClient) -> None:
+    import httpx
+
+    with pytest.raises(httpx.HTTPStatusError) as exc:
+        client.update_repo("r1", id="r1-renamed")
+    assert exc.value.response.status_code == 400

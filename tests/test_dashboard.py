@@ -44,18 +44,24 @@ class _FakeClient:
         tasks: list[dict[str, Any]],
         registrations: dict[str, list[dict[str, Any]]] | None = None,
         *,
-        repos: list[str] | None = None,
+        repos: list[str] | list[dict[str, Any]] | None = None,
         workflows: list[str] | None = None,
         operations: dict[str, str] | None = None,
     ) -> None:
         self._tasks = tasks
         self._registrations = registrations or {}
-        self._repos = repos or []
+        # repos may be bare ids (existing task-creation tests) or full dicts (repo-screen tests).
+        self._repos: list[dict[str, Any]] = [
+            {"id": r, "name": r, "git_url": "", "default_base": "main"} if isinstance(r, str) else r
+            for r in (repos or [])
+        ]
         self._workflows = workflows or []
         self._operations = operations or {}
         self.created: list[tuple[str, str, str | None]] = []
         self.applied: list[tuple[str, str]] = []
         self.released: list[str] = []
+        self.created_repos: list[dict[str, Any]] = []
+        self.updated_repos: list[tuple[str, dict[str, Any]]] = []
 
     def list_tasks(self) -> list[dict[str, Any]]:
         return self._tasks
@@ -64,7 +70,25 @@ class _FakeClient:
         return self._registrations.get(task_id, [])
 
     def list_repos(self) -> list[dict[str, Any]]:
-        return [{"id": r} for r in self._repos]
+        return self._repos
+
+    def create_repo(
+        self, repo_id: str, name: str, git_url: str, default_base: str = "main",
+        *, env_file: str | None = None, creds_volume: str | None = None,
+    ) -> dict[str, Any]:
+        repo = {"id": repo_id, "name": name, "git_url": git_url, "default_base": default_base,
+                "env_file": env_file, "creds_volume": creds_volume}
+        self.created_repos.append(repo)
+        self._repos.append(repo)
+        return repo
+
+    def update_repo(self, repo_id: str, **changes: Any) -> dict[str, Any]:
+        self.updated_repos.append((repo_id, changes))
+        for repo in self._repos:
+            if repo["id"] == repo_id:
+                repo.update(changes)
+                return repo
+        return {"id": repo_id, **changes}
 
     def list_workflows(self) -> list[str]:
         return self._workflows
@@ -479,3 +503,75 @@ async def test_respawn_refuses_a_live_task() -> None:
         await pilot.press("R")
         await pilot.pause()
         assert fake.released == []  # live container → respawn refused (would double-spawn)
+
+
+# -- repo config screen (`g`) -------------------------------------------------------
+
+
+async def test_pressing_g_opens_the_repos_screen_listing_repos() -> None:
+    fake = _FakeClient([], repos=[{"id": "r1", "name": "acme/widgets", "git_url": "https://x/r1.git",
+                                   "default_base": "main"}])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        assert isinstance(app.screen, dashboard.ReposScreen)
+        table = app.screen.query_one("#repos", DataTable)
+        assert table.row_count == 1
+
+
+async def test_repos_screen_creates_a_repo() -> None:
+    fake = _FakeClient([], repos=[])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")  # open the create form
+        await pilot.pause()
+        app.screen.query_one("#field-id", Input).value = "r9"
+        app.screen.query_one("#field-name", Input).value = "acme/new"
+        app.screen.query_one("#field-git_url", Input).value = "https://x/r9.git"
+        await pilot.press("enter")  # submit the form
+        await pilot.pause()
+        assert fake.created_repos == [
+            {"id": "r9", "name": "acme/new", "git_url": "https://x/r9.git",
+             "default_base": "main", "env_file": None, "creds_volume": None}
+        ]
+
+
+async def test_repos_screen_create_requires_id_name_and_git_url() -> None:
+    fake = _FakeClient([], repos=[])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        app.screen.query_one("#field-id", Input).value = "r9"  # name + git_url left blank
+        await pilot.press("enter")
+        await pilot.pause()
+        assert fake.created_repos == []  # refused; nothing created
+
+
+async def test_repos_screen_edits_a_repo_via_patch() -> None:
+    fake = _FakeClient([], repos=[{"id": "r1", "name": "old", "git_url": "https://x/r1.git",
+                                   "default_base": "main"}])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")  # edit the highlighted repo
+        await pilot.pause()
+        assert app.screen.query_one("#field-name", Input).value == "old"  # pre-populated
+        app.screen.query_one("#field-name", Input).value = "new"
+        await pilot.press("enter")
+        await pilot.pause()
+        # Only the core fields are sent; image_layer/capabilities are never touched (PATCH).
+        assert fake.updated_repos == [
+            ("r1", {"name": "new", "git_url": "https://x/r1.git", "default_base": "main",
+                    "env_file": None, "creds_volume": None})
+        ]

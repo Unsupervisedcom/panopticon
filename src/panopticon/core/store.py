@@ -68,6 +68,12 @@ class Store(ABC):
         """Return all repos."""
         return self._list_repos()
 
+    def update_repo(self, repo: Repo) -> None:
+        """Persist changes to an existing repo (a full-row write). Raises :class:`NotFound`
+        if no repo with its id exists. The *merge* of a partial update is the caller's job
+        (the service reads-modifies-writes); the store just overwrites the row."""
+        self._update_repo(repo)
+
     # -- tasks (public façade; create/save also enforce the integrity rules) ------
 
     def create_task(self, task: Task) -> None:
@@ -103,6 +109,10 @@ class Store(ABC):
     @abstractmethod
     def _list_repos(self) -> list[Repo]:
         """Return all repos."""
+
+    @abstractmethod
+    def _update_repo(self, repo: Repo) -> None:
+        """Overwrite an existing repo's row. Raise :class:`NotFound` if its id is unknown."""
 
     @abstractmethod
     def _create_task(self, task: Task) -> None:

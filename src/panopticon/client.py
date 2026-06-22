@@ -94,6 +94,12 @@ class TaskServiceClient:
         }
         return cast(JsonObj, self._json(self._http.post("/repos", json=body)))
 
+    def update_repo(self, repo_id: str, **changes: Any) -> JsonObj:
+        """Partially update a repo (PATCH): only the supplied fields are sent, and the service
+        merges them onto the stored repo — so untouched fields (e.g. image_layer/capabilities)
+        are preserved."""
+        return cast(JsonObj, self._json(self._http.patch(f"/repos/{repo_id}", json=changes)))
+
     def create_task(self, repo_id: str, workflow: str, description: str | None = None) -> JsonObj:
         body = {"repo_id": repo_id, "workflow": workflow, "description": description}
         return cast(JsonObj, self._json(self._http.post("/tasks", json=body)))
