@@ -44,6 +44,7 @@ def test_briefing_names_the_phase_responsibilities_and_user_advance() -> None:
     assert "PLANNING" in text  # the agent learns which phase it's in
     assert "later phase" in text  # ... and not to do later-phase work (e.g. implementing)
     assert "plan-written" in text and "plan artifact" in text  # this phase's responsibility
+    assert "Produce a plan for the implementation." in text  # PLANNING's description (what it's for)
     assert "ITERATING" in text  # the advance target
     # PLANNING is user-advanced, so the agent should hand back, not advance itself
     assert "hand back to the user" in text and "Don't advance on your own" in text
@@ -75,6 +76,10 @@ def test_workflow_overview_maps_the_ordered_phases() -> None:
     order = [text.index(p) for p in ("PLANNING", "ITERATING", "REVIEW", "MERGING", "COMPLETE")]
     assert order == sorted(order)
     assert "plan-written" in text and "pr-merged" in text  # each phase's responsibilities
+    # each phase carries its own description (what it's for), sourced from cloude-cade
+    assert "Produce a plan for the implementation." in text  # PLANNING
+    assert "Wait for review or approval of the PR." in text  # REVIEW
+    assert "Add the PR to the merge queue." in text  # MERGING
     assert "hand back to the user, who advances it" in text  # user-advanced phases
     assert "advance it yourself" in text  # MERGING (agent-advanced)
     assert "terminal" in text  # COMPLETE
@@ -87,7 +92,9 @@ def test_workflow_overview_handles_a_phase_with_no_responsibilities() -> None:
     # spike's ITERATING declares no responsibilities — the line must not dangle a colon + empty list.
     text = render_workflow_overview(Spike())
     assert "ITERATING" in text
-    assert "do the work, then hand back to the user, who advances it." in text
+    assert "Open-ended agent work until the user marks the task complete." in text  # its description
+    # the advance clause follows the description as its own sentence (capitalised), no dangling colon
+    assert "Do the work, then hand back to the user, who advances it." in text
     assert "its responsibilities" not in text  # no "finish its responsibilities" with nothing under it
     assert "## Tools" not in text  # spike declares no tools → the section is omitted
 

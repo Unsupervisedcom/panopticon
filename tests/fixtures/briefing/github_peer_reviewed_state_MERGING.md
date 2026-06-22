@@ -1,4 +1,4 @@
-You are in the **MERGING** phase of the `github-peer-reviewed` workflow. Do the work this phase calls for and then hand back — **don't start work that belongs to a later phase.**
+You are in the **MERGING** phase of the `github-peer-reviewed` workflow. Add the PR to the merge queue. If the PR exits the merge queue, re-add it. Do the work this phase calls for and then hand back — **don't start work that belongs to a later phase.**
 
 This phase's responsibilities (resolve each before advancing):
 - [pending] pr-merged: The PR is merged.

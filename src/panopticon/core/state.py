@@ -34,6 +34,9 @@ class BaseState(ABC):
 
     #: Stable identifier — persisted in ``Task.state`` and shown on the dashboard.
     label: ClassVar[str]
+    #: Short, human-facing prose for what this phase is *for* (rendered into the agent's
+    #: workflow overview + per-turn briefing). Empty by default — states need not set it.
+    description: ClassVar[str] = ""
     #: Who holds the turn upon entering this state.
     turn_on_enter: ClassVar[Actor]
     #: The agent's obligations while in this state (empty = ungated).
@@ -53,12 +56,14 @@ class Complete(TerminalState):
     """Built-in terminal state for successfully finished tasks."""
 
     label: ClassVar[str] = "COMPLETE"
+    description: ClassVar[str] = "The work has landed; the task is finished."
 
 
 class Dropped(TerminalState):
     """Built-in terminal state for abandoned tasks. Reachable from every non-terminal state."""
 
     label: ClassVar[str] = "DROPPED"
+    description: ClassVar[str] = "The task was abandoned."
 
 
 #: The built-in terminal state labels — a task in one of these has finished (no container needed).

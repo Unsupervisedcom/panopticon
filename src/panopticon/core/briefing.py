@@ -17,6 +17,14 @@ from panopticon.core.models import Actor, Task
 from panopticon.core.workflow import Workflow
 
 
+def _lead(description: str, how: str) -> str:
+    """A phase's overview clause: its description (what it's for) then how it advances. When a
+    description is present, the advance clause becomes its own sentence (first letter capitalised)."""
+    if not description:
+        return how
+    return f"{description} {how[:1].upper()}{how[1:]}"
+
+
 def _ordered_phases(workflow: Workflow) -> list[str]:
     """The happy-path phase order: from the initial state, follow each state's `advance` edge until
     a terminal state (or a state with no `advance`). The lifecycle as a line, for the overview."""
@@ -43,8 +51,10 @@ def render_workflow_overview(workflow: Workflow) -> str:
         "",
     ]
     for i, label in enumerate(_ordered_phases(workflow), 1):
+        desc = workflow.description(label)  # the phase's own description, then how it advances
         if workflow.is_terminal(label):
-            lines.append(f"{i}. **{label}** — terminal; the task is finished.")
+            tail = f"terminal. {desc}" if desc else "terminal; the task is finished."
+            lines.append(f"{i}. **{label}** — {tail}")
             continue
         responsibilities = list(workflow.responsibilities(label))
         agent_advances = workflow.advanced_by(label) is Actor.AGENT
@@ -54,7 +64,7 @@ def render_workflow_overview(workflow: Workflow) -> str:
                 if agent_advances
                 else "you finish its responsibilities, then hand back to the user, who advances it"
             )
-            lines.append(f"{i}. **{label}** — {how}:")
+            lines.append(f"{i}. **{label}** — {_lead(desc, how)}:")
             lines += [f"   - {r.key}: {r.description}" for r in responsibilities]
         else:
             how = (
@@ -62,7 +72,7 @@ def render_workflow_overview(workflow: Workflow) -> str:
                 if agent_advances
                 else "do the work, then hand back to the user, who advances it"
             )
-            lines.append(f"{i}. **{label}** — {how}.")
+            lines.append(f"{i}. **{label}** — {_lead(desc, how)}.")
     lines += [
         "",
         "Moving between phases: **`advance`** follows this sequence and is gated on the current "
@@ -90,9 +100,11 @@ def render_state_briefing(workflow: Workflow, task: Task) -> str:
     if workflow.is_terminal(label):
         return f"This task is in the terminal state **{label}** — it's finished; there's nothing to do."
 
+    desc = workflow.description(label)
+    lead = f" {desc}" if desc else ""  # remind the agent what this phase is for
     lines = [
-        f"You are in the **{label}** phase of the `{workflow.name}` workflow. Do the work this phase "
-        f"calls for and then hand back — **don't start work that belongs to a later phase.**"
+        f"You are in the **{label}** phase of the `{workflow.name}` workflow.{lead} Do the work this "
+        f"phase calls for and then hand back — **don't start work that belongs to a later phase.**"
     ]
 
     responsibilities = list(task.current_entry.responsibilities)
