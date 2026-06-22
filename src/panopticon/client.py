@@ -32,6 +32,11 @@ class TaskServiceClient:
     def list_workflows(self) -> list[str]:
         return cast("list[str]", self._json(self._http.get("/workflows")))
 
+    def workflow_image_layer(self, name: str) -> str:
+        """The workflow's Dockerfile layer (ADR 0005); empty when it needs none."""
+        body = cast(JsonObj, self._json(self._http.get(f"/workflows/{name}/image-layer")))
+        return cast(str, body["layer"])
+
     def get_repo(self, repo_id: str) -> JsonObj:
         return cast(JsonObj, self._json(self._http.get(f"/repos/{repo_id}")))
 
@@ -58,6 +63,16 @@ class TaskServiceClient:
         """The active workflow's in-container skills (the harness renders these to the CLI)."""
         return cast("list[JsonObj]", self._json(self._http.get(f"/tasks/{task_id}/skills")))
 
+    def get_briefing(self, task_id: str) -> str:
+        """The agent's current-phase briefing (the user-prompt hook emits it into context)."""
+        body = cast(JsonObj, self._json(self._http.get(f"/tasks/{task_id}/briefing")))
+        return cast(str, body["briefing"])
+
+    def workflow_overview(self, task_id: str) -> str:
+        """The task's whole-workflow map (the launcher puts it in claude's system prompt)."""
+        body = cast(JsonObj, self._json(self._http.get(f"/tasks/{task_id}/workflow-overview")))
+        return cast(str, body["overview"])
+
     def list_registrations(self, task_id: str) -> list[JsonObj]:
         return cast("list[JsonObj]", self._json(self._http.get(f"/tasks/{task_id}/registrations")))
 
@@ -79,8 +94,9 @@ class TaskServiceClient:
         }
         return cast(JsonObj, self._json(self._http.post("/repos", json=body)))
 
-    def create_task(self, repo_id: str, workflow: str) -> JsonObj:
-        return cast(JsonObj, self._json(self._http.post("/tasks", json={"repo_id": repo_id, "workflow": workflow})))
+    def create_task(self, repo_id: str, workflow: str, description: str | None = None) -> JsonObj:
+        body = {"repo_id": repo_id, "workflow": workflow, "description": description}
+        return cast(JsonObj, self._json(self._http.post("/tasks", json=body)))
 
     def set_slug(self, task_id: str, slug: str) -> JsonObj:
         return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/slug", json={"slug": slug})))

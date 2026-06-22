@@ -16,10 +16,17 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from panopticon.core.artifacts import ArtifactStore
+from panopticon.core.briefing import render_state_briefing, render_workflow_overview
 from panopticon.core.models import Actor, Repo, Skill, Status, Task
 from panopticon.core.provisioning import PROVISION_SKILL
 from panopticon.core.store import NotFound, Store
 from panopticon.core.workflow import Workflow
+
+
+#: A registration is considered live only if heartbeated within this window (the container
+#: heartbeats every ~5s; a few missed beats means it's gone). Past it, the registration is reaped
+#: so a container that died without deregistering doesn't show as "live" forever.
+LIVENESS_TTL_SECONDS = 20.0
 
 
 def _utc_now_iso() -> str:
@@ -87,6 +94,11 @@ class TaskService:
     def workflow_names(self) -> list[str]:
         return sorted(self._workflows)
 
+    def workflow_image_layer(self, name: str) -> str:
+        """The workflow's Docker image layer (ADR 0005) — the Dockerfile fragment the runner
+        composes onto the base image (e.g. github-peer-reviewed's `gh`). Empty when the workflow needs none."""
+        return self._workflow(name).image_layer()
+
     def _workflow(self, name: str) -> Workflow:
         try:
             return self._workflows[name]
@@ -95,10 +107,12 @@ class TaskService:
 
     # -- tasks --------------------------------------------------------------------
 
-    def create_task(self, repo_id: str, workflow_name: str) -> Task:
+    def create_task(
+        self, repo_id: str, workflow_name: str, *, description: str | None = None
+    ) -> Task:
         self.get_repo(repo_id)  # ensure exists (raises NotFound)
         wf = self._workflow(workflow_name)
-        task = wf.start_task(self._id(), repo_id, at=self._clock())
+        task = wf.start_task(self._id(), repo_id, at=self._clock(), description=description)
         self._store.create_task(task)
         return task
 
@@ -131,6 +145,17 @@ class TaskService:
         itself to get a branch, ADR 0011) followed by the active workflow's own skills."""
         task = self.get_task(task_id)
         return [PROVISION_SKILL, *self._workflow(task.workflow).skills()]
+
+    def briefing(self, task_id: str) -> str:
+        """A short briefing on the task's current phase (state + responsibilities + how it advances),
+        rendered from the workflow so the in-container agent knows *where it is* (the hook emits it)."""
+        task = self.get_task(task_id)
+        return render_state_briefing(self._workflow(task.workflow), task)
+
+    def workflow_overview(self, task_id: str) -> str:
+        """A one-time map of the task's whole workflow (the agent gets this in its system prompt)."""
+        task = self.get_task(task_id)
+        return render_workflow_overview(self._workflow(task.workflow))
 
     def apply_operation(self, task_id: str, operation: str, *, note: str | None = None) -> Task:
         """Apply a named core operation (advance/drop) — a gated move along the declared graph."""
@@ -292,7 +317,21 @@ class TaskService:
     def deregister(self, registration_id: str) -> None:
         self._registrations.pop(registration_id, None)
 
+    def _stale(self, reg: Registration) -> bool:
+        """Whether a registration has gone too long without a heartbeat — its container died without
+        deregistering (SIGKILL / ``docker rm --force`` / crash). Defensive: a non-timestamp clock
+        (tests) never expires, so liveness behaviour is unchanged there."""
+        try:
+            age = (datetime.fromisoformat(self._clock()) - datetime.fromisoformat(reg.last_seen))
+        except ValueError:
+            return False
+        return age.total_seconds() > LIVENESS_TTL_SECONDS
+
     def registrations(self, task_id: str | None = None) -> list[Registration]:
+        # Reap stale registrations first, so liveness reflects reality — a container that died
+        # without deregistering otherwise lingers as "live" forever (no heartbeat to age it out).
+        for rid in [r.id for r in self._registrations.values() if self._stale(r)]:
+            del self._registrations[rid]
         return [
             r for r in self._registrations.values() if task_id is None or r.task_id == task_id
         ]

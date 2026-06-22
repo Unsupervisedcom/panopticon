@@ -24,6 +24,7 @@ import httpx
 from panopticon.client import TaskServiceClient
 from panopticon.core.git import GitClones
 from panopticon.sessionservice.clones import CloneCache
+from panopticon.sessionservice.images import ImageBuilder
 from panopticon.sessionservice.local_runner import DEFAULT_IMAGE, LocalRunner
 from panopticon.sessionservice.provisioner import Provisioner
 from panopticon.sessionservice.spawner import Spawner
@@ -63,9 +64,18 @@ class HostDaemon:
                 continue
 
     def run(self, *, until: Callable[[], bool] | None = None) -> None:
-        """Poll until ``until()`` is true (``None`` = forever)."""
+        """Poll until ``until()`` is true (``None`` = forever).
+
+        A whole-pass failure — ``list_tasks()`` raising on a service blip or before the service is
+        listening (the ``make panopticon`` startup race) — is logged and retried next interval, so a
+        transient error never kills the long-lived daemon (and its tmux session) with it. Per-task
+        errors are already isolated inside :meth:`tick`; this is the outer net for everything else.
+        """
         while not (until and until()):
-            self.tick()
+            try:
+                self.tick()
+            except Exception:
+                _log.warning("host pass failed; retrying next interval", exc_info=True)
             self._sleep(self._interval)
 
 
@@ -77,12 +87,15 @@ def run_host(
     tasks_root: str,
     cache: CloneCache,
     git: GitClones,
+    images: ImageBuilder | None = None,
     interval: float = 2.0,
     until: Callable[[], bool] | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
     """Wire the spawner + provisioner over a shared per-task-clone root and run the host loop."""
-    spawner = Spawner(client, runner, runner_id=runner_id, cache=cache, tasks_root=tasks_root, git=git)
+    spawner = Spawner(
+        client, runner, runner_id=runner_id, cache=cache, tasks_root=tasks_root, git=git, images=images
+    )
     provisioner = Provisioner(client, clones_root=tasks_root, git=git)
     HostDaemon(client, spawner, provisioner, interval=interval, sleep=sleep).run(until=until)
 
@@ -113,7 +126,9 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
     run_host(
         client, runner,
         runner_id=args.runner_id, tasks_root=args.tasks_root,
-        cache=CloneCache(args.cache_root), git=GitClones(), interval=args.interval,
+        cache=CloneCache(args.cache_root), git=GitClones(),
+        images=ImageBuilder(base=args.image),  # compose workflow layers onto the same base (ADR 0005)
+        interval=args.interval,
     )
 
 

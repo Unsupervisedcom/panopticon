@@ -54,6 +54,27 @@ def test_health_and_workflows(client: TestClient) -> None:
     assert client.get("/workflows").json() == ["spike"]
 
 
+def test_workflow_image_layer_endpoint(client: TestClient) -> None:
+    # spike needs no layer (empty); the runner composes this onto the base image (ADR 0005).
+    assert client.get("/workflows/spike/image-layer").json() == {"layer": ""}
+
+
+def test_workflow_image_layer_surfaces_github_peer_revieweds_gh_layer(tmp_path: Path) -> None:
+    from panopticon.workflows import GithubPeerReviewed
+
+    svc = TaskService(SqlAlchemyStore(), {"github-peer-reviewed": GithubPeerReviewed()}, FilesystemArtifactStore(tmp_path))
+    with TestClient(create_app(svc)) as c:
+        assert "gh" in c.get("/workflows/github-peer-reviewed/image-layer").json()["layer"]  # forge skills need gh
+
+
+def test_mcp_is_mounted(client: TestClient) -> None:
+    # The MCP streamable-HTTP app is mounted at /mcp (in-container agents connect there); it must
+    # be a mount, not a REST route, and reachable (i.e. not a REST 404).
+    assert any(getattr(r, "path", None) == "/mcp" for r in client.app.routes)
+    resp = client.get("/mcp/", headers={"Accept": "text/event-stream"})
+    assert resp.status_code != 404
+
+
 def test_create_and_get_task(client: TestClient) -> None:
     task_id = _new_task(client)
     got = client.get(f"/tasks/{task_id}")
@@ -62,8 +83,19 @@ def test_create_and_get_task(client: TestClient) -> None:
     assert body["state"] == "ITERATING"
     assert body["turn"] == "agent"
     assert body["slug"] is None
+    assert body["description"] is None  # none given at creation
     assert body["provisioned"] is False  # no branch yet (computed Task.provisioned)
     assert [h["to_state"] for h in body["history"]] == ["ITERATING"]
+
+
+def test_create_task_records_the_description(client: TestClient) -> None:
+    resp = client.post(
+        "/tasks", json={"repo_id": "r1", "workflow": "spike", "description": "make it green"}
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["description"] == "make it green"
+    got = client.get(f"/tasks/{resp.json()['id']}")  # and it survives a reload
+    assert got.json()["description"] == "make it green"
 
 
 def test_get_missing_task_404(client: TestClient) -> None:
@@ -115,6 +147,18 @@ def test_list_skills_is_just_provision_for_a_forgeless_workflow(client: TestClie
     assert resp.status_code == 200
     # spike has no forge skills, but every task gets the agnostic `provision` skill (ADR 0011).
     assert [s["name"] for s in resp.json()] == ["provision"]
+
+
+def test_briefing_describes_the_current_phase(client: TestClient) -> None:
+    task_id = _new_task(client)  # spike, ITERATING
+    body = client.get(f"/tasks/{task_id}/briefing").json()
+    assert "ITERATING" in body["briefing"]  # the agent's current-phase briefing (the hook emits it)
+
+
+def test_workflow_overview_maps_the_workflow(client: TestClient) -> None:
+    task_id = _new_task(client)  # spike
+    body = client.get(f"/tasks/{task_id}/workflow-overview").json()
+    assert "spike" in body["overview"] and "ITERATING" in body["overview"]  # the whole-workflow map
 
 
 def test_legal_transition(client: TestClient) -> None:

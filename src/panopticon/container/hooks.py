@@ -10,9 +10,10 @@ callback only sets the turn, never the block.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
+
+from panopticon.container.config import update_json_config
 
 #: The command claude runs for each hook event (sets the turn via the task service).
 HOOK_COMMAND = "python -m panopticon.container.hook"
@@ -28,9 +29,8 @@ def settings() -> dict[str, Any]:
 
 
 def write_settings(home: Path) -> Path:
-    """Write the turn-flip hooks to ``<home>/.claude/settings.json``; return the path."""
-    claude_dir = home / ".claude"
-    claude_dir.mkdir(parents=True, exist_ok=True)
-    path = claude_dir / "settings.json"
-    path.write_text(json.dumps(settings(), indent=2))
+    """Merge the turn-flip hooks into ``<home>/.claude/settings.json``; return the path."""
+    path = home / ".claude" / "settings.json"
+    with update_json_config(path) as data:
+        data.update(settings())
     return path

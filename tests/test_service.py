@@ -256,6 +256,25 @@ def test_register_requires_task(tmp_path: Path) -> None:
         svc.register("ghost", container_id="c-abc")
 
 
+def test_stale_registration_is_reaped_after_the_ttl(tmp_path: Path) -> None:
+    # A container that dies without deregistering (SIGKILL / rm -f / crash) leaves a registration
+    # behind; with no heartbeat it must age out, else the dashboard shows it "live" forever.
+    now = {"t": "2026-01-01T00:00:00+00:00"}
+    svc = TaskService(
+        SqlAlchemyStore(), {"spike": Spike()}, FilesystemArtifactStore(tmp_path),
+        clock=lambda: now["t"],
+    )
+    svc.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
+    task = svc.create_task("r1", "spike")
+    reg = svc.register(task.id, container_id="c-abc")  # last_seen = 00:00:00
+
+    now["t"] = "2026-01-01T00:00:05+00:00"  # +5s, within the TTL
+    assert [r.id for r in svc.registrations(task.id)] == [reg.id]  # still live
+
+    now["t"] = "2026-01-01T00:01:00+00:00"  # +60s, past the 20s TTL
+    assert svc.registrations(task.id) == []  # reaped — no longer "live"
+
+
 def test_heartbeat_unknown_registration(tmp_path: Path) -> None:
     svc = make_service(tmp_path)
     with pytest.raises(NotFound):

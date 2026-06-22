@@ -23,6 +23,19 @@ def test_write_settings_writes_claude_settings(tmp_path: Path) -> None:
     assert "Stop" in json.loads(path.read_text())["hooks"]
 
 
+def test_write_settings_merges_without_clobbering_existing_keys(tmp_path: Path) -> None:
+    # Routed through the read-merge-write helper: any unrelated settings already on disk survive.
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text('{"model": "opus"}')
+
+    write_settings(tmp_path)
+
+    data = json.loads(settings_path.read_text())
+    assert data["model"] == "opus"  # preserved
+    assert "Stop" in data["hooks"]  # turn-flip hooks merged in
+
+
 class _FakeClient:
     def __init__(self, slug: str | None = None) -> None:
         self.calls: list[tuple[str, str]] = []
@@ -34,6 +47,9 @@ class _FakeClient:
 
     def get_task(self, task_id: str) -> dict[str, object]:
         return {"id": task_id, "slug": self._slug}
+
+    def get_briefing(self, task_id: str) -> str:
+        return "PHASE BRIEFING: you are in PLANNING"
 
 
 def test_hook_flips_the_turn(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -49,20 +65,31 @@ def test_hook_rejects_unknown_event() -> None:
     assert hook.main(["nonsense"], client=_FakeClient()) == 2  # type: ignore[arg-type]
 
 
-def test_user_turn_nudges_toward_provision_while_unslugged(
+def test_user_turn_briefs_the_phase_and_nudges_provision_while_unslugged(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("PANOPTICON_SERVICE_URL", "http://svc")
     monkeypatch.setenv("PANOPTICON_TASK_ID", "t1")
     assert hook.main(["agent"], client=_FakeClient(slug=None)) == 0  # type: ignore[arg-type]
-    assert "provision" in capsys.readouterr().out  # the nudge reaches the agent's context
+    out = capsys.readouterr().out
+    assert "PHASE BRIEFING" in out  # the current-phase briefing reaches the agent's context
+    assert "provision" in out  # and, unslugged, the provisioning nudge
 
 
-def test_no_nudge_once_slugged_or_on_the_stop_hook(
+def test_briefing_prints_but_no_nudge_once_slugged(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("PANOPTICON_SERVICE_URL", "http://svc")
     monkeypatch.setenv("PANOPTICON_TASK_ID", "t1")
     hook.main(["agent"], client=_FakeClient(slug="fix-widget"))  # type: ignore[arg-type]
-    hook.main(["user"], client=_FakeClient(slug=None))  # Stop hook never nudges  # type: ignore[arg-type]
+    out = capsys.readouterr().out
+    assert "PHASE BRIEFING" in out and "provision" not in out  # briefing always; nudge only unslugged
+
+
+def test_stop_hook_is_silent(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("PANOPTICON_SERVICE_URL", "http://svc")
+    monkeypatch.setenv("PANOPTICON_TASK_ID", "t1")
+    hook.main(["user"], client=_FakeClient(slug=None))  # Stop hook: just flips the turn, no output
     assert capsys.readouterr().out == ""

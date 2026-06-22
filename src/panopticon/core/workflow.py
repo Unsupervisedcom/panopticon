@@ -17,7 +17,7 @@ from functools import cached_property
 from typing import ClassVar
 
 from panopticon.core.artifacts import ArtifactStore
-from panopticon.core.models import Actor, HistoryEntry, Responsibility, Skill, Task
+from panopticon.core.models import Actor, HistoryEntry, Responsibility, Skill, Task, Tool
 from panopticon.core.state import BaseState, Complete, Dropped, State, TerminalState
 
 _ABSTRACT_BASES = (BaseState, State, TerminalState)
@@ -235,6 +235,12 @@ class Workflow(ABC):
         """
         return ()
 
+    def tools(self) -> Sequence[Tool]:
+        """Command-line tools this workflow's container provides beyond the base shell/git — named
+        so the agent's system prompt can tell it what to use (e.g. github-peer-reviewed's `gh`). Declared as data;
+        the *install* is :meth:`image_layer`. Default none; a workflow overrides this."""
+        return ()
+
     def image_layer(self) -> str:
         """The workflow's Docker image layer (ADR 0005): a Dockerfile fragment appended on top of
         the base image with what this workflow's skills need (e.g. `gh` for forge). Default none;
@@ -270,10 +276,13 @@ class Workflow(ABC):
         """A fresh PENDING responsibility list to seed the history entry for entering ``label``."""
         return list(self.responsibilities(label))
 
-    def start_task(self, task_id: str, repo_id: str, *, at: str) -> Task:
+    def start_task(
+        self, task_id: str, repo_id: str, *, at: str, description: str | None = None
+    ) -> Task:
         """Create a task in this workflow's initial state, with turn and seed history set.
 
         The seed history entry carries the initial state's responsibilities (all ``PENDING``).
+        ``description`` is the optional free-text intent collected at creation.
         """
         state = self.initial_label
         return Task(
@@ -282,6 +291,7 @@ class Workflow(ABC):
             workflow=self.name,
             state=state,
             turn=self.turn_on_enter(state),
+            description=description,
             history=[
                 HistoryEntry(
                     at=at,

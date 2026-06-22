@@ -10,15 +10,22 @@ writing one cascades — no hand-written load/insert code.
 The integrity checks are enforced by the base :class:`~panopticon.core.store.Store`
 template methods; this adapter implements the persistence primitives. ``_update_task`` only
 appends new entries and updates the current entry's promises in place — never rewriting
-recorded history — rather than letting the unit-of-work write whatever is dirty. Schema via
-``metadata.create_all``; Alembic deferred — see docs/BACKLOG.md.
+recorded history — rather than letting the unit-of-work write whatever is dirty.
+
+Schema management: ``__init__`` calls ``metadata.create_all`` to bootstrap a fresh database
+(zero-config dev + the ephemeral in-memory engine the tests use). Versioned evolution is owned
+by **Alembic** (``migrations/``, ADR 0001 §3) — the initial migration reproduces this exact
+schema, and ``tests/test_migrations.py`` guards the two against drift. On a persistent
+deployment, run ``alembic upgrade head`` to apply migrations; ``alembic stamp head`` aligns a
+dev database that ``create_all`` already bootstrapped.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 
-from sqlalchemy import ForeignKey, ForeignKeyConstraint, create_engine, select
+from sqlalchemy import JSON, ForeignKey, ForeignKeyConstraint, create_engine, select
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
@@ -47,6 +54,11 @@ class _Base(DeclarativeBase):
     pass
 
 
+#: The schema's table metadata — Alembic's autogenerate target (``migrations/env.py``) and the
+#: single source of truth migrations are checked against (``tests/test_migrations.py``).
+metadata = _Base.metadata
+
+
 class _RepoRow(_Base):
     __tablename__ = "repo"
 
@@ -56,18 +68,22 @@ class _RepoRow(_Base):
     default_base: Mapped[str]
     env_file: Mapped[str | None] = mapped_column(default=None)
     creds_volume: Mapped[str | None] = mapped_column(default=None)
+    image_layer: Mapped[str | None] = mapped_column(default=None)
+    capabilities: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
     def to_domain(self) -> Repo:
         return Repo(
             id=self.id, name=self.name, git_url=self.git_url, default_base=self.default_base,
-            env_file=self.env_file, creds_volume=self.creds_volume,
+            env_file=self.env_file, creds_volume=self.creds_volume, image_layer=self.image_layer,
+            capabilities=dict(self.capabilities or {}),
         )
 
     @classmethod
     def from_domain(cls, repo: Repo) -> _RepoRow:
         return cls(
             id=repo.id, name=repo.name, git_url=repo.git_url, default_base=repo.default_base,
-            env_file=repo.env_file, creds_volume=repo.creds_volume,
+            env_file=repo.env_file, creds_volume=repo.creds_volume, image_layer=repo.image_layer,
+            capabilities=dict(repo.capabilities),
         )
 
 
@@ -80,6 +96,7 @@ class _TaskRow(_Base):
     state: Mapped[str]
     turn: Mapped[str]
     blocked: Mapped[bool] = mapped_column(default=False)
+    description: Mapped[str | None] = mapped_column(default=None)
     slug: Mapped[str | None]
     branch: Mapped[str | None] = mapped_column(default=None)
     clone: Mapped[str | None] = mapped_column(default=None)
@@ -99,6 +116,7 @@ class _TaskRow(_Base):
             state=self.state,
             turn=Actor(self.turn),
             blocked=self.blocked,
+            description=self.description,
             slug=self.slug,
             branch=self.branch,
             clone=self.clone,
@@ -115,6 +133,7 @@ class _TaskRow(_Base):
             state=task.state,
             turn=task.turn.value,
             blocked=task.blocked,
+            description=task.description,
             slug=task.slug,
             branch=task.branch,
             clone=task.clone,
