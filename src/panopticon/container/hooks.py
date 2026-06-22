@@ -20,12 +20,23 @@ HOOK_COMMAND = "python -m panopticon.container.hook"
 
 
 def settings() -> dict[str, Any]:
-    """The `.claude/settings.json` hook block for turn-flip tracking."""
+    """The `.claude/settings.json` we seed: the turn-flip hooks **and** a pre-accept of Bypass
+    Permissions mode.
+
+    The agent launches with ``--dangerously-skip-permissions`` (no operator to answer prompts), but
+    on a fresh config dir claude first stops on an interactive *"Bypass Permissions mode … 1. No,
+    exit / 2. Yes, I accept"* gate — which hangs the container forever (the task shows "stuck
+    starting"). claude records that acceptance as ``skipDangerousModePermissionPrompt`` in this file,
+    so seeding it ``True`` up front pre-accepts the gate and claude goes straight to work.
+    """
 
     def run(actor: str) -> dict[str, Any]:
         return {"hooks": [{"type": "command", "command": f"{HOOK_COMMAND} {actor}"}]}
 
-    return {"hooks": {"Stop": [run("user")], "UserPromptSubmit": [run("agent")]}}
+    return {
+        "hooks": {"Stop": [run("user")], "UserPromptSubmit": [run("agent")]},
+        "skipDangerousModePermissionPrompt": True,
+    }
 
 
 def write_settings(home: Path) -> Path:

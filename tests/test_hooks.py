@@ -17,6 +17,12 @@ def test_settings_wire_stop_to_user_and_prompt_to_agent() -> None:
     assert s["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"].endswith("hook agent")
 
 
+def test_settings_pre_accept_bypass_permissions_mode() -> None:
+    # Without this, unattended claude (--dangerously-skip-permissions) hangs on the first-run
+    # "Bypass Permissions mode" acceptance prompt — the task shows "stuck starting".
+    assert settings()["skipDangerousModePermissionPrompt"] is True
+
+
 def test_write_settings_writes_claude_settings(tmp_path: Path) -> None:
     path = write_settings(tmp_path)
     assert path == tmp_path / ".claude" / "settings.json"
