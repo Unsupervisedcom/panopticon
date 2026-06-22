@@ -50,6 +50,9 @@ ACCOUNT_KEYS = ("oauthAccount", "userID", "hasCompletedOnboarding", "lastOnboard
 #: Filename of the rendered MCP client config in the config dir; claude is pointed at it via
 #: ``--mcp-config`` so it connects to the task service's MCP server (task operations as tools).
 MCP_CONFIG_FILE = "panopticon-mcp.json"
+#: Filename of the rendered workflow overview (the whole-lifecycle map); claude gets its contents in
+#: the system prompt via ``--append-system-prompt`` so the agent always knows the workflow's shape.
+WORKFLOW_OVERVIEW_FILE = "workflow-overview.md"
 
 
 def render_skills(client: TaskServiceClient, task_id: str, home: Path) -> list[Path]:
@@ -77,6 +80,17 @@ def write_mcp_config(config_dir: Path, service_url: str) -> Path:
     path = config_dir / MCP_CONFIG_FILE
     server = {"type": "http", "url": f"{service_url.rstrip('/')}/mcp"}
     path.write_text(json.dumps({"mcpServers": {"panopticon": server}}, indent=2))
+    return path
+
+
+def write_workflow_overview(config_dir: Path, overview: str) -> Path | None:
+    """Write the whole-workflow map so the launcher can put it in claude's system prompt. Returns the
+    path, or ``None`` when there's no overview (skipped — the agent just gets the per-turn briefing)."""
+    if not overview.strip():
+        return None
+    config_dir.mkdir(parents=True, exist_ok=True)
+    path = config_dir / WORKFLOW_OVERVIEW_FILE
+    path.write_text(overview)
     return path
 
 
@@ -148,6 +162,9 @@ def _claude_argv(config_dir: Path, cwd: Path) -> list[str]:
     claude's, we simply start fresh — a safe degradation.
     """
     argv = ["claude", "--dangerously-skip-permissions"]
+    overview = config_dir / WORKFLOW_OVERVIEW_FILE
+    if overview.exists():  # the whole-workflow map → claude's system prompt (so it knows the shape)
+        argv += ["--append-system-prompt", overview.read_text()]
     mcp_config = config_dir / MCP_CONFIG_FILE
     if mcp_config.exists():  # connect to the task service's MCP server, and *only* it
         argv += ["--mcp-config", str(mcp_config), "--strict-mcp-config"]
@@ -201,6 +218,7 @@ def main(
     render_operations(client, task_id, config_dir.parent)  # advance/drop/… as slash-commands
     write_settings(config_dir.parent)  # turn-flip hooks → <home>/.claude/settings.json
     write_mcp_config(config_dir, service_url)  # point claude at the task service's MCP server
+    write_workflow_overview(config_dir, client.workflow_overview(task_id))  # → system prompt (the map)
     trust_workspace(config_dir, Path.cwd())  # pre-accept the trust dialog (no operator to)
     link_credentials(config_dir)
     seed_account(config_dir)  # + the logged-in account, so the token alone isn't a login prompt

@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from panopticon.core.artifacts import ArtifactStore
-from panopticon.core.briefing import render_state_briefing
+from panopticon.core.briefing import render_state_briefing, render_workflow_overview
 from panopticon.core.models import Actor, Repo, Skill, Status, Task
 from panopticon.core.provisioning import PROVISION_SKILL
 from panopticon.core.store import NotFound, Store
@@ -151,6 +151,11 @@ class TaskService:
         rendered from the workflow so the in-container agent knows *where it is* (the hook emits it)."""
         task = self.get_task(task_id)
         return render_state_briefing(self._workflow(task.workflow), task)
+
+    def workflow_overview(self, task_id: str) -> str:
+        """A one-time map of the task's whole workflow (the agent gets this in its system prompt)."""
+        task = self.get_task(task_id)
+        return render_workflow_overview(self._workflow(task.workflow))
 
     def apply_operation(self, task_id: str, operation: str, *, note: str | None = None) -> Task:
         """Apply a named core operation (advance/drop) — a gated move along the declared graph."""

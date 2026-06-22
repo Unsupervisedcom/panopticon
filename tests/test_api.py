@@ -155,6 +155,12 @@ def test_briefing_describes_the_current_phase(client: TestClient) -> None:
     assert "ITERATING" in body["briefing"]  # the agent's current-phase briefing (the hook emits it)
 
 
+def test_workflow_overview_maps_the_workflow(client: TestClient) -> None:
+    task_id = _new_task(client)  # spike
+    body = client.get(f"/tasks/{task_id}/workflow-overview").json()
+    assert "spike" in body["overview"] and "ITERATING" in body["overview"]  # the whole-workflow map
+
+
 def test_legal_transition(client: TestClient) -> None:
     task_id = _new_task(client)
     resp = client.post(f"/tasks/{task_id}/transition", json={"to_state": "COMPLETE", "trigger": "finish"})

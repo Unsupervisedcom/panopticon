@@ -6,8 +6,8 @@ agent doesn't charge ahead — e.g. start implementing during a parity task's PL
 
 from __future__ import annotations
 
-from panopticon.core.briefing import render_state_briefing
-from panopticon.workflows import Parity
+from panopticon.core.briefing import render_state_briefing, render_workflow_overview
+from panopticon.workflows import Parity, Spike
 
 
 def test_briefing_names_the_phase_responsibilities_and_user_advance() -> None:
@@ -41,3 +41,24 @@ def test_briefing_for_a_terminal_state() -> None:
     text = render_state_briefing(wf, task)
 
     assert "COMPLETE" in text and "finished" in text  # nothing to do in a terminal state
+
+
+def test_workflow_overview_maps_the_ordered_phases() -> None:
+    text = render_workflow_overview(Parity())
+
+    # the whole lifecycle, in advance order, ending at the terminal state
+    order = [text.index(p) for p in ("PLANNING", "ITERATING", "REVIEW", "MERGING", "COMPLETE")]
+    assert order == sorted(order)
+    assert "plan-written" in text and "pr-merged" in text  # each phase's responsibilities
+    assert "hand back to the user, who advances it" in text  # user-advanced phases
+    assert "advance it yourself" in text  # MERGING (agent-advanced)
+    assert "terminal" in text  # COMPLETE
+    assert "`advance`" in text and "`drop`" in text and "free move" in text  # the mechanics
+
+
+def test_workflow_overview_handles_a_phase_with_no_responsibilities() -> None:
+    # spike's ITERATING declares no responsibilities — the line must not dangle a colon + empty list.
+    text = render_workflow_overview(Spike())
+    assert "ITERATING" in text
+    assert "do the work, then hand back to the user, who advances it." in text
+    assert "its responsibilities" not in text  # no "finish its responsibilities" with nothing under it
