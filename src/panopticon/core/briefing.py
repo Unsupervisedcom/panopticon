@@ -103,7 +103,7 @@ def render_state_briefing(workflow: Workflow, task: Task) -> str:
 
     responsibilities = list(task.current_entry.responsibilities)
     if responsibilities:
-        lines += ["", "This phase's responsibilities (resolve each before advancing):"]
+        lines += ["", "This phase's responsibilities (resolve each before ending your turn):"]
         lines += [f"- [{r.status.value}] {r.key}: {r.description}" for r in responsibilities]
 
     target = workflow.operations(label).get("advance")
