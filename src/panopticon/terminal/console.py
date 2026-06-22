@@ -38,6 +38,19 @@ DASHBOARD_SESSION = "dashboard"
 #: tmux session name the task service runs in under `make panopticon` (beside the dashboard).
 SERVICE_SESSION = "service"
 
+def switch_file_path(socket: str) -> Path:
+    """The supervisor↔dashboard switch-file, **deterministic per socket**.
+
+    The `dashboard` tmux session outlives any one supervisor (it's reused across `make panopticon`
+    invocations via ``has-session``), so the path the dashboard writes its `t` pick to must not be
+    per-invocation. A fresh temp path each run desyncs them: a re-invoked supervisor reads a *new*
+    empty file while the still-running dashboard writes picks to the *old* one — so every `t` reads
+    as empty (a quit), detaching the operator to the shell instead of attaching the task. Keying the
+    path to the socket keeps a re-attached dashboard and its supervisor on the same file.
+    """
+    return Path(tempfile.gettempdir()) / f"panopticon-console-{socket}" / "switch"
+
+
 #: Show the dashboard and return the task session the operator picked, or ``None`` to quit.
 Selector = Callable[[], "str | None"]
 #: Hand the terminal to a task's session; blocks until the operator detaches.
@@ -131,7 +144,8 @@ def run_console_local(service_url: str, *, socket: str = TMUX_SOCKET) -> None:
     if not wait_for_service(service_url):
         print(f"task service not reachable at {service_url}; is it running?", file=sys.stderr)
         return
-    switch_file = Path(tempfile.mkdtemp(prefix="panopticon-console-")) / "switch"
+    switch_file = switch_file_path(socket)
+    switch_file.parent.mkdir(parents=True, exist_ok=True)
     dashboard = [
         sys.executable, "-m", "panopticon.terminal",
         "--service-url", service_url,
