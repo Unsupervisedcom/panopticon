@@ -8,7 +8,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from panopticon.terminal.console import run_console, switch_to, wait_for_service
+from panopticon.terminal.console import (
+    run_console,
+    switch_file_path,
+    switch_to,
+    wait_for_service,
+)
+
+
+def test_switch_file_is_deterministic_per_socket() -> None:
+    # The dashboard session outlives the supervisor, so the switch-file must be stable across
+    # `make panopticon` re-invocations — otherwise a re-attached dashboard writes its `t` pick to a
+    # file the new supervisor isn't reading, and every `t` reads as a quit (operator dropped to shell).
+    assert switch_file_path("panopticon") == switch_file_path("panopticon")  # same socket → same path
+    assert switch_file_path("panopticon") != switch_file_path("other")  # keyed by socket
 
 
 def test_wait_for_service_polls_until_ready() -> None:
