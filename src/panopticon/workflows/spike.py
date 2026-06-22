@@ -26,6 +26,7 @@ class Spike(Workflow):
 
     class Iterating(State):
         label = "ITERATING"
+        description = "Open-ended agent work until the user marks the task complete."
         transitions = (Complete,)  # + DROPPED inherited from State
 
     initial = Iterating

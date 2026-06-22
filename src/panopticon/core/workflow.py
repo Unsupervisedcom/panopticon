@@ -209,6 +209,10 @@ class Workflow(ABC):
     def is_terminal(self, label: str) -> bool:
         return issubclass(self._state_class(label), TerminalState)
 
+    def description(self, label: str) -> str:
+        """The state's human-facing description — what the phase is *for* (may be empty)."""
+        return self._state_class(label).description
+
     def turn_on_enter(self, label: str) -> Actor:
         """Who holds the turn upon entering ``label`` (the state's declared value)."""
         return self._state_class(label).turn_on_enter

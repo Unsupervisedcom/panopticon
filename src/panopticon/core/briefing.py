@@ -43,26 +43,27 @@ def render_workflow_overview(workflow: Workflow) -> str:
         "",
     ]
     for i, label in enumerate(_ordered_phases(workflow), 1):
+        desc = workflow.description(label)  # the phase's own description, then how it advances
         if workflow.is_terminal(label):
-            lines.append(f"{i}. **{label}** — terminal; the task is finished.")
+            tail = f"terminal. {desc}" if desc else "terminal; the task is finished."
+            lines.append(f"{i}. **{label}** — {tail}")
             continue
         responsibilities = list(workflow.responsibilities(label))
         agent_advances = workflow.advanced_by(label) is Actor.AGENT
+        lead = f"{desc} " if desc else ""  # the phase's description, then how it advances
+        # Two orthogonal facts, as two sentences: the responsibilities gate the agent (it must
+        # always meet them before yielding), and `advanced_by` says who moves on afterward.
+        advance = (
+            "Automatically advance to the next state."
+            if agent_advances
+            else "The user will advance to the next state."
+        )
         if responsibilities:
-            how = (
-                "you advance it yourself once its responsibilities are met"
-                if agent_advances
-                else "you finish its responsibilities, then hand back to the user, who advances it"
-            )
-            lines.append(f"{i}. **{label}** — {how}:")
+            lines.append(f"{i}. **{label}** — {lead}You must meet these responsibilities before ending your turn:")
             lines += [f"   - {r.key}: {r.description}" for r in responsibilities]
+            lines.append(f"   {advance}")
         else:
-            how = (
-                "do the work, then advance it yourself"
-                if agent_advances
-                else "do the work, then hand back to the user, who advances it"
-            )
-            lines.append(f"{i}. **{label}** — {how}.")
+            lines.append(f"{i}. **{label}** — {lead}{advance}")
     lines += [
         "",
         "Moving between phases: **`advance`** follows this sequence and is gated on the current "
@@ -90,14 +91,19 @@ def render_state_briefing(workflow: Workflow, task: Task) -> str:
     if workflow.is_terminal(label):
         return f"This task is in the terminal state **{label}** — it's finished; there's nothing to do."
 
+    desc = workflow.description(label)
+    lead = f" {desc}" if desc else ""  # remind the agent what this phase is for
+    # The opener stays neutral on how the phase ends — the closing line below says whether to hand
+    # back (user-advanced) or advance yourself (agent-advanced); "then hand back" would be wrong for
+    # an agent-advanced phase like MERGING.
     lines = [
-        f"You are in the **{label}** phase of the `{workflow.name}` workflow. Do the work this phase "
-        f"calls for and then hand back — **don't start work that belongs to a later phase.**"
+        f"You are in the **{label}** phase of the `{workflow.name}` workflow.{lead} Do the work this "
+        f"phase calls for — **don't start work that belongs to a later phase.**"
     ]
 
     responsibilities = list(task.current_entry.responsibilities)
     if responsibilities:
-        lines += ["", "This phase's responsibilities (resolve each before advancing):"]
+        lines += ["", "This phase's responsibilities (resolve each before ending your turn):"]
         lines += [f"- [{r.status.value}] {r.key}: {r.description}" for r in responsibilities]
 
     target = workflow.operations(label).get("advance")

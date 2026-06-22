@@ -44,6 +44,7 @@ def test_briefing_names_the_phase_responsibilities_and_user_advance() -> None:
     assert "PLANNING" in text  # the agent learns which phase it's in
     assert "later phase" in text  # ... and not to do later-phase work (e.g. implementing)
     assert "plan-written" in text and "plan artifact" in text  # this phase's responsibility
+    assert "Produce a plan for the implementation." in text  # PLANNING's description (what it's for)
     assert "ITERATING" in text  # the advance target
     # PLANNING is user-advanced, so the agent should hand back, not advance itself
     assert "hand back to the user" in text and "Don't advance on your own" in text
@@ -57,6 +58,7 @@ def test_briefing_for_an_agent_advanced_phase() -> None:
 
     assert "MERGING" in text and "pr-merged" in text
     assert "advance the task yourself" in text  # MERGING is agent-advanced (background)
+    assert "hand back" not in text  # it auto-advances — the briefing must not tell it to hand back
 
 
 def test_briefing_for_a_terminal_state() -> None:
@@ -75,8 +77,15 @@ def test_workflow_overview_maps_the_ordered_phases() -> None:
     order = [text.index(p) for p in ("PLANNING", "ITERATING", "REVIEW", "MERGING", "COMPLETE")]
     assert order == sorted(order)
     assert "plan-written" in text and "pr-merged" in text  # each phase's responsibilities
-    assert "hand back to the user, who advances it" in text  # user-advanced phases
-    assert "advance it yourself" in text  # MERGING (agent-advanced)
+    # each phase carries its own description (what it's for), sourced from cloude-cade
+    assert "Produce a plan for the implementation." in text  # PLANNING
+    assert "Wait for review or approval of the PR." in text  # REVIEW
+    assert "Add the PR to the merge queue." in text  # MERGING
+    # the responsibility gate and who advances are two separate sentences (gate before the bullets,
+    # advance after them) — meeting the responsibilities is not what triggers the advance
+    assert "You must meet these responsibilities before ending your turn:" in text
+    assert "The user will advance to the next state." in text  # user-advanced phases
+    assert "Automatically advance to the next state." in text  # MERGING (agent-advanced)
     assert "terminal" in text  # COMPLETE
     assert "`advance`" in text and "`drop`" in text and "free move" in text  # the mechanics
     # the Tools section names the workflow's expected tools (github-peer-reviewed ships `gh`)
@@ -87,8 +96,10 @@ def test_workflow_overview_handles_a_phase_with_no_responsibilities() -> None:
     # spike's ITERATING declares no responsibilities — the line must not dangle a colon + empty list.
     text = render_workflow_overview(Spike())
     assert "ITERATING" in text
-    assert "do the work, then hand back to the user, who advances it." in text
-    assert "its responsibilities" not in text  # no "finish its responsibilities" with nothing under it
+    assert "Open-ended agent work until the user marks the task complete." in text  # its description
+    # with no responsibilities the gate sentence is omitted — just the advance sentence
+    assert "The user will advance to the next state." in text
+    assert "responsibilities before ending your turn" not in text  # no gate sentence with nothing listed
     assert "## Tools" not in text  # spike declares no tools → the section is omitted
 
 

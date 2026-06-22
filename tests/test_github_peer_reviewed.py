@@ -67,6 +67,17 @@ def test_responsibilities_mirror_cloude_cade_dod() -> None:
     assert {r.key for r in WF.responsibilities("MERGING")} == {"pr-merged"}
 
 
+def test_each_state_describes_its_phase() -> None:
+    # every step carries a human-facing description (what the phase is for), sourced from
+    # cloude-cade's per-stage prose — guards against the field regressing to empty.
+    assert WF.description("PLANNING") == "Collect requirements. Produce a plan for the implementation."
+    assert WF.description("ITERATING").startswith("Implement the plan.")
+    assert WF.description("REVIEW") == "Wait for review or approval of the PR."
+    assert WF.description("MERGING") == "Add the PR to the merge queue. If the PR exits the merge queue, re-add it."
+    assert WF.description("COMPLETE")  # the terminal state is described too
+    assert all(WF.description(label) for label in ("PLANNING", "ITERATING", "REVIEW", "MERGING"))
+
+
 def test_github_peer_reviewed_exposes_forge_skills() -> None:
     skills = WF.skills()
     assert {s.name for s in skills} == {"open-pr", "babysit-ci", "babysit-merge"}

@@ -43,6 +43,7 @@ class GithubPeerReviewed(Workflow):
 
     class Planning(State):
         label = "PLANNING"
+        description = "Collect requirements. Produce a plan for the implementation."
         responsibilities = (
             Responsibility(key="plan-written", description="The plan is written into the plan artifact."),
         )
@@ -50,6 +51,10 @@ class GithubPeerReviewed(Workflow):
 
     class Iterating(State):
         label = "ITERATING"
+        description = (
+            "Implement the plan. Implement any additional user requests or feedback. Implement "
+            "any review comments the user has approved for implementation."
+        )
         responsibilities = (
             Responsibility(key="plan-implemented", description="The plan is implemented in code."),
             Responsibility(key="requests-implemented", description="All user requests are implemented in code."),
@@ -65,6 +70,7 @@ class GithubPeerReviewed(Workflow):
 
     class Review(State):
         label = "REVIEW"
+        description = "Wait for review or approval of the PR."
         responsibilities = (
             Responsibility(key="pr-reviewed", description="The PR has been reviewed."),
         )
@@ -72,6 +78,7 @@ class GithubPeerReviewed(Workflow):
 
     class Merging(State):
         label = "MERGING"
+        description = "Add the PR to the merge queue. If the PR exits the merge queue, re-add it."
         advanced_by = Actor.AGENT  # background: the agent shepherds the merge and advances itself
         responsibilities = (
             Responsibility(key="pr-merged", description="The PR is merged."),
