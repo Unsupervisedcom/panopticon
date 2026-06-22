@@ -50,24 +50,20 @@ def render_workflow_overview(workflow: Workflow) -> str:
             continue
         responsibilities = list(workflow.responsibilities(label))
         agent_advances = workflow.advanced_by(label) is Actor.AGENT
-        lead = f"{desc} " if desc else ""  # the phase's description, then its own who-advances sentence
+        lead = f"{desc} " if desc else ""  # the phase's description, then how it advances
+        # Two orthogonal facts, as two sentences: the responsibilities gate the agent (it must
+        # always meet them before yielding), and `advanced_by` says who moves on afterward.
+        advance = (
+            "Automatically advance to the next state."
+            if agent_advances
+            else "The user will advance to the next state."
+        )
         if responsibilities:
-            # responsibilities gate the agent (it must always meet them); who advances afterward
-            # is the separate `advanced_by` fact — the agent itself, or hand back to the user.
-            how = (
-                "Meet these, then advance it yourself"
-                if agent_advances
-                else "Meet these, then hand back to the user to advance"
-            )
-            lines.append(f"{i}. **{label}** — {lead}{how}:")
+            lines.append(f"{i}. **{label}** — {lead}You must meet these responsibilities before ending your turn:")
             lines += [f"   - {r.key}: {r.description}" for r in responsibilities]
+            lines.append(f"   {advance}")
         else:
-            how = (
-                "Do the work, then advance it yourself"
-                if agent_advances
-                else "Do the work, then hand back to the user to advance"
-            )
-            lines.append(f"{i}. **{label}** — {lead}{how}.")
+            lines.append(f"{i}. **{label}** — {lead}{advance}")
     lines += [
         "",
         "Moving between phases: **`advance`** follows this sequence and is gated on the current "

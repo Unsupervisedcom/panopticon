@@ -80,9 +80,11 @@ def test_workflow_overview_maps_the_ordered_phases() -> None:
     assert "Produce a plan for the implementation." in text  # PLANNING
     assert "Wait for review or approval of the PR." in text  # REVIEW
     assert "Add the PR to the merge queue." in text  # MERGING
-    # responsibilities gate the agent; who advances afterward is the separate `advanced_by` fact
-    assert "Meet these, then hand back to the user to advance:" in text  # user-advanced phases
-    assert "Meet these, then advance it yourself:" in text  # MERGING (agent-advanced)
+    # the responsibility gate and who advances are two separate sentences (gate before the bullets,
+    # advance after them) — meeting the responsibilities is not what triggers the advance
+    assert "You must meet these responsibilities before ending your turn:" in text
+    assert "The user will advance to the next state." in text  # user-advanced phases
+    assert "Automatically advance to the next state." in text  # MERGING (agent-advanced)
     assert "terminal" in text  # COMPLETE
     assert "`advance`" in text and "`drop`" in text and "free move" in text  # the mechanics
     # the Tools section names the workflow's expected tools (github-peer-reviewed ships `gh`)
@@ -94,9 +96,9 @@ def test_workflow_overview_handles_a_phase_with_no_responsibilities() -> None:
     text = render_workflow_overview(Spike())
     assert "ITERATING" in text
     assert "Open-ended agent work until the user marks the task complete." in text  # its description
-    # the advance clause follows the description as its own sentence, no dangling colon + empty list
-    assert "Do the work, then hand back to the user to advance." in text
-    assert "Meet these" not in text  # no "Meet these:" with nothing listed under it
+    # with no responsibilities the gate sentence is omitted — just the advance sentence
+    assert "The user will advance to the next state." in text
+    assert "responsibilities before ending your turn" not in text  # no gate sentence with nothing listed
     assert "## Tools" not in text  # spike declares no tools → the section is omitted
 
 
