@@ -10,6 +10,12 @@ its claim so the host runner re-spawns it), and `p` opens the task's `url` in th
 drives: every other transition starts a new agentic turn, so it's triggered by an in-container
 agent skill (advance/iterate over REST/MCP), not the operator (ADR 0004).
 
+`/` enters **search-as-you-type** (cloude-cade's `/`): a query box reveals at the bottom and the
+table filters live to tasks whose slug/id/state/workflow/description contains the query
+(case-insensitive substring). `Enter` **locks** the filter — the box hides and normal navigation
+keys return while the filter stays applied; `Esc` **clears** it (from typing or locked). The
+filter is applied in ``action_refresh``, so the auto-refresh timer preserves it across rebuilds.
+
 The `run` column shows each task's container status: `live` (an active registration), `down`
 (was up, container gone — respawn with `R`), `starting` (claimed, no registration yet — its
 container is still coming up), `–` (unclaimed/not spawned yet), or `respawning` (just released
@@ -51,6 +57,22 @@ def _sort_key(task: JsonObj) -> tuple[bool, str, str]:
 
 def _short(task_id: str) -> str:
     return task_id[:8]
+
+
+# Fields a search query matches against (cloude-cade filters on the task title; our nearest
+# analogs are the task's identifying text). Joined and lowercased into one haystack per task.
+_SEARCH_FIELDS = ("slug", "id", "state", "workflow", "description")
+
+
+def _matches(task: JsonObj, query: str) -> bool:
+    """Case-insensitive substring match of ``query`` against a task's identifying fields.
+
+    An empty query matches everything (no filter). Mirrors cloude-cade's "title contains the
+    query" — plain substring, no fuzzy ranking."""
+    if not query:
+        return True
+    haystack = " ".join(str(task.get(field) or "") for field in _SEARCH_FIELDS).lower()
+    return query.lower() in haystack
 
 
 # Turn-column colors, matching cloude-cade's dashboard ball tags: agent=green,
@@ -152,7 +174,7 @@ class Dashboard(App[None]):
     ``on_service`` for the task-service session) and stays running; the supervisor handles the
     attach/detach (ADR 0009)."""
 
-    CSS = "#tasks { width: 3fr; } #detail { width: 2fr; padding: 0 1; }"
+    CSS = "#tasks { width: 3fr; } #detail { width: 2fr; padding: 0 1; } #search { display: none; }"
     REFRESH_INTERVAL = 2.0  # seconds between automatic refreshes (0/None disables the timer)
     BINDINGS = [
         ("r", "refresh", "Refresh"),
@@ -162,6 +184,8 @@ class Dashboard(App[None]):
         ("t", "attach", "Attach tmux"),
         ("p", "open_url", "Open URL"),
         ("s", "service", "Service"),
+        ("/", "search", "Search"),
+        ("escape", "clear_search", "Clear search"),
         ("q", "quit", "Quit"),
     ]
     TITLE = "panopticon"
@@ -181,6 +205,7 @@ class Dashboard(App[None]):
         self._refresh_interval = refresh_interval  # auto-refresh cadence (0/None → manual only)
         self._tasks: dict[str, JsonObj] = {}
         self._current: str | None = None
+        self._query: str = ""  # active search filter ("" → no filter); see action_search
         self._respawning: set[str] = set()  # tasks awaiting re-claim after `R` (shown "respawning")
 
     def compose(self) -> ComposeResult:
@@ -188,12 +213,14 @@ class Dashboard(App[None]):
         with Horizontal():
             yield DataTable(id="tasks")
             yield Static(id="detail")
+        yield Input(id="search", placeholder="search tasks…")  # hidden until `/` (CSS display:none)
         yield Footer()
 
     def on_mount(self) -> None:
         table = self.query_one("#tasks", DataTable)
         table.cursor_type = "row"
         table.add_columns("id", "state", "turn", "run", "slug")
+        table.focus()  # the (hidden) search Input would otherwise grab initial focus
         self.action_refresh()
         if self._refresh_interval:
             self.set_interval(self._refresh_interval, self.action_refresh)
@@ -220,8 +247,9 @@ class Dashboard(App[None]):
         selected = self._current  # keep the operator's highlight across the rebuild (auto-refresh)
         table.clear()
         ordered = sorted(self._client.list_tasks(), key=_sort_key)  # state asc, terminal last
-        self._tasks = {t["id"]: t for t in ordered}
-        for task in ordered:
+        visible = [t for t in ordered if _matches(t, self._query)]  # apply the search filter
+        self._tasks = {t["id"]: t for t in visible}
+        for task in visible:
             table.add_row(
                 _short(task["id"]), task["state"], _turn_cell(task), self._run_status(task),
                 task["slug"] or "-",
@@ -348,6 +376,46 @@ class Dashboard(App[None]):
             return
         if not self._on_service():
             self.notify("No task-service session is running.", severity="warning")
+
+    def action_search(self) -> None:
+        """`/`: enter search-as-you-type — reveal the query box and focus it (cloude-cade's `/`).
+
+        Seeds the box with the active query so re-entering an existing filter is editable. While
+        the box has focus it captures typed keys; the table filters live via ``on_input_changed``."""
+        search = self.query_one("#search", Input)
+        search.styles.display = "block"
+        search.value = self._query
+        search.focus()
+
+    def action_clear_search(self) -> None:
+        """`Esc`: clear the search filter and hide the box, whether typing or locked.
+
+        A no-op clear when there's no active filter (just hides the box + returns focus to the
+        table), so a stray `Esc` is harmless."""
+        if self._query:
+            self._query = ""
+            self.action_refresh()
+        self._hide_search()
+
+    def _hide_search(self) -> None:
+        """Hide the query box and return focus to the task table (Enter-lock and Esc-clear)."""
+        self.query_one("#search", Input).styles.display = "none"
+        self.query_one("#tasks", DataTable).focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Live-filter as the operator types in the search box (other Inputs are untouched)."""
+        if event.input.id != "search":
+            return
+        self._query = event.value
+        self.action_refresh()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """`Enter` in the search box **locks** the filter: hide the box, keep the query, restore
+        navigation. The `n`-flow's modal `InputScreen` handles its own submit, so this only fires
+        for the dashboard's own search box."""
+        if event.input.id != "search":
+            return
+        self._hide_search()
 
 
 def run(

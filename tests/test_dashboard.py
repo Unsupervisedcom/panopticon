@@ -7,10 +7,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from textual.widgets import DataTable, Static
+from textual.widgets import DataTable, Input, Static
 
 from panopticon.terminal import dashboard
-from panopticon.terminal.dashboard import Dashboard, _turn_cell, render_detail
+from panopticon.terminal.dashboard import Dashboard, _matches, _turn_cell, render_detail
 
 _TASK: dict[str, Any] = {
     "id": "task-abcdef0123",
@@ -346,6 +346,95 @@ async def test_respawn_releases_a_down_tasks_claim() -> None:
         await pilot.pause()
         assert fake.released == [task["id"]]  # released → the runner re-spawns it
         assert task["id"] in app._respawning  # marked respawning (shown instead of bare "–")
+
+
+def test_matches_is_a_case_insensitive_substring_over_identifying_fields() -> None:
+    task = {**_TASK, "slug": "fix-widget", "state": "WORKING", "workflow": "spike"}
+    assert _matches(task, "")  # empty query → no filter
+    assert _matches(task, "widget")  # slug substring
+    assert _matches(task, "WIDGET")  # case-insensitive
+    assert _matches(task, "working")  # state
+    assert _matches(task, "spike")  # workflow
+    assert _matches(task, task["id"][:6])  # id
+    assert not _matches(task, "nope")
+    # description is searchable too
+    assert _matches({**task, "description": "make it green"}, "green")
+    assert _matches({**_TASK, "description": None}, "")  # None description doesn't blow up
+
+
+_FIX = {**_TASK, "id": "t-fix", "slug": "fix-widget", "state": "WORKING", "workflow": "spike"}
+_DEP = {**_TASK, "id": "t-dep", "slug": "deploy-api", "state": "PLANNING", "workflow": "github-self-reviewed"}
+
+
+async def test_pressing_slash_filters_the_task_list_as_you_type() -> None:
+    app = Dashboard(_FakeClient([_FIX, _DEP]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        assert table.row_count == 2
+        await pilot.press("slash")  # enter search mode → the box reveals + focuses
+        await pilot.pause()
+        assert app.query_one("#search", Input).styles.display == "block"
+        await pilot.press("d", "e", "p")  # type a substring of the deploy-api slug
+        await pilot.pause()
+        assert [str(k.value) for k in table.rows] == ["t-dep"]  # only the match remains
+
+
+async def test_search_matches_state_and_workflow_not_just_slug() -> None:
+    app = Dashboard(_FakeClient([_FIX, _DEP]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        await pilot.press("slash")
+        await pilot.press("p", "l", "a", "n")  # matches _DEP's PLANNING state
+        await pilot.pause()
+        assert [str(k.value) for k in table.rows] == ["t-dep"]
+
+
+async def test_enter_locks_the_filter_and_restores_navigation() -> None:
+    app = Dashboard(_FakeClient([_FIX, _DEP]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        await pilot.press("slash")
+        await pilot.press("f", "i", "x")
+        await pilot.press("enter")  # lock: box hides, filter stays, table regains focus
+        await pilot.pause()
+        assert app.query_one("#search", Input).styles.display == "none"
+        assert app._query == "fix"  # filter preserved
+        assert [str(k.value) for k in table.rows] == ["t-fix"]
+        assert table.has_focus  # navigation keys work again
+
+
+async def test_escape_clears_the_search() -> None:
+    app = Dashboard(_FakeClient([_FIX, _DEP]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        await pilot.press("slash")
+        await pilot.press("f", "i", "x")
+        await pilot.pause()
+        assert table.row_count == 1
+        await pilot.press("escape")  # clear: query reset, all rows return, box hidden
+        await pilot.pause()
+        assert app._query == ""
+        assert app.query_one("#search", Input).styles.display == "none"
+        assert table.row_count == 2
+
+
+async def test_search_filter_survives_auto_refresh() -> None:
+    # The filter lives in action_refresh, so the auto-refresh timer keeps it applied.
+    app = Dashboard(_FakeClient([_FIX, _DEP]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        await pilot.press("slash")
+        await pilot.press("f", "i", "x")
+        await pilot.pause()
+        assert table.row_count == 1
+        app.action_refresh()  # a rebuild (as the timer would do) keeps the filter
+        await pilot.pause()
+        assert [str(k.value) for k in table.rows] == ["t-fix"]
 
 
 async def test_respawn_refuses_a_live_task() -> None:
