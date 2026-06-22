@@ -11,9 +11,9 @@ drives: every other transition starts a new agentic turn, so it's triggered by a
 agent skill (advance/iterate over REST/MCP), not the operator (ADR 0004).
 
 The `run` column shows each task's container status: `live` (an active registration), `down`
-(provisioned but no container — respawn with `R`), `starting` (claimed but not yet provisioned —
-its container is still coming up), `–` (unclaimed/not spawned yet), or `respawning` (just released
-by `R`, awaiting the runner's re-claim).
+(was up, container gone — respawn with `R`), `starting` (claimed, no registration yet — its
+container is still coming up), `–` (unclaimed/not spawned yet), or `respawning` (just released
+by `R`, awaiting the runner's re-claim). Liveness is the registration, independent of provisioning.
 
 The dashboard does not attach to tmux itself: on `t` it calls ``on_switch`` (the terminal
 supervisor, ADR 0009 §6, records the chosen session and detaches this client) and **keeps
@@ -199,17 +199,21 @@ class Dashboard(App[None]):
             self.set_interval(self._refresh_interval, self.action_refresh)
 
     def _run_status(self, task: JsonObj) -> str:
-        """A task's container status: `live` (registered), `down` (provisioned but no container),
-        `starting` (claimed, not yet provisioned), `–` (unclaimed), or `respawning` (just released
-        by `R`, awaiting the runner's re-claim — shown instead of the bare `–` so a respawn doesn't
-        read as the task losing its runner)."""
+        """A task's container status: `live` (a registered container), `down` (was up, container
+        gone — respawn with `R`), `starting` (claimed, container still coming up — no registration
+        yet), `–` (unclaimed), or `respawning` (just released by `R`, awaiting the runner's re-claim —
+        shown instead of the bare `–` so a respawn doesn't read as the task losing its runner).
+
+        Liveness is the **registration**, not provisioning: a task can be live and working (e.g. an
+        unprovisioned PLANNING task that hasn't set its slug yet) — so registration is checked first.
+        """
         tid = task["id"]
         if not task.get("claimed_by"):
             return "respawning" if tid in self._respawning else "–"
         self._respawning.discard(tid)  # re-claimed → the normal down→live boot takes over
-        if not task.get("provisioned"):
-            return "starting"
-        return "live" if self._client.list_registrations(tid) else "down"
+        if self._client.list_registrations(tid):
+            return "live"  # a registered container — regardless of whether it's provisioned yet
+        return "down" if task.get("provisioned") else "starting"
 
     def action_refresh(self) -> None:
         table = self.query_one("#tasks", DataTable)
