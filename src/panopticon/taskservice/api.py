@@ -279,6 +279,11 @@ def create_app(service: TaskService) -> FastAPI:
     async def list_skills(task_id: str) -> list[SkillOut]:
         return [SkillOut.model_validate(s) for s in service.skills(task_id)]
 
+    @app.get("/tasks/{task_id}/briefing")
+    async def get_briefing(task_id: str) -> dict[str, str]:
+        """The agent's current-phase briefing (the container's user-prompt hook emits it)."""
+        return {"briefing": service.briefing(task_id)}
+
     @app.put("/tasks/{task_id}/state")
     async def set_state(task_id: str, body: StateIn) -> TaskOut:
         return TaskOut.model_validate(service.set_state(task_id, body.state))

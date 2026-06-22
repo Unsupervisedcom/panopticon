@@ -5,10 +5,11 @@ It reads the task from the container's env and POSTs `set_turn`. claude-specific
 the deterministic turn mechanism it calls lives in the task service. It sets only the turn, so a
 deliberate `blocked` marker survives.
 
-On the **user's turn** (UserPromptSubmit → ``agent``) it also checks whether the task has a slug
-yet; if not, it prints the provisioning nudge (ADR 0011 §3) — claude adds a UserPromptSubmit hook's
-stdout to the agent's context — reminding the agent to run the `provision` skill once it knows
-enough to name the task.
+On the **user's turn** (UserPromptSubmit → ``agent``) it also prints, into the agent's context
+(claude adds a UserPromptSubmit hook's stdout there), the **current-phase briefing** — which state
+the task is in and what that phase expects — so the agent knows where it is in the workflow instead
+of charging ahead. While the task is still unslugged it additionally prints the provisioning nudge
+(ADR 0011 §3), reminding the agent to run the `provision` skill once it can name the task.
 """
 
 from __future__ import annotations
@@ -32,9 +33,12 @@ def main(argv: Sequence[str] | None = None, *, client: TaskServiceClient | None 
     actor, task_id = args[0], env["PANOPTICON_TASK_ID"]
     client = client or TaskServiceClient(httpx.Client(base_url=env["PANOPTICON_SERVICE_URL"]))
     client.set_turn(task_id, actor)
-    # UserPromptSubmit (actor == "agent"): nudge toward provisioning while the task is unslugged.
-    if actor == "agent" and client.get_task(task_id).get("slug") is None:
-        print(PROVISION_NUDGE)
+    # UserPromptSubmit (actor == "agent"): ground the agent in its current phase, and (while the
+    # task is unslugged) nudge toward provisioning. claude adds this hook's stdout to its context.
+    if actor == "agent":
+        print(client.get_briefing(task_id))
+        if client.get_task(task_id).get("slug") is None:
+            print(PROVISION_NUDGE)
     return 0
 
 

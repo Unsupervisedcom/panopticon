@@ -149,6 +149,12 @@ def test_list_skills_is_just_provision_for_a_forgeless_workflow(client: TestClie
     assert [s["name"] for s in resp.json()] == ["provision"]
 
 
+def test_briefing_describes_the_current_phase(client: TestClient) -> None:
+    task_id = _new_task(client)  # spike, ITERATING
+    body = client.get(f"/tasks/{task_id}/briefing").json()
+    assert "ITERATING" in body["briefing"]  # the agent's current-phase briefing (the hook emits it)
+
+
 def test_legal_transition(client: TestClient) -> None:
     task_id = _new_task(client)
     resp = client.post(f"/tasks/{task_id}/transition", json={"to_state": "COMPLETE", "trigger": "finish"})

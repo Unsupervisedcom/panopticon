@@ -63,6 +63,11 @@ class TaskServiceClient:
         """The active workflow's in-container skills (the harness renders these to the CLI)."""
         return cast("list[JsonObj]", self._json(self._http.get(f"/tasks/{task_id}/skills")))
 
+    def get_briefing(self, task_id: str) -> str:
+        """The agent's current-phase briefing (the user-prompt hook emits it into context)."""
+        body = cast(JsonObj, self._json(self._http.get(f"/tasks/{task_id}/briefing")))
+        return cast(str, body["briefing"])
+
     def list_registrations(self, task_id: str) -> list[JsonObj]:
         return cast("list[JsonObj]", self._json(self._http.get(f"/tasks/{task_id}/registrations")))
 
