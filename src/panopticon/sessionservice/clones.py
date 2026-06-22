@@ -46,12 +46,16 @@ class CloneCache:
     def ensure(self, repo_id: str, git_url: str) -> str:
         """Ensure the repo's clone exists and is current, returning its path. Idempotent.
 
-        Clones from ``git_url`` on first use; on later calls fetches (``--all --prune``) so the
-        base branch a worktree is cut from stays up to date.
+        Clones from ``git_url`` on first use; on later calls fetches (``--all --prune``) **and
+        fast-forwards the checked-out base branch** to its upstream, so the branch a per-task clone
+        is cut from is actually current. (``fetch`` alone only moves ``origin/<base>``; the local
+        base branch — which ``git clone --local`` copies into the per-task clone — would stay at the
+        commit it was first cloned at, so every task would start behind.)
         """
         path = self.path(repo_id)
         if self._exists(path):
             self._run(["git", "-C", path, "fetch", "--all", "--prune"])
+            self._run(["git", "-C", path, "merge", "--ff-only"])  # advance the base branch to upstream
         else:
             self._run(["git", "clone", git_url, path])
         return path

@@ -39,7 +39,10 @@ def test_fetches_when_the_clone_exists() -> None:
     cache = CloneCache("/clones", run=rec, exists=lambda _p: True)
     path = cache.ensure("r1", "https://x/r1.git")
     assert path == "/clones/r1"
-    assert rec.calls == [["git", "-C", "/clones/r1", "fetch", "--all", "--prune"]]  # kept current
+    assert rec.calls == [
+        ["git", "-C", "/clones/r1", "fetch", "--all", "--prune"],
+        ["git", "-C", "/clones/r1", "merge", "--ff-only"],  # advance local base to upstream (else stale)
+    ]
 
 
 # -- integration: a real git repo ---------------------------------------------------
@@ -60,4 +63,8 @@ def test_ensure_clones_then_fetches_a_real_repo(tmp_path: Path) -> None:
     cache = CloneCache(str(tmp_path / "clones"))
     path = cache.ensure("r1", str(origin))  # first use: clones
     assert (Path(path) / "README").read_text() == "hi"
-    assert cache.ensure("r1", str(origin)) == path  # second use: fetches, same path, no error
+
+    (origin / "README").write_text("updated")  # origin's base branch moves forward
+    run("git", "commit", "--all", "--message", "second")
+    assert cache.ensure("r1", str(origin)) == path  # second use: fetch + fast-forward, same path
+    assert (Path(path) / "README").read_text() == "updated"  # the cache's base branch advanced (not stale)
