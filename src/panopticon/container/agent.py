@@ -25,13 +25,12 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-import httpx
-
 from panopticon.client import TaskServiceClient
 from panopticon.container.config import update_json_config
 from panopticon.container.hooks import write_settings
 from panopticon.container.skills import write_commands, write_operation_commands
 from panopticon.core.models import Skill
+from panopticon.transport import make_http_client
 
 #: The repo's OAuth creds volume mount inside the container (matches the runner's CREDS_MOUNT).
 #: Per-repo and persistent — it holds *only* the credentials, not claude's other state.
@@ -176,7 +175,7 @@ def _stop_container() -> None:  # pragma: no cover - signals the real container'
 
 
 def _default_client(service_url: str) -> TaskServiceClient:
-    return TaskServiceClient(httpx.Client(base_url=service_url))
+    return TaskServiceClient(make_http_client(service_url))
 
 
 def main(

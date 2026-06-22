@@ -15,9 +15,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import httpx
-
 from panopticon.client import TaskServiceClient
+from panopticon.transport import make_http_client
 
 if TYPE_CHECKING:  # avoid importing sessionservice at module load
     from panopticon.sessionservice.local_runner import LocalRunner
@@ -49,7 +48,7 @@ def main(
     login_p.add_argument("cmd", nargs="*", help="login command to run (default: claude)")
     args = parser.parse_args(argv)
 
-    client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
+    client = client or TaskServiceClient(make_http_client(args.service_url))
     if args.command == "tasks":
         for t in client.list_tasks():
             print(f"{t['id']}  {t['state']:<10}  {t['turn']:<5}  {t['slug'] or '-'}")

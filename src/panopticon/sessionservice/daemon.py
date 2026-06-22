@@ -20,11 +20,10 @@ import os
 import time
 from collections.abc import Callable, Iterable
 
-import httpx
-
 from panopticon.client import TaskServiceClient
 from panopticon.core.git import GitClones
 from panopticon.sessionservice.provisioner import Provisioner
+from panopticon.transport import make_http_client
 
 _log = logging.getLogger(__name__)
 
@@ -118,7 +117,7 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
     parser.add_argument("--tasks-root", default=os.environ.get("PANOPTICON_TASKS_ROOT", DEFAULT_TASKS_ROOT))
     parser.add_argument("--interval", type=float, default=2.0, help="poll interval, seconds")
     args = parser.parse_args(argv)
-    client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
+    client = client or TaskServiceClient(make_http_client(args.service_url))
     run_daemon(client, tasks_root=args.tasks_root, interval=args.interval)
 
 

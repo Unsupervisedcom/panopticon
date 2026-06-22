@@ -8,7 +8,8 @@ at a time (see ROADMAP "Definition of done — every slice").
 
 The control plane makes **no LLM calls**. All LLM calls happen **inside task containers**.
 
-- LLM-free packages: `core`, `taskservice`, `sessionservice`, `terminal`, `workflows`.
+- LLM-free packages: `core`, `taskservice`, `sessionservice`, `terminal`, `workflows` (and the
+  shared `client.py` / `transport.py` modules).
 - The **only** LLM-bearing package is `container/` (the agent runs there).
 
 If you add a package that orchestrates or renders, keep it LLM-free.
@@ -41,6 +42,10 @@ src/panopticon/
                    # heartbeat liveness) + agent.py (`-m panopticon.container.agent` = the tmux
                    # pane's launcher: render skills + operations, point claude at the /mcp server
                    # → exec `claude`) — the ONLY LLM pkg
+  client.py        # the task service's REST client (TaskServiceClient), shared by every caller
+  transport.py     # how a caller reaches the service: a TCP base URL, or a `unix://<path>` Unix
+                   # socket (make_http_client builds the httpx client; `make panopticon` uses a
+                   # socket so no port is provisioned) — LLM-free
 docker/Dockerfile  # base task-container image (ADR 0005 base layer): python + git + bash +
                    # the panopticon package + the `claude` CLI the agent execs; runs as the
                    # unprivileged `panopticon` user. docker/entrypoint.sh = remap that user to the
@@ -103,7 +108,8 @@ already bootstrapped.
 
 `make serve` runs the control plane (`python -m panopticon.taskservice` — default on-disk
 SQLite + filesystem artifacts + the built-in workflows; `PANOPTICON_HOST/PORT/DB/ARTIFACTS`
-override). **`make panopticon` brings up the whole system** on the dedicated `panopticon` tmux
+override; `--socket`/`PANOPTICON_SOCKET` binds a Unix socket instead of host/port).
+**`make panopticon` brings up the whole system** on the dedicated `panopticon` tmux
 server (`-L panopticon`): three background sessions — `service` (task service), `runner`
 (`python -m panopticon.sessionservice.host` — the per-host session service: spawns a container per
 new task and provisions each on slug, ADR 0008/0011), and `dashboard` — then runs the **terminal
@@ -119,6 +125,14 @@ task over ssh at M5; `s` jumps to the `service` session. The background sessions
 (stop them with `make panopticon-down`, which kills the `-L panopticon` server). Spawning needs the base image — `make build`
 first. `make dashboard` runs the dashboard once without the attach loop (talks to
 `PANOPTICON_SERVICE_URL`).
+
+Because `make panopticon` runs the whole system on one host, it talks over a **Unix socket**
+(`SOCKET ?= $(CURDIR)/panopticon.sock`) instead of provisioning a TCP port: the service binds it
+(`PANOPTICON_SOCKET`), and the runner + dashboard reach it via a `unix://<path>` service URL
+(`PANOPTICON_SERVICE_URL`). The runner **bind-mounts the socket into each task container at the
+same path**, so that one `unix://` URL is valid host- and container-side alike — no
+`host.docker.internal` hop. `transport.py` is the one place that knows the `unix://` convention
+(`make_http_client`). Plain `make serve` still defaults to TCP `0.0.0.0:8000`.
 
 CI (`.github/workflows/ci.yml`) runs `uv sync`, `mypy`, and `pytest` on every PR (the same
 commands the Makefile wraps).
@@ -138,6 +152,10 @@ commands the Makefile wraps).
   flow.
 - `tests/test_store.py` — store **contract tests run against in-memory and on-disk SQLite**,
   proving the interface is backend-agnostic (and that rows/domain models stay in sync).
+- `tests/test_transport.py` / `tests/test_server.py` — the TCP-vs-`unix://` transport selector
+  (`make_http_client`, used by `make panopticon`'s socket mode): unit tests pin the `unix://`
+  parsing + which httpx transport each URL shape yields, and an end-to-end test binds a real
+  Unix socket with uvicorn and reaches it through a `unix://` client. No Docker, no LLM.
 - `tests/test_discovery.py` — workflow discovery (Slice 8): the built-in package + an optional
   path are scanned for `Workflow` subclasses; a dropped-in module registers with no core change;
   underscored/non-workflow files are ignored; duplicate names are rejected.

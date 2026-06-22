@@ -62,6 +62,20 @@ def test_spawn_runs_detached_container_then_tmux_pane_execing_in() -> None:
     ]
 
 
+def test_spawn_over_a_socket_mounts_it_and_skips_host_networking() -> None:
+    rec = _Recorder()
+    runner = LocalRunner("unix:///run/panopticon.sock", run=rec)
+
+    runner.spawn("t1")
+
+    docker_run = rec.calls[1][0]
+    # the service socket is bind-mounted in at the same path, so the injected unix:// URL resolves
+    assert "/run/panopticon.sock:/run/panopticon.sock" in docker_run
+    assert "PANOPTICON_SERVICE_URL=unix:///run/panopticon.sock" in docker_run
+    # no host-gateway: the container reaches the service over the mounted socket, not over TCP
+    assert "--add-host" not in docker_run
+
+
 def test_spawn_runs_container_unprivileged_as_the_invoking_user() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", run=rec).spawn("t1")

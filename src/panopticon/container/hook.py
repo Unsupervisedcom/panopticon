@@ -18,10 +18,9 @@ import os
 import sys
 from collections.abc import Sequence
 
-import httpx
-
 from panopticon.client import TaskServiceClient
 from panopticon.core.provisioning import PROVISION_NUDGE
+from panopticon.transport import make_http_client
 
 
 def main(argv: Sequence[str] | None = None, *, client: TaskServiceClient | None = None) -> int:
@@ -31,7 +30,7 @@ def main(argv: Sequence[str] | None = None, *, client: TaskServiceClient | None 
         return 2
     env = os.environ
     actor, task_id = args[0], env["PANOPTICON_TASK_ID"]
-    client = client or TaskServiceClient(httpx.Client(base_url=env["PANOPTICON_SERVICE_URL"]))
+    client = client or TaskServiceClient(make_http_client(env["PANOPTICON_SERVICE_URL"]))
     client.set_turn(task_id, actor)
     # UserPromptSubmit (actor == "agent"): ground the agent in its current phase, and (while the
     # task is unslugged) nudge toward provisioning. claude adds this hook's stdout to its context.

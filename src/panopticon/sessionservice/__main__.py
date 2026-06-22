@@ -11,8 +11,6 @@ import argparse
 import os
 from collections.abc import Sequence
 
-import httpx
-
 from panopticon.client import TaskServiceClient
 from panopticon.core.git import GitClones
 from panopticon.sessionservice.clones import CloneCache
@@ -23,6 +21,7 @@ from panopticon.sessionservice.local_runner import (
     _subprocess_run,
 )
 from panopticon.sessionservice.spawn import prepare_workspace
+from panopticon.transport import make_http_client
 
 #: Per-host provisioning roots (ADR 0010/0011): the per-repo clone cache and the per-task clones.
 DEFAULT_CACHE_ROOT = os.path.expanduser("~/.panopticon/cache")
@@ -50,7 +49,7 @@ def main(
     args = parser.parse_args(argv)
 
     # Look up the task's repo to inject that repo's secrets (ADR 0007), scoped to this task.
-    client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
+    client = client or TaskServiceClient(make_http_client(args.service_url))
     repo = client.get_repo(client.get_task(args.task_id)["repo_id"])
 
     # Spawn-prep (ADR 0011): give the task a writable per-task clone, mounted at /workspace.

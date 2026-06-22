@@ -5,6 +5,11 @@
 #: The base task-container image (ADR 0005 base layer); must match DEFAULT_IMAGE.
 IMAGE ?= panopticon-base
 
+#: `make panopticon` runs the whole system on one host, so it talks over a Unix socket instead of
+#: provisioning a TCP port. Absolute path: the runner bind-mounts it into each task container at
+#: the same path, so the `unix://` URL is valid host- and container-side alike (see transport.py).
+SOCKET ?= $(CURDIR)/panopticon.sock
+
 help:  ## List available targets
 	@grep --no-filename --extended-regexp '^[a-z][a-z-]*:.*## ' $(MAKEFILE_LIST) | sort | awk -F':.*## ' '{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
@@ -31,6 +36,10 @@ serve:  ## Run the task service over HTTP (the control plane)
 dashboard:  ## Launch the dashboard (foreground; no tmux)
 	uv run panopticon dashboard
 
+# Socket mode (see SOCKET above): the service binds the Unix socket via PANOPTICON_SOCKET; the
+# runner + dashboard reach it via the unix:// service URL. The tmux server inherits this env.
+panopticon: export PANOPTICON_SOCKET := $(SOCKET)
+panopticon: export PANOPTICON_SERVICE_URL := unix://$(SOCKET)
 panopticon:  ## Run panopticon: task service + session-service runner (background) + dashboard supervisor
 	tmux -L panopticon has-session -t service 2>/dev/null || \
 		tmux -L panopticon new-session -d -s service 'uv run python -m panopticon.taskservice'
