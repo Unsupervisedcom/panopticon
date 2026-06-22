@@ -2,18 +2,18 @@
 
 This task moves through a fixed sequence of phases. You are always in exactly one phase: do that phase's work, then it advances. Each turn you'll be reminded which phase you're in and what it needs — **don't do a later phase's work early.** The phases, in order:
 
-1. **PLANNING** — Collect requirements. Produce a plan for the implementation. You finish its responsibilities, then hand back to the user, who advances it:
+1. **PLANNING** — Collect requirements. Produce a plan for the implementation. The user advances it once these are met:
    - plan-written: The plan is written into the plan artifact.
-2. **ITERATING** — Implement the plan. Implement any additional user requests or feedback. Implement any review comments the user has approved for implementation. You finish its responsibilities, then hand back to the user, who advances it:
+2. **ITERATING** — Implement the plan. Implement any additional user requests or feedback. Implement any review comments the user has approved for implementation. The user advances it once these are met:
    - plan-implemented: The plan is implemented in code.
    - requests-implemented: All user requests are implemented in code.
    - tests-pass: New and relevant tests pass locally.
    - committed-pushed: Changes are committed and pushed.
    - ci-passing: CI tests are passing, or any failures are irrelevant flakes.
    - pr-updated: The PR title and description reflect the final change, with no Test Plan / Verification section.
-3. **REVIEW** — Wait for review or approval of the PR. You finish its responsibilities, then hand back to the user, who advances it:
+3. **REVIEW** — Wait for review or approval of the PR. The user advances it once these are met:
    - pr-reviewed: The PR has been reviewed.
-4. **MERGING** — Add the PR to the merge queue. If the PR exits the merge queue, re-add it. You advance it yourself once its responsibilities are met:
+4. **MERGING** — Add the PR to the merge queue. If the PR exits the merge queue, re-add it. You advance it yourself once these are met:
    - pr-merged: The PR is merged.
 5. **COMPLETE** — terminal. The work has landed; the task is finished.
 

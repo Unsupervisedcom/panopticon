@@ -80,8 +80,8 @@ def test_workflow_overview_maps_the_ordered_phases() -> None:
     assert "Produce a plan for the implementation." in text  # PLANNING
     assert "Wait for review or approval of the PR." in text  # REVIEW
     assert "Add the PR to the merge queue." in text  # MERGING
-    assert "hand back to the user, who advances it" in text  # user-advanced phases
-    assert "advance it yourself" in text  # MERGING (agent-advanced)
+    assert "The user advances it once these are met:" in text  # user-advanced phases
+    assert "You advance it yourself once these are met:" in text  # MERGING (agent-advanced)
     assert "terminal" in text  # COMPLETE
     assert "`advance`" in text and "`drop`" in text and "free move" in text  # the mechanics
     # the Tools section names the workflow's expected tools (github-peer-reviewed ships `gh`)
@@ -93,9 +93,9 @@ def test_workflow_overview_handles_a_phase_with_no_responsibilities() -> None:
     text = render_workflow_overview(Spike())
     assert "ITERATING" in text
     assert "Open-ended agent work until the user marks the task complete." in text  # its description
-    # the advance clause follows the description as its own sentence (capitalised), no dangling colon
-    assert "Do the work, then hand back to the user, who advances it." in text
-    assert "its responsibilities" not in text  # no "finish its responsibilities" with nothing under it
+    # the advance clause follows the description as its own sentence, no dangling colon + empty list
+    assert "The user advances it once the work is done." in text
+    assert "these are met" not in text  # no "once these are met:" with nothing listed under it
     assert "## Tools" not in text  # spike declares no tools → the section is omitted
 
 

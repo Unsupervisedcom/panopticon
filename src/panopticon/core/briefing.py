@@ -17,14 +17,6 @@ from panopticon.core.models import Actor, Task
 from panopticon.core.workflow import Workflow
 
 
-def _lead(description: str, how: str) -> str:
-    """A phase's overview clause: its description (what it's for) then how it advances. When a
-    description is present, the advance clause becomes its own sentence (first letter capitalised)."""
-    if not description:
-        return how
-    return f"{description} {how[:1].upper()}{how[1:]}"
-
-
 def _ordered_phases(workflow: Workflow) -> list[str]:
     """The happy-path phase order: from the initial state, follow each state's `advance` edge until
     a terminal state (or a state with no `advance`). The lifecycle as a line, for the overview."""
@@ -58,21 +50,22 @@ def render_workflow_overview(workflow: Workflow) -> str:
             continue
         responsibilities = list(workflow.responsibilities(label))
         agent_advances = workflow.advanced_by(label) is Actor.AGENT
+        lead = f"{desc} " if desc else ""  # the phase's description, then its own who-advances sentence
         if responsibilities:
             how = (
-                "you advance it yourself once its responsibilities are met"
+                "You advance it yourself once these are met"
                 if agent_advances
-                else "you finish its responsibilities, then hand back to the user, who advances it"
+                else "The user advances it once these are met"
             )
-            lines.append(f"{i}. **{label}** — {_lead(desc, how)}:")
+            lines.append(f"{i}. **{label}** — {lead}{how}:")
             lines += [f"   - {r.key}: {r.description}" for r in responsibilities]
         else:
             how = (
-                "do the work, then advance it yourself"
+                "You advance it yourself once the work is done"
                 if agent_advances
-                else "do the work, then hand back to the user, who advances it"
+                else "The user advances it once the work is done"
             )
-            lines.append(f"{i}. **{label}** — {_lead(desc, how)}.")
+            lines.append(f"{i}. **{label}** — {lead}{how}.")
     lines += [
         "",
         "Moving between phases: **`advance`** follows this sequence and is gated on the current "
