@@ -12,16 +12,21 @@ from panopticon.container import agent
 
 class _FakeClient:
     def __init__(
-        self, skills: list[dict[str, str]], operations: dict[str, str] | None = None
+        self, skills: list[dict[str, str]], operations: dict[str, str] | None = None,
+        overview: str = "# the workflow",
     ) -> None:
         self._skills = skills
         self._operations = operations or {}
+        self._overview = overview
 
     def list_skills(self, task_id: str) -> list[dict[str, str]]:
         return self._skills
 
     def list_operations(self, task_id: str) -> dict[str, str]:
         return self._operations
+
+    def workflow_overview(self, task_id: str) -> str:
+        return self._overview
 
 
 def test_render_skills_writes_command_files(tmp_path: Path) -> None:
@@ -76,6 +81,19 @@ def test_claude_argv_adds_strict_mcp_config_when_present(tmp_path: Path) -> None
         str(tmp_path / agent.MCP_CONFIG_FILE),
         "--strict-mcp-config",
     ]
+
+
+def test_write_workflow_overview_writes_the_map_else_skips(tmp_path: Path) -> None:
+    path = agent.write_workflow_overview(tmp_path, "# parity\nphases…")
+    assert path == tmp_path / agent.WORKFLOW_OVERVIEW_FILE and path.read_text() == "# parity\nphases…"
+    assert agent.write_workflow_overview(tmp_path / "empty", "  ") is None  # no overview → skipped
+
+
+def test_claude_argv_appends_the_workflow_overview_to_the_system_prompt(tmp_path: Path) -> None:
+    agent.write_workflow_overview(tmp_path, "# the workflow map")
+    argv = agent._claude_argv(tmp_path, Path("/work/repo"))
+    i = argv.index("--append-system-prompt")
+    assert argv[i + 1] == "# the workflow map"  # the map's contents go inline into the system prompt
 
 
 def test_link_credentials_symlinks_only_the_credential_file(tmp_path: Path) -> None:
@@ -170,6 +188,7 @@ def test_main_bootstraps_into_a_container_local_config_dir_then_launches(
     assert (commands / "advance.md").exists()  # ...operations rendered...
     assert (tmp_path / ".claude" / "settings.json").exists()  # ...turn-flip hooks written...
     assert (tmp_path / ".claude" / agent.MCP_CONFIG_FILE).exists()  # ...MCP server wired...
+    assert (tmp_path / ".claude" / agent.WORKFLOW_OVERVIEW_FILE).exists()  # ...workflow map written...
     import json
 
     trust = json.loads((tmp_path / ".claude" / ".claude.json").read_text())

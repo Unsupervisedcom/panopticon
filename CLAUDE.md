@@ -39,8 +39,8 @@ src/panopticon/
                    # spawns one task
   container/       # entrypoint (`python -m panopticon.container` = connect/register/slug/
                    # heartbeat liveness) + agent.py (`-m panopticon.container.agent` = the tmux
-                   # pane's launcher: render skills + operations, point claude at the /mcp server
-                   # → exec `claude`) — the ONLY LLM pkg
+                   # pane's launcher: render skills + operations, point claude at the /mcp server,
+                   # put the workflow overview in its system prompt → exec `claude`) — the ONLY LLM pkg
 docker/Dockerfile  # base task-container image (ADR 0005 base layer): python + git + bash +
                    # the panopticon package + the `claude` CLI the agent execs; runs as the
                    # unprivileged `panopticon` user. docker/entrypoint.sh = remap that user to the

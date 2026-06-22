@@ -68,6 +68,11 @@ class TaskServiceClient:
         body = cast(JsonObj, self._json(self._http.get(f"/tasks/{task_id}/briefing")))
         return cast(str, body["briefing"])
 
+    def workflow_overview(self, task_id: str) -> str:
+        """The task's whole-workflow map (the launcher puts it in claude's system prompt)."""
+        body = cast(JsonObj, self._json(self._http.get(f"/tasks/{task_id}/workflow-overview")))
+        return cast(str, body["overview"])
+
     def list_registrations(self, task_id: str) -> list[JsonObj]:
         return cast("list[JsonObj]", self._json(self._http.get(f"/tasks/{task_id}/registrations")))
 

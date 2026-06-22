@@ -284,6 +284,11 @@ def create_app(service: TaskService) -> FastAPI:
         """The agent's current-phase briefing (the container's user-prompt hook emits it)."""
         return {"briefing": service.briefing(task_id)}
 
+    @app.get("/tasks/{task_id}/workflow-overview")
+    async def get_workflow_overview(task_id: str) -> dict[str, str]:
+        """The whole-workflow map (the agent launcher puts it in claude's system prompt)."""
+        return {"overview": service.workflow_overview(task_id)}
+
     @app.put("/tasks/{task_id}/state")
     async def set_state(task_id: str, body: StateIn) -> TaskOut:
         return TaskOut.model_validate(service.set_state(task_id, body.state))
