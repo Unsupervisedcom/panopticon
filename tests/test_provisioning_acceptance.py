@@ -1,9 +1,9 @@
 """Slice 7 acceptance (ADR 0010/0011): the host-side provisioning path end to end with **real git**
 (skipped when git is absent). No fakes for git, no LLM:
 
-  create task → clone --local the per-task checkout → agent sets slug → the daemon observes it and
-  branches the clone (`panopticon/<slug>`) + points origin at the forge → the task service records
-  the branch + clone path.
+  create task → spawn-prep clones the per-task checkout + points origin at the forge → agent sets
+  slug → the daemon observes it and branches the clone (`panopticon/<slug>`) → the task service
+  records the branch + clone path.
 
 The agent (claude) and the container/docker mount are out of scope here (covered by the runner's
 unit tests + the Slice 2 acceptance); this proves the git reality of provisioning.
@@ -19,9 +19,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from panopticon.client import TaskServiceClient
-from panopticon.core.git import GitClones
 from panopticon.core.models import Repo
+from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.daemon import run_daemon
+from panopticon.sessionservice.spawn import prepare_workspace
 from panopticon.taskservice.api import create_app
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 from panopticon.taskservice.service import TaskService
@@ -51,12 +52,16 @@ def test_provisioning_end_to_end_with_real_git(tmp_path: Path) -> None:
         client = TaskServiceClient(http)
         task_id = client.create_task("r1", "spike")["id"]
 
-        # Spawn-prep: the task's writable per-task clone (a real self-contained `git clone --local`).
+        # Spawn-prep: the task's writable per-task clone (real `git clone --local` via the cache),
+        # with origin pointed at the forge here (not deferred to provisioning).
         clones_root = tmp_path / "clones"
-        per_task = clones_root / task_id
-        GitClones().clone_local(cache_path=str(origin), dest=str(per_task))
+        cache = CloneCache(str(tmp_path / "cache"))
+        per_task = Path(
+            prepare_workspace(task_id, client.get_repo("r1"), cache=cache, tasks_root=str(clones_root))
+        )
         assert (per_task / "README").read_text() == "hi\n"  # working copy on the base branch
         assert _git(per_task, "branch", "--show-current") == "main"
+        assert _git(per_task, "remote", "get-url", "origin") == str(origin)  # origin → forge at spawn-prep
 
         # The agent sets its slug; the daemon observes it and provisions in one pass.
         client.set_slug(task_id, "fix-widget")
@@ -69,7 +74,7 @@ def test_provisioning_end_to_end_with_real_git(tmp_path: Path) -> None:
 
         run_daemon(client, tasks_root=str(clones_root), until=until, sleep=lambda _s: None)
 
-        # The per-task clone is now on the feature branch, with origin pointed at the forge.
+        # The per-task clone is now on the feature branch (origin already at the forge from spawn-prep).
         assert _git(per_task, "branch", "--show-current") == "panopticon/fix-widget"
         assert _git(per_task, "remote", "get-url", "origin") == str(origin)
 

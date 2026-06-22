@@ -3,9 +3,10 @@
 The session service runs **where the container runs**, so it owns the host git. Each task works in
 a writable per-task ``git clone --local`` created at spawn (a self-contained checkout under
 ``<clones_root>/<task_id>``, mounted at ``/workspace``). When the agent acquires a slug, this
-**branches whatever's there** — ``git checkout -b panopticon/<slug>`` — points ``origin`` at the
-repo's real forge (a ``--local`` clone's origin is the cache), and records ``(branch, clone path)``
-on the task service (`PUT /tasks/{id}/provisioning`). The task service does no filesystem work, so
+**branches whatever's there** — ``git checkout -b panopticon/<slug>`` — and records ``(branch,
+clone path)`` on the task service (`PUT /tasks/{id}/provisioning`). (``origin`` is already the forge:
+spawn-prep points it there so the agent has a correct remote before it ever has a slug.) The task
+service does no filesystem work, so
 the split stays correct when the runner is remote (ADR 0009). LLM-free: pure git + REST.
 
 Provisioning is **observed, not pushed** (ADR 0010): the session service spots the slug over its
@@ -45,14 +46,13 @@ class Provisioner:
 
         Ready means it has a slug but isn't provisioned yet; otherwise this no-ops (idempotent, so
         the pull loop can call it on every task). Branches the per-task clone off its current HEAD,
-        points ``origin`` at the repo's forge, then records the branch + clone path on the task
-        service.
+        then records the branch + clone path on the task service. (``origin`` was pointed at the
+        forge at spawn-prep, so there's nothing to repoint here.)
         """
         if not task.get("slug") or task.get("provisioned"):
             return None
         clone = f"{self._clones_root}/{task['id']}"
         branch = branch_name(task["slug"])
         self._git.create_branch(repo_path=clone, branch=branch)
-        self._git.set_origin(repo_path=clone, url=self._client.get_repo(task["repo_id"])["git_url"])
         self._client.record_provisioning(task["id"], branch, clone)
         return branch

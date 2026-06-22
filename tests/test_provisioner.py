@@ -58,10 +58,8 @@ def test_provisions_a_ready_task_by_branching_the_clone() -> None:
     branch = provisioner.provision({"id": "t1", "repo_id": "r1", "slug": "fix-widget", "provisioned": False})
 
     assert branch == "panopticon/fix-widget"
-    assert calls == [
-        ["git", "-C", "/clones/t1", "checkout", "-b", "panopticon/fix-widget"],  # branch whatever's there
-        ["git", "-C", "/clones/t1", "remote", "set-url", "origin", "https://forge/r1.git"],  # → the forge
-    ]
+    # only branches — origin was pointed at the forge at spawn-prep (see test_spawn), not here
+    assert calls == [["git", "-C", "/clones/t1", "checkout", "-b", "panopticon/fix-widget"]]
     assert client.recorded == [("t1", "panopticon/fix-widget", "/clones/t1")]
 
 
@@ -106,8 +104,8 @@ def test_provisioner_against_the_real_service(tmp_path: Path) -> None:
         got = client.get_task(task_id)
         assert got["branch"] == "panopticon/fix-widget"
         assert got["clone"] == f"/clones/{task_id}"  # the per-task clone path
-        assert len(calls) == 2  # checkout -b + set-url
+        assert len(calls) == 1  # checkout -b only (origin set at spawn-prep)
 
         # A second pass sees the recorded branch and does nothing — no new git, no re-record.
         assert provisioner.provision(client.get_task(task_id)) is None
-        assert len(calls) == 2
+        assert len(calls) == 1  # still just the one checkout -b from the first pass

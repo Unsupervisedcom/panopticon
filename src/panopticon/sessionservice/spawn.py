@@ -34,10 +34,18 @@ def prepare_workspace(
     Makes the repo's cache clone current, then ``git clone --local``s it to
     ``<tasks_root>/<task_id>`` if that checkout isn't already there. ``git``/``exists`` are
     injectable so the emitted commands are unit-testable without a real repo.
+
+    Then points ``origin`` at the repo's forge — its ``git_url``, used **verbatim** (a ``--local``
+    clone's origin is the cache *path*, which the container can neither push to nor let ``gh``
+    resolve, so it would fork to the token's own account). The ``git_url`` is registered in the form
+    the container should use as its remote — HTTPS for token auth, SSH for key auth — so no rewriting
+    happens here. Done at spawn, not deferred to slug-time provisioning, so the agent has a correct
+    ``origin`` from its first action; ``set-url`` is idempotent, so it also repoints an existing clone.
     """
     git = git or GitClones()
     clone = f"{tasks_root.rstrip('/')}/{task_id}"
     if not exists(clone):
         cache_path = cache.ensure(repo["id"], repo["git_url"])
         git.clone_local(cache_path=cache_path, dest=clone)
+    git.set_origin(repo_path=clone, url=repo["git_url"])
     return clone
