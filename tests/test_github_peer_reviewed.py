@@ -1,6 +1,6 @@
-"""The Parity workflow: the full cloude-cade lifecycle, gated and turn-aware (ROADMAP Slice 4).
+"""The GithubPeerReviewed workflow: the full cloude-cade lifecycle, gated and turn-aware (ROADMAP Slice 4).
 
-This is the golden behavioral spec for the parity flow — every legal/illegal transition, the
+This is the golden behavioral spec for the github-peer-reviewed flow — every legal/illegal transition, the
 foreground/background (advanced_by) policy, responsibility gating at each stage, the
 iterate-back edges, and the universal drop.
 """
@@ -11,9 +11,9 @@ import pytest
 
 from panopticon.core import Actor, IllegalTransition, ResponsibilitiesNotMet
 from panopticon.core.models import Status, Task
-from panopticon.workflows import Parity
+from panopticon.workflows import GithubPeerReviewed
 
-WF = Parity()
+WF = GithubPeerReviewed()
 
 
 def _meet_all(task: Task) -> None:
@@ -34,7 +34,7 @@ def test_starts_in_planning_on_the_agents_turn() -> None:
     task = WF.start_task("t1", "r1", at="t0")
     assert task.state == "PLANNING"
     assert task.turn is Actor.AGENT  # the agent drafts the plan first
-    assert task.workflow == "parity"
+    assert task.workflow == "github-peer-reviewed"
     assert [h.to_state for h in task.history] == ["PLANNING"]
 
 
@@ -67,13 +67,13 @@ def test_responsibilities_mirror_cloude_cade_dod() -> None:
     assert {r.key for r in WF.responsibilities("MERGING")} == {"pr-merged"}
 
 
-def test_parity_exposes_forge_skills() -> None:
+def test_github_peer_reviewed_exposes_forge_skills() -> None:
     skills = WF.skills()
     assert {s.name for s in skills} == {"open-pr", "babysit-ci", "babysit-merge"}
     assert all(s.description and s.instructions for s in skills)  # functional specs, not stubs
 
 
-def test_parity_image_layer_installs_gh() -> None:
+def test_github_peer_reviewed_image_layer_installs_gh() -> None:
     assert "gh" in WF.image_layer()  # forge skills need gh layered onto the base image
 
 
@@ -152,4 +152,4 @@ def test_cannot_skip_review() -> None:
     _advance(task, "ITERATING")
     _meet_all(task)
     with pytest.raises(IllegalTransition):
-        WF.apply_transition(task, "MERGING", at="t2")  # no ITERATING -> MERGING edge in base parity
+        WF.apply_transition(task, "MERGING", at="t2")  # no ITERATING -> MERGING edge in the base workflow

@@ -229,7 +229,8 @@ class Workflow(ABC):
 
         Declared as agnostic :class:`~panopticon.core.models.Skill` specs; the agent layer
         renders them to the active CLI's surface. Skills are optional — they are whatever extra
-        agent procedures a workflow wants to offer (parity's forge skills are one example, not a
+        agent procedures a workflow wants to offer (the github-peer-reviewed workflow's forge
+        skills are one example, not a
         requirement), so the base default is none; a workflow overrides this to declare its own.
         """
         return ()
@@ -258,7 +259,7 @@ class Workflow(ABC):
 
         *Local* git (the branch + worktree) is core and already done by the time this runs;
         this seam is for workflow-specific *remote* setup that needs the branch — e.g. the
-        parity workflow opening its PR — which is forge integration and lands in a later slice.
+        github-peer-reviewed workflow opening its PR — which is forge integration and lands in a later slice.
         Deterministic forge requests may run here; agent-driven forge work is an in-container
         skill (the determinism split, ADR 0004).
         """

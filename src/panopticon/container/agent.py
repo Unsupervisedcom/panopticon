@@ -45,8 +45,8 @@ def render_skills(client: TaskServiceClient, task_id: str, home: Path) -> list[P
 def render_operations(client: TaskServiceClient, task_id: str, home: Path) -> list[Path]:
     """Render the active workflow's available core operations (advance/drop/…) as slash-commands.
 
-    Reflects the *active workflow's* declared moves (ADR 0004), so a parity and a free-form
-    container expose different operation commands — not a fixed global menu.
+    Reflects the *active workflow's* declared moves (ADR 0004), so a github-peer-reviewed and a
+    free-form container expose different operation commands — not a fixed global menu.
     """
     return write_operation_commands(client.list_operations(task_id), home)
 

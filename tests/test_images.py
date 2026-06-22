@@ -10,7 +10,7 @@ from panopticon.sessionservice.images import ImageBuilder, compose_dockerfile, i
 
 
 def test_image_tag_names_by_workflow_and_repo() -> None:
-    assert image_tag("parity", "r1") == "panopticon-parity-r1"
+    assert image_tag("github-peer-reviewed", "r1") == "panopticon-github-peer-reviewed-r1"
 
 
 def test_compose_dockerfile_chains_base_then_layers() -> None:
@@ -36,7 +36,7 @@ class _BuildRecorder:
 
 def test_build_composes_and_runs_docker_build() -> None:
     rec = _BuildRecorder()
-    tag = ImageBuilder(base="panopticon-base", run=rec).build("parity", "r1", ["RUN x"])
-    assert tag == "panopticon-parity-r1"
-    assert rec.cmd[:4] == ["docker", "build", "--tag", "panopticon-parity-r1"]
+    tag = ImageBuilder(base="panopticon-base", run=rec).build("github-peer-reviewed", "r1", ["RUN x"])
+    assert tag == "panopticon-github-peer-reviewed-r1"
+    assert rec.cmd[:4] == ["docker", "build", "--tag", "panopticon-github-peer-reviewed-r1"]
     assert rec.dockerfile.startswith("FROM panopticon-base") and "RUN x" in rec.dockerfile

@@ -1,7 +1,7 @@
 """Slice 8 acceptance: the lifecycle is genuinely configurable (the Milestone 1 thesis).
 
 Drives the real task service over REST (via `build_app`): a path-discovered workflow is selectable
-with **no core/taskservice change**, and Parity + the free-form (spike) workflow run concurrently
+with **no core/taskservice change**, and GithubPeerReviewed + the free-form (spike) workflow run concurrently
 with **workflow-specific skills**. No Docker, no LLM.
 """
 
@@ -44,22 +44,22 @@ def test_multiple_workflows_are_configurable_and_run_concurrently(tmp_path: Path
     app = build_app(db="sqlite://", artifacts_root=str(tmp_path / "artifacts"), workflows_path=str(wf_dir))
     with TestClient(app) as client:
         # 1. The built-ins and the path-discovered workflow are all selectable (no core change).
-        assert {"spike", "parity", "custom"} <= set(client.get("/workflows").json())
+        assert {"spike", "github-peer-reviewed", "custom"} <= set(client.get("/workflows").json())
 
         client.post("/repos", json={"id": "r1", "name": "acme/widgets", "git_url": "https://x/r1.git"})
 
         # 2. Tasks on three different workflows coexist concurrently, each in its own initial state.
         tasks = {
             wf: client.post("/tasks", json={"repo_id": "r1", "workflow": wf}).json()["id"]
-            for wf in ("parity", "spike", "custom")
+            for wf in ("github-peer-reviewed", "spike", "custom")
         }
         states = {wf: client.get(f"/tasks/{tid}").json()["state"] for wf, tid in tasks.items()}
         assert states["spike"] == "ITERATING" and states["custom"] == "ONLY"  # each its workflow's start
-        assert states["parity"] not in ("ITERATING", "ONLY")  # parity has its own lifecycle
+        assert states["github-peer-reviewed"] not in ("ITERATING", "ONLY")  # it has its own lifecycle
 
-        # 3. Available skills differ per workflow: parity carries forge skills; the free-form one
-        #    (spike) carries none of them — the lifecycle is the workflow's, not the engine's.
-        parity_skills, spike_skills = _skill_names(client, tasks["parity"]), _skill_names(client, tasks["spike"])
-        assert "open-pr" in parity_skills
+        # 3. Available skills differ per workflow: github-peer-reviewed carries forge skills; the
+        #    free-form one (spike) carries none of them — the lifecycle is the workflow's, not the engine's.
+        gpr_skills, spike_skills = _skill_names(client, tasks["github-peer-reviewed"]), _skill_names(client, tasks["spike"])
+        assert "open-pr" in gpr_skills
         assert "open-pr" not in spike_skills
-        assert parity_skills != spike_skills
+        assert gpr_skills != spike_skills

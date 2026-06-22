@@ -21,7 +21,8 @@ src/panopticon/
                    # machine: resolution, queries, start_task/apply_transition),
                    # store & artifact interfaces — pure, no I/O EXCEPT git.py (local
                    # branch/worktree ops; LLM-free, behind an injectable command-runner)
-  workflows/       # built-in Workflow subclasses (Spike seed; Parity = cloude-cade lifecycle) +
+  workflows/       # built-in Workflow subclasses (Spike seed; GithubPeerReviewed [formerly Parity]
+                   # = cloude-cade lifecycle) +
                    # discovery.py = scan the package + an optional path for Workflow subclasses
                    # (the registry build_app runs on; drop a module in → registered, ADR 0004)
   taskservice/     # control plane: TaskService, FastAPI REST API, the SQLAlchemy store
@@ -115,10 +116,10 @@ commands the Makefile wraps).
 - `tests/test_workflow.py` — the **golden harness**: every legal/illegal transition, turn
   derivation, responsibility gating, and workflow validation. Extend it when you touch the
   state machine.
-- `tests/test_parity.py` — the golden spec for the **Parity workflow** (cloude-cade's
-  lifecycle): the full `PLANNING→…→COMPLETE` path, the fg/bg `advanced_by` policy, per-stage
-  gating, going back to coding as an ungated free move (`set_state`), and drop. Extend it when you touch the parity
-  flow.
+- `tests/test_github_peer_reviewed.py` — the golden spec for the **GithubPeerReviewed workflow**
+  (formerly `parity`; cloude-cade's lifecycle): the full `PLANNING→…→COMPLETE` path, the fg/bg
+  `advanced_by` policy, per-stage gating, going back to coding as an ungated free move
+  (`set_state`), and drop. Extend it when you touch the github-peer-reviewed flow.
 - `tests/test_store.py` — store **contract tests run against in-memory and on-disk SQLite**,
   proving the interface is backend-agnostic (and that rows/domain models stay in sync).
 - `tests/test_discovery.py` — workflow discovery (Slice 8): the built-in package + an optional
@@ -160,8 +161,8 @@ commands the Makefile wraps).
   image and a real container connects back to an in-process task service, registers,
   heartbeats, and loses liveness on kill. No LLM.
 - `tests/test_multi_workflow_acceptance.py` — Slice 8 acceptance: over REST (via `build_app`), a
-  path-discovered workflow is selectable with no core change, and Parity + the free-form (spike)
-  workflow run concurrently with workflow-specific skills. No Docker, no LLM.
+  path-discovered workflow is selectable with no core change, and GithubPeerReviewed + the
+  free-form (spike) workflow run concurrently with workflow-specific skills. No Docker, no LLM.
 
 ## Glossary
 
@@ -209,7 +210,7 @@ commands the Makefile wraps).
   `.claude/commands/<name>.md`; other CLIs in M3). Exposed over REST (`GET /tasks/{id}/skills`).
   The agnostic **`provision`** skill (`core/provisioning.py`) is exposed on **every** task (name
   the task → set its slug → the session service branches the clone, ADR 0011); workflow-specific
-  skills (e.g. parity's forge skills) follow it, and a workflow may define none.
+  skills (e.g. github-peer-reviewed's forge skills) follow it, and a workflow may define none.
 - **Responsibility / Status** — an agent obligation for a state. Entering a state seeds its
   responsibilities onto that entry's history record, all `PENDING` (a promise); the agent
   fulfils each one at a time (`MET`, or `FAILED` with a comment) — mutating that entry — and a
@@ -237,4 +238,4 @@ commands the Makefile wraps).
 - **Lifecycle hook** — a deterministic `Workflow` method the task service runs at a defined
   moment (currently `on_transition`, after a transition, before persistence). It may write
   artifacts or mutate the task's own record — no LLM, no clock. The seam; the built-in workflows
-  don't override it yet (the parity plan-accepted hook is claude-driven, Slice 6).
+  don't override it yet (the github-peer-reviewed plan-accepted hook is claude-driven, Slice 6).

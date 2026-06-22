@@ -27,7 +27,7 @@ class Custom(Workflow):
 
 def test_discovers_the_builtin_workflows() -> None:
     registry = discover_workflows()
-    assert {"spike", "parity"} <= set(registry)  # built-ins, keyed by name
+    assert {"spike", "github-peer-reviewed"} <= set(registry)  # built-ins, keyed by name
     assert registry["spike"].name == "spike"  # instances, validated on construction
 
 
@@ -35,7 +35,7 @@ def test_discovers_a_workflow_dropped_on_the_path(tmp_path: Path) -> None:
     (tmp_path / "custom_wf.py").write_text(_CUSTOM_WORKFLOW)
     registry = discover_workflows(path=str(tmp_path))
     assert "custom" in registry and registry["custom"].name == "custom"  # no core change needed
-    assert {"spike", "parity"} <= set(registry)  # still includes the built-ins
+    assert {"spike", "github-peer-reviewed"} <= set(registry)  # still includes the built-ins
 
 
 def test_ignores_underscored_and_non_workflow_files(tmp_path: Path) -> None:

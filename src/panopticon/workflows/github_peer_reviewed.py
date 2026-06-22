@@ -1,4 +1,4 @@
-"""The Parity workflow — cloude-cade's lifecycle as a workflow class (ADR 0004, PARITY §1).
+"""The GithubPeerReviewed workflow — cloude-cade's lifecycle as a workflow class (ADR 0004, PARITY §1).
 
 `PLANNING → ITERATING → REVIEW → MERGING → COMPLETE` (plus the inherited `DROPPED`), the
 prototype's core flow expressed declaratively. The foreground/background split (PARITY §1) is
@@ -20,7 +20,7 @@ bullets fall away because DB state replaces org-mode mechanics. cloude-cade's "A
 been created" is **provisioning** here (ADR 0004's provision seam), not a responsibility. The
 forge-tied responsibilities (CI passing, PR updated/reviewed/merged) are the real DoD and gate
 now; the *skills* that help fulfil them are this workflow's forge skills (`open-pr`,
-`babysit-ci`, `babysit-merge` — see :meth:`Parity.skills`), agent-driven in-container procedures
+`babysit-ci`, `babysit-merge` — see :meth:`GithubPeerReviewed.skills`), agent-driven in-container procedures
 (ADR 0004) the agent runs against `gh`/CI.
 """
 
@@ -35,10 +35,11 @@ from panopticon.core.state import Complete, State
 from panopticon.core.workflow import Workflow
 
 
-class Parity(Workflow):
-    """The parity lifecycle. Foreground states are user-advanced; MERGING is agent-driven."""
+class GithubPeerReviewed(Workflow):
+    """The github-peer-reviewed lifecycle (formerly ``parity``): code reaches GitHub and a peer
+    gates the merge. Foreground states are user-advanced; MERGING is agent-driven."""
 
-    name: ClassVar[str] = "parity"
+    name: ClassVar[str] = "github-peer-reviewed"
 
     class Planning(State):
         label = "PLANNING"
@@ -80,11 +81,11 @@ class Parity(Workflow):
     initial = Planning
 
     def image_layer(self) -> str:
-        """Parity's forge skills shell out to `gh`, so layer it onto the base image (ADR 0005)."""
+        """The forge skills shell out to `gh`, so layer it onto the base image (ADR 0005)."""
         return "RUN apt-get update && apt-get install --yes --no-install-recommends gh"
 
     def skills(self) -> Sequence[Skill]:
-        """The parity workflow's forge skills (ADR 0004 — remote VCS is workflow-specific). The
+        """This workflow's forge skills (ADR 0004 — remote VCS is workflow-specific). The
         agent runs these in the container against `gh`/CI, calling back over MCP/REST."""
         return (
             Skill(
