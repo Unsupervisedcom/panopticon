@@ -98,6 +98,7 @@ class _TaskRow(_Base):
     blocked: Mapped[bool] = mapped_column(default=False)
     description: Mapped[str | None] = mapped_column(default=None)
     slug: Mapped[str | None]
+    url: Mapped[str | None] = mapped_column(default=None)
     branch: Mapped[str | None] = mapped_column(default=None)
     clone: Mapped[str | None] = mapped_column(default=None)
     claimed_by: Mapped[str | None] = mapped_column(default=None)
@@ -118,6 +119,7 @@ class _TaskRow(_Base):
             blocked=self.blocked,
             description=self.description,
             slug=self.slug,
+            url=self.url,
             branch=self.branch,
             clone=self.clone,
             claimed_by=self.claimed_by,
@@ -135,6 +137,7 @@ class _TaskRow(_Base):
             blocked=task.blocked,
             description=task.description,
             slug=task.slug,
+            url=task.url,
             branch=task.branch,
             clone=task.clone,
             claimed_by=task.claimed_by,
@@ -299,6 +302,7 @@ class SqlAlchemyStore(Store):
             row.turn = task.turn.value
             row.blocked = task.blocked
             row.slug = task.slug
+            row.url = task.url
             row.branch = task.branch
             row.clone = task.clone
             row.claimed_by = task.claimed_by

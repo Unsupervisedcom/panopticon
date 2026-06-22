@@ -28,7 +28,7 @@ async def test_tools_are_exposed_and_drive_the_task(tmp_path: Path) -> None:
         await s.initialize()
         names = {t.name for t in (await s.list_tools()).tools}
         assert {
-            "get_task", "set_slug", "apply_operation", "set_state",
+            "get_task", "set_slug", "set_url", "apply_operation", "set_state",
             "resolve_responsibility", "set_turn", "set_blocked", "put_artifact",
         } <= names
         result = await s.call_tool("apply_operation", {"task_id": task.id, "operation": "advance"})
@@ -57,3 +57,15 @@ async def test_set_turn_via_tool(tmp_path: Path) -> None:
         result = await s.call_tool("set_turn", {"task_id": task.id, "turn": "user"})
         assert result.structuredContent is not None
         assert result.structuredContent["turn"] == "user"
+
+
+async def test_set_url_via_tool(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    task = svc.create_task("r1", "spike")
+    url = "https://github.com/acme/widgets/pull/7"
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        result = await s.call_tool("set_url", {"task_id": task.id, "url": url})
+        assert result.structuredContent is not None
+        assert result.structuredContent["url"] == url
+    assert svc.get_task(task.id).url == url  # the tool actually mutated the task

@@ -158,6 +158,15 @@ def test_save_persists_transition_and_slug(store: Store) -> None:
     assert [h.to_state for h in got.history] == ["ITERATING", "COMPLETE"]
 
 
+def test_url_round_trips(store: Store) -> None:
+    _seed_repo(store)
+    task = _new_task(store)
+    assert store.get_task("t1").url is None  # default on create  # type: ignore[union-attr]
+    task.url = "https://github.com/acme/widgets/pull/7"
+    store.save_task(task)
+    assert store.get_task("t1").url == "https://github.com/acme/widgets/pull/7"  # type: ignore[union-attr]
+
+
 def test_blocked_marker_round_trips(store: Store) -> None:
     _seed_repo(store)
     task = _new_task(store)
@@ -323,6 +332,7 @@ def _fully_populated_task() -> Task:
         blocked=True,
         description="make the widget green",
         slug="fix-the-widget",
+        url="https://github.com/acme/widgets/pull/7",
         branch="panopticon/fix-the-widget",
         clone="/clones/t-full",
         claimed_by="local",

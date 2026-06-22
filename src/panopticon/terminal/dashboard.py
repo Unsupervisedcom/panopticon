@@ -4,8 +4,9 @@ A task table on the left, the highlighted task's state/turn/history on the right
 auto-refreshes from the task service every ``REFRESH_INTERVAL`` seconds (preserving the
 highlighted row across the rebuild); `r` forces a refresh now. Keys: `r`
 refreshes from the task service over REST, `t` hands off to the task's container tmux, `n`
-creates a task (pick repo → workflow → describe the work), `x` **drops** it, and `R` **respawns** a down task (releases
-its claim so the host runner re-spawns it). Drop is the only state *transition* the dashboard
+creates a task (pick repo → workflow → describe the work), `x` **drops** it, `R` **respawns** a down task (releases
+its claim so the host runner re-spawns it), and `p` opens the task's `url` in the browser
+(cloude-cade's `p` "open PR"). Drop is the only state *transition* the dashboard
 drives: every other transition starts a new agentic turn, so it's triggered by an in-container
 agent skill (advance/iterate over REST/MCP), not the operator (ADR 0004).
 
@@ -23,6 +24,7 @@ to Textual workers is a refinement (docs/BACKLOG.md).
 
 from __future__ import annotations
 
+import webbrowser
 from collections.abc import Callable
 from typing import Any
 
@@ -71,6 +73,8 @@ def render_detail(task: JsonObj) -> str:
     ]
     if task.get("description"):
         lines += ["", task["description"]]
+    if task.get("url"):
+        lines += ["", f"url: {task['url']}"]
     lines += ["", "history:"]
     for entry in task["history"]:
         line = f"  {entry['from_state'] or '∅'} → {entry['to_state']}"
@@ -156,6 +160,7 @@ class Dashboard(App[None]):
         ("x", "drop", "Drop"),
         ("R", "respawn", "Respawn"),
         ("t", "attach", "Attach tmux"),
+        ("p", "open_url", "Open URL"),
         ("s", "service", "Service"),
         ("q", "quit", "Quit"),
     ]
@@ -312,6 +317,21 @@ class Dashboard(App[None]):
             self.notify("No running container for this task.", severity="warning")
             return
         self._on_switch(registrations[0]["container_id"])  # session == container id (runner names it)
+
+    def action_open_url(self) -> None:
+        """`p`: open the highlighted task's `url` in the browser (cloude-cade's `p` "open PR").
+
+        Opens on the machine running the dashboard, like cloude-dash; a no-op with a notice when
+        the task has no URL set."""
+        if self._current is None:
+            return
+        task = self._tasks.get(self._current)
+        url = task.get("url") if task else None
+        if not url:
+            self.notify("No URL set for this task.", severity="warning")
+            return
+        webbrowser.open(url)
+        self.notify(f"opened {url}")
 
     def action_service(self) -> None:
         """`s`: switch to the task-service tmux session, when one is running (ADR 0009).

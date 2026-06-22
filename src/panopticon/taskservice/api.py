@@ -62,6 +62,7 @@ class TaskOut(BaseModel):
     blocked: bool
     description: str | None  # free-text intent collected at creation (shown in the summary)
     slug: str | None
+    url: str | None  # an optional external URL (PR, issue, …); the dashboard's `p` hotkey opens it
     branch: str | None
     clone: str | None
     claimed_by: str | None  # the runner that owns this task (the spawn gate), or None
@@ -113,6 +114,10 @@ class TransitionIn(BaseModel):
 
 class SlugIn(BaseModel):
     slug: str
+
+
+class UrlIn(BaseModel):
+    url: str
 
 
 class StateIn(BaseModel):
@@ -314,6 +319,10 @@ def create_app(service: TaskService) -> FastAPI:
     @app.put("/tasks/{task_id}/slug")
     async def set_slug(task_id: str, body: SlugIn) -> TaskOut:
         return TaskOut.model_validate(service.set_slug(task_id, body.slug))
+
+    @app.put("/tasks/{task_id}/url")
+    async def set_url(task_id: str, body: UrlIn) -> TaskOut:
+        return TaskOut.model_validate(service.set_url(task_id, body.url))
 
     @app.put("/tasks/{task_id}/turn")
     async def set_turn(task_id: str, body: TurnIn) -> TaskOut:

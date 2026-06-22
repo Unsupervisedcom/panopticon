@@ -9,6 +9,7 @@ from typing import Any
 
 from textual.widgets import DataTable, Static
 
+from panopticon.terminal import dashboard
 from panopticon.terminal.dashboard import Dashboard, _turn_cell, render_detail
 
 _TASK: dict[str, Any] = {
@@ -94,6 +95,12 @@ def test_render_detail_shows_the_description() -> None:
     assert "make the widget green" not in render_detail(_TASK)
     text = render_detail({**_TASK, "description": "make the widget green"})
     assert "make the widget green" in text
+
+
+def test_render_detail_shows_the_url() -> None:
+    assert "url:" not in render_detail(_TASK)
+    text = render_detail({**_TASK, "url": "https://github.com/acme/widgets/pull/7"})
+    assert "url: https://github.com/acme/widgets/pull/7" in text
 
 
 def test_render_detail_marks_blocked() -> None:
@@ -270,6 +277,31 @@ async def test_dashboard_drives_drop() -> None:
         await pilot.press("x")
         await pilot.pause()
         assert fake.applied == [("task-abcdef0123", "drop")]
+
+
+async def test_pressing_p_opens_the_task_url(monkeypatch: Any) -> None:
+    # `p` opens the highlighted task's url in the browser (cloude-cade's `p` "open PR").
+    opened: list[str] = []
+    monkeypatch.setattr(dashboard.webbrowser, "open", opened.append)
+    task = {**_TASK, "url": "https://github.com/acme/widgets/pull/7"}
+    app = Dashboard(_FakeClient([task]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+        assert opened == ["https://github.com/acme/widgets/pull/7"]
+
+
+async def test_pressing_p_with_no_url_does_nothing(monkeypatch: Any) -> None:
+    opened: list[str] = []
+    monkeypatch.setattr(dashboard.webbrowser, "open", opened.append)
+    app = Dashboard(_FakeClient([_TASK]))  # _TASK has no url  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+        assert opened == []  # nothing to open; warned and stayed put
+        assert app.is_running
 
 
 def test_render_detail_shows_the_claim() -> None:

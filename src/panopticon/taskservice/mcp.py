@@ -44,6 +44,10 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
     def set_slug(task_id: str, slug: str) -> dict[str, Any]:
         return _task(service.set_slug(task_id, slug))
 
+    @mcp.tool(description="Record an external URL for the task (e.g. its PR); the dashboard's 'p' hotkey opens it.")
+    def set_url(task_id: str, url: str) -> dict[str, Any]:
+        return _task(service.set_url(task_id, url))
+
     @mcp.tool(description="Apply a named core operation (e.g. 'advance', 'drop').")
     def apply_operation(task_id: str, operation: str) -> dict[str, Any]:
         return _task(service.apply_operation(task_id, operation))

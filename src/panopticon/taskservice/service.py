@@ -210,6 +210,14 @@ class TaskService:
         self._store.save_task(task)
         return task
 
+    def set_url(self, task_id: str, url: str) -> Task:
+        """Record an external URL for the task (its PR, an issue, …); the dashboard's `p`
+        hotkey opens it. A plain recorded fact, like the slug — no transition, no git."""
+        task = self.get_task(task_id)
+        task.url = url
+        self._store.save_task(task)
+        return task
+
     def set_turn(self, task_id: str, turn: Actor) -> Task:
         """Flip who holds the turn within a state (the in-container hooks' callback).
 

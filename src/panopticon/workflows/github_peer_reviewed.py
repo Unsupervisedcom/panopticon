@@ -103,7 +103,9 @@ class GithubPeerReviewed(Workflow):
                 "open-pr",
                 "Open a draft PR for this task's branch.",
                 "Push the task's branch and open a **draft** PR against the repo's base branch with "
-                "`gh pr create --draft`. Title it for the change and reference the plan artifact.",
+                "`gh pr create --draft`. Title it for the change and reference the plan artifact. "
+                "Then record the PR's URL on the task with the `set_url` tool, so the dashboard's "
+                "`p` hotkey opens it.",
             ),
             Skill(
                 "babysit-ci",

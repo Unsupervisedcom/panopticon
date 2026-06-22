@@ -101,6 +101,9 @@ class TaskServiceClient:
     def set_slug(self, task_id: str, slug: str) -> JsonObj:
         return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/slug", json={"slug": slug})))
 
+    def set_url(self, task_id: str, url: str) -> JsonObj:
+        return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/url", json={"url": url})))
+
     def set_state(self, task_id: str, state: str) -> JsonObj:
         """The user's free override — move the task to any state (bypasses the graph and gate)."""
         return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/state", json={"state": state})))

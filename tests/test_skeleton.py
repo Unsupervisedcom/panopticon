@@ -85,6 +85,14 @@ def test_record_provisioning_over_rest(client: TaskServiceClient) -> None:
     assert client.get_task(task_id)["branch"] == "panopticon/fix-widget"  # persisted
 
 
+def test_set_url_over_rest(client: TaskServiceClient) -> None:
+    task_id = client.create_task("r1", "spike")["id"]
+    assert client.get_task(task_id)["url"] is None  # unset on create
+    out = client.set_url(task_id, "https://github.com/acme/widgets/pull/7")
+    assert out["url"] == "https://github.com/acme/widgets/pull/7"
+    assert client.get_task(task_id)["url"] == "https://github.com/acme/widgets/pull/7"  # persisted
+
+
 def test_registration_active_during_work(client: TaskServiceClient) -> None:
     task_id = client.create_task("r1", "spike")["id"]
     seen: list[int] = []

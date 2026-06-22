@@ -157,6 +157,10 @@ class Task:
     #: identifier the agent sets later); ``None`` when the creator gave none.
     description: str | None = None
     slug: str | None = None
+    #: An optional external URL for the task — its pull request, an issue, a dashboard link
+    #: (cloude-cade's ``pr_url``). Set via :meth:`TaskService.set_url`; the dashboard's ``p``
+    #: hotkey opens it. ``None`` until something records one (e.g. the ``open-pr`` skill).
+    url: str | None = None
     #: The git refs the session service provisions for this task once the slug is set (ADR
     #: 0010/0011): the slug-named branch and the path of the per-task ``clone`` it works in **on
     #: the host where the container runs**. The task service only records these — it does no git
