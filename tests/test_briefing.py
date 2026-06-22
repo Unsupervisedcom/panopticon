@@ -6,8 +6,33 @@ agent doesn't charge ahead — e.g. start implementing during a parity task's PL
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
+import pytest
+
 from panopticon.core.briefing import render_state_briefing, render_workflow_overview
 from panopticon.workflows import Parity, Spike
+
+#: Golden fixtures: the exact prompts the parity workflow generates. Regenerate after an intentional
+#: wording change with ``UPDATE_FIXTURES=1 uv run pytest tests/test_briefing.py`` and commit the diff.
+FIXTURES = Path(__file__).parent / "fixtures" / "briefing"
+
+
+def _assert_matches_fixture(name: str, actual: str) -> None:
+    path = FIXTURES / name
+    if os.environ.get("UPDATE_FIXTURES"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(actual)
+    assert actual == path.read_text(), f"{name} drifted — regenerate with UPDATE_FIXTURES=1 and review"
+
+
+def _parity_task_in(state: str):  # type: ignore[no-untyped-def]
+    wf = Parity()
+    task = wf.start_task("t1", "r1", at="t0")  # PLANNING
+    if state != wf.initial_label:
+        task = wf.force_transition(task, state, at="t1")
+    return wf, task
 
 
 def test_briefing_names_the_phase_responsibilities_and_user_advance() -> None:
@@ -65,3 +90,18 @@ def test_workflow_overview_handles_a_phase_with_no_responsibilities() -> None:
     assert "do the work, then hand back to the user, who advances it." in text
     assert "its responsibilities" not in text  # no "finish its responsibilities" with nothing under it
     assert "## Tools" not in text  # spike declares no tools → the section is omitted
+
+
+# -- golden fixtures: the exact parity prompts ------------------------------------------
+
+
+def test_parity_system_prompt_matches_fixture() -> None:
+    # The whole-workflow system prompt (the map + tools), captured verbatim.
+    _assert_matches_fixture("parity_system_prompt.md", render_workflow_overview(Parity()))
+
+
+@pytest.mark.parametrize("state", ["PLANNING", "ITERATING", "REVIEW", "MERGING", "COMPLETE"])
+def test_parity_state_briefing_matches_fixture(state: str) -> None:
+    # The per-turn briefing for each parity phase, captured verbatim.
+    wf, task = _parity_task_in(state)
+    _assert_matches_fixture(f"parity_state_{state}.md", render_state_briefing(wf, task))
