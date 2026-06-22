@@ -97,6 +97,32 @@ def test_list_repos(store: Store) -> None:
     assert {r.id for r in store.list_repos()} == {"r1", "r2"}
 
 
+def test_update_repo_round_trips(store: Store) -> None:
+    store.create_repo(
+        Repo(id="r1", name="old", git_url="https://x/old.git",
+             image_layer="RUN pip install uv", capabilities={"docker_in_docker": True})
+    )
+    store.update_repo(
+        Repo(id="r1", name="new", git_url="https://x/new.git", default_base="trunk",
+             env_file="/secrets/r1.env", creds_volume="creds-r1",
+             image_layer="RUN pip install uv", capabilities={"docker_in_docker": True})
+    )
+    got = store.get_repo("r1")
+    assert got is not None
+    assert got.name == "new"
+    assert got.git_url == "https://x/new.git"
+    assert got.default_base == "trunk"
+    assert got.env_file == "/secrets/r1.env"
+    assert got.creds_volume == "creds-r1"
+    assert got.image_layer == "RUN pip install uv"  # untouched fields persist
+    assert got.capabilities == {"docker_in_docker": True}
+
+
+def test_update_missing_repo_raises(store: Store) -> None:
+    with pytest.raises(NotFound):
+        store.update_repo(Repo(id="ghost", name="x", git_url="https://x/x.git"))
+
+
 # -- task creation ------------------------------------------------------------------
 
 
