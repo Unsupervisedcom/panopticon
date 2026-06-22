@@ -93,9 +93,12 @@ def render_state_briefing(workflow: Workflow, task: Task) -> str:
 
     desc = workflow.description(label)
     lead = f" {desc}" if desc else ""  # remind the agent what this phase is for
+    # The opener stays neutral on how the phase ends — the closing line below says whether to hand
+    # back (user-advanced) or advance yourself (agent-advanced); "then hand back" would be wrong for
+    # an agent-advanced phase like MERGING.
     lines = [
         f"You are in the **{label}** phase of the `{workflow.name}` workflow.{lead} Do the work this "
-        f"phase calls for and then hand back — **don't start work that belongs to a later phase.**"
+        f"phase calls for — **don't start work that belongs to a later phase.**"
     ]
 
     responsibilities = list(task.current_entry.responsibilities)

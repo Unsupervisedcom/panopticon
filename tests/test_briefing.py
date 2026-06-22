@@ -58,6 +58,7 @@ def test_briefing_for_an_agent_advanced_phase() -> None:
 
     assert "MERGING" in text and "pr-merged" in text
     assert "advance the task yourself" in text  # MERGING is agent-advanced (background)
+    assert "hand back" not in text  # it auto-advances — the briefing must not tell it to hand back
 
 
 def test_briefing_for_a_terminal_state() -> None:
