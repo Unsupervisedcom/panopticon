@@ -52,18 +52,20 @@ def render_workflow_overview(workflow: Workflow) -> str:
         agent_advances = workflow.advanced_by(label) is Actor.AGENT
         lead = f"{desc} " if desc else ""  # the phase's description, then its own who-advances sentence
         if responsibilities:
+            # responsibilities gate the agent (it must always meet them); who advances afterward
+            # is the separate `advanced_by` fact — the agent itself, or hand back to the user.
             how = (
-                "You advance it yourself once these are met"
+                "Meet these, then advance it yourself"
                 if agent_advances
-                else "The user advances it once these are met"
+                else "Meet these, then hand back to the user to advance"
             )
             lines.append(f"{i}. **{label}** — {lead}{how}:")
             lines += [f"   - {r.key}: {r.description}" for r in responsibilities]
         else:
             how = (
-                "You advance it yourself once the work is done"
+                "Do the work, then advance it yourself"
                 if agent_advances
-                else "The user advances it once the work is done"
+                else "Do the work, then hand back to the user to advance"
             )
             lines.append(f"{i}. **{label}** — {lead}{how}.")
     lines += [
