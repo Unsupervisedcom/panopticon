@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import webbrowser
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -39,14 +40,26 @@ from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.state import TERMINAL_LABELS
 
 
-def _sort_key(task: JsonObj) -> tuple[bool, str, str]:
-    """Order rows by state, sinking terminal states (COMPLETE/DROPPED) to the bottom.
+def _sort_key(task: JsonObj) -> tuple[bool, bool, float, str]:
+    """Order rows for the operator: live work first, then by whose turn it is, then recency.
 
-    Active work sorts to the top (alphabetically by state); finished tasks settle below it.
-    Ties break on slug (then id) for a stable, readable order.
+    1. non-terminal before terminal — COMPLETE/DROPPED sink to the bottom;
+    2. the user's turn before the agent's — tasks waiting on the operator surface first;
+    3. most-recently-updated first — the latest history entry's timestamp.
+
+    Recency is the latest history ``at``; turn flips / ``blocked`` / ``url`` changes don't append
+    history, so only a state transition moves a task on this axis. Ties break on slug (then id)
+    for a stable, readable order.
     """
     state = task["state"]
-    return (state in TERMINAL_LABELS, state, task["slug"] or task["id"])
+    last = task["history"][-1].get("at") if task["history"] else None
+    recency = -datetime.fromisoformat(last).timestamp() if last else 0.0  # negate → newest first
+    return (
+        state in TERMINAL_LABELS,  # False (live) before True (terminal)
+        task["turn"] != "user",  # False (user) before True (agent)
+        recency,
+        task["slug"] or task["id"],
+    )
 
 
 def _short(task_id: str) -> str:
@@ -219,7 +232,7 @@ class Dashboard(App[None]):
         table = self.query_one("#tasks", DataTable)
         selected = self._current  # keep the operator's highlight across the rebuild (auto-refresh)
         table.clear()
-        ordered = sorted(self._client.list_tasks(), key=_sort_key)  # state asc, terminal last
+        ordered = sorted(self._client.list_tasks(), key=_sort_key)  # live/user/recent first
         self._tasks = {t["id"]: t for t in ordered}
         for task in ordered:
             table.add_row(

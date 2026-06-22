@@ -20,13 +20,22 @@ _TASK: dict[str, Any] = {
     "workflow": "spike",
     "provisioned": True,
     "history": [
-        {"from_state": None, "to_state": "PLAN", "trigger": "start", "responsibilities": []},
         {
+            "at": "2026-06-22T10:00:00+00:00",
+            "from_state": None, "to_state": "PLAN", "trigger": "start", "responsibilities": [],
+        },
+        {
+            "at": "2026-06-22T11:00:00+00:00",
             "from_state": "PLAN", "to_state": "WORKING", "trigger": "advance",
             "responsibilities": [{"key": "tests-pass", "status": "pending"}],
         },
     ],
 }
+
+
+def _at(stamp: str) -> list[dict[str, Any]]:
+    """A one-entry history whose latest timestamp is ``stamp`` (the sort's recency key)."""
+    return [{"at": stamp, "from_state": None, "to_state": "WORKING", "responsibilities": []}]
 
 
 class _FakeClient:
@@ -128,20 +137,44 @@ async def test_dashboard_mounts_lists_tasks_and_shows_detail() -> None:
         assert "WORKING" in str(detail.render())
 
 
-async def test_tasks_are_sorted_by_state_with_terminal_states_last() -> None:
+async def test_tasks_are_sorted_live_then_user_then_recent() -> None:
+    # The order: (1) non-terminal above terminal, (2) the user's turn above the agent's,
+    # (3) most-recently-updated (latest history `at`) first.
     tasks = [
-        {**_TASK, "id": "t-done", "slug": "z", "state": "COMPLETE"},
-        {**_TASK, "id": "t-work", "slug": "m", "state": "WORKING"},
-        {**_TASK, "id": "t-drop", "slug": "a", "state": "DROPPED"},
-        {**_TASK, "id": "t-plan", "slug": "b", "state": "PLANNING"},
+        # terminal tasks — sink below all live work even though their `at` is the most recent.
+        {**_TASK, "id": "t-done", "state": "COMPLETE", "turn": "user", "history": _at("2026-06-22T23:00:00+00:00")},
+        {**_TASK, "id": "t-drop", "state": "DROPPED", "turn": "agent", "history": _at("2026-06-22T22:00:00+00:00")},
+        # live agent-turn tasks — below the user-turn ones, newest of the two first.
+        {**_TASK, "id": "t-agent-new", "turn": "agent", "history": _at("2026-06-22T13:00:00+00:00")},
+        {**_TASK, "id": "t-agent-old", "turn": "agent", "history": _at("2026-06-22T08:00:00+00:00")},
+        # live user-turn tasks — at the very top, newest first.
+        {**_TASK, "id": "t-user-new", "turn": "user", "history": _at("2026-06-22T10:00:00+00:00")},
+        {**_TASK, "id": "t-user-old", "turn": "user", "history": _at("2026-06-22T09:00:00+00:00")},
     ]
     app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
         order = [str(k.value) for k in table.rows]
-        # non-terminal first (PLANNING < WORKING), then terminal (COMPLETE < DROPPED)
-        assert order == ["t-plan", "t-work", "t-done", "t-drop"]
+        assert order == [
+            "t-user-new", "t-user-old",    # live, user's turn, newest first
+            "t-agent-new", "t-agent-old",  # live, agent's turn, newest first
+            "t-done", "t-drop",            # terminal last (their recent `at` doesn't lift them)
+        ]
+
+
+async def test_sort_breaks_ties_on_slug() -> None:
+    # Same terminal-ness, turn, and `at` → fall back to slug (then id) for a stable order.
+    at = _at("2026-06-22T10:00:00+00:00")
+    tasks = [
+        {**_TASK, "id": "t2", "slug": "zebra", "turn": "user", "history": at},
+        {**_TASK, "id": "t1", "slug": "alpha", "turn": "user", "history": at},
+    ]
+    app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        order = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
+        assert order == ["t1", "t2"]  # alpha < zebra
 
 
 async def test_dashboard_auto_refreshes_on_the_interval() -> None:
