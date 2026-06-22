@@ -17,8 +17,18 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from panopticon.core.models import Skill, Tool
+from panopticon.core.models import Responsibility, Skill, Tool
 from panopticon.core.workflow import Workflow
+
+#: The shared PLANNING responsibility for the forge workflows. Both lifecycles produce a plan,
+#: and it's an artifact the operator opens from the dashboard (the `a` hotkey hands it to the
+#: host's default handler, which keys off the extension) — so the plan is a **markdown** file
+#: named ``plan.md``. One frozen instance, referenced by each workflow's PLANNING state, keeps
+#: the guidance single-sourced.
+PLAN_WRITTEN = Responsibility(
+    key="plan-written",
+    description="The plan is written to the plan artifact as a markdown file (`plan.md`).",
+)
 
 
 class GithubForgeWorkflow(Workflow):
@@ -49,7 +59,8 @@ class GithubForgeWorkflow(Workflow):
                 "open-pr",
                 "Open a draft PR for this task's branch.",
                 "Push the task's branch and open a **draft** PR against the repo's base branch with "
-                "`gh pr create --draft`. Title it for the change and reference the plan artifact. "
+                "`gh pr create --draft`. Title it for the change and reference the plan artifact "
+                "(`plan.md`). "
                 "Then record the PR's URL on the task with the `set_url` tool, so the dashboard's "
                 "`p` hotkey opens it.",
             ),

@@ -18,7 +18,7 @@ from typing import ClassVar
 
 from panopticon.core.models import Actor, Responsibility
 from panopticon.core.state import Complete, State
-from panopticon.workflows.github_forge import GithubForgeWorkflow
+from panopticon.workflows.github_forge import PLAN_WRITTEN, GithubForgeWorkflow
 
 
 class GithubSelfReviewed(GithubForgeWorkflow):
@@ -31,9 +31,7 @@ class GithubSelfReviewed(GithubForgeWorkflow):
     class Planning(State):
         label = "PLANNING"
         description = "Collect requirements. Produce a plan for the implementation."
-        responsibilities = (
-            Responsibility(key="plan-written", description="The plan is written into the plan artifact."),
-        )
+        responsibilities = (PLAN_WRITTEN,)  # shared: the plan is a markdown `plan.md` artifact
         transitions = ("ITERATING",)  # advance; + DROPPED inherited
 
     class Iterating(State):

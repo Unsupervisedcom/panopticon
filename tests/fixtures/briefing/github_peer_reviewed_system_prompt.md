@@ -3,7 +3,7 @@
 This task moves through a fixed sequence of phases. You are always in exactly one phase: do that phase's work, then it advances. Each turn you'll be reminded which phase you're in and what it needs — **don't do a later phase's work early.** The phases, in order:
 
 1. **PLANNING** — Collect requirements. Produce a plan for the implementation. You must meet these responsibilities before ending your turn:
-   - plan-written: The plan is written into the plan artifact.
+   - plan-written: The plan is written to the plan artifact as a markdown file (`plan.md`).
    The user will advance to the next state.
 2. **ITERATING** — Implement the plan. Implement any additional user requests or feedback. Implement any review comments the user has approved for implementation. You must meet these responsibilities before ending your turn:
    - plan-implemented: The plan is implemented in code.

@@ -59,6 +59,9 @@ def test_responsibilities_mirror_cloude_cade_dod() -> None:
     # cloude-cade's per-stage dod_bullets (bin/cloude_stages.py), agent-only (no user-approval),
     # DB state replacing the terminal org bullets, and draft-PR creation moved to provisioning.
     assert {r.key for r in WF.responsibilities("PLANNING")} == {"plan-written"}
+    # the plan is a markdown artifact (`plan.md`), so the dashboard opens it with the right handler
+    (plan_written,) = WF.responsibilities("PLANNING")
+    assert "plan.md" in plan_written.description and "markdown" in plan_written.description
     assert {r.key for r in WF.responsibilities("ITERATING")} == {
         "plan-implemented", "requests-implemented", "tests-pass",
         "committed-pushed", "ci-passing", "pr-updated",

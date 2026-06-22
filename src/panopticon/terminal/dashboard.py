@@ -6,7 +6,10 @@ highlighted row across the rebuild); `r` forces a refresh now. Keys: `r`
 refreshes from the task service over REST, `t` hands off to the task's container tmux, `n`
 creates a task (pick repo → workflow → describe the work), `x` **drops** it, `R` **respawns** a down task (releases
 its claim so the host runner re-spawns it), `p` opens the task's `url` in the browser
-(cloude-cade's `p` "open PR"), and `g` opens the **repo config screen** (list / create / edit repos). Drop is the only state *transition* the dashboard
+(cloude-cade's `p` "open PR"), `g` opens the **repo config screen** (list / create / edit repos),
+and `a` opens a modal listing the task's artifacts — Enter opens the selected one with the host's
+default handler (`xdg-open`/`open`) by fetching it over REST to a temp file, `e` opens the on-disk
+file in place when the dashboard shares the artifact store. Drop is the only state *transition* the dashboard
 drives: every other transition starts a new agentic turn, so it's triggered by an in-container
 agent skill (advance/iterate over REST/MCP), not the operator (ADR 0004).
 
@@ -30,20 +33,26 @@ to Textual workers is a refinement (docs/BACKLOG.md).
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import tempfile
 import webbrowser
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime
-from typing import Any
+from pathlib import Path
+from typing import Any, TypeVar
 
 import httpx
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import DataTable, Footer, Header, Input, Label, OptionList, Static
 
 from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.state import TERMINAL_LABELS
+from panopticon.taskservice.artifacts_fs import DEFAULT_ARTIFACTS, FilesystemArtifactStore
 
 
 def _sort_key(task: JsonObj) -> tuple[bool, bool, float, str]:
@@ -122,14 +131,41 @@ def render_detail(task: JsonObj) -> str:
     return "\n".join(lines)
 
 
-class ChoiceScreen(ModalScreen[str | None]):
-    """A modal list picker: select an option (Enter) or cancel (Escape); dismisses the choice."""
+def _open_command() -> str:
+    """The host's "open this file with its default handler" command: `open` on macOS,
+    `xdg-open` elsewhere (Linux + other freedesktop desktops)."""
+    return "open" if sys.platform == "darwin" else "xdg-open"
 
-    CSS = """
-    ChoiceScreen { align: center middle; }
-    #choice-box { width: 48; height: auto; max-height: 80%; padding: 1 2; border: round $accent; background: $surface; }
-    """
+
+def _open_path(path: str) -> None:
+    """Hand ``path`` to the host's default handler, non-blocking (don't freeze the TUI). Raises
+    ``FileNotFoundError`` when the opener isn't installed (e.g. headless host, no ``xdg-open``);
+    callers catch it and notify rather than letting it crash the TUI."""
+    subprocess.Popen([_open_command(), path])
+
+
+def _open_via_rest(client: TaskServiceClient, task_id: str, name: str, tmpdir: str) -> None:
+    """Fetch an artifact over REST and open it: write its bytes under ``tmpdir`` (keeping the
+    artifact's basename so the extension drives the handler), then open that. Works even when the
+    dashboard is remote from the artifact store. ``tmpdir`` is the app's single reused scratch dir
+    (cleaned on exit), so opens don't leak a directory each."""
+    content = client.get_artifact(task_id, name)
+    path = Path(tmpdir) / task_id / Path(name).name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    _open_path(str(path))
+
+
+_ResultT = TypeVar("_ResultT")
+
+
+class _OptionListModal(ModalScreen[_ResultT | None]):
+    """Shared skeleton for the modal list-pickers: a titled ``OptionList`` in a bordered box,
+    Escape to cancel. Subclasses fix the result type, the box id/CSS, how a selection dismisses,
+    and any extra widgets (e.g. a hint line)."""
+
     BINDINGS = [("escape", "cancel", "Cancel")]
+    BOX_ID = "list-box"
 
     def __init__(self, title: str, options: list[str]) -> None:
         super().__init__()
@@ -137,18 +173,32 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._options = options
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="choice-box"):
+        with Vertical(id=self.BOX_ID):
             yield Label(self._title)
             yield OptionList(*self._options)
+            yield from self._extra_widgets()
+
+    def _extra_widgets(self) -> Iterable[Widget]:
+        return ()
 
     def on_mount(self) -> None:
         self.query_one(OptionList).focus()
 
-    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        self.dismiss(str(event.option.prompt))
-
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+class ChoiceScreen(_OptionListModal[str]):
+    """A modal list picker: select an option (Enter) or cancel (Escape); dismisses the choice."""
+
+    CSS = """
+    ChoiceScreen { align: center middle; }
+    #choice-box { width: 48; height: auto; max-height: 80%; padding: 1 2; border: round $accent; background: $surface; }
+    """
+    BOX_ID = "choice-box"
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(str(event.option.prompt))
 
 
 class InputScreen(ModalScreen[str | None]):
@@ -332,6 +382,37 @@ def _detail(exc: httpx.HTTPStatusError) -> str:
         return str(exc)
 
 
+class ArtifactScreen(_OptionListModal[tuple[str, str]]):
+    """A modal list of a task's artifacts: Enter opens the highlighted one over REST, `e` opens
+    its local on-disk file in place; Escape cancels.
+
+    Dismisses ``(name, mode)`` where ``mode`` is ``"rest"`` (Enter) or ``"local"`` (`e`), or
+    ``None`` on cancel. Local-open is bound to `e` (as in "edit in place"), **not** Shift+Enter:
+    many terminals can't deliver Shift+Enter distinctly from Enter, so the local mode would be
+    silently unreachable."""
+
+    CSS = """
+    ArtifactScreen { align: center middle; }
+    #artifact-box { width: 56; height: auto; max-height: 80%; padding: 1 2; border: round $accent; background: $surface; }
+    #artifact-hint { color: $text-muted; }
+    """
+    BOX_ID = "artifact-box"
+    BINDINGS = [("escape", "cancel", "Cancel"), ("e", "open_local", "Open local")]
+
+    def _extra_widgets(self) -> Iterable[Widget]:
+        yield Label("enter: open · e: open local file · esc: cancel", id="artifact-hint")
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss((str(event.option.prompt), "rest"))
+
+    def action_open_local(self) -> None:
+        option_list = self.query_one(OptionList)
+        index = option_list.highlighted
+        if index is None:
+            return
+        self.dismiss((str(option_list.get_option_at_index(index).prompt), "local"))
+
+
 class Dashboard(App[None]):
     """The task view. On `t` it calls ``on_switch`` with the task's session (and `s` calls
     ``on_service`` for the task-service session) and stays running; the supervisor handles the
@@ -347,6 +428,7 @@ class Dashboard(App[None]):
         ("t", "attach", "Attach tmux"),
         ("p", "open_url", "Open URL"),
         ("g", "repos", "Repos"),
+        ("a", "artifacts", "Artifacts"),
         ("s", "service", "Service"),
         ("/", "search", "Search"),
         ("escape", "clear_search", "Clear search"),
@@ -360,17 +442,22 @@ class Dashboard(App[None]):
         *,
         on_switch: Callable[[str], None] | None = None,
         on_service: Callable[[], bool] | None = None,
+        artifacts_root: str | Path = DEFAULT_ARTIFACTS,
         refresh_interval: float | None = REFRESH_INTERVAL,
     ) -> None:
         super().__init__()
         self._client = client
         self._on_switch = on_switch  # supervisor hook: record the pick + detach (None standalone)
         self._on_service = on_service  # `s` hook: switch to the service session; True if one exists
+        self._artifacts_root = artifacts_root  # for `a`'s `e` local-open (co-located store)
         self._refresh_interval = refresh_interval  # auto-refresh cadence (0/None → manual only)
         self._tasks: dict[str, JsonObj] = {}
         self._current: str | None = None
         self._query: str = ""  # active search filter ("" → no filter); see action_search
         self._respawning: set[str] = set()  # tasks awaiting re-claim after `R` (shown "respawning")
+        # one reused scratch dir for `a`'s REST-open (lazily made, cleaned on exit) — so opening
+        # many artifacts doesn't leak a temp dir each.
+        self._artifact_tmp: tempfile.TemporaryDirectory[str] | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -388,6 +475,17 @@ class Dashboard(App[None]):
         self.action_refresh()
         if self._refresh_interval:
             self.set_interval(self._refresh_interval, self.action_refresh)
+
+    def on_unmount(self) -> None:
+        if self._artifact_tmp is not None:  # remove the REST-open scratch dir on exit
+            self._artifact_tmp.cleanup()
+            self._artifact_tmp = None
+
+    def _artifact_tmpdir(self) -> str:
+        """The app's reused scratch dir for REST-opened artifacts, created on first use."""
+        if self._artifact_tmp is None:
+            self._artifact_tmp = tempfile.TemporaryDirectory(prefix="panopticon-artifacts-")
+        return self._artifact_tmp.name
 
     def _run_status(self, task: JsonObj) -> str:
         """A task's container status: `live` (a registered container), `down` (was up, container
@@ -533,6 +631,46 @@ class Dashboard(App[None]):
         """`g`: open the repo config screen — list repos and create/edit them (ADR 0002)."""
         self.push_screen(ReposScreen(self._client))
 
+    def action_artifacts(self) -> None:
+        """`a`: open a modal listing the highlighted task's artifacts. Enter opens the selection
+        with the host's default handler by fetching it over REST to a temp file; `e` opens the
+        on-disk file in place when the dashboard shares the artifact store (else warns).
+
+        Opens on the machine running the dashboard, like `p`."""
+        if self._current is None:
+            return
+        task_id = self._current
+        try:
+            names = self._client.list_artifacts(task_id)
+        except httpx.HTTPStatusError as exc:
+            self.notify(f"Can't list artifacts: {exc}", severity="error")
+            return
+        if not names:
+            self.notify("No artifacts for this task.", severity="warning")
+            return
+
+        def open_selected(choice: tuple[str, str] | None) -> None:
+            if choice is None:  # cancelled
+                return
+            name, mode = choice
+            try:
+                if mode == "local":  # open the on-disk file in place (co-located store)
+                    path = FilesystemArtifactStore(self._artifacts_root).path(task_id, name)
+                    if path is None:
+                        self.notify(f"{name} isn't available locally.", severity="warning")
+                        return
+                    _open_path(str(path))
+                    self.notify(f"opened {path} locally")
+                else:  # "rest": fetch over REST to the scratch dir, then open
+                    _open_via_rest(self._client, task_id, name, self._artifact_tmpdir())
+                    self.notify(f"opened {name}")
+            except FileNotFoundError:  # no opener binary on this host — notify, don't crash the TUI
+                self.notify(f"No '{_open_command()}' on this host to open files.", severity="warning")
+            except httpx.HTTPStatusError as exc:
+                self.notify(f"Can't open {name}: {exc}", severity="error")
+
+        self.push_screen(ArtifactScreen("artifacts", names), open_selected)
+
     def action_service(self) -> None:
         """`s`: switch to the task-service tmux session, when one is running (ADR 0009).
 
@@ -591,7 +729,11 @@ def run(
     *,
     on_switch: Callable[[str], None] | None = None,
     on_service: Callable[[], bool] | None = None,
+    artifacts_root: str | Path = DEFAULT_ARTIFACTS,
 ) -> None:
     """Run the dashboard. ``on_switch``/``on_service`` are the supervisor's `t`/`s` hooks
-    (ADR 0009); both ``None`` standalone."""
-    Dashboard(client, on_switch=on_switch, on_service=on_service).run()
+    (ADR 0009); both ``None`` standalone. ``artifacts_root`` is the local artifact-store root
+    `a`'s `e` opens files from when the dashboard shares the task service's filesystem."""
+    Dashboard(
+        client, on_switch=on_switch, on_service=on_service, artifacts_root=artifacts_root
+    ).run()

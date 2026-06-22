@@ -154,6 +154,9 @@ class TaskServiceClient:
 
     # -- artifacts ----------------------------------------------------------------
 
+    def list_artifacts(self, task_id: str) -> list[str]:
+        return cast(list[str], self._json(self._http.get(f"/tasks/{task_id}/artifacts")))
+
     def put_artifact(self, task_id: str, name: str, content: bytes) -> None:
         self._http.put(f"/tasks/{task_id}/artifacts/{name}", content=content).raise_for_status()
 

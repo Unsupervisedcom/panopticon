@@ -21,13 +21,12 @@ import uvicorn
 from fastapi import FastAPI
 
 from panopticon.taskservice.api import create_app
-from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
+from panopticon.taskservice.artifacts_fs import DEFAULT_ARTIFACTS, FilesystemArtifactStore
 from panopticon.taskservice.service import TaskService
 from panopticon.taskservice.store_sqlalchemy import SqlAlchemyStore
 from panopticon.workflows.discovery import discover_workflows
 
 DEFAULT_DB = "sqlite:///panopticon.db"
-DEFAULT_ARTIFACTS = "./artifacts"
 
 
 def build_app(

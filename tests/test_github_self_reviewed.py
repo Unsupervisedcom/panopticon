@@ -59,6 +59,9 @@ def test_responsibilities_drop_the_peer_review_obligation() -> None:
     # Same per-stage DoD as github-peer-reviewed, minus the REVIEW state's `pr-reviewed`
     # (there is no peer — the user self-reviews, which is the advance, not a responsibility).
     assert {r.key for r in WF.responsibilities("PLANNING")} == {"plan-written"}
+    # the plan is a markdown artifact (`plan.md`), shared with github-peer-reviewed via PLAN_WRITTEN
+    (plan_written,) = WF.responsibilities("PLANNING")
+    assert "plan.md" in plan_written.description and "markdown" in plan_written.description
     assert {r.key for r in WF.responsibilities("ITERATING")} == {
         "plan-implemented", "requests-implemented", "tests-pass",
         "committed-pushed", "ci-passing", "pr-updated",

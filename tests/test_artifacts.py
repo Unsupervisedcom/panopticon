@@ -24,6 +24,16 @@ def test_get_missing_returns_none(tmp_path: Path) -> None:
     assert store.list("t1") == []
 
 
+def test_path_returns_on_disk_path_or_none(tmp_path: Path) -> None:
+    # path() is what co-located readers (the dashboard's open-in-place) use; it owns the layout.
+    store = FilesystemArtifactStore(tmp_path)
+    assert store.path("t1", "plan.md") is None  # absent
+    store.put("t1", "plan.md", b"# Plan\n")
+    path = store.path("t1", "plan.md")
+    assert path == tmp_path / "tasks" / "t1" / "plan.md"
+    assert path is not None and path.read_bytes() == b"# Plan\n"  # the real file, openable in place
+
+
 def test_put_overwrites(tmp_path: Path) -> None:
     store = FilesystemArtifactStore(tmp_path)
     store.put("t1", "plan.md", b"v1")

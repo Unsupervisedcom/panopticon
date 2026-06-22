@@ -10,6 +10,10 @@ from pathlib import Path
 
 from panopticon.core.artifacts import ArtifactStore, validate_segment
 
+#: Default artifact-store root. Shared so the task service and any co-located reader (e.g. the
+#: dashboard's open-in-place) resolve the same location from one source rather than copied literals.
+DEFAULT_ARTIFACTS = "./artifacts"
+
 
 class FilesystemArtifactStore(ArtifactStore):
     """Store artifacts as plain files under a root directory."""
@@ -20,6 +24,14 @@ class FilesystemArtifactStore(ArtifactStore):
     def _task_dir(self, task_id: str) -> Path:
         validate_segment(task_id)
         return self._root / "tasks" / task_id
+
+    def path(self, task_id: str, name: str) -> Path | None:
+        """The artifact's on-disk path, or ``None`` when it doesn't exist. For local callers that
+        share this store's filesystem and want the real file (e.g. the dashboard's open-in-place),
+        so the ``<root>/tasks/<id>/<name>`` layout stays owned here rather than re-derived."""
+        validate_segment(name)
+        path = self._task_dir(task_id) / name
+        return path if path.is_file() else None
 
     def put(self, task_id: str, name: str, content: bytes) -> None:
         validate_segment(name)

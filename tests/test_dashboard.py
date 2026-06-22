@@ -5,6 +5,7 @@ real HTTP client is covered in test_terminal.py."""
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from textual.widgets import DataTable, Input, Static
@@ -47,6 +48,8 @@ class _FakeClient:
         repos: list[str] | list[dict[str, Any]] | None = None,
         workflows: list[str] | None = None,
         operations: dict[str, str] | None = None,
+        artifacts: dict[str, list[str]] | None = None,
+        artifact_content: bytes = b"",
     ) -> None:
         self._tasks = tasks
         self._registrations = registrations or {}
@@ -57,17 +60,27 @@ class _FakeClient:
         ]
         self._workflows = workflows or []
         self._operations = operations or {}
+        self._artifacts = artifacts or {}
+        self._artifact_content = artifact_content
         self.created: list[tuple[str, str, str | None]] = []
         self.applied: list[tuple[str, str]] = []
         self.released: list[str] = []
         self.created_repos: list[dict[str, Any]] = []
         self.updated_repos: list[tuple[str, dict[str, Any]]] = []
+        self.fetched: list[tuple[str, str]] = []  # (task_id, name) passed to get_artifact
 
     def list_tasks(self) -> list[dict[str, Any]]:
         return self._tasks
 
     def list_registrations(self, task_id: str) -> list[dict[str, Any]]:
         return self._registrations.get(task_id, [])
+
+    def list_artifacts(self, task_id: str) -> list[str]:
+        return self._artifacts.get(task_id, [])
+
+    def get_artifact(self, task_id: str, name: str) -> bytes:
+        self.fetched.append((task_id, name))
+        return self._artifact_content
 
     def list_repos(self) -> list[dict[str, Any]]:
         return self._repos
@@ -575,3 +588,129 @@ async def test_repos_screen_edits_a_repo_via_patch() -> None:
             ("r1", {"name": "new", "git_url": "https://x/r1.git", "default_base": "main",
                     "env_file": None, "creds_volume": None})
         ]
+
+
+def _record_popen(monkeypatch: Any) -> list[list[str]]:
+    """Capture `subprocess.Popen` argv (the host-open call) without launching anything."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(dashboard.subprocess, "Popen", lambda argv, *a, **k: calls.append(list(argv)))
+    return calls
+
+
+def test_open_command_is_xdg_open_on_linux_and_open_on_mac(monkeypatch: Any) -> None:
+    monkeypatch.setattr(dashboard.sys, "platform", "linux")
+    assert dashboard._open_command() == "xdg-open"
+    monkeypatch.setattr(dashboard.sys, "platform", "darwin")
+    assert dashboard._open_command() == "open"
+
+
+async def test_pressing_a_opens_the_selected_artifact_via_rest(monkeypatch: Any) -> None:
+    # `a` lists the task's artifacts; Enter fetches the selection over REST to a temp file and
+    # opens it with the host handler — the universal path (works even remote from the store).
+    calls = _record_popen(monkeypatch)
+    fake = _FakeClient(
+        [_TASK], artifacts={_TASK["id"]: ["plan.md", "notes.md"]}, artifact_content=b"# Plan\n"
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")  # open the artifacts modal
+        await pilot.pause()
+        await pilot.press("enter")  # select the first artifact → REST open
+        await pilot.pause()
+        assert fake.fetched == [(_TASK["id"], "plan.md")]
+        assert len(calls) == 1
+        opener, path = calls[0]
+        assert opener == dashboard._open_command()
+        assert Path(path).name == "plan.md"  # basename (extension) preserved for the handler
+        assert Path(path).read_bytes() == b"# Plan\n"
+
+
+async def test_rest_open_reuses_one_scratch_dir_and_cleans_it_up(monkeypatch: Any) -> None:
+    # Opening several artifacts reuses a single temp dir (no per-open leak), removed on exit.
+    calls = _record_popen(monkeypatch)
+    fake = _FakeClient(
+        [_TASK], artifacts={_TASK["id"]: ["plan.md", "notes.md"]}, artifact_content=b"x"
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        for _ in range(2):  # open two different artifacts
+            await pilot.press("a")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+        roots = {str(Path(path).parent.parent) for _, path in calls}
+        assert len(roots) == 1  # both opens landed under the same scratch root
+        scratch = next(iter(roots))
+        assert app._artifact_tmp is not None and Path(scratch).is_dir()
+    assert not Path(scratch).exists()  # cleaned up on unmount
+
+
+async def test_pressing_e_opens_a_locally_present_artifact_in_place(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # `e` opens the on-disk artifact directly (no temp copy, no REST) when the dashboard shares
+    # the store's filesystem — resolved through FilesystemArtifactStore, which owns the layout.
+    calls = _record_popen(monkeypatch)
+    art = tmp_path / "tasks" / str(_TASK["id"]) / "plan.md"
+    art.parent.mkdir(parents=True)
+    art.write_text("# Local\n")
+    fake = _FakeClient([_TASK], artifacts={_TASK["id"]: ["plan.md"]}, artifact_content=b"REST")
+    app = Dashboard(fake, artifacts_root=tmp_path)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        assert calls == [[dashboard._open_command(), str(art)]]  # the real file, in place
+        assert fake.fetched == []  # no REST fetch — opened the local file
+
+
+async def test_e_warns_when_the_artifact_is_not_local(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # No co-located file → warn and do nothing (no silent REST fallback).
+    calls = _record_popen(monkeypatch)
+    fake = _FakeClient([_TASK], artifacts={_TASK["id"]: ["plan.md"]})
+    app = Dashboard(fake, artifacts_root=tmp_path)  # empty root  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        assert calls == []  # nothing opened
+        assert fake.fetched == []  # and no REST fallback
+
+
+async def test_missing_opener_binary_is_handled_not_crashed(monkeypatch: Any) -> None:
+    # On a headless host without `xdg-open`, Popen raises FileNotFoundError; the dashboard must
+    # notify and stay up rather than let it escape the screen callback and kill the TUI.
+    def _raise(argv: Any, *a: Any, **k: Any) -> None:
+        raise FileNotFoundError(argv[0])
+
+    monkeypatch.setattr(dashboard.subprocess, "Popen", _raise)
+    fake = _FakeClient([_TASK], artifacts={_TASK["id"]: ["plan.md"]}, artifact_content=b"x")
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("enter")  # REST open → Popen raises FileNotFoundError
+        await pilot.pause()
+        assert app.is_running  # handled, TUI survived
+
+
+async def test_pressing_a_with_no_artifacts_warns_and_opens_no_modal(monkeypatch: Any) -> None:
+    calls = _record_popen(monkeypatch)
+    fake = _FakeClient([_TASK], artifacts={})  # task has no artifacts
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        assert calls == []
+        assert len(app.screen_stack) == 1  # the modal was not pushed
+        assert app.is_running
