@@ -47,7 +47,7 @@ are suggestions, not decisions.
 | Capability       | What it does                                                               | K/C/D | Hint                 |
 | ---------------- | -------------------------------------------------------------------------- | ----- | -------------------- |
 | `/advance`       | Progress to next stage; evaluate Definition-of-Done; confirm               | K     | Workflow-driven (M1) |
-| `/iterate`       | Return to coding from REVIEW/MERGING                                       | C     | Workflow-driven (M1) |
+| `/iterate`       | Return to coding from REVIEW/MERGING                                       | C     | Free move (`set_state ITERATING`), not a command |
 | `/drop`          | Abandon a non-terminal task                                                | K     |                      |
 | `/babysit-ci`    | Autonomous CI watch/fix loop (retry≤3, 2h budget, conflict handling)       | C     |                      |
 | `/babysit-merge` | Autonomous merge-queue shepherding (auto-squash, requeue, revert on block) | C     |                      |
