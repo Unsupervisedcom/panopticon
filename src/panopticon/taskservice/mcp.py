@@ -17,7 +17,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from panopticon.core.artifacts import mcp_uri
 from panopticon.core.models import Actor, Status
-from panopticon.taskservice.api import TaskOut
+from panopticon.taskservice.api import RepoOut, TaskOut
 from panopticon.taskservice.service import TaskService
 
 #: The artifact resource URI template (the shared id→URI resolver, ADR 0003).
@@ -27,6 +27,11 @@ ARTIFACT_URI = "panopticon://tasks/{task_id}/artifacts/{name}"
 def _task(task: object) -> dict[str, Any]:
     """Serialize a Task the same way the REST API does, so both surfaces agree."""
     return TaskOut.model_validate(task).model_dump(mode="json")
+
+
+def _repo(repo: object) -> dict[str, Any]:
+    """Serialize a Repo the same way the REST API does, so both surfaces agree."""
+    return RepoOut.model_validate(repo).model_dump(mode="json")
 
 
 def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastMCP:
@@ -71,6 +76,33 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
     @mcp.tool(description="Set or clear the deliberate 'blocked' marker (survives turn flips).")
     def set_blocked(task_id: str, blocked: bool) -> dict[str, Any]:
         return _task(service.set_blocked(task_id, blocked))
+
+    # -- orchestration (gated to workflows whose `orchestrates` is set) -----------------------
+    # These widen an agent beyond its own task — creating tasks and discovering repos/workflows —
+    # so each takes the acting orchestrator task's id and the service authorizes it against that
+    # task's workflow. The per-task tools above already accept any task_id, so seeding a child
+    # (set_slug/put_artifact/resolve_responsibility/set_turn) needs nothing new.
+
+    @mcp.tool(
+        description=(
+            "Create a new task on behalf of an orchestrator task (gated to orchestration "
+            "workflows). Pass your own task id as orchestrator_task_id. Returns the new task."
+        )
+    )
+    def create_task(
+        orchestrator_task_id: str, repo_id: str, workflow: str, description: str | None = None
+    ) -> dict[str, Any]:
+        return _task(
+            service.create_task_as(orchestrator_task_id, repo_id, workflow, description=description)
+        )
+
+    @mcp.tool(description="List repos (gated to orchestration workflows); pass your own task id as orchestrator_task_id.")
+    def list_repos(orchestrator_task_id: str) -> list[dict[str, Any]]:
+        return [_repo(r) for r in service.list_repos_as(orchestrator_task_id)]
+
+    @mcp.tool(description="List workflow names (gated to orchestration workflows); pass your own task id as orchestrator_task_id.")
+    def list_workflows(orchestrator_task_id: str) -> list[str]:
+        return service.workflow_names_as(orchestrator_task_id)
 
     @mcp.tool(description="Write (create or overwrite) a task artifact, e.g. the plan. Returns its URI.")
     def put_artifact(task_id: str, name: str, content: str) -> str:
