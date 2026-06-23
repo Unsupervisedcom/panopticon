@@ -16,8 +16,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any
 
-from panopticon.core.artifacts import PLAN_ARTIFACT_NAME, ArtifactStore, plan_uri
-from panopticon.core.briefing import render_state_briefing, render_workflow_overview
+from panopticon.core.artifacts import ArtifactStore
 from panopticon.core.models import Actor, Repo, Skill, Status, Task
 from panopticon.core.provisioning import PROVISION_SKILL
 from panopticon.core.store import NotFound, Store
@@ -208,15 +207,12 @@ class TaskService:
         """A short briefing on the task's current phase (state + responsibilities + how it advances),
         rendered from the workflow so the in-container agent knows *where it is* (the hook emits it)."""
         task = self.get_task(task_id)
-        # Surface the plan's canonical URI in the briefing once the plan artifact exists, so the
-        # agent reads it back at the right URI instead of guessing (ADR 0003's shared resolver).
-        uri = plan_uri(task_id) if PLAN_ARTIFACT_NAME in self._artifacts.list(task_id) else None
-        return render_state_briefing(self._workflow(task.workflow), task, plan_uri=uri)
+        return self._workflow(task.workflow).briefing(task, artifacts=self._artifacts)
 
     def workflow_overview(self, task_id: str) -> str:
         """A one-time map of the task's whole workflow (the agent gets this in its system prompt)."""
         task = self.get_task(task_id)
-        return render_workflow_overview(self._workflow(task.workflow))
+        return self._workflow(task.workflow).overview()
 
     def apply_operation(self, task_id: str, operation: str, *, note: str | None = None) -> Task:
         """Apply a named core operation (advance/drop) — a gated move along the declared graph."""

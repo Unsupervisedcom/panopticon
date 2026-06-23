@@ -8,10 +8,13 @@ inability to skip straight to merging, the inherited forge plumbing, and the uni
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from panopticon.core import Actor, IllegalTransition, ResponsibilitiesNotMet
 from panopticon.core.models import Status, Task
+from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 from panopticon.workflows import GithubSelfReviewed
 
 WF = GithubSelfReviewed()
@@ -73,6 +76,20 @@ def test_github_self_reviewed_inherits_the_forge_skills() -> None:
     skills = WF.skills()
     assert {s.name for s in skills} == {"open-pr", "babysit-ci", "babysit-merge"}
     assert all(s.description and s.instructions for s in skills)  # functional specs, not stubs
+
+
+def test_briefing_surfaces_the_plan_uri_once_the_plan_artifact_exists(tmp_path: Path) -> None:
+    # The forge `_briefing_extras` hook points the agent at the plan's canonical MCP URI — but only
+    # once `plan.md` is written, so a still-to-plan PLANNING turn doesn't dangle a missing file.
+    artifacts = FilesystemArtifactStore(tmp_path)
+    task = WF.start_task("t1", "r1", at="t0")
+
+    assert "panopticon://" not in WF.briefing(task, artifacts=artifacts)  # no plan yet → no URI
+
+    artifacts.put(task.id, "plan.md", b"# Plan")
+    text = WF.briefing(task, artifacts=artifacts)
+    assert "panopticon://tasks/t1/artifacts/plan.md" in text  # the exact URI to read it back at
+    assert "don't guess" in text
 
 
 def test_github_self_reviewed_image_layer_installs_gh() -> None:

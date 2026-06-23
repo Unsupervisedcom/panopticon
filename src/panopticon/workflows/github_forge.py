@@ -17,8 +17,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from panopticon.core.artifacts import PLAN_ARTIFACT_NAME
-from panopticon.core.models import Responsibility, Skill, Tool
+from panopticon.core.artifacts import PLAN_ARTIFACT_NAME, ArtifactStore, plan_uri
+from panopticon.core.models import Responsibility, Skill, Task, Tool
 from panopticon.core.workflow import Workflow
 
 #: The shared PLANNING responsibility for the forge workflows. Both lifecycles produce a plan,
@@ -55,6 +55,18 @@ class GithubForgeWorkflow(Workflow):
     def image_layer(self) -> str:
         """The forge skills shell out to `gh`, so layer it onto the base image (ADR 0005)."""
         return "RUN apt-get update && apt-get install --yes --no-install-recommends gh"
+
+    def _briefing_extras(self, task: Task, *, artifacts: ArtifactStore) -> Sequence[str]:
+        """Once the plan artifact exists, surface its canonical MCP URI in the per-turn briefing so
+        the agent reads the plan back at the right URI instead of guessing (e.g. an orchestrator-
+        spawned agent handed a pre-written plan — ``artifact://<id>/plan.md`` → "Unknown resource").
+        Gated on existence so a still-to-be-planned PLANNING turn doesn't point at a missing file."""
+        if PLAN_ARTIFACT_NAME not in artifacts.list(task.id):
+            return ()
+        return [
+            f"This task's plan is the `{PLAN_ARTIFACT_NAME}` artifact — read it at this exact MCP "
+            f"resource URI: `{plan_uri(task.id)}` (don't guess the URI)."
+        ]
 
     def skills(self) -> Sequence[Skill]:
         """The forge skills (ADR 0004 — remote VCS is workflow-specific). The agent runs these

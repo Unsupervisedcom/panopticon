@@ -147,6 +147,10 @@ def test_render_detail_shows_state_turn_and_history() -> None:
     assert "tests-pass=pending" in text
 
 
+def test_render_detail_shows_the_id() -> None:
+    assert "id: task-abcdef0123" in render_detail(_TASK)
+
+
 def test_render_detail_shows_the_description() -> None:
     assert "make the widget green" not in render_detail(_TASK)
     text = render_detail({**_TASK, "description": "make the widget green"})

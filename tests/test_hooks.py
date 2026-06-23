@@ -14,8 +14,19 @@ from panopticon.container.hooks import settings, write_settings
 
 def test_settings_wire_stop_to_user_and_prompt_to_agent() -> None:
     s = settings()
-    assert s["hooks"]["Stop"][0]["hooks"][0]["command"].endswith("hook user")
-    assert s["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"].endswith("hook agent")
+    assert s["hooks"]["Stop"][0]["hooks"][0]["command"].endswith("hook user stop")
+    assert s["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"].endswith("hook agent prompt")
+
+
+def test_settings_flip_to_user_while_asking_a_question_and_back_when_answered() -> None:
+    # AskUserQuestion is a mid-turn tool call (never fires Stop), so PreToolUse/PostToolUse matched
+    # to it carry the turn: user while the question is pending, agent once it's answered.
+    s = settings()
+    pre = s["hooks"]["PreToolUse"][0]
+    post = s["hooks"]["PostToolUse"][0]
+    assert pre["matcher"] == "AskUserQuestion" and post["matcher"] == "AskUserQuestion"
+    assert pre["hooks"][0]["command"].endswith("hook user")  # no event arg → pure turn flip
+    assert post["hooks"][0]["command"].endswith("hook agent")
 
 
 def test_settings_pre_accept_bypass_permissions_mode() -> None:
@@ -73,8 +84,24 @@ def test_hook_flips_the_turn(monkeypatch: pytest.MonkeyPatch) -> None:
     assert client.calls == [("t1", "user"), ("t1", "agent")]
 
 
+def test_bare_flip_is_a_pure_turn_change_with_no_side_effects(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The AskUserQuestion hooks pass no event arg: they only flip the turn — no briefing/nudge to
+    # the agent's context (unslugged, which would otherwise nudge), no token report (stdin ignored).
+    monkeypatch.setenv("PANOPTICON_SERVICE_URL", "http://svc")
+    monkeypatch.setenv("PANOPTICON_TASK_ID", "t1")
+    client = _FakeClient(slug=None)
+    assert hook.main(["agent"], client=client) == 0  # type: ignore[arg-type]
+    assert hook.main(["user"], client=client, stdin=io.StringIO('{"transcript_path": "x"}')) == 0  # type: ignore[arg-type]
+    assert client.calls == [("t1", "agent"), ("t1", "user")]  # turns flipped
+    assert capsys.readouterr().out == "" and client.tokens == []  # nothing else happened
+
+
 def test_hook_rejects_unknown_event() -> None:
     assert hook.main(["nonsense"], client=_FakeClient()) == 2  # type: ignore[arg-type]
+    assert hook.main(["user", "bogus"], client=_FakeClient()) == 2  # bad event arg  # type: ignore[arg-type]
+    assert hook.main(["user", "prompt", "extra"], client=_FakeClient()) == 2  # too many args  # type: ignore[arg-type]
 
 
 def test_user_turn_briefs_the_phase_and_nudges_provision_while_unslugged(
@@ -82,7 +109,7 @@ def test_user_turn_briefs_the_phase_and_nudges_provision_while_unslugged(
 ) -> None:
     monkeypatch.setenv("PANOPTICON_SERVICE_URL", "http://svc")
     monkeypatch.setenv("PANOPTICON_TASK_ID", "t1")
-    assert hook.main(["agent"], client=_FakeClient(slug=None)) == 0  # type: ignore[arg-type]
+    assert hook.main(["agent", "prompt"], client=_FakeClient(slug=None)) == 0  # type: ignore[arg-type]
     out = capsys.readouterr().out
     assert "PHASE BRIEFING" in out  # the current-phase briefing reaches the agent's context
     assert "provision" in out  # and, unslugged, the provisioning nudge
@@ -93,7 +120,7 @@ def test_briefing_prints_but_no_nudge_once_slugged(
 ) -> None:
     monkeypatch.setenv("PANOPTICON_SERVICE_URL", "http://svc")
     monkeypatch.setenv("PANOPTICON_TASK_ID", "t1")
-    hook.main(["agent"], client=_FakeClient(slug="fix-widget"))  # type: ignore[arg-type]
+    hook.main(["agent", "prompt"], client=_FakeClient(slug="fix-widget"))  # type: ignore[arg-type]
     out = capsys.readouterr().out
     assert "PHASE BRIEFING" in out and "provision" not in out  # briefing always; nudge only unslugged
 
@@ -104,7 +131,7 @@ def test_stop_hook_is_silent(
     monkeypatch.setenv("PANOPTICON_SERVICE_URL", "http://svc")
     monkeypatch.setenv("PANOPTICON_TASK_ID", "t1")
     # Stop hook: flips the turn and reports tokens, but emits nothing to the agent's context.
-    hook.main(["user"], client=_FakeClient(slug=None), stdin=io.StringIO(""))
+    hook.main(["user", "stop"], client=_FakeClient(slug=None), stdin=io.StringIO(""))
     assert capsys.readouterr().out == ""
 
 
@@ -146,7 +173,7 @@ def test_stop_hook_reports_session_tokens_from_the_transcript(
     monkeypatch.setenv("PANOPTICON_TASK_ID", "t1")
     client = _FakeClient(slug="fix-widget")
     stdin = io.StringIO(json.dumps({"transcript_path": str(_transcript(tmp_path))}))
-    assert hook.main(["user"], client=client, stdin=stdin) == 0  # type: ignore[arg-type]
+    assert hook.main(["user", "stop"], client=client, stdin=stdin) == 0  # type: ignore[arg-type]
     assert client.calls == [("t1", "user")]  # turn still flipped
     assert client.tokens == [("t1", 685)]  # and the session total recorded
 
@@ -157,5 +184,5 @@ def test_stop_hook_tolerates_stdin_without_a_transcript(
     monkeypatch.setenv("PANOPTICON_SERVICE_URL", "http://svc")
     monkeypatch.setenv("PANOPTICON_TASK_ID", "t1")
     client = _FakeClient(slug="fix-widget")
-    assert hook.main(["user"], client=client, stdin=io.StringIO("{}")) == 0  # type: ignore[arg-type]
+    assert hook.main(["user", "stop"], client=client, stdin=io.StringIO("{}")) == 0  # type: ignore[arg-type]
     assert client.calls == [("t1", "user")] and client.tokens == []  # no transcript → no report

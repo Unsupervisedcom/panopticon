@@ -1,7 +1,11 @@
 """Render the claude hook settings that wire the **turn-flip contract** (Slice 4):
 
 - the agent's **Stop** hook flips the live turn to the *user* (the agent handed the ball back);
-- **UserPromptSubmit** flips it back to the *agent* (the user replied).
+- **UserPromptSubmit** flips it back to the *agent* (the user replied);
+- **PreToolUse**/**PostToolUse** matched to the ``AskUserQuestion`` tool flip to the *user* while
+  the agent is asking the user something (so the dashboard shows input is required) and back to the
+  *agent* once it's answered. ``AskUserQuestion`` is a mid-turn tool call — it never fires ``Stop``
+  — so without this the turn would wrongly read *agent* the whole time the question is pending.
 
 claude-specific (`.claude/settings.json`); M3 revisits for other CLIs. Pure — the callback the
 hooks invoke is :mod:`panopticon.container.hook`. `:blocked:` is preserved by construction: the
@@ -30,11 +34,23 @@ def settings() -> dict[str, Any]:
     so seeding it ``True`` up front pre-accepts the gate and claude goes straight to work.
     """
 
-    def run(actor: str) -> dict[str, Any]:
-        return {"hooks": [{"type": "command", "command": f"{HOOK_COMMAND} {actor}"}]}
+    def run(actor: str, event: str | None = None, *, matcher: str | None = None) -> dict[str, Any]:
+        # `actor` is the turn to set; the optional `event` selects the callback's side-effect
+        # (briefing on the prompt hook, token report on stop) — the bare question hooks pass none.
+        command = f"{HOOK_COMMAND} {actor}" + (f" {event}" if event else "")
+        entry: dict[str, Any] = {"hooks": [{"type": "command", "command": command}]}
+        if matcher is not None:  # PreToolUse/PostToolUse are tool-scoped; Stop/UserPromptSubmit aren't
+            entry["matcher"] = matcher
+        return entry
 
     return {
-        "hooks": {"Stop": [run("user")], "UserPromptSubmit": [run("agent")]},
+        "hooks": {
+            "Stop": [run("user", "stop")],
+            "UserPromptSubmit": [run("agent", "prompt")],
+            # The agent stops to ask the user → flip to user; once answered → back to agent.
+            "PreToolUse": [run("user", matcher="AskUserQuestion")],
+            "PostToolUse": [run("agent", matcher="AskUserQuestion")],
+        },
         "skipDangerousModePermissionPrompt": True,
     }
 
