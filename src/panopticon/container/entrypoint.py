@@ -29,11 +29,40 @@ from collections.abc import Callable
 
 import httpx
 
-from panopticon.client import TaskServiceClient
+from panopticon.client import JsonObj, TaskServiceClient
 
 Work = Callable[[TaskServiceClient, str], None]
 
 HEARTBEAT_INTERVAL = 5.0
+#: Boot registration is retried on a transient transport error: the task service can be momentarily
+#: unreachable when a container boots — a service restart, a network blip, or a **burst of concurrent
+#: container starts** overflowing its accept backlog. Without this the container exits(1) at boot and
+#: must be respawned ("takes multiple tries to start"). ~60s budget covers a restart window + bursts.
+REGISTER_ATTEMPTS = 60
+REGISTER_INTERVAL = 1.0
+
+
+def _register_resilient(
+    client: TaskServiceClient,
+    task_id: str,
+    *,
+    container_id: str,
+    runner_id: str | None,
+    attempts: int,
+    interval: float,
+    sleep: Callable[[float], None],
+) -> JsonObj:
+    """Register, retrying on a transient transport error (connection refused, timeout) until the
+    service answers or the attempt budget is spent. A non-transport error (e.g. a 4xx) propagates
+    immediately — only the *unreachable service* case is worth retrying."""
+    last: httpx.TransportError | None = None
+    for _ in range(max(1, attempts)):
+        try:
+            return client.register(task_id, container_id=container_id, runner_id=runner_id)
+        except httpx.TransportError as exc:
+            last = exc
+            sleep(interval)
+    raise last if last is not None else RuntimeError("register: no attempts made")
 
 
 def _set_slug_if_unset(client: TaskServiceClient, task_id: str, proposed_slug: str | None) -> None:
@@ -71,22 +100,36 @@ def serve(
     proposed_slug: str | None = None,
     running: Callable[[], bool],
     heartbeat_interval: float = HEARTBEAT_INTERVAL,
+    register_attempts: int = REGISTER_ATTEMPTS,
+    register_interval: float = REGISTER_INTERVAL,
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
     """Long-lived form: register → slug → heartbeat while ``running()`` → deregister.
 
     ``running`` lets a caller decide when to stop (a signal flag in production; a counter in
-    tests). On a clean stop the container deregisters; on ``SIGKILL`` (e.g. ``docker rm -f``)
-    the process dies without deregistering — which is how lost liveness surfaces.
+    tests). Registration is retried on a momentarily-unreachable service (see
+    :func:`_register_resilient`) so a transient blip at boot doesn't kill the container; a transient
+    heartbeat failure mid-life is likewise tolerated (a sustained gap is what the service's liveness
+    TTL reaps). On a clean stop the container deregisters; on ``SIGKILL`` (e.g. ``docker rm -f``) the
+    process dies without deregistering — which is how lost liveness surfaces.
     """
-    registration = client.register(task_id, container_id=container_id, runner_id=runner_id)
+    registration = _register_resilient(
+        client, task_id, container_id=container_id, runner_id=runner_id,
+        attempts=register_attempts, interval=register_interval, sleep=sleep,
+    )
     try:
         _set_slug_if_unset(client, task_id, proposed_slug)
         while running():
-            client.heartbeat(registration["id"])
+            try:
+                client.heartbeat(registration["id"])
+            except httpx.TransportError:
+                pass  # a transient blip shouldn't kill a live container; the TTL reaps a real death
             sleep(heartbeat_interval)
     finally:
-        client.deregister(registration["id"])
+        try:
+            client.deregister(registration["id"])
+        except httpx.HTTPError:
+            pass  # best-effort on shutdown — if the service is unreachable, the TTL reaps it
 
 
 def _until_signalled() -> Callable[[], bool]:
@@ -123,5 +166,7 @@ def main(
         proposed_slug=env.get("PANOPTICON_PROPOSED_SLUG"),
         running=running if running is not None else _until_signalled(),
         heartbeat_interval=float(env.get("PANOPTICON_HEARTBEAT_INTERVAL", HEARTBEAT_INTERVAL)),
+        register_attempts=int(env.get("PANOPTICON_REGISTER_ATTEMPTS", REGISTER_ATTEMPTS)),
+        register_interval=float(env.get("PANOPTICON_REGISTER_INTERVAL", REGISTER_INTERVAL)),
         sleep=sleep,
     )
