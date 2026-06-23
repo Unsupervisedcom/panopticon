@@ -233,6 +233,14 @@ class TaskService:
         self._store.save_task(task)
         return task
 
+    def set_tokens_used(self, task_id: str, tokens_used: int) -> Task:
+        """Record the cumulative tokens the container's claude has used (its Stop hook reports the
+        recomputed session total). A plain recorded fact, like the slug — no transition, no git."""
+        task = self.get_task(task_id)
+        task.tokens_used = tokens_used
+        self._store.save_task(task)
+        return task
+
     def set_turn(self, task_id: str, turn: Actor) -> Task:
         """Flip who holds the turn within a state (the in-container hooks' callback).
 

@@ -102,6 +102,7 @@ class _TaskRow(_Base):
     branch: Mapped[str | None] = mapped_column(default=None)
     clone: Mapped[str | None] = mapped_column(default=None)
     claimed_by: Mapped[str | None] = mapped_column(default=None)
+    tokens_used: Mapped[int | None] = mapped_column(default=None)
     history: Mapped[list[_HistoryRow]] = relationship(
         order_by="_HistoryRow.seq",
         cascade="all, delete-orphan",
@@ -123,6 +124,7 @@ class _TaskRow(_Base):
             branch=self.branch,
             clone=self.clone,
             claimed_by=self.claimed_by,
+            tokens_used=self.tokens_used,
             history=[h.to_domain() for h in self.history],
         )
 
@@ -141,6 +143,7 @@ class _TaskRow(_Base):
             branch=task.branch,
             clone=task.clone,
             claimed_by=task.claimed_by,
+            tokens_used=task.tokens_used,
             history=[_HistoryRow.from_domain(e, seq) for seq, e in enumerate(task.history)],
         )
 
@@ -319,6 +322,7 @@ class SqlAlchemyStore(Store):
             row.branch = task.branch
             row.clone = task.clone
             row.claimed_by = task.claimed_by
+            row.tokens_used = task.tokens_used
             # The current (last stored) entry's promises may have been fulfilled in place.
             if stored:
                 _fulfil_current_promises(row.history[len(stored) - 1], task.history[len(stored) - 1])

@@ -69,3 +69,14 @@ async def test_set_url_via_tool(tmp_path: Path) -> None:
         assert result.structuredContent is not None
         assert result.structuredContent["url"] == url
     assert svc.get_task(task.id).url == url  # the tool actually mutated the task
+
+
+async def test_set_tokens_used_via_tool(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    task = svc.create_task("r1", "spike")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        result = await s.call_tool("set_tokens_used", {"task_id": task.id, "tokens_used": 5000})
+        assert result.structuredContent is not None
+        assert result.structuredContent["tokens_used"] == 5000
+    assert svc.get_task(task.id).tokens_used == 5000  # the tool actually mutated the task
