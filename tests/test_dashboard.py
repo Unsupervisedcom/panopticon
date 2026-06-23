@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
 from textual.widgets import DataTable, Input, Static
 
 from panopticon.terminal import dashboard
@@ -541,6 +542,23 @@ async def test_respawn_refuses_a_live_task() -> None:
 # -- repo config screen (`g`) -------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "url, expected",
+    [
+        ("https://github.com/acme/widgets.git", "widgets"),
+        ("git@github.com:acme/widgets.git", "widgets"),
+        ("https://github.com/acme/widgets", "widgets"),  # no .git suffix
+        ("https://github.com/acme/widgets/", "widgets"),  # trailing slash
+        ("ssh://git@host:22/acme/widgets.git", "widgets"),
+        ("", ""),  # empty
+        ("widgets", ""),  # bare token, no path → unparseable
+        ("   ", ""),  # whitespace only
+    ],
+)
+def test_repo_name_from_git_url(url: str, expected: str) -> None:
+    assert dashboard._repo_name_from_git_url(url) == expected
+
+
 async def test_pressing_g_opens_the_repos_screen_listing_repos() -> None:
     fake = _FakeClient([], repos=[{"id": "r1", "name": "acme/widgets", "git_url": "https://x/r1.git",
                                    "default_base": "main"}])
@@ -554,7 +572,7 @@ async def test_pressing_g_opens_the_repos_screen_listing_repos() -> None:
         assert table.row_count == 1
 
 
-async def test_repos_screen_creates_a_repo() -> None:
+async def test_repos_screen_creates_a_repo_autofilling_from_the_git_url() -> None:
     fake = _FakeClient([], repos=[])
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
@@ -563,15 +581,85 @@ async def test_repos_screen_creates_a_repo() -> None:
         await pilot.pause()
         await pilot.press("n")  # open the create form
         await pilot.pause()
-        app.screen.query_one("#field-id", Input).value = "r9"
-        app.screen.query_one("#field-name", Input).value = "acme/new"
-        app.screen.query_one("#field-git_url", Input).value = "https://x/r9.git"
+        # Only the git URL is typed; id, name and creds_volume auto-fill from it, default_base
+        # defaults to main.
+        app.screen.query_one("#field-git_url", Input).value = "git@github.com:acme/widgets.git"
         await pilot.press("enter")  # submit the form
         await pilot.pause()
         assert fake.created_repos == [
-            {"id": "r9", "name": "acme/new", "git_url": "https://x/r9.git",
-             "default_base": "main", "env_file": None, "creds_volume": None}
+            {"id": "widgets", "name": "widgets", "git_url": "git@github.com:acme/widgets.git",
+             "default_base": "main", "env_file": None, "creds_volume": "widgets-creds"}
         ]
+
+
+async def test_repo_form_autofill_only_fills_blank_fields() -> None:
+    fake = _FakeClient([], repos=[])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        app.screen.query_one("#field-git_url", Input).value = "https://x/widgets.git"
+        app.screen.query_one("#field-id", Input).value = "r9"  # pre-typed → kept
+        app.screen.query_one("#field-name", Input).value = "acme/new"  # pre-typed → kept
+        await pilot.press("enter")
+        await pilot.pause()
+        # id/name keep the user's values; only the blank creds_volume is derived.
+        assert fake.created_repos == [
+            {"id": "r9", "name": "acme/new", "git_url": "https://x/widgets.git",
+             "default_base": "main", "env_file": None, "creds_volume": "widgets-creds"}
+        ]
+
+
+async def test_repo_form_git_url_leads_and_default_base_prefills_main() -> None:
+    fake = _FakeClient([], repos=[])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        # git_url is the first Input on the form; default_base is pre-filled with main.
+        inputs = [w.id for w in app.screen.query(Input)]
+        assert inputs[0] == "field-git_url"
+        assert inputs.index("field-git_url") < inputs.index("field-id") < inputs.index("field-name")
+        assert app.screen.query_one("#field-default_base", Input).value == "main"
+
+
+async def test_repo_form_autofills_on_git_url_blur() -> None:
+    fake = _FakeClient([], repos=[])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        app.screen.query_one("#field-git_url", Input).value = "https://x/widgets.git"
+        app.screen.query_one("#field-name", Input).focus()  # blur git_url
+        await pilot.pause()
+        assert app.screen.query_one("#field-name", Input).value == "widgets"
+        assert app.screen.query_one("#field-creds_volume", Input).value == "widgets-creds"
+
+
+async def test_repo_form_edit_mode_does_not_autofill_blank_fields() -> None:
+    fake = _FakeClient([], repos=[{"id": "r1", "name": "", "git_url": "https://x/widgets.git",
+                                   "default_base": "main"}])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")  # edit
+        await pilot.pause()
+        # Editing an existing repo never derives values: blanks stay blank even on blur.
+        app.screen.query_one("#field-creds_volume", Input).focus()  # blur git_url
+        await pilot.pause()
+        assert app.screen.query_one("#field-name", Input).value == ""
+        assert app.screen.query_one("#field-creds_volume", Input).value == ""
 
 
 async def test_repos_screen_create_requires_id_name_and_git_url() -> None:
@@ -604,6 +692,7 @@ async def test_repos_screen_edits_a_repo_via_patch() -> None:
         await pilot.press("enter")
         await pilot.pause()
         # Only the core fields are sent; image_layer/capabilities are never touched (PATCH).
+        # Edit mode never auto-fills, so the blank creds_volume stays blank.
         assert fake.updated_repos == [
             ("r1", {"name": "new", "git_url": "https://x/r1.git", "default_base": "main",
                     "env_file": None, "creds_volume": None})

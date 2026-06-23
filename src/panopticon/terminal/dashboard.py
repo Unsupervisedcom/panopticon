@@ -37,6 +37,7 @@ to Textual workers is a refinement (docs/BACKLOG.md).
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import tempfile
@@ -48,6 +49,7 @@ from typing import Any, TypeVar
 
 import httpx
 from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -246,9 +248,29 @@ class InputScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+def _repo_name_from_git_url(url: str) -> str:
+    """The repository name from a git URL, for auto-filling the repo form.
+
+    Handles HTTPS (``https://host/owner/repo.git``) and scp-style SSH
+    (``git@host:owner/repo.git``): the last ``/``- or ``:``-delimited segment with any
+    ``.git`` suffix and trailing slash stripped. Returns ``""`` when there's nothing
+    parseable (empty, or a bare token with no path), so callers can no-op."""
+    url = url.strip().rstrip("/")
+    if not url or ("/" not in url and ":" not in url):
+        return ""
+    tail = re.split(r"[/:]", url)[-1]
+    return tail[:-len(".git")] if tail.endswith(".git") else tail
+
+
 class RepoFormScreen(ModalScreen["dict[str, str] | None"]):
     """A modal form for a repo's core fields. Submits a ``{field: value}`` dict on save (Enter
     or Ctrl+S), or ``None`` on cancel (Escape).
+
+    The **git URL leads** the form. In **create mode** the still-blank ``id``, ``name`` and
+    ``creds_volume`` (a ``<repo>-creds`` convention) auto-fill from it when the URL field loses
+    focus and again at submit — never clobbering a value the user already typed — and
+    ``default_base`` defaults to ``main``. Edit mode applies neither: a repo's existing values
+    are left exactly as they are.
 
     Create mode (no ``repo``): every field is an editable :class:`Input`, including ``id``.
     Edit mode: ``id`` is shown read-only (the primary key can't change) and the rest are
@@ -262,7 +284,16 @@ class RepoFormScreen(ModalScreen["dict[str, str] | None"]):
     """
     BINDINGS = [("escape", "cancel", "Cancel"), ("ctrl+s", "submit", "Save")]
 
-    FIELDS = ("name", "git_url", "default_base", "env_file", "creds_volume")
+    # git_url leads (the auto-fill source); the rest follow. ``id`` is rendered between git_url
+    # and these, separately, since it's editable only in create mode.
+    FIELDS = ("git_url", "name", "default_base", "creds_volume", "env_file")
+    # Fields auto-derived from git_url → how to derive each (create mode only; see
+    # _autofill_from_git_url). id and name are the bare repo name; creds_volume a convention.
+    _DERIVED: dict[str, Callable[[str], str]] = {
+        "id": lambda repo: repo,
+        "name": lambda repo: repo,
+        "creds_volume": lambda repo: f"{repo}-creds",
+    }
 
     def __init__(self, title: str, repo: JsonObj | None = None) -> None:
         super().__init__()
@@ -270,23 +301,51 @@ class RepoFormScreen(ModalScreen["dict[str, str] | None"]):
         self._repo = repo or {}
         self._editing = repo is not None
 
+    def _initial(self, name: str) -> str:
+        """A field's pre-populated value: the repo's stored value, else (create mode only)
+        ``main`` for ``default_base``, else blank."""
+        stored = self._repo.get(name)
+        if stored:
+            return str(stored)
+        return "main" if name == "default_base" and not self._editing else ""
+
     def compose(self) -> ComposeResult:
         with Vertical(id="repo-form"):
             yield Label(self._title)
+            yield Input(value=self._initial("git_url"), placeholder="git_url", id="field-git_url")
             if self._editing:
                 yield Label(f"id: {self._repo['id']}")
             else:
                 yield Input(placeholder="id", id="field-id")
-            for name in self.FIELDS:
-                yield Input(value=str(self._repo.get(name) or ""), placeholder=name, id=f"field-{name}")
+            for name in self.FIELDS[1:]:  # git_url already rendered above
+                yield Input(value=self._initial(name), placeholder=name, id=f"field-{name}")
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
+
+    def _autofill_from_git_url(self) -> None:
+        """Fill the blank derived fields from the git URL — create mode only (editing an
+        existing repo leaves its values untouched). Only touches fields the user hasn't filled,
+        so it's safe to run repeatedly (on blur and at submit)."""
+        if self._editing:
+            return
+        repo = _repo_name_from_git_url(self.query_one("#field-git_url", Input).value)
+        if not repo:
+            return
+        for field, derive in self._DERIVED.items():
+            widget = self.query_one(f"#field-{field}", Input)
+            if not widget.value.strip():
+                widget.value = derive(repo)
+
+    def on_descendant_blur(self, event: events.DescendantBlur) -> None:
+        if event.widget.id == "field-git_url":
+            self._autofill_from_git_url()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self.action_submit()
 
     def action_submit(self) -> None:
+        self._autofill_from_git_url()  # backstop: fill blanks even if git_url never blurred
         values: dict[str, str] = {}
         if not self._editing:
             values["id"] = self.query_one("#field-id", Input).value.strip()
