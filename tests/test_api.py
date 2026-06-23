@@ -141,12 +141,23 @@ def test_list_states(client: TestClient) -> None:
     assert set(client.get(f"/tasks/{task_id}/states").json()) == {"ITERATING", "COMPLETE", "DROPPED"}
 
 
-def test_list_skills_is_just_provision_for_a_forgeless_workflow(client: TestClient) -> None:
+def test_list_skills_is_just_the_agnostic_skills_for_a_forgeless_workflow(client: TestClient) -> None:
     task_id = _new_task(client)
     resp = client.get(f"/tasks/{task_id}/skills")
     assert resp.status_code == 200
-    # spike has no forge skills, but every task gets the agnostic `provision` skill (ADR 0011).
-    assert [s["name"] for s in resp.json()] == ["provision"]
+    # spike has no forge skills, but every task gets the agnostic `provision` + `redo` skills.
+    assert [s["name"] for s in resp.json()] == ["provision", "redo"]
+
+
+def test_redo_re_enters_the_current_state(client: TestClient) -> None:
+    task_id = _new_task(client)  # spike, ITERATING
+    before = client.get(f"/tasks/{task_id}").json()
+    resp = client.post(f"/tasks/{task_id}/redo")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["state"] == before["state"]  # stays in the same state
+    assert len(body["history"]) == len(before["history"]) + 1
+    assert body["history"][-1]["trigger"] == "redo"
 
 
 def test_briefing_describes_the_current_phase(client: TestClient) -> None:

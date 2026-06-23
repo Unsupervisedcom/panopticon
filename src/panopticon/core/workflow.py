@@ -357,6 +357,27 @@ class Workflow(ABC):
         self._state_class(to_state)  # validate the target exists
         return self._enter(task, to_state, at=at, trigger=trigger, note=note)
 
+    def redo(
+        self,
+        task: Task,
+        *,
+        at: str,
+        trigger: str | None = "redo",
+        note: str | None = None,
+    ) -> Task:
+        """Re-enter the task's *current* state — a fresh entry that stays in place.
+
+        Re-seeds the state's responsibilities (all ``PENDING`` again), re-applies
+        ``turn_on_enter``, and appends a new history entry — exactly what entering the state via a
+        transition does, but to the same state. Ungated (the point is to reset the promises), so
+        it's a free move like :meth:`force_transition`, *but* refused on a terminal state
+        (re-doing a finished task is meaningless; the prior entry's resolved responsibilities stay
+        on their own record).
+        """
+        if self.is_terminal(task.state):
+            raise IllegalTransition(f"task {task.id!r} is terminal ({task.state!r}); cannot redo")
+        return self._enter(task, task.state, at=at, trigger=trigger, note=note)
+
     def _enter(self, task: Task, to_state: str, *, at: str, trigger: str | None, note: str | None) -> Task:
         """Append the entry for ``to_state`` (seeding its promises) and recompute state + turn."""
         task.history.append(

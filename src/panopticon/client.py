@@ -145,6 +145,11 @@ class TaskServiceClient:
         """Apply a named core operation (e.g. advance/drop); the workflow resolves the target."""
         return cast(JsonObj, self._json(self._http.post(f"/tasks/{task_id}/operations/{operation}")))
 
+    def redo(self, task_id: str) -> JsonObj:
+        """Re-enter the current state from scratch (free move): reset its responsibilities to
+        pending and start a fresh turn. 409 if the task is terminal."""
+        return cast(JsonObj, self._json(self._http.post(f"/tasks/{task_id}/redo")))
+
     def resolve_responsibility(
         self, task_id: str, key: str, status: Status, comment: str | None = None
     ) -> JsonObj:
