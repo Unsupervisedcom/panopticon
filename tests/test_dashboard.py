@@ -734,3 +734,57 @@ async def test_pressing_a_with_no_artifacts_warns_and_opens_no_modal(monkeypatch
         assert calls == []
         assert len(app.screen_stack) == 1  # the modal was not pushed
         assert app.is_running
+
+
+# -- help screen (`?`) --------------------------------------------------------------
+
+
+def test_footer_shows_only_the_essential_keys() -> None:
+    # The legend keeps the few most-used keys; the rest still dispatch but are hidden (show=False)
+    # behind the `?` help screen. Tuple bindings show by default; Binding(...) carries `.show`.
+    shown: set[str] = set()
+    hidden: set[str] = set()
+    for binding in Dashboard.BINDINGS:
+        if isinstance(binding, tuple):
+            shown.add(binding[0])
+        else:
+            (shown if binding.show else hidden).add(binding.key)
+    assert shown == {"t", "n", "x", "/", "question_mark", "q"}
+    assert hidden == {"r", "R", "p", "g", "a", "s", "escape"}
+
+
+async def test_pressing_question_mark_opens_the_help_screen() -> None:
+    app = Dashboard(_FakeClient([_TASK]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("question_mark")
+        await pilot.pause()
+        assert isinstance(app.screen, dashboard.HelpScreen)
+
+
+async def test_help_screen_lists_every_hotkey() -> None:
+    # The help screen is the authoritative keymap: every entry in _HOTKEYS (key + description)
+    # must render, so a future binding change can't quietly drop a key from the listing.
+    app = Dashboard(_FakeClient([_TASK]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("question_mark")
+        await pilot.pause()
+        text = str(app.screen.query_one("#help-keys", Static).render())
+        for key, description in dashboard._HOTKEYS:
+            assert description in text
+        # the non-essential keys (hidden from the footer) are reachable here
+        assert {"r", "R", "p", "g", "a", "s"} <= {key for key, _ in dashboard._HOTKEYS}
+
+
+async def test_help_screen_closes_on_escape() -> None:
+    app = Dashboard(_FakeClient([_TASK]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("question_mark")
+        await pilot.pause()
+        assert isinstance(app.screen, dashboard.HelpScreen)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert len(app.screen_stack) == 1  # dismissed — back to the task view
+        assert app.is_running
