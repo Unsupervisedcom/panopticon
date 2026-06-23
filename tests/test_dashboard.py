@@ -975,16 +975,23 @@ async def test_pressing_a_with_no_artifacts_warns_and_opens_no_modal(monkeypatch
 
 def test_footer_shows_only_the_essential_keys() -> None:
     # The legend keeps the few most-used keys; the rest still dispatch but are hidden (show=False)
-    # behind the `?` help screen. Tuple bindings show by default; Binding(...) carries `.show`.
-    shown: set[str] = set()
-    hidden: set[str] = set()
-    for binding in Dashboard.BINDINGS:
-        if isinstance(binding, tuple):
-            shown.add(binding[0])
-        else:
-            (shown if binding.show else hidden).add(binding.key)
+    # behind the `?` help screen. BINDINGS is derived from HOTKEYS, so every entry is a Binding.
+    shown = {b.key for b in Dashboard.BINDINGS if b.show}
+    hidden = {b.key for b in Dashboard.BINDINGS if not b.show}
     assert shown == {"t", "n", "x", "/", "question_mark", "q"}
     assert hidden == {"r", "R", "p", "g", "a", "s", "escape"}
+
+
+def test_bindings_and_help_derive_from_the_single_hotkey_table() -> None:
+    # The DRY invariant: the footer bindings and the help screen are *both* derived from HOTKEYS,
+    # so the keymap can't drift between them. Every binding traces back to a HOTKEYS entry, and
+    # every entry's action resolves to an action_* method on the dashboard (or Textual's built-in
+    # quit) — so a stale action name can't slip in.
+    assert [b.key for b in Dashboard.BINDINGS] == [h.key for h in dashboard.HOTKEYS]
+    shown = {h.key for h in dashboard.HOTKEYS if h.show}
+    assert {b.key for b in Dashboard.BINDINGS if b.show} == shown
+    for hotkey in dashboard.HOTKEYS:
+        assert hotkey.action == "quit" or hasattr(Dashboard, f"action_{hotkey.action}")
 
 
 async def test_pressing_question_mark_opens_the_help_screen() -> None:
@@ -997,7 +1004,7 @@ async def test_pressing_question_mark_opens_the_help_screen() -> None:
 
 
 async def test_help_screen_lists_every_hotkey() -> None:
-    # The help screen is the authoritative keymap: every entry in _HOTKEYS (key + description)
+    # The help screen is the authoritative keymap: every entry in HOTKEYS (key + description)
     # must render, so a future binding change can't quietly drop a key from the listing.
     app = Dashboard(_FakeClient([_TASK]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
@@ -1005,10 +1012,11 @@ async def test_help_screen_lists_every_hotkey() -> None:
         await pilot.press("question_mark")
         await pilot.pause()
         text = str(app.screen.query_one("#help-keys", Static).render())
-        for key, description in dashboard._HOTKEYS:
-            assert description in text
+        for hotkey in dashboard.HOTKEYS:
+            assert hotkey.description in text
+            assert (hotkey.display or hotkey.key) in text
         # the non-essential keys (hidden from the footer) are reachable here
-        assert {"r", "R", "p", "g", "a", "s"} <= {key for key, _ in dashboard._HOTKEYS}
+        assert {"r", "R", "p", "g", "a", "s"} <= {h.key for h in dashboard.HOTKEYS}
 
 
 async def test_help_screen_closes_on_escape() -> None:

@@ -9,7 +9,8 @@ over it (it's not a selectable task).
 The footer legend shows only the essential, most-used keys — `t` hands off to the task's
 container tmux, `n` creates a task (pick repo → workflow → describe the work), `x` **drops** it,
 `/` searches, `q` quits, and `?` opens the **help screen** (a modal listing every key). The rest
-still work but are hidden from the legend (the full keymap lives in ``_HOTKEYS`` / `HelpScreen`):
+still work but are hidden from the legend (both the footer bindings and `HelpScreen` derive from the
+single ``HOTKEYS`` keymap):
 `r` refreshes from the task service over REST, `R` **respawns** a down task (releases its claim so
 the host runner re-spawns it), `p` opens the task's `url` in the browser (cloude-cade's `p` "open
 PR"), `g` opens the **repo config screen** (list / create / edit repos), `s` switches to the
@@ -46,6 +47,7 @@ import sys
 import tempfile
 import webbrowser
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, TypeVar
@@ -543,23 +545,46 @@ class ArtifactScreen(_OptionListModal[tuple[str, str]]):
         self.dismiss((str(option_list.get_option_at_index(index).prompt), "local"))
 
 
-# The full keymap, single source of truth for the help screen (`?`). The footer shows only the
-# essential few (see ``Dashboard.BINDINGS``); every key — including the hidden ones — is listed
-# here, ordered most-common first, so the help screen stays the authoritative listing.
-_HOTKEYS: tuple[tuple[str, str], ...] = (
-    ("t", "Attach to the task's container tmux session"),
-    ("n", "New task (pick repo → workflow → describe)"),
-    ("x", "Drop the highlighted task"),
-    ("/", "Search tasks as you type"),
-    ("r", "Refresh from the task service now"),
-    ("R", "Respawn a down task (release its claim)"),
-    ("p", "Open the task's URL in the browser"),
-    ("g", "Repo config (list / create / edit repos)"),
-    ("a", "List the task's artifacts"),
-    ("s", "Switch to the task-service session"),
-    ("Esc", "Clear the search filter"),
-    ("?", "This help screen"),
-    ("q", "Quit"),
+# The full keymap, single source of truth for **both** the footer legend and the help screen
+# (`?`). Each ``Hotkey`` carries everything the two consumers need — the Textual key name, the
+# action, the short footer label, the long help description, whether it shows in the footer, and an
+# optional key display — so ``Dashboard.BINDINGS`` and ``HelpScreen`` are *derived* from this one
+# tuple rather than repeating it. Ordered most-common first: the footer renders the ``show=True``
+# subset (``t n x / ? q``) in this order, and the help screen lists every key in it.
+@dataclass(frozen=True)
+class Hotkey:
+    key: str  # the Textual key name ("t", "question_mark", "escape")
+    action: str  # the bound ``action_*`` method ("attach", "help", "clear_search")
+    label: str  # the short footer-legend label ("Attach")
+    description: str  # the long help-screen description
+    show: bool = True  # visible in the footer legend? (hidden keys still dispatch)
+    display: str | None = None  # key_display override ("?" for question_mark, "Esc" for escape)
+
+    def binding(self) -> Binding:
+        """The Textual ``Binding`` this hotkey contributes to ``Dashboard.BINDINGS``.
+
+        ``key_display`` is left ``None`` (Textual's default — render the key itself) unless this
+        hotkey overrides it (``?`` for ``question_mark``, ``Esc`` for ``escape``)."""
+        return Binding(self.key, self.action, self.label, show=self.show, key_display=self.display)
+
+
+HOTKEYS: tuple[Hotkey, ...] = (
+    Hotkey("t", "attach", "Attach", "Attach to the task's container tmux session"),
+    Hotkey("n", "new_task", "New task", "New task (pick repo → workflow → describe)"),
+    Hotkey("x", "drop", "Drop", "Drop the highlighted task"),
+    Hotkey("/", "search", "Search", "Search tasks as you type"),
+    Hotkey("r", "refresh", "Refresh", "Refresh from the task service now", show=False),
+    Hotkey("R", "respawn", "Respawn", "Respawn a down task (release its claim)", show=False),
+    Hotkey("p", "open_url", "Open URL", "Open the task's URL in the browser", show=False),
+    Hotkey("g", "repos", "Repos", "Repo config (list / create / edit repos)", show=False),
+    Hotkey("a", "artifacts", "Artifacts", "List the task's artifacts", show=False),
+    Hotkey("s", "service", "Service", "Switch to the task-service session", show=False),
+    Hotkey(
+        "escape", "clear_search", "Clear search", "Clear the search filter",
+        show=False, display="Esc",
+    ),
+    Hotkey("question_mark", "help", "Help", "This help screen", display="?"),
+    Hotkey("q", "quit", "Quit", "Quit"),
 )
 
 
@@ -579,7 +604,9 @@ class HelpScreen(ModalScreen[None]):
     ]
 
     def compose(self) -> ComposeResult:
-        rows = "\n".join(f"  [b]{key:<5}[/b] {desc}" for key, desc in _HOTKEYS)
+        rows = "\n".join(
+            f"  [b]{(h.display or h.key):<5}[/b] {h.description}" for h in HOTKEYS
+        )
         with Vertical(id="help-box"):
             yield Label("panopticon — keys")
             yield Static(rows, id="help-keys")
@@ -597,22 +624,9 @@ class Dashboard(App[None]):
     REFRESH_INTERVAL = 2.0  # seconds between automatic refreshes (0/None disables the timer)
     # Only the essential, most-used keys show in the footer legend; the rest still dispatch but
     # are hidden (``show=False``) to keep the legend uncluttered — `?` opens HelpScreen, which
-    # lists every key (the full keymap lives in ``_HOTKEYS``).
-    BINDINGS = [
-        ("t", "attach", "Attach"),
-        ("n", "new_task", "New task"),
-        ("x", "drop", "Drop"),
-        ("/", "search", "Search"),
-        Binding("question_mark", "help", "Help", key_display="?"),
-        ("q", "quit", "Quit"),
-        Binding("r", "refresh", "Refresh", show=False),
-        Binding("R", "respawn", "Respawn", show=False),
-        Binding("p", "open_url", "Open URL", show=False),
-        Binding("g", "repos", "Repos", show=False),
-        Binding("a", "artifacts", "Artifacts", show=False),
-        Binding("s", "service", "Service", show=False),
-        Binding("escape", "clear_search", "Clear search", show=False),
-    ]
+    # lists every key. Both the footer bindings and the help screen derive from the single
+    # ``HOTKEYS`` table, so a key can't drift between the two.
+    BINDINGS = [hotkey.binding() for hotkey in HOTKEYS]
     TITLE = "panopticon"
 
     def __init__(
