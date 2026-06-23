@@ -92,3 +92,16 @@ class State(BaseState):
     #: transition, so linear states need declare nothing; declare it (and e.g. `iterate`) only
     #: when a state has several outgoing edges. `drop` → `DROPPED` is always implicit.
     operations: ClassVar[Mapping[str, type[BaseState] | str]] = {}
+
+
+class InitialState(State):
+    """A workflow's entry state — every workflow's ``initial`` must subclass this
+    (enforced when the workflow is built).
+
+    The turn starts with the **user**: the agent always needs a first instruction before
+    it can work, so a freshly created task waits on the user rather than the agent. Every
+    other aspect is inherited from :class:`State` (``advanced_by = USER``, the inherited
+    ``Dropped`` transition); being a :class:`State`, it is also non-terminal.
+    """
+
+    turn_on_enter: ClassVar[Actor] = Actor.USER
