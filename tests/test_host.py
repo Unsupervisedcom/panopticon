@@ -34,6 +34,17 @@ class _FakeRunner:
         return f"panopticon-{task_id}"
 
 
+class _FakeClient:
+    """A do-nothing change-feed client — `tick` takes the snapshot as an argument, so the client is
+    irrelevant to the tick-level tests; the constructor just needs *something* shaped like one."""
+
+    def __init__(self, tasks: list[JsonObj]) -> None:
+        self._tasks = tasks
+
+    def list_tasks_versioned(self, *, since: int = 0, wait: float | None = None) -> tuple[list[JsonObj], int]:
+        return self._tasks, since
+
+
 def test_tick_isolates_a_failing_task_from_the_others() -> None:
     seen: list[str] = []
 
@@ -47,18 +58,42 @@ def test_tick_isolates_a_failing_task_from_the_others() -> None:
         def provision(self, task: JsonObj) -> None:
             return None
 
-    class _Client:
-        def list_tasks(self) -> list[JsonObj]:
-            return [{"id": "t1"}, {"id": "t2"}]
-
-    daemon = HostDaemon(_Client(), _Spawner(), _Provisioner())  # type: ignore[arg-type]
-    daemon.tick()
+    daemon = HostDaemon(_FakeClient([]), _Spawner(), _Provisioner())  # type: ignore[arg-type]
+    daemon.tick([{"id": "t1"}, {"id": "t2"}])
     assert seen == ["t1", "t2"]  # t1's error is logged + skipped; t2 still processed
 
 
+def test_run_blocks_on_the_change_feed_and_feeds_the_version_back() -> None:
+    # The loop waits on `list_tasks_versioned(wait=, since=)`, not a fixed-interval re-poll: each
+    # call's returned version is fed back as the next `since`, so we wake on the *next* change.
+    sinces: list[int] = []
+
+    class _Spawner:
+        def __init__(self) -> None:
+            self.seen: list[str] = []
+
+        def spawn_one(self, task: JsonObj) -> None:
+            self.seen.append(task["id"])
+
+    class _Provisioner:
+        def provision(self, task: JsonObj) -> None:
+            return None
+
+    class _FeedClient:
+        def list_tasks_versioned(self, *, since: int = 0, wait: float | None = None) -> tuple[list[JsonObj], int]:
+            sinces.append(since)
+            return [{"id": f"t{len(sinces)}"}], len(sinces)  # a fresh snapshot + a bumped version
+
+    spawner = _Spawner()
+    daemon = HostDaemon(_FeedClient(), spawner, _Provisioner())  # type: ignore[arg-type]
+    daemon.run(until=lambda: len(sinces) >= 3)
+    assert sinces == [0, 1, 2]  # starts at 0, then each returned version becomes the next `since`
+    assert spawner.seen == ["t1", "t2", "t3"]  # ticked the snapshot returned by each wake
+
+
 def test_run_survives_a_whole_pass_failure() -> None:
-    # `list_tasks()` raising (a service blip, or the service not yet listening at startup) must not
-    # kill the daemon: the pass is logged + retried, so the loop keeps polling until `until()`.
+    # The blocking call raising (a service blip, or the service not yet listening at startup) must
+    # not kill the daemon: the pass is logged + retried after a short sleep, so the loop keeps going.
     passes = {"n": 0}
 
     class _Spawner:
@@ -70,18 +105,18 @@ def test_run_survives_a_whole_pass_failure() -> None:
             return None
 
     class _FlakyClient:
-        def list_tasks(self) -> list[JsonObj]:
+        def list_tasks_versioned(self, *, since: int = 0, wait: float | None = None) -> tuple[list[JsonObj], int]:
             passes["n"] += 1
             if passes["n"] == 1:
-                raise RuntimeError("connection refused")  # first poll fails (startup race)
-            return []
+                raise RuntimeError("connection refused")  # first call fails (startup race)
+            return [], since
 
     def until() -> bool:
-        return passes["n"] >= 3  # let it tick a few times after the failure
+        return passes["n"] >= 3  # let it wake a few times after the failure
 
     daemon = HostDaemon(_FlakyClient(), _Spawner(), _Provisioner(), sleep=lambda _s: None)  # type: ignore[arg-type]
     daemon.run(until=until)
-    assert passes["n"] >= 3  # did not die on the first pass's error; kept polling
+    assert passes["n"] >= 3  # did not die on the first pass's error; kept going
 
 
 def test_run_host_spawns_then_provisions_end_to_end(tmp_path: Path) -> None:
