@@ -13,7 +13,8 @@ still work but are hidden from the legend (the full keymap lives in ``_HOTKEYS``
 `r` refreshes from the task service over REST, `R` **respawns** a down task (releases its claim so
 the host runner re-spawns it), `p` opens the task's `url` in the browser (cloude-cade's `p` "open
 PR"), `g` opens the **repo config screen** (list / create / edit repos), `s` switches to the
-task-service session, and `a` opens a modal listing the task's artifacts — Enter opens the selected
+task-service session, `d` **toggles the detail pane** (hide it to give the table the full width,
+press again to restore), and `a` opens a modal listing the task's artifacts — Enter opens the selected
 one with the host's default handler (`xdg-open`/`open`) by fetching it over REST to a temp file, `e`
 opens the on-disk file in place when the dashboard shares the artifact store. Drop is the only state
 *transition* the dashboard drives: every other transition starts a new agentic turn, so it's
@@ -559,6 +560,7 @@ _HOTKEYS: tuple[tuple[str, str], ...] = (
     ("R", "Respawn a down task (release its claim)"),
     ("p", "Open the task's URL in the browser"),
     ("g", "Repo config (list / create / edit repos)"),
+    ("d", "Show/hide the detail pane"),
     ("a", "List the task's artifacts"),
     ("s", "Switch to the task-service session"),
     ("Esc", "Clear the search filter"),
@@ -613,6 +615,7 @@ class Dashboard(App[None]):
         Binding("R", "respawn", "Respawn", show=False),
         Binding("p", "open_url", "Open URL", show=False),
         Binding("g", "repos", "Repos", show=False),
+        Binding("d", "toggle_detail", "Detail", show=False),
         Binding("a", "artifacts", "Artifacts", show=False),
         Binding("s", "service", "Service", show=False),
         Binding("escape", "clear_search", "Clear search", show=False),
@@ -639,6 +642,7 @@ class Dashboard(App[None]):
         self._tasks: dict[str, JsonObj] = {}
         self._current: str | None = None
         self._query: str = ""  # active search filter ("" → no filter); see action_search
+        self._detail_visible = True  # detail pane shown; `d` toggles it (action_toggle_detail)
         self._respawning: set[str] = set()  # tasks awaiting re-claim after `R` (shown "respawning")
         self._last_cursor_row = 0  # previous cursor row index → infer travel direction to skip the divider
         # one reused scratch dir for `a`'s REST-open (lazily made, cleaned on exit) — so opening
@@ -836,6 +840,15 @@ class Dashboard(App[None]):
             return
         webbrowser.open(url)
         self.notify(f"opened {url}")
+
+    def action_toggle_detail(self) -> None:
+        """`d`: show/hide the right-hand detail pane. Hiding it (``display: none``) lets the task
+        table — the only remaining row child — take the full width; pressing `d` again restores
+        the pane (with the current task's detail already rendered)."""
+        self._detail_visible = not self._detail_visible
+        self.query_one("#detail", Static).styles.display = (
+            "block" if self._detail_visible else "none"
+        )
 
     def action_help(self) -> None:
         """`?`: open the help screen — the full keymap (the footer shows only the essentials)."""
