@@ -220,7 +220,10 @@ commands the Makefile wraps).
   coding is just `set_state(ITERATING)` — not a named operation).
 - **Turn-flip / blocked** — the live `Task.turn` flips *within* a state via
   `PUT /tasks/{id}/turn` (the agnostic agent↔user ball tracking). The **contract** for the
-  in-container hooks: the agent's stop hook sets `turn=user`; the user-prompt hook sets
+  in-container hooks: the agent's stop hook sets `turn=user` (**unless a background task — a
+  `run_in_background` Bash command or the `Monitor` tool — is still running, in which case the turn
+  stays on the agent**, since the task's completion re-invokes the agent without a user-prompt
+  event, so a flip to `user` would never flip back); the user-prompt hook sets
   `turn=agent`. The claude wiring is `container/hooks.py` (renders `.claude/settings.json`) +
   `container/hook.py` (the callback the events invoke), rendered by the agent launcher. `Task.blocked`
   (`PUT …/blocked`) is a deliberate "waiting" marker the agent sets; it's **orthogonal to the
