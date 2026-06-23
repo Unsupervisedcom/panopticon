@@ -101,7 +101,8 @@ rejoins on detach; a task can be created and advanced from the UI.
 
 **Delivers:** the parity workflow (`PLANNING→ITERATING→REVIEW→MERGING→COMPLETE`/`DROPPED`),
 its per-state responsibilities, fg/bg classification, transition policy; core
-operations (`advance`, `iterate`, `drop`); **local git** (branch/worktree) as core ops;
+operations (`advance`, `drop`) — going back to coding is a free move (`set_state`), not a named
+operation; **local git** (branch/worktree) as core ops;
 the **plan artifact** (ADR 0003) + plan-accepted hook; turn-flip hooks.
 
 **Acceptance:** a task runs the full parity lifecycle end-to-end (without forge skills),

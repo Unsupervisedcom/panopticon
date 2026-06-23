@@ -142,7 +142,7 @@ class TaskServiceClient:
         return cast(JsonObj, self._json(self._http.post(f"/tasks/{task_id}/transition", json=body)))
 
     def apply_operation(self, task_id: str, operation: str) -> JsonObj:
-        """Apply a named core operation (e.g. advance/iterate/drop); the workflow resolves the target."""
+        """Apply a named core operation (e.g. advance/drop); the workflow resolves the target."""
         return cast(JsonObj, self._json(self._http.post(f"/tasks/{task_id}/operations/{operation}")))
 
     def resolve_responsibility(

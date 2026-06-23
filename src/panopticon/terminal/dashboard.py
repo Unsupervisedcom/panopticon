@@ -15,7 +15,8 @@ task-service session, and `a` opens a modal listing the task's artifacts — Ent
 one with the host's default handler (`xdg-open`/`open`) by fetching it over REST to a temp file, `e`
 opens the on-disk file in place when the dashboard shares the artifact store. Drop is the only state
 *transition* the dashboard drives: every other transition starts a new agentic turn, so it's
-triggered by an in-container agent skill (advance/iterate over REST/MCP), not the operator (ADR 0004).
+triggered by an in-container agent skill (`advance` over REST/MCP; going back to coding is a free
+`set_state` move), not the operator (ADR 0004).
 
 `/` enters **search-as-you-type** (cloude-cade's `/`): a query box reveals at the bottom and the
 table filters live to tasks whose slug/id/state/workflow/description contains the query
