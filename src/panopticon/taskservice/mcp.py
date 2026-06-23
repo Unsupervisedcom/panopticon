@@ -57,6 +57,13 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
         return _task(service.set_state(task_id, state))
 
     @mcp.tool(
+        description="Re-enter the current state from scratch: reset its responsibilities to "
+        "pending and start a fresh turn (a free move; stays in the same state)."
+    )
+    def redo(task_id: str) -> dict[str, Any]:
+        return _task(service.redo_state(task_id))
+
+    @mcp.tool(
         description="Resolve one promised responsibility ('met', or 'failed' with a comment)."
     )
     def resolve_responsibility(

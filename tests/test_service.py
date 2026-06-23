@@ -94,14 +94,26 @@ def test_skills_exposes_the_active_workflows_skills(tmp_path: Path) -> None:
     svc.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
     task = svc.create_task("r1", "skilled")
     skills = svc.skills(task.id)
-    # The agnostic `provision` skill is exposed first, then the workflow's own skills.
-    assert [s.name for s in skills] == ["provision", "babysit-ci"]
+    # The agnostic `provision` + `redo` skills are exposed first, then the workflow's own skills.
+    assert [s.name for s in skills] == ["provision", "redo", "babysit-ci"]
 
 
-def test_provision_skill_is_exposed_even_for_skill_less_workflows(tmp_path: Path) -> None:
+def test_agnostic_skills_are_exposed_even_for_skill_less_workflows(tmp_path: Path) -> None:
     svc = make_service(tmp_path)
     task = svc.create_task("r1", "spike")  # the seed workflow declares no skills of its own
-    assert [s.name for s in svc.skills(task.id)] == ["provision"]
+    assert [s.name for s in svc.skills(task.id)] == ["provision", "redo"]
+
+
+def test_redo_state_re_enters_and_reseeds_responsibilities(tmp_path: Path) -> None:
+    svc = make_service(tmp_path)
+    task = svc.create_task("r1", "spike")
+    state, turn = task.state, task.turn
+    before = len(task.history)
+    redone = svc.redo_state(task.id)
+    assert redone.state == state and redone.turn == turn  # stays put, fresh entry
+    assert len(redone.history) == before + 1
+    assert redone.history[-1].trigger == "redo"
+    assert redone.history[-1].from_state == state and redone.history[-1].to_state == state
 
 
 def test_on_transition_hook_fires_through_the_service(tmp_path: Path) -> None:

@@ -302,6 +302,12 @@ def create_app(service: TaskService) -> FastAPI:
     async def apply_operation(task_id: str, operation: str) -> TaskOut:
         return TaskOut.model_validate(service.apply_operation(task_id, operation))
 
+    @app.post("/tasks/{task_id}/redo")
+    async def redo(task_id: str) -> TaskOut:
+        """Re-enter the current state from scratch (free move): reset its responsibilities to
+        pending and start a fresh turn. 409 if the task is terminal (IllegalTransition)."""
+        return TaskOut.model_validate(service.redo_state(task_id))
+
     @app.get("/tasks/{task_id}/states")
     async def list_states(task_id: str) -> list[str]:
         return service.workflow_states(task_id)

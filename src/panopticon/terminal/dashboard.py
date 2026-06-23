@@ -8,7 +8,8 @@ The footer legend shows only the essential, most-used keys — `t` hands off to 
 container tmux, `n` creates a task (pick repo → workflow → describe the work), `x` **drops** it,
 `/` searches, `q` quits, and `?` opens the **help screen** (a modal listing every key). The rest
 still work but are hidden from the legend (the full keymap lives in ``_HOTKEYS`` / `HelpScreen`):
-`r` refreshes from the task service over REST, `R` **respawns** a down task (releases its claim so
+`r` refreshes from the task service over REST, `e` **redoes** a task's current state (re-enters it,
+resetting its responsibilities), `R` **respawns** a down task (releases its claim so
 the host runner re-spawns it), `p` opens the task's `url` in the browser (cloude-cade's `p` "open
 PR"), `g` opens the **repo config screen** (list / create / edit repos), `s` switches to the
 task-service session, and `a` opens a modal listing the task's artifacts — Enter opens the selected
@@ -520,6 +521,7 @@ _HOTKEYS: tuple[tuple[str, str], ...] = (
     ("x", "Drop the highlighted task"),
     ("/", "Search tasks as you type"),
     ("r", "Refresh from the task service now"),
+    ("e", "Redo: re-enter the current state (reset its responsibilities)"),
     ("R", "Respawn a down task (release its claim)"),
     ("p", "Open the task's URL in the browser"),
     ("g", "Repo config (list / create / edit repos)"),
@@ -574,6 +576,7 @@ class Dashboard(App[None]):
         Binding("question_mark", "help", "Help", key_display="?"),
         ("q", "quit", "Quit"),
         Binding("r", "refresh", "Refresh", show=False),
+        Binding("e", "redo", "Redo", show=False),
         Binding("R", "respawn", "Respawn", show=False),
         Binding("p", "open_url", "Open URL", show=False),
         Binding("g", "repos", "Repos", show=False),
@@ -720,6 +723,24 @@ class Dashboard(App[None]):
         except httpx.HTTPStatusError as exc:
             detail = exc.response.json().get("detail", str(exc))
             self.notify(f"Can't drop: {detail}", severity="error")
+            return
+        self.action_refresh()
+
+    def action_redo(self) -> None:
+        """`e`: re-enter the highlighted task's current state from scratch — reset its
+        responsibilities to pending and start a fresh turn (the task stays in the same state).
+
+        Unlike most transitions (agent-driven, since they start a new turn), this is offered to
+        the operator deliberately — like `R` respawn — so a state's work can be restarted from the
+        dashboard. Refused (409) on a terminal task."""
+        task_id = self._current
+        if task_id is None:
+            return
+        try:
+            self._client.redo(task_id)
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.json().get("detail", str(exc))
+            self.notify(f"Can't redo: {detail}", severity="error")
             return
         self.action_refresh()
 

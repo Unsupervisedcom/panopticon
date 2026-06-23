@@ -133,6 +133,19 @@ def test_free_move_back_from_merging_to_iterating() -> None:
     assert task.state == "ITERATING"
 
 
+def test_redo_re_enters_iterating_with_promises_reset() -> None:
+    task = WF.start_task("t1", "r1", at="t0")
+    _advance(task, "ITERATING")
+    task.resolve_responsibility(key="tests-pass", status=Status.MET)  # some progress
+    WF.redo(task, at="t2")  # restart the state from scratch
+    assert task.state == "ITERATING"  # stays put
+    assert task.turn is Actor.AGENT  # fresh turn handed to the agent
+    assert {r.key for r in task.outstanding_responsibilities} == {
+        "plan-implemented", "requests-implemented", "tests-pass",
+        "committed-pushed", "ci-passing", "pr-updated",
+    }  # every promise PENDING again, including the one just met
+
+
 def test_drop_is_allowed_from_every_state_and_bypasses_gating() -> None:
     for start in ("PLANNING", "ITERATING", "MERGING"):
         task = WF.start_task("t1", "r1", at="t0")

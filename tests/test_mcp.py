@@ -28,7 +28,7 @@ async def test_tools_are_exposed_and_drive_the_task(tmp_path: Path) -> None:
         await s.initialize()
         names = {t.name for t in (await s.list_tools()).tools}
         assert {
-            "get_task", "set_slug", "set_url", "apply_operation", "set_state",
+            "get_task", "set_slug", "set_url", "apply_operation", "set_state", "redo",
             "resolve_responsibility", "set_turn", "set_blocked", "put_artifact",
         } <= names
         result = await s.call_tool("apply_operation", {"task_id": task.id, "operation": "advance"})
@@ -47,6 +47,19 @@ async def test_artifacts_round_trip_via_tool_and_resource(tmp_path: Path) -> Non
         res = await s.read_resource(f"panopticon://tasks/{task.id}/artifacts/plan.md")
         assert res.contents[0].text == "# Plan"  # type: ignore[union-attr]
     assert svc.get_artifact(task.id, "plan.md") == b"# Plan"
+
+
+async def test_redo_via_tool_re_enters_the_current_state(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    task = svc.create_task("r1", "spike")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        result = await s.call_tool("redo", {"task_id": task.id})
+        assert result.isError is False
+        assert result.structuredContent is not None
+        assert result.structuredContent["state"] == task.state  # stayed in place
+    refreshed = svc.get_task(task.id)
+    assert refreshed.history[-1].trigger == "redo"  # a fresh entry was recorded
 
 
 async def test_set_turn_via_tool(tmp_path: Path) -> None:

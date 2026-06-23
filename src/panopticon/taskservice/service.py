@@ -20,6 +20,7 @@ from panopticon.core.artifacts import ArtifactStore
 from panopticon.core.briefing import render_state_briefing, render_workflow_overview
 from panopticon.core.models import Actor, Repo, Skill, Status, Task
 from panopticon.core.provisioning import PROVISION_SKILL
+from panopticon.core.redo import REDO_SKILL
 from panopticon.core.store import NotFound, Store
 from panopticon.core.workflow import Workflow
 
@@ -157,9 +158,10 @@ class TaskService:
 
     def skills(self, task_id: str) -> list[Skill]:
         """The in-container skills for a task: the agnostic `provision` skill (every task names
-        itself to get a branch, ADR 0011) followed by the active workflow's own skills."""
+        itself to get a branch, ADR 0011) and `redo` (re-enter the current state from scratch),
+        followed by the active workflow's own skills."""
         task = self.get_task(task_id)
-        return [PROVISION_SKILL, *self._workflow(task.workflow).skills()]
+        return [PROVISION_SKILL, REDO_SKILL, *self._workflow(task.workflow).skills()]
 
     def briefing(self, task_id: str) -> str:
         """A short briefing on the task's current phase (state + responsibilities + how it advances),
@@ -195,6 +197,19 @@ class TaskService:
         task = self.get_task(task_id)
         wf = self._workflow(task.workflow)
         return self._commit_transition(task, wf, to_state, force=True, trigger="set-state", note=note)
+
+    def redo_state(self, task_id: str, *, note: str | None = None) -> Task:
+        """Re-enter the task's current state from scratch: re-seed its responsibilities (all
+        ``PENDING``) and start a fresh turn, without leaving the state (a free move). Refused on a
+        terminal task (``IllegalTransition``)."""
+        task = self.get_task(task_id)
+        wf = self._workflow(task.workflow)
+        from_state = task.state
+        wf.redo(task, at=self._clock(), note=note)
+        # Same post-entry bookkeeping a transition gets: the lifecycle hook then a single save.
+        wf.on_transition(task, from_state=from_state, to_state=task.state, artifacts=self._artifacts)
+        self._store.save_task(task)
+        return task
 
     def _commit_transition(
         self, task: Task, wf: Workflow, to_state: str, *, force: bool, trigger: str | None, note: str | None

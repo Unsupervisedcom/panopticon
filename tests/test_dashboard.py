@@ -871,7 +871,7 @@ def test_footer_shows_only_the_essential_keys() -> None:
         else:
             (shown if binding.show else hidden).add(binding.key)
     assert shown == {"t", "n", "x", "/", "question_mark", "q"}
-    assert hidden == {"r", "R", "p", "g", "a", "s", "escape"}
+    assert hidden == {"r", "e", "R", "p", "g", "a", "s", "escape"}
 
 
 async def test_pressing_question_mark_opens_the_help_screen() -> None:

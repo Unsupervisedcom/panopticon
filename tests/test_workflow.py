@@ -165,6 +165,43 @@ def test_force_transition_is_a_free_ungated_move() -> None:
         WF.force_transition(task, "GHOST", at="t3")  # target must still exist
 
 
+# -- redo: re-enter the current state from scratch (free move) ----------------------
+
+
+def test_redo_reseeds_responsibilities_and_keeps_the_prior_record() -> None:
+    task = _to_working()
+    working_entry = task.history[-1]
+    task.resolve_responsibility(key="tests-pass", status=Status.MET)  # progress made…
+    WF.redo(task, at="t2")  # …then redo from scratch
+    assert task.state == "WORKING"  # stays in place
+    assert task.turn is Actor.AGENT  # WORKING.turn_on_enter re-applied (fresh turn)
+    # the prior entry's resolved promise is untouched; a fresh entry seeds them all PENDING again
+    assert working_entry.responsibilities[0].status is Status.MET
+    fresh = task.history[-1]
+    assert fresh is not working_entry
+    assert fresh.from_state == "WORKING" and fresh.to_state == "WORKING"
+    assert fresh.trigger == "redo"
+    assert {r.key: r.status for r in fresh.responsibilities} == {
+        "tests-pass": Status.PENDING,
+        "pr-opened": Status.PENDING,
+    }
+
+
+def test_redo_on_ungated_state_re_enters_with_no_promises() -> None:
+    task = WF.start_task("t1", "r1", at="t0")  # PLAN, ungated
+    WF.redo(task, at="t1")
+    assert task.state == "PLAN"
+    assert task.history[-1].to_state == "PLAN"
+    assert task.history[-1].responsibilities == []
+
+
+def test_redo_is_refused_on_a_terminal_state() -> None:
+    task = WF.start_task("t1", "r1", at="t0")
+    WF.apply_transition(task, "DROPPED", at="t1")
+    with pytest.raises(IllegalTransition):
+        WF.redo(task, at="t2")
+
+
 # -- illegal transitions ------------------------------------------------------------
 
 
