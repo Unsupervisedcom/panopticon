@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 
@@ -45,6 +46,7 @@ def test_write_settings_merges_without_clobbering_existing_keys(tmp_path: Path) 
 class _FakeClient:
     def __init__(self, slug: str | None = None) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.tokens: list[tuple[str, int]] = []
         self._slug = slug
 
     def set_turn(self, task_id: str, turn: str) -> dict[str, object]:
@@ -56,6 +58,10 @@ class _FakeClient:
 
     def get_briefing(self, task_id: str) -> str:
         return "PHASE BRIEFING: you are in PLANNING"
+
+    def set_tokens_used(self, task_id: str, tokens_used: int) -> dict[str, object]:
+        self.tokens.append((task_id, tokens_used))
+        return {}
 
 
 def test_hook_flips_the_turn(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -97,5 +103,59 @@ def test_stop_hook_is_silent(
 ) -> None:
     monkeypatch.setenv("PANOPTICON_SERVICE_URL", "http://svc")
     monkeypatch.setenv("PANOPTICON_TASK_ID", "t1")
-    hook.main(["user"], client=_FakeClient(slug=None))  # Stop hook: just flips the turn, no output
+    # Stop hook: flips the turn and reports tokens, but emits nothing to the agent's context.
+    hook.main(["user"], client=_FakeClient(slug=None), stdin=io.StringIO(""))
     assert capsys.readouterr().out == ""
+
+
+def _transcript(tmp_path: Path) -> Path:
+    """A small claude-style JSONL transcript: two assistant lines with usage (totalling 685),
+    plus lines the summer must ignore — a non-assistant line, an assistant line with no usage,
+    a blank line, and malformed JSON."""
+    lines = [
+        {"type": "assistant", "message": {"usage": {
+            "input_tokens": 100, "output_tokens": 50,
+            "cache_creation_input_tokens": 10, "cache_read_input_tokens": 5}}},  # 165
+        {"type": "user", "message": {"content": "hi"}},  # no usage
+        "",
+        "not json at all",
+        {"type": "assistant", "message": {"role": "assistant"}},  # assistant, no usage
+        {"type": "assistant", "message": {"usage": {
+            "input_tokens": 200, "output_tokens": 20, "cache_read_input_tokens": 300}}},  # 520
+    ]
+    path = tmp_path / "transcript.jsonl"
+    path.write_text("\n".join(x if isinstance(x, str) else json.dumps(x) for x in lines))
+    return path
+
+
+def test_session_tokens_sums_all_tiers_across_assistant_lines(tmp_path: Path) -> None:
+    assert hook.session_tokens(str(_transcript(tmp_path))) == 685  # 165 + 520
+
+
+def test_session_tokens_is_zero_for_missing_or_empty_transcript(tmp_path: Path) -> None:
+    assert hook.session_tokens(str(tmp_path / "nope.jsonl")) == 0  # no file → no crash
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("")
+    assert hook.session_tokens(str(empty)) == 0
+
+
+def test_stop_hook_reports_session_tokens_from_the_transcript(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("PANOPTICON_SERVICE_URL", "http://svc")
+    monkeypatch.setenv("PANOPTICON_TASK_ID", "t1")
+    client = _FakeClient(slug="fix-widget")
+    stdin = io.StringIO(json.dumps({"transcript_path": str(_transcript(tmp_path))}))
+    assert hook.main(["user"], client=client, stdin=stdin) == 0  # type: ignore[arg-type]
+    assert client.calls == [("t1", "user")]  # turn still flipped
+    assert client.tokens == [("t1", 685)]  # and the session total recorded
+
+
+def test_stop_hook_tolerates_stdin_without_a_transcript(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PANOPTICON_SERVICE_URL", "http://svc")
+    monkeypatch.setenv("PANOPTICON_TASK_ID", "t1")
+    client = _FakeClient(slug="fix-widget")
+    assert hook.main(["user"], client=client, stdin=io.StringIO("{}")) == 0  # type: ignore[arg-type]
+    assert client.calls == [("t1", "user")] and client.tokens == []  # no transcript → no report

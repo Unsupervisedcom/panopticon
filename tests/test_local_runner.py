@@ -170,6 +170,7 @@ def test_login_runs_interactive_container_with_creds_volume() -> None:
     ]
     assert check is False  # interactive; tolerate non-zero exit
     assert rec.interactive[0] is True  # attaches the operator's terminal (no output capture)
+    assert len(rec.calls) == 1  # login only writes the volume; propagation is the caller's restart
 
 
 def test_tmux_socket_can_be_overridden() -> None:

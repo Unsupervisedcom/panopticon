@@ -101,11 +101,23 @@ def link_credentials(config_dir: Path, *, creds_dir: Path = Path(CREDS_DIR)) -> 
     the repo's token is used and refreshes write through to the persistent volume — while
     sessions/settings/skills stay container-local (not shared across the repo's tasks). Best
     effort: if the volume has no credentials yet (no `panopticon login`), leave it to claude to
-    complain at launch."""
+    complain at launch.
+
+    **Authoritative**: we re-point the symlink whenever it isn't already exactly ``src``. The
+    config dir is a per-task volume that persists across respawn, and claude rewrites
+    ``.credentials.json`` in place on token refresh — an atomic write that clobbers our symlink
+    into a *regular file* holding a now-stale token. On the next (re)spawn that file would shadow
+    the volume's fresh token (e.g. after `panopticon login`), so we replace any non-symlink or
+    wrong-target link rather than skip when something's already there."""
     config_dir.mkdir(parents=True, exist_ok=True)
     src, link = creds_dir / CREDS_FILE, config_dir / CREDS_FILE
-    if src.exists() and not link.exists():
-        link.symlink_to(src)
+    if not src.exists():
+        return  # nothing logged in yet — leave the config dir as claude left it
+    if link.is_symlink() and link.readlink() == src:
+        return  # already correctly linked — don't churn it
+    if link.is_symlink() or link.exists():
+        link.unlink()  # a stale regular file (clobbered by a refresh) or a wrong/broken target
+    link.symlink_to(src)
 
 
 def trust_workspace(config_dir: Path, cwd: Path) -> Path:
