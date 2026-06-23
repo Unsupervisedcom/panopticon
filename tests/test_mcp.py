@@ -22,6 +22,7 @@ def _service(tmp_path: Path) -> TaskService:
         FilesystemArtifactStore(tmp_path),
     )
     svc.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
+    svc.create_repo(Repo(id="r2", name="acme/other", git_url="https://x/r2.git"))
     return svc
 
 
@@ -83,27 +84,27 @@ async def test_orchestration_tools_are_exposed(tmp_path: Path) -> None:
     async with connect(build_mcp_server(svc)) as s:
         await s.initialize()
         names = {t.name for t in (await s.list_tools()).tools}
-        assert {"create_task", "list_repos", "list_workflows"} <= names
+        assert {"create_task", "list_workflows"} <= names
 
 
-async def test_orchestrator_creates_and_discovers(tmp_path: Path) -> None:
+async def test_orchestrator_creates_in_its_own_repo(tmp_path: Path) -> None:
     svc = _service(tmp_path)
-    boss = svc.create_task("r1", "orchestrator")
+    boss = svc.create_task("r2", "orchestrator")  # the orchestrator lives in r2
     async with connect(build_mcp_server(svc)) as s:
         await s.initialize()
-        repos = await s.call_tool("list_repos", {"orchestrator_task_id": boss.id})
-        assert [r["id"] for r in repos.structuredContent["result"]] == ["r1"]  # type: ignore[index]
         wfs = await s.call_tool("list_workflows", {"orchestrator_task_id": boss.id})
         assert "github-self-reviewed" in wfs.structuredContent["result"]  # type: ignore[index]
 
         result = await s.call_tool(
             "create_task",
-            {"orchestrator_task_id": boss.id, "repo_id": "r1", "workflow": "github-self-reviewed"},
+            {"orchestrator_task_id": boss.id, "workflow": "github-self-reviewed"},
         )
         assert result.isError is False
         child_id = result.structuredContent["id"]  # type: ignore[index]
         assert result.structuredContent["state"] == "PLANNING"  # type: ignore[index]
-    assert svc.get_task(child_id).workflow == "github-self-reviewed"  # the tool really created it
+    child = svc.get_task(child_id)
+    assert child.workflow == "github-self-reviewed"  # the tool really created it
+    assert child.repo_id == "r2"  # in the orchestrator's own repo, not some other repo
 
 
 async def test_create_task_rejected_for_non_orchestrator(tmp_path: Path) -> None:
@@ -111,10 +112,10 @@ async def test_create_task_rejected_for_non_orchestrator(tmp_path: Path) -> None
     task = svc.create_task("r1", "spike")  # spike does not orchestrate
     async with connect(build_mcp_server(svc)) as s:
         await s.initialize()
-        for tool in ("create_task", "list_repos", "list_workflows"):
+        for tool in ("create_task", "list_workflows"):
             args = {"orchestrator_task_id": task.id}
             if tool == "create_task":
-                args |= {"repo_id": "r1", "workflow": "spike"}
+                args |= {"workflow": "spike"}
             result = await s.call_tool(tool, args)
             assert result.isError is True  # the gate holds: a non-orchestrator may not orchestrate
     assert len(svc.list_tasks()) == 1  # nothing was created
@@ -131,7 +132,6 @@ async def test_orchestrator_seeds_a_child_ready_to_approve(tmp_path: Path) -> No
             "create_task",
             {
                 "orchestrator_task_id": boss.id,
-                "repo_id": "r1",
                 "workflow": "github-self-reviewed",
                 "description": "Add a /healthz endpoint",
             },

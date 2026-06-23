@@ -44,34 +44,39 @@ def make_service(tmp_path: Path) -> TaskService:
 def test_create_task_as_orchestrator_is_allowed(tmp_path: Path) -> None:
     svc = make_service(tmp_path)
     boss = svc.create_task("r1", "orchestrator")
-    child = svc.create_task_as(boss.id, "r1", "github-peer-reviewed", description="do a thing")
+    child = svc.create_task_as(boss.id, "github-peer-reviewed", description="do a thing")
     assert child.workflow == "github-peer-reviewed"
     assert child.state == "PLANNING"  # the child's own workflow initial state
     assert child.description == "do a thing"
+
+
+def test_create_task_as_uses_the_orchestrators_own_repo(tmp_path: Path) -> None:
+    svc = make_service(tmp_path)
+    svc.create_repo(Repo(id="r2", name="acme/other", git_url="https://x/r2.git"))
+    boss = svc.create_task("r2", "orchestrator")  # the orchestrator lives in r2
+    child = svc.create_task_as(boss.id, "github-peer-reviewed")
+    assert child.repo_id == "r2"  # first iteration: always the orchestrator's own repo
 
 
 def test_create_task_as_non_orchestrator_is_rejected(tmp_path: Path) -> None:
     svc = make_service(tmp_path)
     actor = svc.create_task("r1", "spike")  # spike does not orchestrate
     with pytest.raises(NotAuthorized):
-        svc.create_task_as(actor.id, "r1", "spike")
+        svc.create_task_as(actor.id, "spike")
     assert len(svc.list_tasks()) == 1  # nothing created
 
 
 def test_create_task_as_unknown_actor_is_not_found(tmp_path: Path) -> None:
     svc = make_service(tmp_path)
     with pytest.raises(NotFound):
-        svc.create_task_as("ghost", "r1", "spike")
+        svc.create_task_as("ghost", "spike")
 
 
 def test_gated_discovery_requires_orchestrator(tmp_path: Path) -> None:
     svc = make_service(tmp_path)
     boss = svc.create_task("r1", "orchestrator")
     spike = svc.create_task("r1", "spike")
-    assert [r.id for r in svc.list_repos_as(boss.id)] == ["r1"]
     assert "orchestrator" in svc.workflow_names_as(boss.id)
-    with pytest.raises(NotAuthorized):
-        svc.list_repos_as(spike.id)
     with pytest.raises(NotAuthorized):
         svc.workflow_names_as(spike.id)
 

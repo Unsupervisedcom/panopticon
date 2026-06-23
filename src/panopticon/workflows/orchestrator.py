@@ -31,13 +31,12 @@ _SPAWN_TASK_INSTRUCTIONS = """\
 Create one new task and leave it **pre-planned, ready for the user to approve**. Repeat per task
 you want to spawn. Throughout, your *own* task id is shown below; the new task has its *own* id.
 
-1. **Choose the target.** Pick the `repo_id` (default: this orchestrator task's own repo — read
-   it with the `get_task` tool on your own id — or call `list_repos` to pick another) and the
-   `workflow` (usually `github-self-reviewed` or `github-peer-reviewed`; `list_workflows` lists
-   the valid names).
+1. **Choose the workflow.** Pick the `workflow` (usually `github-self-reviewed` or
+   `github-peer-reviewed`; `list_workflows` lists the valid names). New tasks are created in
+   *your own* repo — this first iteration can't create tasks in another repo.
 2. **Create it.** Call the `create_task` tool with `orchestrator_task_id` set to *your own* task
-   id, plus `repo_id`, `workflow`, and a `description` (put the intent/provenance here). Record
-   the **new task's id** from the result.
+   id, plus `workflow`, and a `description` (put the intent/provenance here). Record the **new
+   task's id** from the result.
 3. **Name it.** `set_slug` on the new id with a short kebab-case slug.
 4. **Write its plan.** `put_artifact` on the new id with `name="plan.md"` and the full markdown
    plan for *that* task.

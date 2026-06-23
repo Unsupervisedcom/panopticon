@@ -154,7 +154,6 @@ class TaskService:
     def create_task_as(
         self,
         actor_task_id: str,
-        repo_id: str,
         workflow_name: str,
         *,
         description: str | None = None,
@@ -162,16 +161,13 @@ class TaskService:
         """Create a task **on behalf of an orchestrator task** — gated to orchestration workflows.
 
         The acting task (``actor_task_id``) must be one whose workflow ``orchestrates``; otherwise
-        :class:`NotAuthorized`. This is the create path the orchestration MCP tools use; the plain
+        :class:`NotAuthorized`. The new task is created **in the orchestrator's own repo** — this
+        first iteration deliberately can't create tasks in another repo, so there is no repo
+        parameter to misuse. This is the create path the orchestration MCP tools use; the plain
         :meth:`create_task` (and REST ``POST /tasks``) remain the ungated user/dashboard path.
         """
-        self._require_orchestrator(actor_task_id)
-        return self.create_task(repo_id, workflow_name, description=description)
-
-    def list_repos_as(self, actor_task_id: str) -> list[Repo]:
-        """List repos for an orchestrator task (gated): discovery for picking a child's ``repo_id``."""
-        self._require_orchestrator(actor_task_id)
-        return self.list_repos()
+        actor = self._require_orchestrator(actor_task_id)
+        return self.create_task(actor.repo_id, workflow_name, description=description)
 
     def workflow_names_as(self, actor_task_id: str) -> list[str]:
         """List workflow names for an orchestrator task (gated): discovery for a child's ``workflow``."""
