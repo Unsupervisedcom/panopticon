@@ -24,7 +24,7 @@ table filters live to tasks whose slug/id/state/workflow/description contains th
 keys return while the filter stays applied; `Esc` **clears** it (from typing or locked). The
 filter is applied in ``action_refresh``, so the auto-refresh timer preserves it across rebuilds.
 
-The `run` column shows each task's container status: `live` (an active registration), `down`
+The `container` column shows each task's container status: `live` (an active registration), `down`
 (was up, container gone — respawn with `R`), `starting` (claimed, no registration yet — its
 container is still coming up), `–` (unclaimed/not spawned yet), or `respawning` (just released
 by `R`, awaiting the runner's re-claim). Liveness is the registration, independent of provisioning.
@@ -638,7 +638,7 @@ class Dashboard(App[None]):
         table = self.query_one("#tasks", DataTable)
         table.cursor_type = "row"
         # the slug header carries a literal "[" — pass it as Text so Textual doesn't eat it as markup
-        table.add_columns("id", "state", "turn", "run", "tokens", Text("slug[description]"))
+        table.add_columns("id", "state", "turn", "container", "tokens", Text("slug[description]"))
         table.focus()  # the (hidden) search Input would otherwise grab initial focus
         self.action_refresh()
         if self._refresh_interval:
