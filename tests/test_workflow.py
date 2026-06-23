@@ -16,6 +16,7 @@ from panopticon.core import (
     Actor,
     Complete,
     IllegalTransition,
+    InitialState,
     InvalidWorkflow,
     ResponsibilitiesNotMet,
     Responsibility,
@@ -30,8 +31,8 @@ class GatedWorkflow(Workflow):
 
     name = "gated-test"
 
-    class Plan(State):
-        label = "PLAN"  # defaults: turn_on_enter=AGENT, advanced_by=USER (user approves to leave)
+    class Plan(InitialState):
+        label = "PLAN"  # initial: turn_on_enter=USER (waits on the user), advanced_by=USER (user approves to leave)
         transitions = ("WORKING",)  # forward reference resolved by label
 
     class Working(State):
@@ -62,7 +63,7 @@ def _to_working() -> object:
 def test_start_task_sets_initial_state_turn_and_history() -> None:
     task = WF.start_task("t1", "r1", at="t0")
     assert task.state == "PLAN"
-    assert task.turn is Actor.AGENT  # PLAN.turn_on_enter defaults to AGENT (agent drafts)
+    assert task.turn is Actor.USER  # PLAN is the initial state → turn starts with the user
     assert task.slug is None
     assert task.history[0].from_state is None
     assert task.history[0].to_state == "PLAN"
@@ -95,7 +96,7 @@ def test_labels_lists_states_then_builtin_terminals() -> None:
 
 
 def test_turn_on_enter_is_declared_not_derived() -> None:
-    assert WF.turn_on_enter("PLAN") is Actor.AGENT
+    assert WF.turn_on_enter("PLAN") is Actor.USER  # initial state → user holds the turn
     assert WF.turn_on_enter("WORKING") is Actor.AGENT
     assert WF.turn_on_enter("COMPLETE") is Actor.USER  # terminal: turn returns to the user
     assert WF.turn_on_enter("DROPPED") is Actor.USER
@@ -159,7 +160,7 @@ def test_force_transition_is_a_free_ungated_move() -> None:
     task = _to_working()  # WORKING has unresolved promises and only COMPLETE/DROPPED edges
     WF.force_transition(task, "PLAN", at="t2", trigger="set-state")  # backward, ungated, off-graph
     assert task.state == "PLAN"
-    assert task.turn is Actor.AGENT  # PLAN.turn_on_enter
+    assert task.turn is Actor.USER  # PLAN.turn_on_enter (initial state → user)
     assert task.history[-1].from_state == "WORKING"
     with pytest.raises(InvalidWorkflow):
         WF.force_transition(task, "GHOST", at="t3")  # target must still exist
@@ -329,3 +330,33 @@ def test_validate_rejects_duplicate_labels() -> None:
 
     with pytest.raises(InvalidWorkflow):
         list(Bad().labels())
+
+
+def test_validate_requires_initial_state_to_subclass_initialstate() -> None:
+    # A freshly created task starts on the user's turn — enforced by requiring the initial state
+    # to be an InitialState (turn_on_enter=USER). A plain State as initial is rejected.
+    class Bad(Workflow):
+        name = "bad-initial-base"
+
+        class A(State):
+            label = "A"
+            transitions = (Complete,)
+
+        initial = A
+
+    with pytest.raises(InvalidWorkflow, match="InitialState"):
+        Bad().initial_label
+
+
+def test_initial_state_starts_on_the_users_turn() -> None:
+    class Good(Workflow):
+        name = "good-initial-base"
+
+        class A(InitialState):
+            label = "A"
+            transitions = (Complete,)
+
+        initial = A
+
+    assert Good().turn_on_enter("A") is Actor.USER
+    assert Good().start_task("t1", "r1", at="t0").turn is Actor.USER

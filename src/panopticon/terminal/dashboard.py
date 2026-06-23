@@ -8,13 +8,14 @@ over it (it's not a selectable task).
 
 The footer legend shows only the essential, most-used keys — `t` hands off to the task's
 container tmux, `n` creates a task (pick repo → workflow → describe the work), `x` **drops** it,
-`/` searches, `q` quits, and `?` opens the **help screen** (a modal listing every key). The rest
-still work but are hidden from the legend (both the footer bindings and `HelpScreen` derive from the
-single ``HOTKEYS`` keymap):
-`r` refreshes from the task service over REST, `R` **respawns** a down task (releases its claim so
-the host runner re-spawns it), `p` opens the task's `url` in the browser (cloude-cade's `p` "open
-PR"), `g` opens the **repo config screen** (list / create / edit repos), `s` switches to the
-task-service session, and `a` opens a modal listing the task's artifacts — Enter opens the selected
+`/` searches, `d` **toggles the detail pane** (hide it to give the table the full width, press
+again to restore), `q` quits, and `?` opens the **help screen** (a modal listing every key). The
+rest still work but are hidden from the legend (both the footer bindings and `HelpScreen` derive
+from the single ``HOTKEYS`` keymap): `r` refreshes from the task service over REST, `R` **respawns**
+a down task (releases its claim so the host runner re-spawns it), `p` opens the task's `url` in the
+browser (cloude-cade's `p` "open PR"), `g` opens the **repo config screen** (list / create / edit
+repos), `s` switches to the task-service session, and `a` opens a modal listing the task's
+artifacts — Enter opens the selected
 one with the host's default handler (`xdg-open`/`open`) by fetching it over REST to a temp file, `e`
 opens the on-disk file in place when the dashboard shares the artifact store. Drop is the only state
 *transition* the dashboard drives: every other transition starts a new agentic turn, so it's
@@ -550,7 +551,7 @@ class ArtifactScreen(_OptionListModal[tuple[str, str]]):
 # action, the short footer label, the long help description, whether it shows in the footer, and an
 # optional key display — so ``Dashboard.BINDINGS`` and ``HelpScreen`` are *derived* from this one
 # tuple rather than repeating it. Ordered most-common first: the footer renders the ``show=True``
-# subset (``t n x / ? q``) in this order, and the help screen lists every key in it.
+# subset (``t n x / d ? q``) in this order, and the help screen lists every key in it.
 @dataclass(frozen=True)
 class Hotkey:
     key: str  # the Textual key name ("t", "question_mark", "escape")
@@ -573,6 +574,7 @@ HOTKEYS: tuple[Hotkey, ...] = (
     Hotkey("n", "new_task", "New task", "New task (pick repo → workflow → describe)"),
     Hotkey("x", "drop", "Drop", "Drop the highlighted task"),
     Hotkey("/", "search", "Search", "Search tasks as you type"),
+    Hotkey("d", "toggle_detail", "Detail", "Show/hide the detail pane"),
     Hotkey("r", "refresh", "Refresh", "Refresh from the task service now", show=False),
     Hotkey("R", "respawn", "Respawn", "Respawn a down task (release its claim)", show=False),
     Hotkey("p", "open_url", "Open URL", "Open the task's URL in the browser", show=False),
@@ -649,6 +651,7 @@ class Dashboard(App[None]):
         self._tasks: dict[str, JsonObj] = {}
         self._current: str | None = None
         self._query: str = ""  # active search filter ("" → no filter); see action_search
+        self._detail_visible = True  # detail pane shown; `d` toggles it (action_toggle_detail)
         self._respawning: set[str] = set()  # tasks awaiting re-claim after `R` (shown "respawning")
         self._last_cursor_row = 0  # previous cursor row index → infer travel direction to skip the divider
         # one reused scratch dir for `a`'s REST-open (lazily made, cleaned on exit) — so opening
@@ -846,6 +849,15 @@ class Dashboard(App[None]):
             return
         webbrowser.open(url)
         self.notify(f"opened {url}")
+
+    def action_toggle_detail(self) -> None:
+        """`d`: show/hide the right-hand detail pane. Hiding it (``display: none``) lets the task
+        table — the only remaining row child — take the full width; pressing `d` again restores
+        the pane (with the current task's detail already rendered)."""
+        self._detail_visible = not self._detail_visible
+        self.query_one("#detail", Static).styles.display = (
+            "block" if self._detail_visible else "none"
+        )
 
     def action_help(self) -> None:
         """`?`: open the help screen — the full keymap (the footer shows only the essentials)."""

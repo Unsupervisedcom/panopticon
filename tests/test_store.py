@@ -139,7 +139,7 @@ def test_create_and_get_task_roundtrips(store: Store) -> None:
     got = store.get_task("t1")
     assert got is not None
     assert got.state == "ITERATING"
-    assert got.turn is Actor.AGENT
+    assert got.turn is Actor.USER  # spike's initial state → turn starts with the user
     assert got.workflow == "spike"
     assert got.slug is None  # create persisted before slug was set
     assert [(h.from_state, h.to_state) for h in got.history] == [(None, "ITERATING")]

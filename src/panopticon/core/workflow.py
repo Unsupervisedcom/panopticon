@@ -18,7 +18,7 @@ from typing import ClassVar
 
 from panopticon.core.artifacts import ArtifactStore
 from panopticon.core.models import Actor, HistoryEntry, Responsibility, Skill, Task, Tool
-from panopticon.core.state import BaseState, Complete, Dropped, State, TerminalState
+from panopticon.core.state import BaseState, Complete, Dropped, InitialState, State, TerminalState
 
 _ABSTRACT_BASES = (BaseState, State, TerminalState)
 
@@ -136,6 +136,10 @@ class Workflow(ABC):
         operations = {label: self._resolve_operations(cls, transitions[label]) for label, cls in states.items()}
 
         initial = label_of(self.initial)
+        if not issubclass(states[initial], InitialState):
+            raise InvalidWorkflow(
+                f"{self.name!r}: initial state {initial!r} must subclass InitialState"
+            )
         if "DROPPED" not in states:  # guaranteed by the built-in; assert the invariant
             raise InvalidWorkflow(f"{self.name!r}: a DROPPED terminal state is required")
         return _Graph(states=states, transitions=transitions, operations=operations, initial=initial)

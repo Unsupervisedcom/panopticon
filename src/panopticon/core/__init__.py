@@ -19,6 +19,7 @@ from panopticon.core.state import (
     BaseState,
     Complete,
     Dropped,
+    InitialState,
     State,
     TerminalState,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "Dropped",
     "HistoryEntry",
     "IllegalTransition",
+    "InitialState",
     "InvalidWorkflow",
     "Repo",
     "ResponsibilitiesNotMet",
