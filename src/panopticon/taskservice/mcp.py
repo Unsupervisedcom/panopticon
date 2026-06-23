@@ -76,6 +76,30 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
     def set_blocked(task_id: str, blocked: bool) -> dict[str, Any]:
         return _task(service.set_blocked(task_id, blocked))
 
+    # -- orchestration (gated to workflows whose `orchestrates` is set) -----------------------
+    # These widen an agent beyond its own task — creating tasks and discovering workflows — so
+    # each takes the acting orchestrator task's id and the service authorizes it against that
+    # task's workflow. The per-task tools above already accept any task_id, so seeding a child
+    # (set_slug/put_artifact/resolve_responsibility/set_turn) needs nothing new.
+
+    @mcp.tool(
+        description=(
+            "Create a new task on behalf of an orchestrator task (gated to orchestration "
+            "workflows). The task is created in your own repo. Pass your own task id as "
+            "orchestrator_task_id. Returns the new task."
+        )
+    )
+    def create_task(
+        orchestrator_task_id: str, workflow: str, description: str | None = None
+    ) -> dict[str, Any]:
+        return _task(
+            service.create_task_as(orchestrator_task_id, workflow, description=description)
+        )
+
+    @mcp.tool(description="List workflow names (gated to orchestration workflows); pass your own task id as orchestrator_task_id.")
+    def list_workflows(orchestrator_task_id: str) -> list[str]:
+        return service.workflow_names_as(orchestrator_task_id)
+
     @mcp.tool(description="Write (create or overwrite) a task artifact, e.g. the plan. Returns its URI.")
     def put_artifact(task_id: str, name: str, content: str) -> str:
         service.put_artifact(task_id, name, content.encode())

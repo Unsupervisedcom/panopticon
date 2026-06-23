@@ -46,6 +46,11 @@ class AlreadyClaimed(Exception):
     """Raised when a task is claimed by a different runner than the one claiming."""
 
 
+class NotAuthorized(Exception):
+    """Raised when a task attempts an operation its workflow isn't permitted (e.g. a
+    non-orchestration workflow trying to create other tasks)."""
+
+
 @dataclass
 class Registration:
     """An active container's claim that it is working on a task (liveness)."""
@@ -130,6 +135,44 @@ class TaskService:
         task = wf.start_task(self._id(), repo_id, at=self._clock(), description=description)
         self._store.create_task(task)
         return task
+
+    def _require_orchestrator(self, actor_task_id: str) -> Task:
+        """Authorize an orchestration action by ``actor_task_id``: the acting task must exist and
+        its workflow must opt in (``Workflow.orchestrates``). Returns the acting task on success.
+
+        The capability lives on the workflow (declarative, like ``skills``/``tools``), so the
+        service stays workflow-name-agnostic — any workflow that sets ``orchestrates = True`` can
+        create/seed other tasks.
+        """
+        actor = self.get_task(actor_task_id)  # raises NotFound
+        if not self._workflow(actor.workflow).orchestrates:
+            raise NotAuthorized(
+                f"task {actor_task_id!r} (workflow {actor.workflow!r}) may not orchestrate other tasks"
+            )
+        return actor
+
+    def create_task_as(
+        self,
+        actor_task_id: str,
+        workflow_name: str,
+        *,
+        description: str | None = None,
+    ) -> Task:
+        """Create a task **on behalf of an orchestrator task** — gated to orchestration workflows.
+
+        The acting task (``actor_task_id``) must be one whose workflow ``orchestrates``; otherwise
+        :class:`NotAuthorized`. The new task is created **in the orchestrator's own repo** — this
+        first iteration deliberately can't create tasks in another repo, so there is no repo
+        parameter to misuse. This is the create path the orchestration MCP tools use; the plain
+        :meth:`create_task` (and REST ``POST /tasks``) remain the ungated user/dashboard path.
+        """
+        actor = self._require_orchestrator(actor_task_id)
+        return self.create_task(actor.repo_id, workflow_name, description=description)
+
+    def workflow_names_as(self, actor_task_id: str) -> list[str]:
+        """List workflow names for an orchestrator task (gated): discovery for a child's ``workflow``."""
+        self._require_orchestrator(actor_task_id)
+        return self.workflow_names()
 
     def get_task(self, task_id: str) -> Task:
         task = self._store.get_task(task_id)

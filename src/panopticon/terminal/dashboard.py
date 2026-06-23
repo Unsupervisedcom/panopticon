@@ -2,7 +2,9 @@
 
 A task table on the left, the highlighted task's state/turn/history on the right. It
 auto-refreshes from the task service every ``REFRESH_INTERVAL`` seconds (preserving the
-highlighted row across the rebuild); `r` forces a refresh now.
+highlighted row across the rebuild); `r` forces a refresh now. A dim divider row splits the
+active tasks from the terminal (COMPLETE/DROPPED) ones that sink below them; the arrow keys jump
+over it (it's not a selectable task).
 
 The footer legend shows only the essential, most-used keys — `t` hands off to the task's
 container tmux, `n` creates a task (pick repo → workflow → describe the work), `x` **drops** it,
@@ -24,7 +26,7 @@ table filters live to tasks whose slug/state/workflow/description contains the q
 keys return while the filter stays applied; `Esc` **clears** it (from typing or locked). The
 filter is applied in ``action_refresh``, so the auto-refresh timer preserves it across rebuilds.
 
-The `run` column shows each task's container status: `live` (an active registration), `down`
+The `container` column shows each task's container status: `live` (an active registration), `down`
 (was up, container gone — respawn with `R`), `starting` (claimed, no registration yet — its
 container is still coming up), `–` (unclaimed/not spawned yet), or `respawning` (just released
 by `R`, awaiting the runner's re-claim). Liveness is the registration, independent of provisioning.
@@ -98,16 +100,32 @@ def _short_tokens(n: int | None) -> str:
     return str(n)
 
 
+# A sentinel row key for the divider drawn between the active and terminal task groups (see
+# action_refresh). It's not a real task id, so it's never in ``self._tasks`` — the highlight
+# handler treats it as "no task selected" and the arrow keys jump over it.
+_SEPARATOR_KEY = "__separator__"
+
+
+def _separator_cells(columns: int) -> list[Text]:
+    """A dim box-drawing rule, one cell per task-table column — the visual divider between the
+    active tasks and the terminal (COMPLETE/DROPPED) ones that sink below them."""
+    return [Text("─" * 8, style="dim") for _ in range(columns)]
+
+
 def _slug_cell(task: JsonObj) -> Text:
-    """The ``slug[description]`` column: the slug followed by the task's description in brackets
-    (bare slug when there's no description; ``-`` when there's no slug).
+    """The ``slug[description]`` column: the slug followed by the task's description in brackets.
+
+    Bare slug when there's no description; bare ``[description]`` (no leading dash) when there's a
+    description but no slug; ``-`` only when neither is set.
 
     Returned as a Rich ``Text`` (like :func:`_turn_cell`), **not** a markup string: Textual renders
     bare ``str`` cells through console markup, which swallows the ``[…]`` — so a plain string would
     show just the bare slug (the bug that hid descriptions; the header had the same problem)."""
-    slug = task.get("slug") or "-"
+    slug = task.get("slug") or ""
     desc = task.get("description")
-    return Text(f"{slug}[{desc}]" if desc else slug)
+    if desc:
+        return Text(f"{slug}[{desc}]")
+    return Text(slug or "-")
 
 
 # Fields a search query matches against (cloude-cade filters on the task title; our nearest
@@ -618,6 +636,7 @@ class Dashboard(App[None]):
         self._current: str | None = None
         self._query: str = ""  # active search filter ("" → no filter); see action_search
         self._respawning: set[str] = set()  # tasks awaiting re-claim after `R` (shown "respawning")
+        self._last_cursor_row = 0  # previous cursor row index → infer travel direction to skip the divider
         # one reused scratch dir for `a`'s REST-open (lazily made, cleaned on exit) — so opening
         # many artifacts doesn't leak a temp dir each.
         self._artifact_tmp: tempfile.TemporaryDirectory[str] | None = None
@@ -634,7 +653,7 @@ class Dashboard(App[None]):
         table = self.query_one("#tasks", DataTable)
         table.cursor_type = "row"
         # the slug header carries a literal "[" — pass it as Text so Textual doesn't eat it as markup
-        table.add_columns("state", "turn", "run", "tokens", Text("slug[description]"))
+        table.add_columns("state", "turn", "container", "tokens", Text("slug[description]"))
         table.focus()  # the (hidden) search Input would otherwise grab initial focus
         self.action_refresh()
         if self._refresh_interval:
@@ -675,7 +694,16 @@ class Dashboard(App[None]):
         ordered = sorted(self._client.list_tasks(), key=_sort_key)  # live/user/recent first
         visible = [t for t in ordered if _matches(t, self._query)]  # apply the search filter
         self._tasks = {t["id"]: t for t in visible}
+        # Draw the active↔terminal divider once, before the first terminal row — but only when an
+        # active row precedes it (an all-terminal list gets no divider).
+        seen_active = False
+        separated = False
         for task in visible:
+            terminal = task["state"] in TERMINAL_LABELS
+            if terminal and seen_active and not separated:
+                table.add_row(*_separator_cells(len(table.ordered_columns)), key=_SEPARATOR_KEY)
+                separated = True
+            seen_active = seen_active or not terminal
             table.add_row(
                 task["state"], _turn_cell(task), self._run_status(task),
                 _short_tokens(task.get("tokens_used")), _slug_cell(task),
@@ -687,10 +715,24 @@ class Dashboard(App[None]):
         self._update_detail(target)
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        table = self.query_one("#tasks", DataTable)
+        if event.row_key.value == _SEPARATOR_KEY:
+            # The arrow keys jump the divider: step one more row in the direction of travel
+            # (down → first terminal task, up → last active task). The divider always sits
+            # between groups, so there's a real row on both sides; move_cursor re-fires this
+            # handler on that real row, so we don't recurse on the sentinel.
+            step = 1 if table.cursor_row >= self._last_cursor_row else -1
+            table.move_cursor(row=table.cursor_row + step)
+            return
+        self._last_cursor_row = table.cursor_row
         key = event.row_key.value
         self._update_detail(str(key) if key is not None else None)
 
     def _update_detail(self, task_id: str | None) -> None:
+        if task_id == _SEPARATOR_KEY:  # the divider isn't a task — select nothing, blank the pane
+            self._current = None
+            self.query_one("#detail", Static).update("")
+            return
         self._current = task_id
         task = self._tasks.get(task_id) if task_id else None
         self.query_one("#detail", Static).update(render_detail(task) if task else "no tasks")

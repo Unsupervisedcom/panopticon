@@ -15,6 +15,7 @@ from textual.widgets import DataTable, Input, Static
 from panopticon.terminal import dashboard
 from panopticon.terminal.dashboard import (
     Dashboard,
+    _SEPARATOR_KEY,
     _matches,
     _short_tokens,
     _slug_cell,
@@ -215,12 +216,16 @@ async def test_tasks_are_sorted_live_then_user_then_recent() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
-        order = [str(k.value) for k in table.rows]
+        keys = [str(k.value) for k in table.rows]
+        order = [k for k in keys if k != _SEPARATOR_KEY]  # task order, ignoring the divider row
         assert order == [
             "t-user-new", "t-user-old",    # live, user's turn, newest first
             "t-agent-new", "t-agent-old",  # live, agent's turn, newest first
             "t-done", "t-drop",            # terminal last (their recent `at` doesn't lift them)
         ]
+        # the divider sits exactly between the last active row and the first terminal one
+        assert keys.index(_SEPARATOR_KEY) == keys.index("t-agent-old") + 1
+        assert keys.index(_SEPARATOR_KEY) == keys.index("t-done") - 1
 
 
 async def test_sort_breaks_ties_on_slug() -> None:
@@ -235,6 +240,86 @@ async def test_sort_breaks_ties_on_slug() -> None:
         await pilot.pause()
         order = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
         assert order == ["t1", "t2"]  # alpha < zebra
+
+
+# -- active/terminal divider --------------------------------------------------------
+
+_ACTIVE_A = {**_TASK, "id": "t-a", "slug": "alpha", "state": "WORKING", "turn": "user"}
+_ACTIVE_B = {**_TASK, "id": "t-b", "slug": "bravo", "state": "ITERATING", "turn": "user"}
+_TERM_A = {**_TASK, "id": "t-done", "slug": "done", "state": "COMPLETE", "turn": "user"}
+_TERM_B = {**_TASK, "id": "t-drop", "slug": "dropped", "state": "DROPPED", "turn": "user"}
+
+
+async def test_separator_divides_active_from_terminal() -> None:
+    # With both groups present, a single divider row splices in at the boundary.
+    app = Dashboard(_FakeClient([_ACTIVE_A, _TERM_A, _ACTIVE_B, _TERM_B]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        keys = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
+        assert keys == ["t-a", "t-b", _SEPARATOR_KEY, "t-done", "t-drop"]
+
+
+async def test_no_separator_when_all_active() -> None:
+    app = Dashboard(_FakeClient([_ACTIVE_A, _ACTIVE_B]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        keys = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
+        assert _SEPARATOR_KEY not in keys
+
+
+async def test_no_separator_when_all_terminal() -> None:
+    app = Dashboard(_FakeClient([_TERM_A, _TERM_B]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        keys = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
+        assert _SEPARATOR_KEY not in keys
+
+
+async def test_no_separator_when_filtered_to_one_group() -> None:
+    # A search filter that leaves only active tasks shows no divider.
+    app = Dashboard(_FakeClient([_ACTIVE_A, _ACTIVE_B, _TERM_A, _TERM_B]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("slash")
+        await pilot.press("a", "l", "p", "h", "a")  # matches only _ACTIVE_A's slug
+        await pilot.pause()
+        keys = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
+        assert keys == ["t-a"]  # only the match; no divider
+
+
+async def test_highlighting_the_separator_selects_no_task() -> None:
+    # If the cursor is forced onto the divider, it selects nothing and actions no-op.
+    fake = _FakeClient([_ACTIVE_A, _TERM_A])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        sep_index = [str(k.value) for k in table.rows].index(_SEPARATOR_KEY)
+        app._update_detail(_SEPARATOR_KEY)  # as a raw highlight on the sentinel would
+        await pilot.pause()
+        assert app._current is None  # no task selected
+        assert str(app.query_one("#detail", Static).render()) == ""  # blank pane
+        await pilot.press("x")  # drop no-ops with no current task
+        await pilot.pause()
+        assert fake.applied == []
+        assert sep_index == 1  # divider after the one active row
+
+
+async def test_arrow_keys_skip_the_separator() -> None:
+    # Arrowing across the boundary jumps the divider in both directions.
+    app = Dashboard(_FakeClient([_ACTIVE_A, _TERM_A]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        table.move_cursor(row=0)  # the active task
+        await pilot.pause()
+        assert app._current == "t-a"
+        await pilot.press("down")  # would land on the divider → skip to the terminal task
+        await pilot.pause()
+        assert app._current == "t-done"
+        await pilot.press("up")  # back up over the divider → the active task again
+        await pilot.pause()
+        assert app._current == "t-a"
 
 
 async def test_dashboard_auto_refreshes_on_the_interval() -> None:
@@ -464,10 +549,12 @@ def test_slug_cell_combines_slug_and_description() -> None:
     # slug, no description → bare slug
     assert _slug_cell({**_TASK, "slug": "fix-widget", "description": None}).plain == "fix-widget"
     assert _slug_cell({"slug": "fix-widget"}).plain == "fix-widget"  # description key absent
-    # no slug, with description → "-[description]"
-    assert _slug_cell({"slug": None, "description": "make it green"}).plain == "-[make it green]"
+    # no slug, with description → "[description]" (no leading dash)
+    assert _slug_cell({"slug": None, "description": "make it green"}).plain == "[make it green]"
+    assert _slug_cell({"description": "make it green"}).plain == "[make it green]"  # slug key absent
     # neither → "-"
     assert _slug_cell({"slug": None}).plain == "-"
+    assert _slug_cell({}).plain == "-"
 
 
 def test_slug_cell_is_text_so_brackets_arent_eaten_as_markup() -> None:
