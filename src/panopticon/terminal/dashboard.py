@@ -163,6 +163,7 @@ def render_detail(task: JsonObj) -> str:
     claim = f"    claimed: {task['claimed_by']}" if task.get("claimed_by") else ""
     lines = [
         f"[b]{task.get('slug') or task['id']}[/b]",
+        f"id: {task['id']}",
         f"state: {task['state']}    turn: {turn}    workflow: {task['workflow']}{claim}",
     ]
     if task.get("description"):
