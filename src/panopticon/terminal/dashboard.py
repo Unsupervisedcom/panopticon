@@ -2,16 +2,20 @@
 
 A task table on the left, the highlighted task's state/turn/history on the right. It
 auto-refreshes from the task service every ``REFRESH_INTERVAL`` seconds (preserving the
-highlighted row across the rebuild); `r` forces a refresh now. Keys: `r`
-refreshes from the task service over REST, `t` hands off to the task's container tmux, `n`
-creates a task (pick repo → workflow → describe the work), `x` **drops** it, `R` **respawns** a down task (releases
-its claim so the host runner re-spawns it), `p` opens the task's `url` in the browser
-(cloude-cade's `p` "open PR"), `g` opens the **repo config screen** (list / create / edit repos),
-and `a` opens a modal listing the task's artifacts — Enter opens the selected one with the host's
-default handler (`xdg-open`/`open`) by fetching it over REST to a temp file, `e` opens the on-disk
-file in place when the dashboard shares the artifact store. Drop is the only state *transition* the dashboard
-drives: every other transition starts a new agentic turn, so it's triggered by an in-container
-agent skill (advance/iterate over REST/MCP), not the operator (ADR 0004).
+highlighted row across the rebuild); `r` forces a refresh now.
+
+The footer legend shows only the essential, most-used keys — `t` hands off to the task's
+container tmux, `n` creates a task (pick repo → workflow → describe the work), `x` **drops** it,
+`/` searches, `q` quits, and `?` opens the **help screen** (a modal listing every key). The rest
+still work but are hidden from the legend (the full keymap lives in ``_HOTKEYS`` / `HelpScreen`):
+`r` refreshes from the task service over REST, `R` **respawns** a down task (releases its claim so
+the host runner re-spawns it), `p` opens the task's `url` in the browser (cloude-cade's `p` "open
+PR"), `g` opens the **repo config screen** (list / create / edit repos), `s` switches to the
+task-service session, and `a` opens a modal listing the task's artifacts — Enter opens the selected
+one with the host's default handler (`xdg-open`/`open`) by fetching it over REST to a temp file, `e`
+opens the on-disk file in place when the dashboard shares the artifact store. Drop is the only state
+*transition* the dashboard drives: every other transition starts a new agentic turn, so it's
+triggered by an in-container agent skill (advance/iterate over REST/MCP), not the operator (ADR 0004).
 
 `/` enters **search-as-you-type** (cloude-cade's `/`): a query box reveals at the bottom and the
 table filters live to tasks whose slug/id/state/workflow/description contains the query
@@ -45,6 +49,7 @@ from typing import Any, TypeVar
 import httpx
 from rich.text import Text
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widget import Widget
@@ -413,6 +418,51 @@ class ArtifactScreen(_OptionListModal[tuple[str, str]]):
         self.dismiss((str(option_list.get_option_at_index(index).prompt), "local"))
 
 
+# The full keymap, single source of truth for the help screen (`?`). The footer shows only the
+# essential few (see ``Dashboard.BINDINGS``); every key — including the hidden ones — is listed
+# here, ordered most-common first, so the help screen stays the authoritative listing.
+_HOTKEYS: tuple[tuple[str, str], ...] = (
+    ("t", "Attach to the task's container tmux session"),
+    ("n", "New task (pick repo → workflow → describe)"),
+    ("x", "Drop the highlighted task"),
+    ("/", "Search tasks as you type"),
+    ("r", "Refresh from the task service now"),
+    ("R", "Respawn a down task (release its claim)"),
+    ("p", "Open the task's URL in the browser"),
+    ("g", "Repo config (list / create / edit repos)"),
+    ("a", "List the task's artifacts"),
+    ("s", "Switch to the task-service session"),
+    ("Esc", "Clear the search filter"),
+    ("?", "This help screen"),
+    ("q", "Quit"),
+)
+
+
+class HelpScreen(ModalScreen[None]):
+    """A modal listing **every** hotkey — the footer shows only the essential few, so this is
+    the full keymap. Escape / `?` / `q` close it."""
+
+    CSS = """
+    HelpScreen { align: center middle; }
+    #help-box { width: 64; height: auto; max-height: 90%; padding: 1 2; border: round $accent; background: $surface; }
+    #help-keys { padding-top: 1; }
+    """
+    BINDINGS = [
+        ("escape", "close", "Close"),
+        ("question_mark", "close", "Close"),
+        ("q", "close", "Close"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        rows = "\n".join(f"  [b]{key:<5}[/b] {desc}" for key, desc in _HOTKEYS)
+        with Vertical(id="help-box"):
+            yield Label("panopticon — keys")
+            yield Static(rows, id="help-keys")
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
 class Dashboard(App[None]):
     """The task view. On `t` it calls ``on_switch`` with the task's session (and `s` calls
     ``on_service`` for the task-service session) and stays running; the supervisor handles the
@@ -420,19 +470,23 @@ class Dashboard(App[None]):
 
     CSS = "#tasks { width: 3fr; } #detail { width: 2fr; padding: 0 1; } #search { display: none; }"
     REFRESH_INTERVAL = 2.0  # seconds between automatic refreshes (0/None disables the timer)
+    # Only the essential, most-used keys show in the footer legend; the rest still dispatch but
+    # are hidden (``show=False``) to keep the legend uncluttered — `?` opens HelpScreen, which
+    # lists every key (the full keymap lives in ``_HOTKEYS``).
     BINDINGS = [
-        ("r", "refresh", "Refresh"),
+        ("t", "attach", "Attach"),
         ("n", "new_task", "New task"),
         ("x", "drop", "Drop"),
-        ("R", "respawn", "Respawn"),
-        ("t", "attach", "Attach tmux"),
-        ("p", "open_url", "Open URL"),
-        ("g", "repos", "Repos"),
-        ("a", "artifacts", "Artifacts"),
-        ("s", "service", "Service"),
         ("/", "search", "Search"),
-        ("escape", "clear_search", "Clear search"),
+        Binding("question_mark", "help", "Help", key_display="?"),
         ("q", "quit", "Quit"),
+        Binding("r", "refresh", "Refresh", show=False),
+        Binding("R", "respawn", "Respawn", show=False),
+        Binding("p", "open_url", "Open URL", show=False),
+        Binding("g", "repos", "Repos", show=False),
+        Binding("a", "artifacts", "Artifacts", show=False),
+        Binding("s", "service", "Service", show=False),
+        Binding("escape", "clear_search", "Clear search", show=False),
     ]
     TITLE = "panopticon"
 
@@ -626,6 +680,10 @@ class Dashboard(App[None]):
             return
         webbrowser.open(url)
         self.notify(f"opened {url}")
+
+    def action_help(self) -> None:
+        """`?`: open the help screen — the full keymap (the footer shows only the essentials)."""
+        self.push_screen(HelpScreen())
 
     def action_repos(self) -> None:
         """`g`: open the repo config screen — list repos and create/edit them (ADR 0002)."""
