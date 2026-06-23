@@ -9,7 +9,7 @@
 FROM python:3.13-slim
 
 RUN apt-get update \
- && apt-get install --yes --no-install-recommends git bash curl ca-certificates gosu passwd \
+ && apt-get install --yes --no-install-recommends git bash curl ca-certificates gosu passwd vim \
  && rm --recursive --force /var/lib/apt/lists/*
 
 # The unprivileged account the task runs as. The entrypoint remaps it to the invoking uid/gid at
