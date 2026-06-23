@@ -221,8 +221,14 @@ class TaskService:
 
     def set_slug(self, task_id: str, slug: str) -> Task:
         task = self.get_task(task_id)
+        previous = task.slug
         task.slug = slug
         self._store.save_task(task)
+        # Expose the task's artifacts under the slug alias; drop a stale one on a re-slug so the
+        # tasks/ dir keeps a single live alias per task (the symlinks live on the artifact store).
+        if previous is not None and previous != slug:
+            self._artifacts.unlink_slug(previous)
+        self._artifacts.link_slug(task_id, slug)
         return task
 
     def set_url(self, task_id: str, url: str) -> Task:

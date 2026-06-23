@@ -215,6 +215,28 @@ def test_set_slug(tmp_path: Path) -> None:
     assert svc.get_task(task.id).slug == "fix-widget"
 
 
+def test_set_slug_aliases_the_artifacts_dir(tmp_path: Path) -> None:
+    # Setting the slug exposes the task's artifacts under <root>/tasks/<slug> (the symlink).
+    svc = make_service(tmp_path)
+    task = svc.create_task("r1", "spike")
+    svc.put_artifact(task.id, "plan.md", b"# Plan\n")
+    svc.set_slug(task.id, "fix-widget")
+    alias = tmp_path / "tasks" / "fix-widget"
+    assert alias.is_symlink()
+    assert (alias / "plan.md").read_bytes() == b"# Plan\n"
+
+
+def test_re_slug_swaps_the_alias(tmp_path: Path) -> None:
+    # Re-slugging drops the stale alias and points a fresh one at the same task.
+    svc = make_service(tmp_path)
+    task = svc.create_task("r1", "spike")
+    svc.put_artifact(task.id, "plan.md", b"# Plan\n")
+    svc.set_slug(task.id, "old-name")
+    svc.set_slug(task.id, "new-name")
+    assert not (tmp_path / "tasks" / "old-name").exists()
+    assert (tmp_path / "tasks" / "new-name" / "plan.md").read_bytes() == b"# Plan\n"
+
+
 # -- artifacts ----------------------------------------------------------------------
 
 

@@ -1,14 +1,16 @@
 """Filesystem artifact-store adapter (ADR 0003: local filesystem first).
 
 Layout: ``<root>/tasks/<task_id>/<name>``. The same files are openable in an editor and,
-later, served over MCP using the resolver in :mod:`panopticon.core.artifacts`.
+later, served over MCP using the resolver in :mod:`panopticon.core.artifacts`. Once a task has
+a slug, ``<root>/tasks/<slug>`` is a relative symlink to its id-named directory, so a human can
+reach a task's artifacts by its readable label as well as its opaque id.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from panopticon.core.artifacts import ArtifactStore, validate_segment
+from panopticon.core.artifacts import ArtifactStore, InvalidArtifactName, validate_segment
 
 #: Default artifact-store root. Shared so the task service and any co-located reader (e.g. the
 #: dashboard's open-in-place) resolve the same location from one source rather than copied literals.
@@ -49,3 +51,31 @@ class FilesystemArtifactStore(ArtifactStore):
         if not task_dir.is_dir():
             return []
         return sorted(p.name for p in task_dir.iterdir() if p.is_file())
+
+    def link_slug(self, task_id: str, slug: str) -> None:
+        """Alias ``<root>/tasks/<slug>`` to the task's id-named directory.
+
+        The link is **relative** (its target is just ``<task_id>``, a sibling under
+        ``tasks/``) so the whole root stays relocatable. Idempotent, and it refuses to clobber
+        a real (non-symlink) entry — the slug is validated like any other path segment first.
+        """
+        validate_segment(task_id)
+        validate_segment(slug)
+        link = self._root / "tasks" / slug
+        if link.is_symlink():
+            if link.readlink() == Path(task_id):
+                return  # already the right alias
+            link.unlink()
+        elif link.exists():
+            raise InvalidArtifactName(f"slug {slug!r} collides with an existing artifact entry")
+        # Ensure the target exists so the alias resolves immediately rather than dangling.
+        self._task_dir(task_id).mkdir(parents=True, exist_ok=True)
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(task_id, target_is_directory=True)
+
+    def unlink_slug(self, slug: str) -> None:
+        """Remove a slug alias (only if it is a symlink); ignore an absent one."""
+        validate_segment(slug)
+        link = self._root / "tasks" / slug
+        if link.is_symlink():
+            link.unlink()
