@@ -70,7 +70,7 @@ class Spawner:
             workspace=workspace,
             image=self._compose_image(task["workflow"], repo),
             docker_in_docker=bool((repo.get("capabilities") or {}).get("docker_in_docker")),
-            description=task.get("description"),  # pre-filled into claude's input box on first spawn
+            memo=task.get("memo"),  # pre-filled into claude's input box on first spawn
         )
 
     def _compose_image(self, workflow: str, repo: JsonObj) -> str | None:

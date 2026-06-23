@@ -61,7 +61,7 @@ class TaskOut(BaseModel):
     state: str
     turn: Actor
     blocked: bool
-    description: str | None  # free-text intent collected at creation (shown in the summary)
+    memo: str | None  # free-text intent collected at creation (shown in the summary)
     slug: str | None
     url: str | None  # an optional external URL (PR, issue, …); the dashboard's `p` hotkey opens it
     branch: str | None
@@ -114,7 +114,7 @@ class RepoPatchIn(BaseModel):
 class CreateTaskIn(BaseModel):
     repo_id: str
     workflow: str
-    description: str | None = None
+    memo: str | None = None
 
 
 class ResponsibilityIn(BaseModel):
@@ -338,7 +338,7 @@ def create_app(service: TaskService) -> FastAPI:
     @app.post("/tasks", status_code=201)
     async def create_task(body: CreateTaskIn) -> TaskOut:
         return TaskOut.model_validate(
-            service.create_task(body.repo_id, body.workflow, description=body.description)
+            service.create_task(body.repo_id, body.workflow, memo=body.memo)
         )
 
     @app.get("/tasks")

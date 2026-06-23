@@ -396,7 +396,7 @@ def _fully_populated_task() -> Task:
         state="WORKING",
         turn=Actor.AGENT,
         blocked=True,
-        description="make the widget green",
+        memo="make the widget green",
         slug="fix-the-widget",
         url="https://github.com/acme/widgets/pull/7",
         branch="panopticon/fix-the-widget",

@@ -120,9 +120,9 @@ class _FakeClient:
         return self._operations
 
     def create_task(
-        self, repo_id: str, workflow: str, description: str | None = None
+        self, repo_id: str, workflow: str, memo: str | None = None
     ) -> dict[str, Any]:
-        self.created.append((repo_id, workflow, description))
+        self.created.append((repo_id, workflow, memo))
         return {"id": "new"}
 
     def apply_operation(self, task_id: str, operation: str) -> dict[str, Any]:
@@ -151,9 +151,9 @@ def test_render_detail_shows_the_id() -> None:
     assert "id: task-abcdef0123" in render_detail(_TASK)
 
 
-def test_render_detail_shows_the_description() -> None:
+def test_render_detail_shows_the_memo() -> None:
     assert "make the widget green" not in render_detail(_TASK)
-    text = render_detail({**_TASK, "description": "make the widget green"})
+    text = render_detail({**_TASK, "memo": "make the widget green"})
     assert "make the widget green" in text
 
 
@@ -458,7 +458,7 @@ async def test_pressing_u_with_no_runner_session_does_nothing() -> None:
         assert app.is_running  # reported "none running"; stayed on the dashboard
 
 
-async def test_pressing_n_creates_a_task_via_repo_workflow_then_description() -> None:
+async def test_pressing_n_creates_a_task_via_repo_workflow_then_memo() -> None:
     fake = _FakeClient([], repos=["r1", "r2"], workflows=["spike"])
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
@@ -469,13 +469,13 @@ async def test_pressing_n_creates_a_task_via_repo_workflow_then_description() ->
         await pilot.pause()
         await pilot.press("enter")  # first (only) workflow: spike
         await pilot.pause()
-        await pilot.press("f", "i", "x")  # type a description into the prompt
+        await pilot.press("f", "i", "x")  # type a memo into the prompt
         await pilot.press("enter")  # submit
         await pilot.pause()
         assert fake.created == [("r1", "spike", "fix")]
 
 
-async def test_pressing_n_with_a_blank_description_creates_with_none() -> None:
+async def test_pressing_n_with_a_blank_memo_creates_with_none() -> None:
     fake = _FakeClient([], repos=["r1"], workflows=["spike"])
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
@@ -486,7 +486,7 @@ async def test_pressing_n_with_a_blank_description_creates_with_none() -> None:
         await pilot.pause()
         await pilot.press("enter")  # workflow
         await pilot.pause()
-        await pilot.press("enter")  # submit an empty description
+        await pilot.press("enter")  # submit an empty memo
         await pilot.pause()
         assert fake.created == [("r1", "spike", None)]
 
@@ -581,23 +581,23 @@ def test_matches_is_a_case_insensitive_substring_over_identifying_fields() -> No
     assert _matches(task, "spike")  # workflow
     assert not _matches(task, task["id"][:6])  # id is not a search field
     assert not _matches(task, "nope")
-    # description is searchable too
-    assert _matches({**task, "description": "make it green"}, "green")
-    assert _matches({**_TASK, "description": None}, "")  # None description doesn't blow up
+    # memo is searchable too
+    assert _matches({**task, "memo": "make it green"}, "green")
+    assert _matches({**_TASK, "memo": None}, "")  # None memo doesn't blow up
 
 
-def test_slug_cell_combines_slug_and_description() -> None:
+def test_slug_cell_combines_slug_and_memo() -> None:
     # Returns a Rich Text (not a markup str) so the "[" survives — compare on .plain.
-    # both present → slug[description]
-    assert _slug_cell({**_TASK, "slug": "fix-widget", "description": "make it green"}).plain == (
+    # both present → slug[memo]
+    assert _slug_cell({**_TASK, "slug": "fix-widget", "memo": "make it green"}).plain == (
         "fix-widget[make it green]"
     )
-    # slug, no description → bare slug
-    assert _slug_cell({**_TASK, "slug": "fix-widget", "description": None}).plain == "fix-widget"
-    assert _slug_cell({"slug": "fix-widget"}).plain == "fix-widget"  # description key absent
-    # no slug, with description → "[description]" (no leading dash)
-    assert _slug_cell({"slug": None, "description": "make it green"}).plain == "[make it green]"
-    assert _slug_cell({"description": "make it green"}).plain == "[make it green]"  # slug key absent
+    # slug, no memo → bare slug
+    assert _slug_cell({**_TASK, "slug": "fix-widget", "memo": None}).plain == "fix-widget"
+    assert _slug_cell({"slug": "fix-widget"}).plain == "fix-widget"  # memo key absent
+    # no slug, with memo → "[memo]" (no leading dash)
+    assert _slug_cell({"slug": None, "memo": "make it green"}).plain == "[make it green]"
+    assert _slug_cell({"memo": "make it green"}).plain == "[make it green]"  # slug key absent
     # neither → "-"
     assert _slug_cell({"slug": None}).plain == "-"
     assert _slug_cell({}).plain == "-"
@@ -608,7 +608,7 @@ def test_slug_cell_is_text_so_brackets_arent_eaten_as_markup() -> None:
     # (e.g. "fix-widget[make it green]" → "fix-widget"). A Text renders literally.
     from rich.text import Text
 
-    cell = _slug_cell({"slug": "fix-widget", "description": "make it green"})
+    cell = _slug_cell({"slug": "fix-widget", "memo": "make it green"})
     assert isinstance(cell, Text)
     assert Text.from_markup(cell.plain).plain != cell.plain  # plain str WOULD be mangled by markup
 

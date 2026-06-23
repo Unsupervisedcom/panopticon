@@ -175,7 +175,7 @@ async def test_orchestrator_seeds_a_child_ready_to_approve(tmp_path: Path) -> No
             {
                 "orchestrator_task_id": boss.id,
                 "workflow": "github-self-reviewed",
-                "description": "Add a /healthz endpoint",
+                "memo": "Add a /healthz endpoint",
             },
         )
         child_id = created.structuredContent["id"]  # type: ignore[index]

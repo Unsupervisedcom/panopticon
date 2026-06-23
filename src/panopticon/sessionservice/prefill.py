@@ -5,14 +5,14 @@ The runner makes a host tmux session whose pane runs ``docker exec -it … pytho
 panopticon.container.agent`` — the launcher bootstraps the CLI then ``exec``s ``claude`` — so the
 pane's TTY *is* claude's stdin/stdout. This poller watches that pane's **raw** output for the
 bracketed-paste-enable escape (``ESC[?2004h``), emitted once when claude's TUI initializes the very
-input mode the paste relies on, then bracketed-pastes the task description into the input box **left
+input mode the paste relies on, then bracketed-pastes the task memo into the input box **left
 unsent** — so the user attaches and presses Enter to begin (or edits the prompt first).
 
 Why the escape, not on-screen wording: it's independent of any UI text, so a claude restyle can't
 break it; and nothing interactive runs ahead of claude on the pane (the launcher's bootstrap is
 plain non-interactive Python), so the first ``ESC[?2004h`` on the stream is unambiguously claude's.
 
-Why paste, not type: a description may span multiple lines; ``tmux paste-buffer -p`` uses bracketed
+Why paste, not type: a memo may span multiple lines; ``tmux paste-buffer -p`` uses bracketed
 paste, so the whole block lands in the box without a newline being treated as submit.
 
 The runner launches this **detached** so ``spawn`` never blocks. Best-effort throughout: on an empty

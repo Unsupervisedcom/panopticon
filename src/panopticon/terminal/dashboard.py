@@ -23,7 +23,7 @@ triggered by an in-container agent skill (`advance` over REST/MCP; going back to
 `set_state` move), not the operator (ADR 0004).
 
 `/` enters **search-as-you-type** (cloude-cade's `/`): a query box reveals at the bottom and the
-table filters live to tasks whose slug/state/workflow/description contains the query
+table filters live to tasks whose slug/state/workflow/memo contains the query
 (case-insensitive substring). `Enter` **locks** the filter — the box hides and normal navigation
 keys return while the filter stays applied; `Esc` **clears** it (from typing or locked). The
 filter is applied in ``action_refresh``, so the auto-refresh timer preserves it across rebuilds.
@@ -116,24 +116,24 @@ def _separator_cells(columns: int) -> list[Text]:
 
 
 def _slug_cell(task: JsonObj) -> Text:
-    """The ``slug[description]`` column: the slug followed by the task's description in brackets.
+    """The ``slug[memo]`` column: the slug followed by the task's memo in brackets.
 
-    Bare slug when there's no description; bare ``[description]`` (no leading dash) when there's a
-    description but no slug; ``-`` only when neither is set.
+    Bare slug when there's no memo; bare ``[memo]`` (no leading dash) when there's a
+    memo but no slug; ``-`` only when neither is set.
 
     Returned as a Rich ``Text`` (like :func:`_turn_cell`), **not** a markup string: Textual renders
     bare ``str`` cells through console markup, which swallows the ``[…]`` — so a plain string would
-    show just the bare slug (the bug that hid descriptions; the header had the same problem)."""
+    show just the bare slug (the bug that hid memos; the header had the same problem)."""
     slug = task.get("slug") or ""
-    desc = task.get("description")
-    if desc:
-        return Text(f"{slug}[{desc}]")
+    memo = task.get("memo")
+    if memo:
+        return Text(f"{slug}[{memo}]")
     return Text(slug or "-")
 
 
 # Fields a search query matches against (cloude-cade filters on the task title; our nearest
 # analogs are the task's identifying text). Joined and lowercased into one haystack per task.
-_SEARCH_FIELDS = ("slug", "state", "workflow", "description")
+_SEARCH_FIELDS = ("slug", "state", "workflow", "memo")
 
 
 def _matches(task: JsonObj, query: str) -> bool:
@@ -166,8 +166,8 @@ def render_detail(task: JsonObj) -> str:
         f"id: {task['id']}",
         f"state: {task['state']}    turn: {turn}    workflow: {task['workflow']}{claim}",
     ]
-    if task.get("description"):
-        lines += ["", task["description"]]
+    if task.get("memo"):
+        lines += ["", task["memo"]]
     if task.get("url"):
         lines += ["", f"url: {task['url']}"]
     if task.get("tokens_used"):
@@ -674,7 +674,7 @@ class Dashboard(App[None]):
         table = self.query_one("#tasks", DataTable)
         table.cursor_type = "row"
         # the slug header carries a literal "[" — pass it as Text so Textual doesn't eat it as markup
-        table.add_columns("state", "turn", "container", "tokens", Text("slug[description]"))
+        table.add_columns("state", "turn", "container", "tokens", Text("slug[memo]"))
         table.focus()  # the (hidden) search Input would otherwise grab initial focus
         self.action_refresh()
         if self._refresh_interval:
@@ -774,13 +774,13 @@ class Dashboard(App[None]):
                 if workflow is None:
                     return
 
-                def create(description: str | None) -> None:
-                    if description is None:  # backed out of the prompt
+                def create(memo: str | None) -> None:
+                    if memo is None:  # backed out of the prompt
                         return
-                    self._client.create_task(repo, workflow, description.strip() or None)
+                    self._client.create_task(repo, workflow, memo.strip() or None)
                     self.action_refresh()
 
-                self.push_screen(InputScreen("description"), create)
+                self.push_screen(InputScreen("memo"), create)
 
             self.push_screen(ChoiceScreen("workflow", workflows), describe)
 

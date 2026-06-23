@@ -96,7 +96,7 @@ class _TaskRow(_Base):
     state: Mapped[str]
     turn: Mapped[str]
     blocked: Mapped[bool] = mapped_column(default=False)
-    description: Mapped[str | None] = mapped_column(default=None)
+    memo: Mapped[str | None] = mapped_column(default=None)
     slug: Mapped[str | None]
     url: Mapped[str | None] = mapped_column(default=None)
     branch: Mapped[str | None] = mapped_column(default=None)
@@ -118,7 +118,7 @@ class _TaskRow(_Base):
             state=self.state,
             turn=Actor(self.turn),
             blocked=self.blocked,
-            description=self.description,
+            memo=self.memo,
             slug=self.slug,
             url=self.url,
             branch=self.branch,
@@ -137,7 +137,7 @@ class _TaskRow(_Base):
             state=task.state,
             turn=task.turn.value,
             blocked=task.blocked,
-            description=task.description,
+            memo=task.memo,
             slug=task.slug,
             url=task.url,
             branch=task.branch,

@@ -157,10 +157,10 @@ class _RecorderWithConfigVolume(_Recorder):
         return ""
 
 
-def test_spawn_prefills_the_input_box_with_the_description_on_first_spawn(tmp_path: Path) -> None:
+def test_spawn_prefills_the_input_box_with_the_memo_on_first_spawn(tmp_path: Path) -> None:
     rec, prefill = _Recorder(), _FakePrefill()  # _Recorder's volume-inspect returns "" → first spawn
     runner = LocalRunner("http://svc", run=rec, prefill=prefill)
-    runner.spawn("t1", description="build the thing")
+    runner.spawn("t1", memo="build the thing")
     # gated on a *first* spawn: it checks the per-task config volume before `docker run` creates it
     assert ["docker", "volume", "inspect", "panopticon-config-t1"] in [c for c, _ in rec.calls]
     assert len(prefill.calls) == 1
@@ -170,22 +170,22 @@ def test_spawn_prefills_the_input_box_with_the_description_on_first_spawn(tmp_pa
     os.unlink(str(call["prompt_file"]))
 
 
-def test_spawn_does_not_prefill_without_a_description() -> None:
+def test_spawn_does_not_prefill_without_a_memo() -> None:
     rec, prefill = _Recorder(), _FakePrefill()
     LocalRunner("http://svc", run=rec, prefill=prefill).spawn("t1")
     assert prefill.calls == []  # nothing to prefill
     assert not any(c[:2] == ["docker", "volume"] for c, _ in rec.calls)  # no needless volume probe
 
 
-def test_spawn_does_not_prefill_a_blank_description() -> None:
+def test_spawn_does_not_prefill_a_blank_memo() -> None:
     rec, prefill = _Recorder(), _FakePrefill()
-    LocalRunner("http://svc", run=rec, prefill=prefill).spawn("t1", description="   \n")
+    LocalRunner("http://svc", run=rec, prefill=prefill).spawn("t1", memo="   \n")
     assert prefill.calls == []
 
 
 def test_spawn_skips_prefill_on_respawn_when_the_config_volume_exists() -> None:
     rec, prefill = _RecorderWithConfigVolume(), _FakePrefill()
-    LocalRunner("http://svc", run=rec, prefill=prefill).spawn("t1", description="build the thing")
+    LocalRunner("http://svc", run=rec, prefill=prefill).spawn("t1", memo="build the thing")
     # the config volume already exists → a respawn → don't paste into a --continue'd box
     assert prefill.calls == []
 
@@ -193,7 +193,7 @@ def test_spawn_skips_prefill_on_respawn_when_the_config_volume_exists() -> None:
 def test_spawn_honours_the_no_prefill_opt_out(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PANOPTICON_NO_PREFILL", "1")
     rec, prefill = _Recorder(), _FakePrefill()
-    LocalRunner("http://svc", run=rec, prefill=prefill).spawn("t1", description="build the thing")
+    LocalRunner("http://svc", run=rec, prefill=prefill).spawn("t1", memo="build the thing")
     assert prefill.calls == []
     assert not any(c[:2] == ["docker", "volume"] for c, _ in rec.calls)  # opt-out skips the probe too
 

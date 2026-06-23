@@ -124,8 +124,8 @@ class TaskServiceClient:
         are preserved."""
         return cast(JsonObj, self._json(self._http.patch(f"/repos/{repo_id}", json=changes)))
 
-    def create_task(self, repo_id: str, workflow: str, description: str | None = None) -> JsonObj:
-        body = {"repo_id": repo_id, "workflow": workflow, "description": description}
+    def create_task(self, repo_id: str, workflow: str, memo: str | None = None) -> JsonObj:
+        body = {"repo_id": repo_id, "workflow": workflow, "memo": memo}
         return cast(JsonObj, self._json(self._http.post("/tasks", json=body)))
 
     def set_slug(self, task_id: str, slug: str) -> JsonObj:

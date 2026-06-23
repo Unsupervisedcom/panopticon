@@ -36,7 +36,7 @@ you want to spawn. Throughout, your *own* task id is shown below; the new task h
    `github-peer-reviewed`; `list_workflows` lists the valid names). New tasks are created in
    *your own* repo — this first iteration can't create tasks in another repo.
 2. **Create it.** Call the `create_task` tool with `orchestrator_task_id` set to *your own* task
-   id, plus `workflow`, and a `description` (put the intent/provenance here). Record the **new
+   id, plus `workflow`, and a `memo` (put the intent/provenance here). Record the **new
    task's id** from the result.
 3. **Name it.** `set_slug` on the new id with a short kebab-case slug.
 4. **Write its plan.** `put_artifact` on the new id with `name="{GithubForgeWorkflow.PLAN_ARTIFACT_NAME}"` and the full
