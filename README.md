@@ -3,9 +3,8 @@
 Run a fleet of coding agents across isolated tasks and **configurable workflows** — from one
 seat of mission control.
 
-A ground-up rewrite of the [cloude-cade](https://github.com/tildesrc/cloude-cade) prototype.
-The full design lives on the [`design-docs`](../../tree/design-docs) branch (goals, parity
-analysis, architecture, roadmap, and ADRs).
+The full design lives on the [`design-docs`](../../tree/design-docs) branch (goals, architecture,
+roadmap, and ADRs).
 
 ## What this is for
 
@@ -178,8 +177,7 @@ The dashboard colors both, so foreground tasks (your turn) stand out from backgr
 
 ## Workflows are code
 
-This is the headline difference from the prototype: a workflow is a **`Workflow` subclass** whose
-states are nested, declarative `State` classes. The lifecycle is code — transitions, the actor
+A workflow is a **`Workflow` subclass** whose states are nested, declarative `State` classes. The lifecycle is code — transitions, the actor
 who holds the turn, the responsibility gates — not hardcoded control flow (ADR 0004). Workflows
 are **discovered** from the built-in package plus an optional path: drop a module in and it
 registers, no core change. The built-ins:
@@ -216,9 +214,8 @@ service over REST. Keys:
 
 ## Skills
 
-Where the prototype had host-side slash commands, panopticon has **skills**: agent-driven
-procedures rendered into the container, layered on top of the core operations (`advance`,
-`drop`). The agent invokes them from its session; you can ask it to. Every task gets the agnostic
+Skills are agent-driven procedures rendered into the container, layered on top of the core
+operations (`advance`, `drop`). The agent invokes them from its session; you can ask it to. Every task gets the agnostic
 provisioning skill; the forge workflows add the rest:
 
 - **`/provision`** — name the task (set its slug) so the session service creates the branch.
