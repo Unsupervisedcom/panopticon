@@ -35,7 +35,10 @@ src/panopticon/
                    # (ADR 0011: branch the per-task clone on slug, record it back); clones.py =
                    # per-repo clone cache; spawn.py = spawn-prep (clone --local the per-task
                    # checkout, mounted rw at /workspace); spawner.py = the spawn loop (claim an
-                   # unclaimed task → spawn its container); daemon.py = the provision-only pull loop;
+                   # unclaimed task → spawn its container; prefills claude's input box with the
+                   # task description on a first spawn); prefill.py = the detached input-box prefill
+                   # poller (mirrors cloude-cade: pipe-pane watch for ESC[?2004h → paste-buffer the
+                   # description, unsent); daemon.py = the provision-only pull loop;
                    # host.py = the unified per-host daemon (spawn + provision each pass;
                    # `python -m panopticon.sessionservice.host`); `python -m panopticon.sessionservice`
                    # spawns one task
@@ -171,6 +174,11 @@ commands the Makefile wraps).
   container entrypoint loop (fakes; no Docker/LLM), plus a `skipif` docker integration test.
 - `tests/test_spawn.py` — spawn-prep (ADR 0011): unit tests pin the `clone --local` of the
   per-task checkout and the idempotency gate (skips when the checkout already exists).
+- `tests/test_prefill.py` — the input-box prefill poller: unit tests drive `prefill_pane` with a
+  fake tmux runner + injected `sleep`/raw-log — pin the `pipe-pane`/`load-buffer`/`paste-buffer -p`
+  commands when the box becomes ready, and every best-effort give-up (empty prompt, timeout,
+  vanished session). `test_local_runner.py` covers the first-spawn gate (config-volume probe) +
+  the `PANOPTICON_NO_PREFILL` opt-out.
 - `tests/test_provisioning_acceptance.py` — Slice 7 acceptance (`skipif` no git): the host-side
   provisioning path with **real git** — clone --local the per-task checkout → set slug → the daemon
   branches it (`panopticon/<slug>`) + repoints origin → the task service records branch + clone path.

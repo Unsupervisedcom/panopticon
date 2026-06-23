@@ -136,6 +136,68 @@ def test_spawn_mounts_a_per_task_config_volume_for_claude_history() -> None:
     assert "panopticon-config-t1:/home/panopticon/.claude" in docker_run
 
 
+class _FakePrefill:
+    """Records prefill-launch calls instead of detaching a real poller."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def __call__(self, session: str, prompt_file: str, *, socket: str | None) -> None:
+        self.calls.append({"session": session, "prompt_file": prompt_file, "socket": socket})
+
+
+class _RecorderWithConfigVolume(_Recorder):
+    """A recorder whose ``docker volume inspect`` reports the per-task config volume *exists*
+    (i.e. simulate a respawn)."""
+
+    def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False) -> str:
+        super().__call__(args, check=check, interactive=interactive)
+        if list(args[:3]) == ["docker", "volume", "inspect"]:
+            return '[{"Name": "panopticon-config-t1"}]'
+        return ""
+
+
+def test_spawn_prefills_the_input_box_with_the_description_on_first_spawn(tmp_path: Path) -> None:
+    rec, prefill = _Recorder(), _FakePrefill()  # _Recorder's volume-inspect returns "" → first spawn
+    runner = LocalRunner("http://svc", run=rec, prefill=prefill)
+    runner.spawn("t1", description="build the thing")
+    # gated on a *first* spawn: it checks the per-task config volume before `docker run` creates it
+    assert ["docker", "volume", "inspect", "panopticon-config-t1"] in [c for c, _ in rec.calls]
+    assert len(prefill.calls) == 1
+    call = prefill.calls[0]
+    assert call["session"] == "panopticon-t1" and call["socket"] == "panopticon"
+    assert Path(str(call["prompt_file"])).read_text() == "build the thing"  # the unsent prompt
+    os.unlink(str(call["prompt_file"]))
+
+
+def test_spawn_does_not_prefill_without_a_description() -> None:
+    rec, prefill = _Recorder(), _FakePrefill()
+    LocalRunner("http://svc", run=rec, prefill=prefill).spawn("t1")
+    assert prefill.calls == []  # nothing to prefill
+    assert not any(c[:2] == ["docker", "volume"] for c, _ in rec.calls)  # no needless volume probe
+
+
+def test_spawn_does_not_prefill_a_blank_description() -> None:
+    rec, prefill = _Recorder(), _FakePrefill()
+    LocalRunner("http://svc", run=rec, prefill=prefill).spawn("t1", description="   \n")
+    assert prefill.calls == []
+
+
+def test_spawn_skips_prefill_on_respawn_when_the_config_volume_exists() -> None:
+    rec, prefill = _RecorderWithConfigVolume(), _FakePrefill()
+    LocalRunner("http://svc", run=rec, prefill=prefill).spawn("t1", description="build the thing")
+    # the config volume already exists → a respawn → don't paste into a --continue'd box
+    assert prefill.calls == []
+
+
+def test_spawn_honours_the_no_prefill_opt_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PANOPTICON_NO_PREFILL", "1")
+    rec, prefill = _Recorder(), _FakePrefill()
+    LocalRunner("http://svc", run=rec, prefill=prefill).spawn("t1", description="build the thing")
+    assert prefill.calls == []
+    assert not any(c[:2] == ["docker", "volume"] for c, _ in rec.calls)  # opt-out skips the probe too
+
+
 def test_spawn_uses_the_composed_image_when_given_else_the_base() -> None:
     rec = _Recorder()
     runner = LocalRunner("http://svc", image="panopticon-base", run=rec)

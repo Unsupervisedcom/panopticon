@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import os
 import subprocess
-from collections.abc import Sequence
+import sys
+import tempfile
+from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
-
-from collections.abc import Mapping
 
 from panopticon.sessionservice.runner import Runner
 
@@ -68,6 +68,29 @@ def _subprocess_run(args: Sequence[str], *, check: bool = True, interactive: boo
     return subprocess.run(list(args), check=check, capture_output=True, text=True).stdout
 
 
+class PrefillLauncher(Protocol):
+    """Launches the input-box prefill poller (``sessionservice.prefill``) **detached** for a tmux
+    ``session``, reading ``prompt_file``. Injectable so ``spawn`` stays fast + unit-testable."""
+
+    def __call__(self, session: str, prompt_file: str, *, socket: str | None) -> None: ...
+
+
+def _launch_prefill(session: str, prompt_file: str, *, socket: str | None) -> None:  # pragma: no cover - detaches a real subprocess
+    """Spawn ``python -m panopticon.sessionservice.prefill`` in its own session (``setsid``-style)
+    so it outlives ``spawn`` and never blocks it; it polls the pane and pastes the prompt, then
+    removes ``prompt_file`` itself. Fire-and-forget — the prefill is best-effort (see ``prefill``)."""
+    argv = [sys.executable, "-m", "panopticon.sessionservice.prefill", session, prompt_file]
+    if socket:
+        argv += ["--socket", socket]
+    subprocess.Popen(  # noqa: S603 - fixed argv, no shell
+        argv,
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
 def _invoking_user() -> str:
     """The ``uid:gid`` of the host process invoking the runner — passed to the container (as
     ``PANOPTICON_PUID``/``PGID``) for its entrypoint to adopt, so the task runs **unprivileged** as
@@ -91,6 +114,7 @@ class LocalRunner(Runner):
         extra_env: Mapping[str, str] | None = None,
         user: str | None = None,
         run: CommandRunner = _subprocess_run,
+        prefill: PrefillLauncher = _launch_prefill,
     ) -> None:
         self._service_url = service_url
         self._image = image
@@ -104,6 +128,7 @@ class LocalRunner(Runner):
         self._tmux_socket = tmux_socket  # isolate panopticon's tmux server when set (-L)
         self._extra_env = dict(extra_env or {})
         self._run = run
+        self._prefill = prefill
 
     def _tmux(self, *args: str) -> list[str]:
         prefix = ["tmux", *(["-L", self._tmux_socket] if self._tmux_socket else [])]
@@ -118,6 +143,7 @@ class LocalRunner(Runner):
         workspace: str | None = None,
         image: str | None = None,
         docker_in_docker: bool = False,
+        description: str | None = None,
     ) -> str:
         """Spawn the task container. ``env_file``/``creds_volume`` are the task's repo's secret
         references (ADR 0007), injected at launch — never baked into the image. ``workspace`` is the
@@ -125,9 +151,14 @@ class LocalRunner(Runner):
         the agent's working dir. ``image`` overrides the default base with the task's composed image
         (base → workflow → repo, ADR 0005); ``None`` uses the configured base. ``docker_in_docker``
         (the repo's ``capabilities``) runs the container ``--privileged`` and tells the entrypoint to
-        start a nested Docker daemon — a trust escalation, opt-in per repo."""
+        start a nested Docker daemon — a trust escalation, opt-in per repo. ``description`` (the
+        task's free-text intent) is pre-filled into claude's input box on a **first** spawn, left
+        unsent — see :func:`_maybe_prefill`."""
         # The container name doubles as the tmux session name, so stop() needs only the id.
         container = f"panopticon-{task_id}"
+        # Decide *before* `docker run` (which creates the config volume) whether this is the task's
+        # first spawn — only then do we prefill, so a respawn doesn't paste into a --continue'd box.
+        first_spawn = self._wants_prefill(description) and not self._config_volume_exists(task_id)
         puid, _, pgid = self._user.partition(":")
         env = {
             "PANOPTICON_SERVICE_URL": self._service_url,
@@ -176,7 +207,38 @@ class LocalRunner(Runner):
                 container, *self._agent_command,
             )
         )
+        if first_spawn and description is not None:
+            self._maybe_prefill(container, description)
         return container
+
+    @staticmethod
+    def _wants_prefill(description: str | None) -> bool:
+        """Whether a description is worth pre-filling: non-empty and not opted out via
+        ``PANOPTICON_NO_PREFILL`` (the env knob the detached poller also honours)."""
+        return bool(description and description.strip()) and not os.environ.get("PANOPTICON_NO_PREFILL")
+
+    def _config_volume_exists(self, task_id: str) -> bool:
+        """True if the per-task config volume is already present — i.e. the task has been spawned
+        before (a respawn). It's the same persisted state ``claude --continue`` keys on, so gating
+        the prefill on it keeps the two consistent: prefill a brand-new box, never a continued one."""
+        return bool(self._run(
+            ["docker", "volume", "inspect", f"panopticon-config-{task_id}"], check=False
+        ).strip())
+
+    def _maybe_prefill(self, session: str, description: str) -> None:
+        """Write the description to a throwaway file and launch the detached prefill poller against
+        the task's tmux ``session``. The poller pastes it into claude's input box, unsent, then
+        removes the file. Best-effort: a launch failure must not fail the spawn."""
+        fd, prompt_file = tempfile.mkstemp(prefix=f"panopticon-prefill-{session}-", suffix=".txt")
+        with os.fdopen(fd, "w") as handle:
+            handle.write(description)
+        try:
+            self._prefill(session, prompt_file, socket=self._tmux_socket)
+        except OSError:  # couldn't even launch the poller — drop the temp file, leave the box empty
+            try:
+                os.unlink(prompt_file)
+            except OSError:
+                pass
 
     def stop(self, container_id: str) -> None:
         # Idempotent: tolerate an already-gone session/container.
