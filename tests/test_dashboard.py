@@ -625,6 +625,23 @@ async def test_repo_form_autofills_on_git_url_blur() -> None:
         assert app.screen.query_one("#field-creds_volume", Input).value == "widgets-creds"
 
 
+async def test_repo_form_edit_mode_does_not_autofill_blank_fields() -> None:
+    fake = _FakeClient([], repos=[{"id": "r1", "name": "", "git_url": "https://x/widgets.git",
+                                   "default_base": "main"}])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")  # edit
+        await pilot.pause()
+        # Editing an existing repo never derives values: blanks stay blank even on blur.
+        app.screen.query_one("#field-creds_volume", Input).focus()  # blur git_url
+        await pilot.pause()
+        assert app.screen.query_one("#field-name", Input).value == ""
+        assert app.screen.query_one("#field-creds_volume", Input).value == ""
+
+
 async def test_repos_screen_create_requires_id_name_and_git_url() -> None:
     fake = _FakeClient([], repos=[])
     app = Dashboard(fake)  # type: ignore[arg-type]
@@ -654,11 +671,11 @@ async def test_repos_screen_edits_a_repo_via_patch() -> None:
         app.screen.query_one("#field-name", Input).value = "new"
         await pilot.press("enter")
         await pilot.pause()
-        # Only the core fields are sent; image_layer/capabilities are never touched (PATCH). The
-        # blank creds_volume backfills from the git URL (r1); name keeps the user's edit.
+        # Only the core fields are sent; image_layer/capabilities are never touched (PATCH).
+        # Edit mode never auto-fills, so the blank creds_volume stays blank.
         assert fake.updated_repos == [
             ("r1", {"name": "new", "git_url": "https://x/r1.git", "default_base": "main",
-                    "env_file": None, "creds_volume": "r1-creds"})
+                    "env_file": None, "creds_volume": None})
         ]
 
 

@@ -252,10 +252,11 @@ class RepoFormScreen(ModalScreen["dict[str, str] | None"]):
     """A modal form for a repo's core fields. Submits a ``{field: value}`` dict on save (Enter
     or Ctrl+S), or ``None`` on cancel (Escape).
 
-    The **git URL leads** the form: from it we auto-fill the still-blank ``name``, ``id``
-    (create mode only) and ``creds_volume`` (a ``<repo>-creds`` convention) when the URL field
-    loses focus and again at submit — never clobbering a value the user already typed.
-    ``default_base`` defaults to ``main``.
+    The **git URL leads** the form. In **create mode** the still-blank ``id``, ``name`` and
+    ``creds_volume`` (a ``<repo>-creds`` convention) auto-fill from it when the URL field loses
+    focus and again at submit — never clobbering a value the user already typed — and
+    ``default_base`` defaults to ``main``. Edit mode applies neither: a repo's existing values
+    are left exactly as they are.
 
     Create mode (no ``repo``): every field is an editable :class:`Input`, including ``id``.
     Edit mode: ``id`` is shown read-only (the primary key can't change) and the rest are
@@ -285,12 +286,12 @@ class RepoFormScreen(ModalScreen["dict[str, str] | None"]):
         self._editing = repo is not None
 
     def _initial(self, name: str) -> str:
-        """A field's pre-populated value: the repo's stored value, else ``main`` for
-        ``default_base``, else blank."""
+        """A field's pre-populated value: the repo's stored value, else (create mode only)
+        ``main`` for ``default_base``, else blank."""
         stored = self._repo.get(name)
         if stored:
             return str(stored)
-        return "main" if name == "default_base" else ""
+        return "main" if name == "default_base" and not self._editing else ""
 
     def compose(self) -> ComposeResult:
         with Vertical(id="repo-form"):
@@ -307,14 +308,15 @@ class RepoFormScreen(ModalScreen["dict[str, str] | None"]):
         self.query_one(Input).focus()
 
     def _autofill_from_git_url(self) -> None:
-        """Fill the blank derived fields from the git URL. Only touches fields the user hasn't
-        filled, so it's safe to run repeatedly (on blur and at submit)."""
+        """Fill the blank derived fields from the git URL — create mode only (editing an
+        existing repo leaves its values untouched). Only touches fields the user hasn't filled,
+        so it's safe to run repeatedly (on blur and at submit)."""
+        if self._editing:
+            return
         repo = _repo_name_from_git_url(self.query_one("#field-git_url", Input).value)
         if not repo:
             return
-        derived = dict(self._DERIVED)
-        if not self._editing:
-            derived["id"] = lambda r: r
+        derived: dict[str, Callable[[str], str]] = {**self._DERIVED, "id": lambda r: r}
         for field, derive in derived.items():
             widget = self.query_one(f"#field-{field}", Input)
             if not widget.value.strip():
