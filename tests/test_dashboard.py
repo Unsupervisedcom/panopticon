@@ -5,6 +5,7 @@ real HTTP client is covered in test_terminal.py."""
 
 from __future__ import annotations
 
+import threading
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
@@ -72,6 +73,11 @@ class _FakeClient:
         self._operations = operations or {}
         self._artifacts = artifacts or {}
         self._artifact_content = artifact_content
+        # Change-feed state for the long-poll worker: a version cursor + an event a test arms with
+        # `signal_change()` to release a parked `list_tasks_versioned` (the producer "changed a task").
+        self._version = 0
+        self._change = threading.Event()
+        self.list_tasks_calls = 0  # how many times the table was (re)built — counts feed refreshes
         self.created: list[tuple[str, str, str | None]] = []
         self.applied: list[tuple[str, str]] = []
         self.released: list[str] = []
@@ -80,7 +86,30 @@ class _FakeClient:
         self.fetched: list[tuple[str, str]] = []  # (task_id, name) passed to get_artifact
 
     def list_tasks(self) -> list[dict[str, Any]]:
+        self.list_tasks_calls += 1
         return self._tasks
+
+    def list_tasks_versioned(
+        self, *, since: int = 0, wait: float | None = None
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Mimic the block-until-change feed: park until a test arms `signal_change()` (then bump
+        the cursor and return) or the park elapses (return the current, unchanged cursor). `wait=None`
+        is the immediate seed read the worker does before its first long-poll.
+
+        The park is **capped** well below a real long-poll's `wait`: the worker thread blocks here,
+        and the asyncio default executor is joined at loop teardown, so a multi-second park would
+        stall every test's teardown. Capping keeps an idle worker cycling cheaply and teardown
+        snappy while still releasing promptly on `signal_change`."""
+        timeout = 0.0 if wait is None else min(wait, 0.05)
+        if self._change.wait(timeout=timeout):
+            self._change.clear()
+            self._version += 1
+        return self._tasks, self._version
+
+    def signal_change(self) -> None:
+        """Release a parked long-poll once, as a task-state change would — the next
+        `list_tasks_versioned` returns a bumped cursor and the worker refreshes."""
+        self._change.set()
 
     def list_registrations(self, task_id: str) -> list[dict[str, Any]]:
         return self._registrations.get(task_id, [])
@@ -341,24 +370,50 @@ async def test_arrow_keys_skip_the_separator() -> None:
         assert app._current == "t-a"
 
 
-async def test_dashboard_auto_refreshes_on_the_interval() -> None:
-    # A short interval picks up task-list changes without an `r` keypress.
+async def _settle(pilot: Any, predicate: Any, *, tries: int = 100, step: float = 0.02) -> None:
+    """Pump the event loop until ``predicate()`` holds (or we run out of tries). The feed worker
+    runs on a thread and marshals the rebuild back via ``call_from_thread``, so we poll rather than
+    sleep a fixed span — robust against scheduling jitter in CI."""
+    for _ in range(tries):
+        if predicate():
+            return
+        await pilot.pause(step)
+
+
+async def test_dashboard_refreshes_when_the_feed_signals_a_change() -> None:
+    # No wall-clock timer: the long-poll worker redraws the table when the change feed reports a
+    # task changed — exactly once per change, and the rebuild reflects the new snapshot.
     fake = _FakeClient([])
-    app = Dashboard(fake, refresh_interval=0.05)  # type: ignore[arg-type]
+    app = Dashboard(fake, refresh_interval=0.05)  # short long-poll wait so idle polls cycle fast  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
         assert table.row_count == 0
-        fake._tasks = [_TASK]  # the service grew a task; the timer should pick it up
-        await pilot.pause(0.15)
+        builds = fake.list_tasks_calls  # the first paint
+        fake._tasks = [_TASK]  # the producer grew a task...
+        fake.signal_change()  # ...and the feed releases the worker's parked long-poll
+        await _settle(pilot, lambda: table.row_count == 1)
         assert table.row_count == 1
+        assert fake.list_tasks_calls == builds + 1  # exactly one feed-driven rebuild
+
+
+async def test_dashboard_does_not_refresh_while_the_feed_is_idle() -> None:
+    # A quiet feed (no change signalled) drives no rebuild, however many long-poll cycles elapse —
+    # the old fixed-interval timer would have redrawn regardless.
+    fake = _FakeClient([_TASK])
+    app = Dashboard(fake, refresh_interval=0.02)  # fast idle polls, but nothing changes  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        builds = fake.list_tasks_calls  # first paint only
+        await pilot.pause(0.2)  # several idle long-poll cycles elapse
+        assert fake.list_tasks_calls == builds  # the quiet feed triggered no rebuild
 
 
 async def test_auto_refresh_preserves_the_highlighted_task() -> None:
     # Two tasks; highlight the second, then a refresh must keep the cursor on it (not snap to first).
     other = {**_TASK, "id": "task-second9999", "slug": "other"}
     fake = _FakeClient([_TASK, other])
-    app = Dashboard(fake, refresh_interval=0)  # manual refresh only — drive it explicitly
+    app = Dashboard(fake, refresh_interval=0)  # feed worker disabled — drive the rebuild explicitly
     async with app.run_test() as pilot:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
@@ -674,7 +729,7 @@ async def test_escape_clears_the_search() -> None:
 
 
 async def test_search_filter_survives_auto_refresh() -> None:
-    # The filter lives in action_refresh, so the auto-refresh timer keeps it applied.
+    # The filter lives in action_refresh, so a change-feed rebuild keeps it applied.
     app = Dashboard(_FakeClient([_FIX, _DEP]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()

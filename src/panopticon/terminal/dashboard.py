@@ -1,10 +1,12 @@
 """The Textual dashboard (ADR 0002 presentation adapter): the operator's view of tasks.
 
-A task table on the left, the highlighted task's state/turn/history on the right. It
-auto-refreshes from the task service every ``REFRESH_INTERVAL`` seconds (preserving the
-highlighted row across the rebuild); `r` forces a refresh now. A dim divider row splits the
-active tasks from the terminal (COMPLETE/DROPPED) ones that sink below them; the arrow keys jump
-over it (it's not a selectable task).
+A task table on the left, the highlighted task's state/turn/history on the right. It refreshes
+from the task service **on change** — a background worker long-polls the change feed
+(``list_tasks_versioned``), so the table redraws within a round-trip of a state change and stays
+still when nothing changes (no fixed-interval redraw); `r` forces a refresh now. The redraw
+preserves the highlighted row across the rebuild. A dim divider row splits the active tasks from
+the terminal (COMPLETE/DROPPED) ones that sink below them; the arrow keys jump over it (it's not a
+selectable task).
 
 The footer legend shows only the essential, most-used keys — `t` hands off to the task's
 container tmux, `n` creates a task (pick repo → workflow → describe the work), `x` **drops** it,
@@ -26,7 +28,7 @@ triggered by an in-container agent skill (`advance` over REST/MCP; going back to
 table filters live to tasks whose slug/state/workflow/description contains the query
 (case-insensitive substring). `Enter` **locks** the filter — the box hides and normal navigation
 keys return while the filter stays applied; `Esc` **clears** it (from typing or locked). The
-filter is applied in ``action_refresh``, so the auto-refresh timer preserves it across rebuilds.
+filter is applied in ``action_refresh``, so a change-feed refresh preserves it across rebuilds.
 
 The `container` column shows each task's container status: `live` (an active registration), `down`
 (was up, container gone — respawn with `R`), `starting` (claimed, no registration yet — its
@@ -46,6 +48,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import webbrowser
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -55,13 +58,14 @@ from typing import Any, TypeVar
 
 import httpx
 from rich.text import Text
-from textual import events
+from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import DataTable, Footer, Header, Input, Label, OptionList, Static
+from textual.worker import get_current_worker
 
 from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.state import TERMINAL_LABELS
@@ -625,7 +629,11 @@ class Dashboard(App[None]):
     running; the supervisor handles the attach/detach (ADR 0009)."""
 
     CSS = "#tasks { width: 3fr; } #detail { width: 2fr; padding: 0 1; } #search { display: none; }"
-    REFRESH_INTERVAL = 2.0  # seconds between automatic refreshes (0/None disables the timer)
+    # The change-feed long-poll's ``wait`` ceiling: the feed worker parks each request up to this
+    # many seconds before re-polling, so a quiet feed reconnects this often (no redraw) while a
+    # change still returns — and redraws — immediately. It also bounds how long quitting waits on
+    # the parked worker thread. 0/None disables the worker (manual `r` only; `make dashboard` one-shot).
+    REFRESH_INTERVAL = 2.0
     # Only the essential, most-used keys show in the footer legend; the rest still dispatch but
     # are hidden (``show=False``) to keep the legend uncluttered — `?` opens HelpScreen, which
     # lists every key. Both the footer bindings and the help screen derive from the single
@@ -651,7 +659,8 @@ class Dashboard(App[None]):
         self._on_runner = on_runner  # `u` hook: switch to the runner session; True if one exists
         self._login = login  # repos screen `l` hook: per-repo (by id) login + task restart (None → off)
         self._artifacts_root = artifacts_root  # for `a`'s `e` local-open (co-located store)
-        self._refresh_interval = refresh_interval  # auto-refresh cadence (0/None → manual only)
+        self._refresh_interval = refresh_interval  # change-feed long-poll wait (0/None → manual only)
+        self._version = 0  # the change-feed cursor (X-Tasks-Version) the worker long-polls against
         self._tasks: dict[str, JsonObj] = {}
         self._current: str | None = None
         self._query: str = ""  # active search filter ("" → no filter); see action_search
@@ -676,9 +685,43 @@ class Dashboard(App[None]):
         # the slug header carries a literal "[" — pass it as Text so Textual doesn't eat it as markup
         table.add_columns("state", "turn", "container", "tokens", Text("slug[description]"))
         table.focus()  # the (hidden) search Input would otherwise grab initial focus
-        self.action_refresh()
+        self.action_refresh()  # first paint; the feed worker drives every refresh after
         if self._refresh_interval:
-            self.set_interval(self._refresh_interval, self.action_refresh)
+            self._watch_feed()
+
+    @work(thread=True, exclusive=True, group="task-feed")
+    def _watch_feed(self) -> None:
+        """Redraw the table when tasks change, driven off the task service's change feed.
+
+        Replaces the old fixed-interval timer: each iteration long-polls ``list_tasks_versioned``,
+        which parks server-side until a task changes past our cursor (``_version``) or
+        ``_refresh_interval`` seconds elapse. A change returns immediately, so the table redraws
+        within a round-trip; a quiet feed just re-polls without redrawing. Runs in a thread (the
+        REST client is blocking) — ``call_from_thread`` marshals the rebuild onto the UI thread,
+        and Textual cancels the worker on unmount (the cancel lands when the parked poll returns)."""
+        worker = get_current_worker()
+        # Seed the cursor without redrawing: on_mount already painted the current snapshot, so the
+        # first poll should wait for the *next* change rather than re-firing on the current version.
+        try:
+            _, self._version = self._client.list_tasks_versioned()
+        except Exception:  # service not up yet — fall through; the loop retries with back-off
+            pass
+        while not worker.is_cancelled:
+            try:
+                _, version = self._client.list_tasks_versioned(
+                    since=self._version, wait=self._refresh_interval
+                )
+            except Exception:  # transient feed error (service restart / blip) — back off, retry
+                time.sleep(min(self._refresh_interval or 1.0, 1.0))
+                continue
+            if worker.is_cancelled:
+                return
+            if version != self._version:  # a task changed past our cursor → rebuild the table
+                self._version = version
+                try:
+                    self.call_from_thread(self.action_refresh)
+                except RuntimeError:  # app shut down between the cancel check and the dispatch
+                    return
 
     def on_unmount(self) -> None:
         if self._artifact_tmp is not None:  # remove the REST-open scratch dir on exit
@@ -710,7 +753,7 @@ class Dashboard(App[None]):
 
     def action_refresh(self) -> None:
         table = self.query_one("#tasks", DataTable)
-        selected = self._current  # keep the operator's highlight across the rebuild (auto-refresh)
+        selected = self._current  # keep the operator's highlight across the rebuild (feed refresh)
         table.clear()
         ordered = sorted(self._client.list_tasks(), key=_sort_key)  # live/user/recent first
         visible = [t for t in ordered if _matches(t, self._query)]  # apply the search filter
