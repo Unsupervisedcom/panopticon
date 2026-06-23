@@ -89,13 +89,16 @@ def _short(task_id: str) -> str:
     return task_id[:8]
 
 
-def _slug_cell(task: JsonObj) -> str:
-    """The ``slug[description]`` column: the slug followed by the task's description in
-    brackets. Falls back to the bare slug when there's no description, and to ``-`` when
-    there's no slug (an unprovisioned task still shows its description)."""
+def _slug_cell(task: JsonObj) -> Text:
+    """The ``slug[description]`` column: the slug followed by the task's description in brackets
+    (bare slug when there's no description; ``-`` when there's no slug).
+
+    Returned as a Rich ``Text`` (like :func:`_turn_cell`), **not** a markup string: Textual renders
+    bare ``str`` cells through console markup, which swallows the ``[…]`` — so a plain string would
+    show just the bare slug (the bug that hid descriptions; the header had the same problem)."""
     slug = task.get("slug") or "-"
     desc = task.get("description")
-    return f"{slug}[{desc}]" if desc else slug
+    return Text(f"{slug}[{desc}]" if desc else slug)
 
 
 # Fields a search query matches against (cloude-cade filters on the task title; our nearest
@@ -619,7 +622,8 @@ class Dashboard(App[None]):
     def on_mount(self) -> None:
         table = self.query_one("#tasks", DataTable)
         table.cursor_type = "row"
-        table.add_columns("id", "state", "turn", "run", "slug[description]")
+        # the slug header carries a literal "[" — pass it as Text so Textual doesn't eat it as markup
+        table.add_columns("id", "state", "turn", "run", Text("slug[description]"))
         table.focus()  # the (hidden) search Input would otherwise grab initial focus
         self.action_refresh()
         if self._refresh_interval:

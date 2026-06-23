@@ -441,17 +441,28 @@ def test_matches_is_a_case_insensitive_substring_over_identifying_fields() -> No
 
 
 def test_slug_cell_combines_slug_and_description() -> None:
+    # Returns a Rich Text (not a markup str) so the "[" survives — compare on .plain.
     # both present → slug[description]
-    assert _slug_cell({**_TASK, "slug": "fix-widget", "description": "make it green"}) == (
+    assert _slug_cell({**_TASK, "slug": "fix-widget", "description": "make it green"}).plain == (
         "fix-widget[make it green]"
     )
     # slug, no description → bare slug
-    assert _slug_cell({**_TASK, "slug": "fix-widget", "description": None}) == "fix-widget"
-    assert _slug_cell({"slug": "fix-widget"}) == "fix-widget"  # description key absent
+    assert _slug_cell({**_TASK, "slug": "fix-widget", "description": None}).plain == "fix-widget"
+    assert _slug_cell({"slug": "fix-widget"}).plain == "fix-widget"  # description key absent
     # no slug, with description → "-[description]"
-    assert _slug_cell({"slug": None, "description": "make it green"}) == "-[make it green]"
+    assert _slug_cell({"slug": None, "description": "make it green"}).plain == "-[make it green]"
     # neither → "-"
-    assert _slug_cell({"slug": None}) == "-"
+    assert _slug_cell({"slug": None}).plain == "-"
+
+
+def test_slug_cell_is_text_so_brackets_arent_eaten_as_markup() -> None:
+    # The regression: a bare string cell is rendered through Textual markup, which swallows "[…]"
+    # (e.g. "fix-widget[make it green]" → "fix-widget"). A Text renders literally.
+    from rich.text import Text
+
+    cell = _slug_cell({"slug": "fix-widget", "description": "make it green"})
+    assert isinstance(cell, Text)
+    assert Text.from_markup(cell.plain).plain != cell.plain  # plain str WOULD be mangled by markup
 
 
 _FIX = {**_TASK, "id": "t-fix", "slug": "fix-widget", "state": "WORKING", "workflow": "spike"}
