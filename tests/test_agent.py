@@ -117,6 +117,53 @@ def test_link_credentials_is_a_noop_without_a_logged_in_volume(tmp_path: Path) -
     assert config_dir.is_dir() and not (config_dir / ".credentials.json").exists()
 
 
+def test_link_credentials_replaces_a_stale_regular_file(tmp_path: Path) -> None:
+    # On respawn the persisted config volume can hold a *regular file* `.credentials.json` with a
+    # stale token — claude rewrites it in place on refresh, clobbering our symlink. It would shadow
+    # the volume's fresh token (e.g. after `panopticon login`), so link_credentials must replace it.
+    creds_dir = tmp_path / "creds"
+    creds_dir.mkdir()
+    (creds_dir / ".credentials.json").write_text("{fresh}")
+    config_dir = tmp_path / "home" / ".claude"
+    config_dir.mkdir(parents=True)
+    (config_dir / ".credentials.json").write_text("{stale}")  # clobbered-symlink leftover
+
+    agent.link_credentials(config_dir, creds_dir=creds_dir)
+
+    link = config_dir / ".credentials.json"
+    assert link.is_symlink() and link.read_text() == "{fresh}"  # repointed at the volume
+
+
+def test_link_credentials_repoints_a_symlink_to_a_wrong_target(tmp_path: Path) -> None:
+    creds_dir = tmp_path / "creds"
+    creds_dir.mkdir()
+    (creds_dir / ".credentials.json").write_text("{fresh}")
+    config_dir = tmp_path / "home" / ".claude"
+    config_dir.mkdir(parents=True)
+    old = tmp_path / "old-creds.json"
+    old.write_text("{old}")
+    (config_dir / ".credentials.json").symlink_to(old)  # points at a stale/other location
+
+    agent.link_credentials(config_dir, creds_dir=creds_dir)
+
+    link = config_dir / ".credentials.json"
+    assert link.readlink() == creds_dir / ".credentials.json" and link.read_text() == "{fresh}"
+
+
+def test_link_credentials_is_idempotent_when_already_linked(tmp_path: Path) -> None:
+    creds_dir = tmp_path / "creds"
+    creds_dir.mkdir()
+    (creds_dir / ".credentials.json").write_text("{token}")
+    config_dir = tmp_path / "home" / ".claude"
+    config_dir.mkdir(parents=True)
+    (config_dir / ".credentials.json").symlink_to(creds_dir / ".credentials.json")
+
+    agent.link_credentials(config_dir, creds_dir=creds_dir)  # no-op — leaves the good link alone
+
+    link = config_dir / ".credentials.json"
+    assert link.is_symlink() and link.readlink() == creds_dir / ".credentials.json"
+
+
 def test_trust_workspace_seeds_acceptance_for_a_fresh_config(tmp_path: Path) -> None:
     import json
 
