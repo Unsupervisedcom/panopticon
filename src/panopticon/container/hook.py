@@ -57,11 +57,17 @@ def _read_payload(stdin: IO[str]) -> dict[str, Any]:
 
 
 def _has_live_background_task(payload: dict[str, Any]) -> bool:
-    """Whether the Stop payload reports a still-running background task (Bash bg / Monitor).
+    """Whether the Stop payload reports a still-running background task.
 
     Reads claude's ``background_tasks`` array (claude ≥ v2.1.145; absent on older builds, where this
     is simply ``False`` and the turn flips as before). An entry is live unless its ``status`` is a
-    known terminal one (see :data:`_TERMINAL_STATUSES`)."""
+    known terminal one (see :data:`_TERMINAL_STATUSES`).
+
+    Deliberately **type-agnostic**: it ignores each entry's ``type`` so it covers every kind of
+    background work that re-wakes the agent — ``shell`` (Bash ``run_in_background``), ``monitor``,
+    and background **agents** (``subagent``/``workflow``/``teammate``/``cloud_session``/``mcp_task``)
+    alike. They all re-invoke the agent on completion without a UserPromptSubmit, so the turn must
+    stay on the agent for all of them."""
     tasks = payload.get("background_tasks")
     if not isinstance(tasks, list):
         return False

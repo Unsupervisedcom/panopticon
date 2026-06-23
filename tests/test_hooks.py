@@ -113,6 +113,8 @@ def _stop(client: _FakeClient, payload: str) -> int:
     [
         '{"background_tasks": [{"id": "t", "type": "shell", "status": "running"}]}',
         '{"background_tasks": [{"id": "m", "type": "monitor", "status": "running"}]}',  # Monitor tool
+        '{"background_tasks": [{"id": "a", "type": "subagent", "status": "running"}]}',  # background agent
+        '{"background_tasks": [{"id": "w", "type": "workflow", "status": "running"}]}',  # background workflow
         '{"background_tasks": [{"id": "t", "status": "completed"}, {"id": "u", "status": "running"}]}',
         '{"background_tasks": [{"id": "t"}]}',  # no status → treated as live (conservative)
     ],
