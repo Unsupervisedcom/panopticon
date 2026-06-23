@@ -8,12 +8,13 @@ over it (it's not a selectable task).
 
 The footer legend shows only the essential, most-used keys — `t` hands off to the task's
 container tmux, `n` creates a task (pick repo → workflow → describe the work), `x` **drops** it,
-`/` searches, `q` quits, and `?` opens the **help screen** (a modal listing every key). The rest
-still work but are hidden from the legend (the full keymap lives in ``_HOTKEYS`` / `HelpScreen`):
-`r` refreshes from the task service over REST, `R` **respawns** a down task (releases its claim so
-the host runner re-spawns it), `p` opens the task's `url` in the browser (cloude-cade's `p` "open
-PR"), `g` opens the **repo config screen** (list / create / edit repos), `s` switches to the
-task-service session, and `a` opens a modal listing the task's artifacts — Enter opens the selected
+`/` searches, `d` **toggles the detail pane** (hide it to give the table the full width, press
+again to restore), `q` quits, and `?` opens the **help screen** (a modal listing every key). The
+rest still work but are hidden from the legend (the full keymap lives in ``_HOTKEYS`` /
+`HelpScreen`): `r` refreshes from the task service over REST, `R` **respawns** a down task
+(releases its claim so the host runner re-spawns it), `p` opens the task's `url` in the browser
+(cloude-cade's `p` "open PR"), `g` opens the **repo config screen** (list / create / edit repos),
+`s` switches to the task-service session, and `a` opens a modal listing the task's artifacts — Enter opens the selected
 one with the host's default handler (`xdg-open`/`open`) by fetching it over REST to a temp file, `e`
 opens the on-disk file in place when the dashboard shares the artifact store. Drop is the only state
 *transition* the dashboard drives: every other transition starts a new agentic turn, so it's
@@ -21,7 +22,7 @@ triggered by an in-container agent skill (`advance` over REST/MCP; going back to
 `set_state` move), not the operator (ADR 0004).
 
 `/` enters **search-as-you-type** (cloude-cade's `/`): a query box reveals at the bottom and the
-table filters live to tasks whose slug/id/state/workflow/description contains the query
+table filters live to tasks whose slug/state/workflow/description contains the query
 (case-insensitive substring). `Enter` **locks** the filter — the box hides and normal navigation
 keys return while the filter stays applied; `Esc` **clears** it (from typing or locked). The
 filter is applied in ``action_refresh``, so the auto-refresh timer preserves it across rebuilds.
@@ -87,10 +88,6 @@ def _sort_key(task: JsonObj) -> tuple[bool, bool, float, str]:
     )
 
 
-def _short(task_id: str) -> str:
-    return task_id[:8]
-
-
 def _short_tokens(n: int | None) -> str:
     """A token count in short human form for the table: ``None``/0 (not yet reported) → ``-``,
     under 1000 shown as-is (``300``), otherwise scaled to ``K``/``M``/``B`` to one decimal
@@ -134,7 +131,7 @@ def _slug_cell(task: JsonObj) -> Text:
 
 # Fields a search query matches against (cloude-cade filters on the task title; our nearest
 # analogs are the task's identifying text). Joined and lowercased into one haystack per task.
-_SEARCH_FIELDS = ("slug", "id", "state", "workflow", "description")
+_SEARCH_FIELDS = ("slug", "state", "workflow", "description")
 
 
 def _matches(task: JsonObj, query: str) -> bool:
@@ -559,6 +556,7 @@ _HOTKEYS: tuple[tuple[str, str], ...] = (
     ("R", "Respawn a down task (release its claim)"),
     ("p", "Open the task's URL in the browser"),
     ("g", "Repo config (list / create / edit repos)"),
+    ("d", "Show/hide the detail pane"),
     ("a", "List the task's artifacts"),
     ("s", "Switch to the task-service session"),
     ("Esc", "Clear the search filter"),
@@ -612,6 +610,7 @@ class Dashboard(App[None]):
         Binding("r", "refresh", "Refresh", show=False),
         Binding("R", "respawn", "Respawn", show=False),
         Binding("p", "open_url", "Open URL", show=False),
+        ("d", "toggle_detail", "Detail"),
         Binding("g", "repos", "Repos", show=False),
         Binding("a", "artifacts", "Artifacts", show=False),
         Binding("s", "service", "Service", show=False),
@@ -639,6 +638,7 @@ class Dashboard(App[None]):
         self._tasks: dict[str, JsonObj] = {}
         self._current: str | None = None
         self._query: str = ""  # active search filter ("" → no filter); see action_search
+        self._detail_visible = True  # detail pane shown; `d` toggles it (action_toggle_detail)
         self._respawning: set[str] = set()  # tasks awaiting re-claim after `R` (shown "respawning")
         self._last_cursor_row = 0  # previous cursor row index → infer travel direction to skip the divider
         # one reused scratch dir for `a`'s REST-open (lazily made, cleaned on exit) — so opening
@@ -657,7 +657,7 @@ class Dashboard(App[None]):
         table = self.query_one("#tasks", DataTable)
         table.cursor_type = "row"
         # the slug header carries a literal "[" — pass it as Text so Textual doesn't eat it as markup
-        table.add_columns("id", "state", "turn", "container", "tokens", Text("slug[description]"))
+        table.add_columns("state", "turn", "container", "tokens", Text("slug[description]"))
         table.focus()  # the (hidden) search Input would otherwise grab initial focus
         self.action_refresh()
         if self._refresh_interval:
@@ -709,7 +709,7 @@ class Dashboard(App[None]):
                 separated = True
             seen_active = seen_active or not terminal
             table.add_row(
-                _short(task["id"]), task["state"], _turn_cell(task), self._run_status(task),
+                task["state"], _turn_cell(task), self._run_status(task),
                 _short_tokens(task.get("tokens_used")), _slug_cell(task),
                 key=task["id"],
             )
@@ -836,6 +836,15 @@ class Dashboard(App[None]):
             return
         webbrowser.open(url)
         self.notify(f"opened {url}")
+
+    def action_toggle_detail(self) -> None:
+        """`d`: show/hide the right-hand detail pane. Hiding it (``display: none``) lets the task
+        table — the only remaining row child — take the full width; pressing `d` again restores
+        the pane (with the current task's detail already rendered)."""
+        self._detail_visible = not self._detail_visible
+        self.query_one("#detail", Static).styles.display = (
+            "block" if self._detail_visible else "none"
+        )
 
     def action_help(self) -> None:
         """`?`: open the help screen — the full keymap (the footer shows only the essentials)."""

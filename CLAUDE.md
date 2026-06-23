@@ -23,7 +23,9 @@ src/panopticon/
                    # branch/worktree ops; LLM-free, behind an injectable command-runner)
   workflows/       # built-in Workflow subclasses (Spike seed; GithubPeerReviewed [formerly Parity]
                    # = cloude-cade lifecycle; GithubSelfReviewed = same, sans the peer-review state,
-                   # the user self-reviews; both share the GithubForgeWorkflow base = gh tool/layer/skills) +
+                   # the user self-reviews; both share the GithubForgeWorkflow base = gh tool/layer/skills;
+                   # Orchestrator = an agent that creates + pre-plans other tasks, `orchestrates=True`
+                   # gating the create/list MCP tools to it, ready-to-approve via the spawn-task skill) +
                    # discovery.py = scan the package + an optional path for Workflow subclasses
                    # (the registry build_app runs on; drop a module in → registered, ADR 0004)
   taskservice/     # control plane: TaskService, FastAPI REST API, the SQLAlchemy store

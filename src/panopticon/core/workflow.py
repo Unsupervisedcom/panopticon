@@ -74,6 +74,12 @@ class Workflow(ABC):
     name: ClassVar[str]
     #: The state a new task starts in — a nested ``State`` class or its label string.
     initial: ClassVar[type[BaseState] | str]
+    #: Whether this workflow's in-container agent may **orchestrate other tasks** — create new
+    #: tasks (in its own repo) and discover the available workflows through the control plane. The
+    #: orchestration MCP tools are gated to workflows that opt in (the task service checks this
+    #: flag for the acting task); default off, so an ordinary workflow's agent can mutate only
+    #: tasks it already knows, never create them.
+    orchestrates: ClassVar[bool] = False
 
     # -- build / validate (the resolution pass; answers "why not a free function?") -----
 
