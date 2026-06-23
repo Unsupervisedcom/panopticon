@@ -198,6 +198,21 @@ async def test_dashboard_mounts_lists_tasks_and_shows_detail() -> None:
         assert "WORKING" in str(detail.render())
 
 
+async def test_pressing_d_toggles_the_detail_pane() -> None:
+    # `d` hides the detail pane (so the table takes the full width) and shows it again.
+    app = Dashboard(_FakeClient([_TASK]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        detail = app.query_one("#detail", Static)
+        assert app._detail_visible and detail.styles.display == "block"
+        await pilot.press("d")  # hide
+        await pilot.pause()
+        assert not app._detail_visible and detail.styles.display == "none"
+        await pilot.press("d")  # show again
+        await pilot.pause()
+        assert app._detail_visible and detail.styles.display == "block"
+
+
 async def test_tasks_are_sorted_live_then_user_then_recent() -> None:
     # The order: (1) non-terminal above terminal, (2) the user's turn above the agent's,
     # (3) most-recently-updated (latest history `at`) first.
@@ -983,7 +998,7 @@ def test_footer_shows_only_the_essential_keys() -> None:
             shown.add(binding[0])
         else:
             (shown if binding.show else hidden).add(binding.key)
-    assert shown == {"t", "n", "x", "/", "question_mark", "q"}
+    assert shown == {"t", "n", "x", "/", "d", "question_mark", "q"}
     assert hidden == {"r", "R", "p", "g", "a", "s", "escape"}
 
 
