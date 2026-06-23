@@ -170,6 +170,34 @@ def test_login_runs_interactive_container_with_creds_volume() -> None:
     ]
     assert check is False  # interactive; tolerate non-zero exit
     assert rec.interactive[0] is True  # attaches the operator's terminal (no output capture)
+    # No running containers mount the volume here → nothing to propagate beyond the `docker ps` probe.
+    assert [c[0][:2] for c in rec.calls] == [["docker", "run"], ["docker", "ps"]]
+
+
+def test_login_propagates_creds_into_running_containers() -> None:
+    # After writing fresh creds, login re-seeds them into the repo's live task containers (found by
+    # the creds volume they mount) so a running agent isn't left logged out until respawn.
+    class _PsRecorder(_Recorder):
+        def __call__(self, args, *, check=True, interactive=False):  # type: ignore[no-untyped-def]
+            super().__call__(args, check=check, interactive=interactive)
+            if args[:2] == ["docker", "ps"]:
+                return "panopticon-t1\npanopticon-t2\n"  # two live containers on this volume
+            return ""
+
+    rec = _PsRecorder()
+    LocalRunner("http://svc", image="img:1", run=rec).login("creds-r1", ["claude"])
+
+    ps = next(cmd for cmd, _ in rec.calls if cmd[:2] == ["docker", "ps"])
+    assert ps == [
+        "docker", "ps", "--filter", "volume=creds-r1",
+        "--filter", "label=panopticon.task", "--format", "{{.Names}}",
+    ]
+    execs = [(cmd, check) for cmd, check in rec.calls if cmd[:2] == ["docker", "exec"]]
+    assert execs == [
+        (["docker", "exec", "--user", "panopticon", c,
+          "python", "-m", "panopticon.container.refresh_credentials"], False)
+        for c in ("panopticon-t1", "panopticon-t2")
+    ]
 
 
 def test_tmux_socket_can_be_overridden() -> None:

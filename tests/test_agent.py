@@ -169,6 +169,36 @@ def test_seed_account_is_a_noop_without_a_logged_in_volume(tmp_path: Path) -> No
     assert not (config_dir / ".claude.json").exists()  # nothing seeded → claude handles login
 
 
+def test_refresh_credentials_links_and_seeds_from_a_populated_volume(tmp_path: Path) -> None:
+    # The runner execs this into a running container after `login` writes the volume, so a live
+    # agent that started logged-out gets the link + account without a respawn.
+    import json
+
+    from panopticon.container import refresh_credentials
+
+    creds_dir = tmp_path / "creds"
+    creds_dir.mkdir()
+    (creds_dir / ".credentials.json").write_text("{token}")
+    (creds_dir / ".claude.json").write_text(json.dumps({"oauthAccount": {"uuid": "a"}, "userID": "u"}))
+    config_dir = tmp_path / "home" / ".claude"  # container-local, started without creds
+
+    refresh_credentials.main(config_dir, creds_dir=creds_dir)
+
+    link = config_dir / ".credentials.json"
+    assert link.is_symlink() and link.read_text() == "{token}"  # token reads live through the link
+    seeded = json.loads((config_dir / ".claude.json").read_text())
+    assert seeded["oauthAccount"] == {"uuid": "a"} and seeded["userID"] == "u"  # account seeded
+
+
+def test_refresh_credentials_is_a_noop_without_a_logged_in_volume(tmp_path: Path) -> None:
+    from panopticon.container import refresh_credentials
+
+    config_dir = tmp_path / ".claude"
+    refresh_credentials.main(config_dir, creds_dir=tmp_path / "empty")  # nothing logged in yet
+    assert config_dir.is_dir() and not (config_dir / ".credentials.json").exists()
+    assert not (config_dir / ".claude.json").exists()
+
+
 def test_main_bootstraps_into_a_container_local_config_dir_then_launches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
