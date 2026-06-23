@@ -8,13 +8,13 @@ over it (it's not a selectable task).
 
 The footer legend shows only the essential, most-used keys — `t` hands off to the task's
 container tmux, `n` creates a task (pick repo → workflow → describe the work), `x` **drops** it,
-`/` searches, `q` quits, and `?` opens the **help screen** (a modal listing every key). The rest
-still work but are hidden from the legend (the full keymap lives in ``_HOTKEYS`` / `HelpScreen`):
-`r` refreshes from the task service over REST, `R` **respawns** a down task (releases its claim so
-the host runner re-spawns it), `p` opens the task's `url` in the browser (cloude-cade's `p` "open
-PR"), `g` opens the **repo config screen** (list / create / edit repos), `s` switches to the
-task-service session, `d` **toggles the detail pane** (hide it to give the table the full width,
-press again to restore), and `a` opens a modal listing the task's artifacts — Enter opens the selected
+`/` searches, `d` **toggles the detail pane** (hide it to give the table the full width, press
+again to restore), `q` quits, and `?` opens the **help screen** (a modal listing every key). The
+rest still work but are hidden from the legend (the full keymap lives in ``_HOTKEYS`` /
+`HelpScreen`): `r` refreshes from the task service over REST, `R` **respawns** a down task
+(releases its claim so the host runner re-spawns it), `p` opens the task's `url` in the browser
+(cloude-cade's `p` "open PR"), `g` opens the **repo config screen** (list / create / edit repos),
+`s` switches to the task-service session, and `a` opens a modal listing the task's artifacts — Enter opens the selected
 one with the host's default handler (`xdg-open`/`open`) by fetching it over REST to a temp file, `e`
 opens the on-disk file in place when the dashboard shares the artifact store. Drop is the only state
 *transition* the dashboard drives: every other transition starts a new agentic turn, so it's
@@ -614,8 +614,8 @@ class Dashboard(App[None]):
         Binding("r", "refresh", "Refresh", show=False),
         Binding("R", "respawn", "Respawn", show=False),
         Binding("p", "open_url", "Open URL", show=False),
+        ("d", "toggle_detail", "Detail"),
         Binding("g", "repos", "Repos", show=False),
-        Binding("d", "toggle_detail", "Detail", show=False),
         Binding("a", "artifacts", "Artifacts", show=False),
         Binding("s", "service", "Service", show=False),
         Binding("escape", "clear_search", "Clear search", show=False),
