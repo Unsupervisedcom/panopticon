@@ -21,13 +21,17 @@ from panopticon.core.models import Responsibility, Skill, Tool
 from panopticon.core.workflow import Workflow
 
 #: The shared PLANNING responsibility for the forge workflows. Both lifecycles produce a plan,
-#: and it's an artifact the operator opens from the dashboard (the `a` hotkey hands it to the
-#: host's default handler, which keys off the extension) — so the plan is a **markdown** file
-#: named ``plan.md``. One frozen instance, referenced by each workflow's PLANNING state, keeps
-#: the guidance single-sourced.
+#: and it's a task **artifact** — uploaded with the ``put_artifact`` tool, not just written to the
+#: ``/workspace`` tree — so the operator can open it from the dashboard (the `a` hotkey hands it to
+#: the host's default handler, which keys off the extension); hence it's a **markdown** file named
+#: ``plan.md``. One frozen instance, referenced by each workflow's PLANNING state, keeps the
+#: guidance single-sourced.
 PLAN_WRITTEN = Responsibility(
     key="plan-written",
-    description="The plan is written to the plan artifact as a markdown file (`plan.md`).",
+    description=(
+        "The plan is uploaded to the plan artifact `plan.md` (a markdown file) with the "
+        "`put_artifact` tool — not just written to the working tree."
+    ),
 )
 
 
