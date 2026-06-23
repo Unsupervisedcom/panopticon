@@ -192,7 +192,10 @@ class LocalRunner(Runner):
         ``command`` is passed through the image's entrypoint, which adopts the same invoking user as
         the task container (``PANOPTICON_PUID``/``PGID``), chowns ``/creds`` to it, then drops to it
         before running ``command``. So the creds it writes are owned by that user — the task
-        container, running as the same user, can then read and refresh them."""
+        container, running as the same user, can then read and refresh them.
+
+        Propagating the fresh creds to the repo's already-running task containers is handled by the
+        caller restarting them (``sessionservice.restart``), not here — this only writes the volume."""
         puid, _, pgid = self._user.partition(":")
         self._run(
             ["docker", "run", "--interactive", "--tty", "--rm",

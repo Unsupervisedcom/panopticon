@@ -2,7 +2,9 @@
 
 A task table on the left, the highlighted task's state/turn/history on the right. It
 auto-refreshes from the task service every ``REFRESH_INTERVAL`` seconds (preserving the
-highlighted row across the rebuild); `r` forces a refresh now.
+highlighted row across the rebuild); `r` forces a refresh now. A dim divider row splits the
+active tasks from the terminal (COMPLETE/DROPPED) ones that sink below them; the arrow keys jump
+over it (it's not a selectable task).
 
 The footer legend shows only the essential, most-used keys — `t` hands off to the task's
 container tmux, `n` creates a task (pick repo → workflow → describe the work), `x` **drops** it,
@@ -19,12 +21,12 @@ triggered by an in-container agent skill (`advance` over REST/MCP; going back to
 `set_state` move), not the operator (ADR 0004).
 
 `/` enters **search-as-you-type** (cloude-cade's `/`): a query box reveals at the bottom and the
-table filters live to tasks whose slug/id/state/workflow/description contains the query
+table filters live to tasks whose slug/state/workflow/description contains the query
 (case-insensitive substring). `Enter` **locks** the filter — the box hides and normal navigation
 keys return while the filter stays applied; `Esc` **clears** it (from typing or locked). The
 filter is applied in ``action_refresh``, so the auto-refresh timer preserves it across rebuilds.
 
-The `run` column shows each task's container status: `live` (an active registration), `down`
+The `container` column shows each task's container status: `live` (an active registration), `down`
 (was up, container gone — respawn with `R`), `starting` (claimed, no registration yet — its
 container is still coming up), `–` (unclaimed/not spawned yet), or `respawning` (just released
 by `R`, awaiting the runner's re-claim). Liveness is the registration, independent of provisioning.
@@ -85,25 +87,50 @@ def _sort_key(task: JsonObj) -> tuple[bool, bool, float, str]:
     )
 
 
-def _short(task_id: str) -> str:
-    return task_id[:8]
+def _short_tokens(n: int | None) -> str:
+    """A token count in short human form for the table: ``None``/0 (not yet reported) → ``-``,
+    under 1000 shown as-is (``300``), otherwise scaled to ``K``/``M``/``B`` to one decimal
+    (``1.2K``, ``1.1M``). Plain ``str`` — the output has no markup-special chars (unlike the
+    slug cell), so Textual renders it verbatim."""
+    if not n:
+        return "-"
+    for limit, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")):
+        if n >= limit:
+            return f"{n / limit:.1f}{suffix}"
+    return str(n)
+
+
+# A sentinel row key for the divider drawn between the active and terminal task groups (see
+# action_refresh). It's not a real task id, so it's never in ``self._tasks`` — the highlight
+# handler treats it as "no task selected" and the arrow keys jump over it.
+_SEPARATOR_KEY = "__separator__"
+
+
+def _separator_cells(columns: int) -> list[Text]:
+    """A dim box-drawing rule, one cell per task-table column — the visual divider between the
+    active tasks and the terminal (COMPLETE/DROPPED) ones that sink below them."""
+    return [Text("─" * 8, style="dim") for _ in range(columns)]
 
 
 def _slug_cell(task: JsonObj) -> Text:
-    """The ``slug[description]`` column: the slug followed by the task's description in brackets
-    (bare slug when there's no description; ``-`` when there's no slug).
+    """The ``slug[description]`` column: the slug followed by the task's description in brackets.
+
+    Bare slug when there's no description; bare ``[description]`` (no leading dash) when there's a
+    description but no slug; ``-`` only when neither is set.
 
     Returned as a Rich ``Text`` (like :func:`_turn_cell`), **not** a markup string: Textual renders
     bare ``str`` cells through console markup, which swallows the ``[…]`` — so a plain string would
     show just the bare slug (the bug that hid descriptions; the header had the same problem)."""
-    slug = task.get("slug") or "-"
+    slug = task.get("slug") or ""
     desc = task.get("description")
-    return Text(f"{slug}[{desc}]" if desc else slug)
+    if desc:
+        return Text(f"{slug}[{desc}]")
+    return Text(slug or "-")
 
 
 # Fields a search query matches against (cloude-cade filters on the task title; our nearest
 # analogs are the task's identifying text). Joined and lowercased into one haystack per task.
-_SEARCH_FIELDS = ("slug", "id", "state", "workflow", "description")
+_SEARCH_FIELDS = ("slug", "state", "workflow", "description")
 
 
 def _matches(task: JsonObj, query: str) -> bool:
@@ -139,6 +166,8 @@ def render_detail(task: JsonObj) -> str:
         lines += ["", task["description"]]
     if task.get("url"):
         lines += ["", f"url: {task['url']}"]
+    if task.get("tokens_used"):
+        lines += ["", f"tokens: {_short_tokens(task['tokens_used'])}"]
     lines += ["", "history:"]
     for entry in task["history"]:
         line = f"  {entry['from_state'] or '∅'} → {entry['to_state']}"
@@ -382,7 +411,7 @@ class ReposScreen(ModalScreen[None]):
     ) -> None:
         super().__init__()
         self._client = client
-        self._login = login  # `l` hook: log in to a repo's creds volume (None → unavailable)
+        self._login = login  # `l` hook: log in a repo (by id) + restart its tasks (None → unavailable)
         self._repos: dict[str, JsonObj] = {}
         self._current: str | None = None
 
@@ -457,12 +486,12 @@ class ReposScreen(ModalScreen[None]):
 
     def action_login(self) -> None:
         """`l`: log in to the highlighted repo — run its interactive creds-volume login (the same
-        flow as `panopticon login <repo>`, default command `claude`). The dashboard owns the TTY, so
-        we suspend the app while the docker login holds the terminal, then resume on the live view."""
+        flow as `panopticon login <repo>`, default command `claude`), then restart the repo's
+        running task containers so they pick up the new creds. The dashboard owns the TTY, so we
+        suspend the app while the docker login holds the terminal, then resume on the live view."""
         if self._current is None:
             return
-        creds = self._repos[self._current].get("creds_volume")
-        if not creds:
+        if not self._repos[self._current].get("creds_volume"):
             self.notify("Repo has no creds_volume configured.", severity="warning")
             return
         if self._login is None:  # standalone with no runner wired (e.g. tests) — nothing to attach
@@ -470,7 +499,7 @@ class ReposScreen(ModalScreen[None]):
             return
         try:
             with self.app.suspend():  # restore the terminal so the container's TTY is the operator's
-                self._login(str(creds))
+                self._login(self._current)  # the repo id — the hook resolves the volume + restarts
         except Exception as exc:  # docker missing / login failed — don't crash the TUI
             self.notify(f"Login failed: {exc}", severity="error")
 
@@ -600,13 +629,14 @@ class Dashboard(App[None]):
         self._client = client
         self._on_switch = on_switch  # supervisor hook: record the pick + detach (None standalone)
         self._on_service = on_service  # `s` hook: switch to the service session; True if one exists
-        self._login = login  # repos screen `l` hook: interactive per-repo creds login (None → off)
+        self._login = login  # repos screen `l` hook: per-repo (by id) login + task restart (None → off)
         self._artifacts_root = artifacts_root  # for `a`'s `e` local-open (co-located store)
         self._refresh_interval = refresh_interval  # auto-refresh cadence (0/None → manual only)
         self._tasks: dict[str, JsonObj] = {}
         self._current: str | None = None
         self._query: str = ""  # active search filter ("" → no filter); see action_search
         self._respawning: set[str] = set()  # tasks awaiting re-claim after `R` (shown "respawning")
+        self._last_cursor_row = 0  # previous cursor row index → infer travel direction to skip the divider
         # one reused scratch dir for `a`'s REST-open (lazily made, cleaned on exit) — so opening
         # many artifacts doesn't leak a temp dir each.
         self._artifact_tmp: tempfile.TemporaryDirectory[str] | None = None
@@ -623,7 +653,7 @@ class Dashboard(App[None]):
         table = self.query_one("#tasks", DataTable)
         table.cursor_type = "row"
         # the slug header carries a literal "[" — pass it as Text so Textual doesn't eat it as markup
-        table.add_columns("id", "state", "turn", "run", Text("slug[description]"))
+        table.add_columns("state", "turn", "container", "tokens", Text("slug[description]"))
         table.focus()  # the (hidden) search Input would otherwise grab initial focus
         self.action_refresh()
         if self._refresh_interval:
@@ -664,10 +694,19 @@ class Dashboard(App[None]):
         ordered = sorted(self._client.list_tasks(), key=_sort_key)  # live/user/recent first
         visible = [t for t in ordered if _matches(t, self._query)]  # apply the search filter
         self._tasks = {t["id"]: t for t in visible}
+        # Draw the active↔terminal divider once, before the first terminal row — but only when an
+        # active row precedes it (an all-terminal list gets no divider).
+        seen_active = False
+        separated = False
         for task in visible:
+            terminal = task["state"] in TERMINAL_LABELS
+            if terminal and seen_active and not separated:
+                table.add_row(*_separator_cells(len(table.ordered_columns)), key=_SEPARATOR_KEY)
+                separated = True
+            seen_active = seen_active or not terminal
             table.add_row(
-                _short(task["id"]), task["state"], _turn_cell(task), self._run_status(task),
-                _slug_cell(task),
+                task["state"], _turn_cell(task), self._run_status(task),
+                _short_tokens(task.get("tokens_used")), _slug_cell(task),
                 key=task["id"],
             )
         target = selected if selected in self._tasks else next(iter(self._tasks), None)
@@ -676,10 +715,24 @@ class Dashboard(App[None]):
         self._update_detail(target)
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        table = self.query_one("#tasks", DataTable)
+        if event.row_key.value == _SEPARATOR_KEY:
+            # The arrow keys jump the divider: step one more row in the direction of travel
+            # (down → first terminal task, up → last active task). The divider always sits
+            # between groups, so there's a real row on both sides; move_cursor re-fires this
+            # handler on that real row, so we don't recurse on the sentinel.
+            step = 1 if table.cursor_row >= self._last_cursor_row else -1
+            table.move_cursor(row=table.cursor_row + step)
+            return
+        self._last_cursor_row = table.cursor_row
         key = event.row_key.value
         self._update_detail(str(key) if key is not None else None)
 
     def _update_detail(self, task_id: str | None) -> None:
+        if task_id == _SEPARATOR_KEY:  # the divider isn't a task — select nothing, blank the pane
+            self._current = None
+            self.query_one("#detail", Static).update("")
+            return
         self._current = task_id
         task = self._tasks.get(task_id) if task_id else None
         self.query_one("#detail", Static).update(render_detail(task) if task else "no tasks")

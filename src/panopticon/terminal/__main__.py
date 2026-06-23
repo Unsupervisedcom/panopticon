@@ -59,8 +59,13 @@ def main(
             print(f"repo {args.repo!r} has no creds_volume configured", file=sys.stderr)
             return 1
         from panopticon.sessionservice.local_runner import LocalRunner
+        from panopticon.sessionservice.restart import restart_repo_containers
 
-        (runner or LocalRunner(args.service_url)).login(creds, args.cmd or ["claude"])
+        runner = runner or LocalRunner(args.service_url)
+        runner.login(creds, args.cmd or ["claude"])
+        restarted = restart_repo_containers(client, runner, args.repo)  # so live tasks pick it up
+        if restarted:
+            print(f"restarted {len(restarted)} running container(s) to pick up the new credentials")
     elif args.command == "dashboard":
         from panopticon.terminal.console import make_service_switch, switch_to
         from panopticon.terminal.dashboard import run
@@ -77,11 +82,21 @@ def main(
 
         artifacts_root = os.environ.get("PANOPTICON_ARTIFACTS", DEFAULT_ARTIFACTS)
         # The repos screen's `l` hook: log in to a repo's creds volume interactively (default
-        # command `claude`), the same flow as `panopticon login`. Import lazily so the dashboard
-        # path doesn't pull in sessionservice at module load.
+        # command `claude`), the same flow as `panopticon login`, then restart the repo's running
+        # task containers so they pick up the new creds. Takes the repo id (resolves the volume +
+        # owns the runner here) so the dashboard stays free of a sessionservice dependency. Import
+        # lazily so the dashboard path doesn't pull in sessionservice at module load.
         from panopticon.sessionservice.local_runner import LocalRunner
+        from panopticon.sessionservice.restart import restart_repo_containers
 
-        login = lambda creds: LocalRunner(args.service_url).login(creds, ["claude"])  # noqa: E731
+        def login(repo_id: str) -> None:
+            creds = client.get_repo(repo_id).get("creds_volume")
+            if not creds:  # the dashboard pre-checks this, but guard anyway
+                return
+            runner = LocalRunner(args.service_url)
+            runner.login(creds, ["claude"])
+            restart_repo_containers(client, runner, repo_id)
+
         run(
             client, on_switch=on_switch, on_service=on_service, login=login,
             artifacts_root=artifacts_root,

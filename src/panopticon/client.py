@@ -110,6 +110,11 @@ class TaskServiceClient:
     def set_url(self, task_id: str, url: str) -> JsonObj:
         return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/url", json={"url": url})))
 
+    def set_tokens_used(self, task_id: str, tokens_used: int) -> JsonObj:
+        """Record cumulative tokens used by claude in this container (the Stop hook reports it)."""
+        return cast(JsonObj, self._json(self._http.put(
+            f"/tasks/{task_id}/tokens-used", json={"tokens_used": tokens_used})))
+
     def set_state(self, task_id: str, state: str) -> JsonObj:
         """The user's free override — move the task to any state (bypasses the graph and gate)."""
         return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/state", json={"state": state})))

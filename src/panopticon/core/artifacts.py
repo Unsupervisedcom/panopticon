@@ -53,3 +53,14 @@ class ArtifactStore(ABC):
     @abstractmethod
     def list(self, task_id: str) -> list[str]:
         """Return the names of a task's artifacts (empty if none)."""
+
+    def link_slug(self, task_id: str, slug: str) -> None:
+        """Expose a task's artifacts under a readable ``slug`` alias (best-effort).
+
+        Symlinks are a filesystem concept, so the default is a no-op; the filesystem adapter
+        overrides it. Non-filesystem stores inherit the no-op rather than being forced to model
+        an alias they have no notion of.
+        """
+
+    def unlink_slug(self, slug: str) -> None:
+        """Remove a slug alias created by :meth:`link_slug` (best-effort no-op default)."""
