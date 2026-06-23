@@ -89,7 +89,6 @@ make check       # typecheck + test (what CI runs)
 make serve       # run the task service over HTTP (python -m panopticon.taskservice)
 make dashboard   # run the dashboard once (no attach loop)
 make panopticon  # bring up everything: task service + session-service runner + dashboard supervisor
-make login REPO=<id>  # populate a repo's creds volume interactively (panopticon login)
 make build       # docker build the base task-container image (panopticon-base)
 make clean       # remove the base + composed panopticon-* images
 make migrate     # alembic upgrade head (uses $PANOPTICON_DB; override DB=<url>)

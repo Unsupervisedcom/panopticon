@@ -50,7 +50,7 @@ def test_cli_login_runs_against_repo_creds_volume() -> None:
 
 
 def test_cli_login_defaults_to_claude() -> None:
-    # `make login REPO=<id>` passes no command → claude (so it drops straight into the login flow).
+    # `panopticon login <repo>` passes no command → claude (so it drops straight into the login flow).
     runner = _FakeRunner()
     rc = cli.main(
         ["login", "r1"],
@@ -79,10 +79,11 @@ def test_dashboard_under_supervisor_wires_the_switch_hooks(monkeypatch: pytest.M
     seen: dict[str, Any] = {}
     monkeypatch.setattr(
         dashboard, "run",
-        lambda _c, *, on_switch=None, on_service=None, artifacts_root=None: seen.update(on_switch=on_switch, on_service=on_service),
+        lambda _c, *, on_switch=None, on_service=None, login=None, artifacts_root=None: seen.update(on_switch=on_switch, on_service=on_service, login=login),
     )
     cli.main(["dashboard", "--switch-file", "/tmp/x"], client=_FakeClient())  # type: ignore[arg-type]
     assert seen["on_switch"] is not None and seen["on_service"] is not None
+    assert seen["login"] is not None  # the repos screen's `l` hook is wired
 
 
 def test_standalone_dashboard_has_no_switch_hooks(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -91,7 +92,8 @@ def test_standalone_dashboard_has_no_switch_hooks(monkeypatch: pytest.MonkeyPatc
     seen: dict[str, Any] = {}
     monkeypatch.setattr(
         dashboard, "run",
-        lambda _c, *, on_switch=None, on_service=None, artifacts_root=None: seen.update(on_switch=on_switch, on_service=on_service),
+        lambda _c, *, on_switch=None, on_service=None, login=None, artifacts_root=None: seen.update(on_switch=on_switch, on_service=on_service, login=login),
     )
     cli.main(["dashboard"], client=_FakeClient())  # type: ignore[arg-type]
     assert seen["on_switch"] is None and seen["on_service"] is None
+    assert seen["login"] is not None  # login works standalone (unlike the switch hooks)

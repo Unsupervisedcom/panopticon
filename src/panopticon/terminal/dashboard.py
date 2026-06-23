@@ -285,8 +285,9 @@ class RepoFormScreen(ModalScreen["dict[str, str] | None"]):
 
 
 class ReposScreen(ModalScreen[None]):
-    """Repo management: list repos and create (`n`) / edit (`e`) them; Escape returns to the
-    task view. Mutations go through the task service over REST, then the table refreshes."""
+    """Repo management: list repos, create (`n`) / edit (`e`) them, and `l` to log in to the
+    highlighted repo (populate its creds volume interactively); Escape returns to the task view.
+    Mutations go through the task service over REST, then the table refreshes."""
 
     CSS = """
     ReposScreen { align: center middle; }
@@ -295,18 +296,22 @@ class ReposScreen(ModalScreen[None]):
     BINDINGS = [
         ("n", "new_repo", "New repo"),
         ("e", "edit_repo", "Edit repo"),
+        ("l", "login", "Login"),
         ("escape", "close", "Close"),
     ]
 
-    def __init__(self, client: TaskServiceClient) -> None:
+    def __init__(
+        self, client: TaskServiceClient, *, login: Callable[[str], None] | None = None
+    ) -> None:
         super().__init__()
         self._client = client
+        self._login = login  # `l` hook: log in to a repo's creds volume (None → unavailable)
         self._repos: dict[str, JsonObj] = {}
         self._current: str | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="repos-box"):
-            yield Label("repos — n: new   e: edit   esc: close")
+            yield Label("repos — n: new   e: edit   l: login   esc: close")
             yield DataTable(id="repos")
 
     def on_mount(self) -> None:
@@ -372,6 +377,25 @@ class ReposScreen(ModalScreen[None]):
             self._refresh()
 
         self.app.push_screen(RepoFormScreen(f"edit {repo_id}", repo=self._repos[repo_id]), save)
+
+    def action_login(self) -> None:
+        """`l`: log in to the highlighted repo — run its interactive creds-volume login (the same
+        flow as `panopticon login <repo>`, default command `claude`). The dashboard owns the TTY, so
+        we suspend the app while the docker login holds the terminal, then resume on the live view."""
+        if self._current is None:
+            return
+        creds = self._repos[self._current].get("creds_volume")
+        if not creds:
+            self.notify("Repo has no creds_volume configured.", severity="warning")
+            return
+        if self._login is None:  # standalone with no runner wired (e.g. tests) — nothing to attach
+            self.notify("Login is unavailable here.", severity="warning")
+            return
+        try:
+            with self.app.suspend():  # restore the terminal so the container's TTY is the operator's
+                self._login(str(creds))
+        except Exception as exc:  # docker missing / login failed — don't crash the TUI
+            self.notify(f"Login failed: {exc}", severity="error")
 
 
 def _detail(exc: httpx.HTTPStatusError) -> str:
@@ -442,6 +466,7 @@ class Dashboard(App[None]):
         *,
         on_switch: Callable[[str], None] | None = None,
         on_service: Callable[[], bool] | None = None,
+        login: Callable[[str], None] | None = None,
         artifacts_root: str | Path = DEFAULT_ARTIFACTS,
         refresh_interval: float | None = REFRESH_INTERVAL,
     ) -> None:
@@ -449,6 +474,7 @@ class Dashboard(App[None]):
         self._client = client
         self._on_switch = on_switch  # supervisor hook: record the pick + detach (None standalone)
         self._on_service = on_service  # `s` hook: switch to the service session; True if one exists
+        self._login = login  # repos screen `l` hook: interactive per-repo creds login (None → off)
         self._artifacts_root = artifacts_root  # for `a`'s `e` local-open (co-located store)
         self._refresh_interval = refresh_interval  # auto-refresh cadence (0/None → manual only)
         self._tasks: dict[str, JsonObj] = {}
@@ -628,8 +654,8 @@ class Dashboard(App[None]):
         self.notify(f"opened {url}")
 
     def action_repos(self) -> None:
-        """`g`: open the repo config screen — list repos and create/edit them (ADR 0002)."""
-        self.push_screen(ReposScreen(self._client))
+        """`g`: open the repo config screen — list repos, create/edit them, and `l` to log in (ADR 0002)."""
+        self.push_screen(ReposScreen(self._client, login=self._login))
 
     def action_artifacts(self) -> None:
         """`a`: open a modal listing the highlighted task's artifacts. Enter opens the selection
@@ -729,11 +755,14 @@ def run(
     *,
     on_switch: Callable[[str], None] | None = None,
     on_service: Callable[[], bool] | None = None,
+    login: Callable[[str], None] | None = None,
     artifacts_root: str | Path = DEFAULT_ARTIFACTS,
 ) -> None:
     """Run the dashboard. ``on_switch``/``on_service`` are the supervisor's `t`/`s` hooks
-    (ADR 0009); both ``None`` standalone. ``artifacts_root`` is the local artifact-store root
+    (ADR 0009); both ``None`` standalone. ``login`` is the repos screen's `l` hook — the
+    interactive per-repo creds login. ``artifacts_root`` is the local artifact-store root
     `a`'s `e` opens files from when the dashboard shares the task service's filesystem."""
     Dashboard(
-        client, on_switch=on_switch, on_service=on_service, artifacts_root=artifacts_root
+        client, on_switch=on_switch, on_service=on_service, login=login,
+        artifacts_root=artifacts_root,
     ).run()

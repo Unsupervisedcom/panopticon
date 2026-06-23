@@ -76,7 +76,16 @@ def main(
         from panopticon.taskservice.artifacts_fs import DEFAULT_ARTIFACTS
 
         artifacts_root = os.environ.get("PANOPTICON_ARTIFACTS", DEFAULT_ARTIFACTS)
-        run(client, on_switch=on_switch, on_service=on_service, artifacts_root=artifacts_root)
+        # The repos screen's `l` hook: log in to a repo's creds volume interactively (default
+        # command `claude`), the same flow as `panopticon login`. Import lazily so the dashboard
+        # path doesn't pull in sessionservice at module load.
+        from panopticon.sessionservice.local_runner import LocalRunner
+
+        login = lambda creds: LocalRunner(args.service_url).login(creds, ["claude"])  # noqa: E731
+        run(
+            client, on_switch=on_switch, on_service=on_service, login=login,
+            artifacts_root=artifacts_root,
+        )
     else:  # default / "console"
         from panopticon.terminal.console import run_console_local
 
