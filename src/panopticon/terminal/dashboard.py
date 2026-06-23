@@ -2,28 +2,33 @@
 
 A task table on the left, the highlighted task's state/turn/history on the right. It
 auto-refreshes from the task service every ``REFRESH_INTERVAL`` seconds (preserving the
-highlighted row across the rebuild); `r` forces a refresh now.
+highlighted row across the rebuild); `r` forces a refresh now. A dim divider row splits the
+active tasks from the terminal (COMPLETE/DROPPED) ones that sink below them; the arrow keys jump
+over it (it's not a selectable task).
 
 The footer legend shows only the essential, most-used keys — `t` hands off to the task's
 container tmux, `n` creates a task (pick repo → workflow → describe the work), `x` **drops** it,
-`/` searches, `q` quits, and `?` opens the **help screen** (a modal listing every key). The rest
-still work but are hidden from the legend (the full keymap lives in ``_HOTKEYS`` / `HelpScreen`):
-`r` refreshes from the task service over REST, `R` **respawns** a down task (releases its claim so
-the host runner re-spawns it), `p` opens the task's `url` in the browser (cloude-cade's `p` "open
-PR"), `g` opens the **repo config screen** (list / create / edit repos), `s` switches to the
-task-service session, and `a` opens a modal listing the task's artifacts — Enter opens the selected
+`/` searches, `d` **toggles the detail pane** (hide it to give the table the full width, press
+again to restore), `q` quits, and `?` opens the **help screen** (a modal listing every key). The
+rest still work but are hidden from the legend (both the footer bindings and `HelpScreen` derive
+from the single ``HOTKEYS`` keymap): `r` refreshes from the task service over REST, `R` **respawns**
+a down task (releases its claim so the host runner re-spawns it), `p` opens the task's `url` in the
+browser (cloude-cade's `p` "open PR"), `g` opens the **repo config screen** (list / create / edit
+repos), `s` switches to the task-service session, and `a` opens a modal listing the task's
+artifacts — Enter opens the selected
 one with the host's default handler (`xdg-open`/`open`) by fetching it over REST to a temp file, `e`
 opens the on-disk file in place when the dashboard shares the artifact store. Drop is the only state
 *transition* the dashboard drives: every other transition starts a new agentic turn, so it's
-triggered by an in-container agent skill (advance/iterate over REST/MCP), not the operator (ADR 0004).
+triggered by an in-container agent skill (`advance` over REST/MCP; going back to coding is a free
+`set_state` move), not the operator (ADR 0004).
 
 `/` enters **search-as-you-type** (cloude-cade's `/`): a query box reveals at the bottom and the
-table filters live to tasks whose slug/id/state/workflow/description contains the query
+table filters live to tasks whose slug/state/workflow/description contains the query
 (case-insensitive substring). `Enter` **locks** the filter — the box hides and normal navigation
 keys return while the filter stays applied; `Esc` **clears** it (from typing or locked). The
 filter is applied in ``action_refresh``, so the auto-refresh timer preserves it across rebuilds.
 
-The `run` column shows each task's container status: `live` (an active registration), `down`
+The `container` column shows each task's container status: `live` (an active registration), `down`
 (was up, container gone — respawn with `R`), `starting` (claimed, no registration yet — its
 container is still coming up), `–` (unclaimed/not spawned yet), or `respawning` (just released
 by `R`, awaiting the runner's re-claim). Liveness is the registration, independent of provisioning.
@@ -37,17 +42,20 @@ to Textual workers is a refinement (docs/BACKLOG.md).
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import tempfile
 import webbrowser
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, TypeVar
 
 import httpx
 from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -82,22 +90,50 @@ def _sort_key(task: JsonObj) -> tuple[bool, bool, float, str]:
     )
 
 
-def _short(task_id: str) -> str:
-    return task_id[:8]
+def _short_tokens(n: int | None) -> str:
+    """A token count in short human form for the table: ``None``/0 (not yet reported) → ``-``,
+    under 1000 shown as-is (``300``), otherwise scaled to ``K``/``M``/``B`` to one decimal
+    (``1.2K``, ``1.1M``). Plain ``str`` — the output has no markup-special chars (unlike the
+    slug cell), so Textual renders it verbatim."""
+    if not n:
+        return "-"
+    for limit, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")):
+        if n >= limit:
+            return f"{n / limit:.1f}{suffix}"
+    return str(n)
 
 
-def _slug_cell(task: JsonObj) -> str:
-    """The ``slug[description]`` column: the slug followed by the task's description in
-    brackets. Falls back to the bare slug when there's no description, and to ``-`` when
-    there's no slug (an unprovisioned task still shows its description)."""
-    slug = task.get("slug") or "-"
+# A sentinel row key for the divider drawn between the active and terminal task groups (see
+# action_refresh). It's not a real task id, so it's never in ``self._tasks`` — the highlight
+# handler treats it as "no task selected" and the arrow keys jump over it.
+_SEPARATOR_KEY = "__separator__"
+
+
+def _separator_cells(columns: int) -> list[Text]:
+    """A dim box-drawing rule, one cell per task-table column — the visual divider between the
+    active tasks and the terminal (COMPLETE/DROPPED) ones that sink below them."""
+    return [Text("─" * 8, style="dim") for _ in range(columns)]
+
+
+def _slug_cell(task: JsonObj) -> Text:
+    """The ``slug[description]`` column: the slug followed by the task's description in brackets.
+
+    Bare slug when there's no description; bare ``[description]`` (no leading dash) when there's a
+    description but no slug; ``-`` only when neither is set.
+
+    Returned as a Rich ``Text`` (like :func:`_turn_cell`), **not** a markup string: Textual renders
+    bare ``str`` cells through console markup, which swallows the ``[…]`` — so a plain string would
+    show just the bare slug (the bug that hid descriptions; the header had the same problem)."""
+    slug = task.get("slug") or ""
     desc = task.get("description")
-    return f"{slug}[{desc}]" if desc else slug
+    if desc:
+        return Text(f"{slug}[{desc}]")
+    return Text(slug or "-")
 
 
 # Fields a search query matches against (cloude-cade filters on the task title; our nearest
 # analogs are the task's identifying text). Joined and lowercased into one haystack per task.
-_SEARCH_FIELDS = ("slug", "id", "state", "workflow", "description")
+_SEARCH_FIELDS = ("slug", "state", "workflow", "description")
 
 
 def _matches(task: JsonObj, query: str) -> bool:
@@ -127,12 +163,15 @@ def render_detail(task: JsonObj) -> str:
     claim = f"    claimed: {task['claimed_by']}" if task.get("claimed_by") else ""
     lines = [
         f"[b]{task.get('slug') or task['id']}[/b]",
+        f"id: {task['id']}",
         f"state: {task['state']}    turn: {turn}    workflow: {task['workflow']}{claim}",
     ]
     if task.get("description"):
         lines += ["", task["description"]]
     if task.get("url"):
         lines += ["", f"url: {task['url']}"]
+    if task.get("tokens_used"):
+        lines += ["", f"tokens: {_short_tokens(task['tokens_used'])}"]
     lines += ["", "history:"]
     for entry in task["history"]:
         line = f"  {entry['from_state'] or '∅'} → {entry['to_state']}"
@@ -246,9 +285,29 @@ class InputScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+def _repo_name_from_git_url(url: str) -> str:
+    """The repository name from a git URL, for auto-filling the repo form.
+
+    Handles HTTPS (``https://host/owner/repo.git``) and scp-style SSH
+    (``git@host:owner/repo.git``): the last ``/``- or ``:``-delimited segment with any
+    ``.git`` suffix and trailing slash stripped. Returns ``""`` when there's nothing
+    parseable (empty, or a bare token with no path), so callers can no-op."""
+    url = url.strip().rstrip("/")
+    if not url or ("/" not in url and ":" not in url):
+        return ""
+    tail = re.split(r"[/:]", url)[-1]
+    return tail[:-len(".git")] if tail.endswith(".git") else tail
+
+
 class RepoFormScreen(ModalScreen["dict[str, str] | None"]):
     """A modal form for a repo's core fields. Submits a ``{field: value}`` dict on save (Enter
     or Ctrl+S), or ``None`` on cancel (Escape).
+
+    The **git URL leads** the form. In **create mode** the still-blank ``id``, ``name`` and
+    ``creds_volume`` (a ``<repo>-creds`` convention) auto-fill from it when the URL field loses
+    focus and again at submit — never clobbering a value the user already typed — and
+    ``default_base`` defaults to ``main``. Edit mode applies neither: a repo's existing values
+    are left exactly as they are.
 
     Create mode (no ``repo``): every field is an editable :class:`Input`, including ``id``.
     Edit mode: ``id`` is shown read-only (the primary key can't change) and the rest are
@@ -262,7 +321,16 @@ class RepoFormScreen(ModalScreen["dict[str, str] | None"]):
     """
     BINDINGS = [("escape", "cancel", "Cancel"), ("ctrl+s", "submit", "Save")]
 
-    FIELDS = ("name", "git_url", "default_base", "env_file", "creds_volume")
+    # git_url leads (the auto-fill source); the rest follow. ``id`` is rendered between git_url
+    # and these, separately, since it's editable only in create mode.
+    FIELDS = ("git_url", "name", "default_base", "creds_volume", "env_file")
+    # Fields auto-derived from git_url → how to derive each (create mode only; see
+    # _autofill_from_git_url). id and name are the bare repo name; creds_volume a convention.
+    _DERIVED: dict[str, Callable[[str], str]] = {
+        "id": lambda repo: repo,
+        "name": lambda repo: repo,
+        "creds_volume": lambda repo: f"{repo}-creds",
+    }
 
     def __init__(self, title: str, repo: JsonObj | None = None) -> None:
         super().__init__()
@@ -270,23 +338,51 @@ class RepoFormScreen(ModalScreen["dict[str, str] | None"]):
         self._repo = repo or {}
         self._editing = repo is not None
 
+    def _initial(self, name: str) -> str:
+        """A field's pre-populated value: the repo's stored value, else (create mode only)
+        ``main`` for ``default_base``, else blank."""
+        stored = self._repo.get(name)
+        if stored:
+            return str(stored)
+        return "main" if name == "default_base" and not self._editing else ""
+
     def compose(self) -> ComposeResult:
         with Vertical(id="repo-form"):
             yield Label(self._title)
+            yield Input(value=self._initial("git_url"), placeholder="git_url", id="field-git_url")
             if self._editing:
                 yield Label(f"id: {self._repo['id']}")
             else:
                 yield Input(placeholder="id", id="field-id")
-            for name in self.FIELDS:
-                yield Input(value=str(self._repo.get(name) or ""), placeholder=name, id=f"field-{name}")
+            for name in self.FIELDS[1:]:  # git_url already rendered above
+                yield Input(value=self._initial(name), placeholder=name, id=f"field-{name}")
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
+
+    def _autofill_from_git_url(self) -> None:
+        """Fill the blank derived fields from the git URL — create mode only (editing an
+        existing repo leaves its values untouched). Only touches fields the user hasn't filled,
+        so it's safe to run repeatedly (on blur and at submit)."""
+        if self._editing:
+            return
+        repo = _repo_name_from_git_url(self.query_one("#field-git_url", Input).value)
+        if not repo:
+            return
+        for field, derive in self._DERIVED.items():
+            widget = self.query_one(f"#field-{field}", Input)
+            if not widget.value.strip():
+                widget.value = derive(repo)
+
+    def on_descendant_blur(self, event: events.DescendantBlur) -> None:
+        if event.widget.id == "field-git_url":
+            self._autofill_from_git_url()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self.action_submit()
 
     def action_submit(self) -> None:
+        self._autofill_from_git_url()  # backstop: fill blanks even if git_url never blurred
         values: dict[str, str] = {}
         if not self._editing:
             values["id"] = self.query_one("#field-id", Input).value.strip()
@@ -299,8 +395,9 @@ class RepoFormScreen(ModalScreen["dict[str, str] | None"]):
 
 
 class ReposScreen(ModalScreen[None]):
-    """Repo management: list repos and create (`n`) / edit (`e`) them; Escape returns to the
-    task view. Mutations go through the task service over REST, then the table refreshes."""
+    """Repo management: list repos, create (`n`) / edit (`e`) them, and `l` to log in to the
+    highlighted repo (populate its creds volume interactively); Escape returns to the task view.
+    Mutations go through the task service over REST, then the table refreshes."""
 
     CSS = """
     ReposScreen { align: center middle; }
@@ -309,18 +406,22 @@ class ReposScreen(ModalScreen[None]):
     BINDINGS = [
         ("n", "new_repo", "New repo"),
         ("e", "edit_repo", "Edit repo"),
+        ("l", "login", "Login"),
         ("escape", "close", "Close"),
     ]
 
-    def __init__(self, client: TaskServiceClient) -> None:
+    def __init__(
+        self, client: TaskServiceClient, *, login: Callable[[str], None] | None = None
+    ) -> None:
         super().__init__()
         self._client = client
+        self._login = login  # `l` hook: log in a repo (by id) + restart its tasks (None → unavailable)
         self._repos: dict[str, JsonObj] = {}
         self._current: str | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="repos-box"):
-            yield Label("repos — n: new   e: edit   esc: close")
+            yield Label("repos — n: new   e: edit   l: login   esc: close")
             yield DataTable(id="repos")
 
     def on_mount(self) -> None:
@@ -387,6 +488,25 @@ class ReposScreen(ModalScreen[None]):
 
         self.app.push_screen(RepoFormScreen(f"edit {repo_id}", repo=self._repos[repo_id]), save)
 
+    def action_login(self) -> None:
+        """`l`: log in to the highlighted repo — run its interactive creds-volume login (the same
+        flow as `panopticon login <repo>`, default command `claude`), then restart the repo's
+        running task containers so they pick up the new creds. The dashboard owns the TTY, so we
+        suspend the app while the docker login holds the terminal, then resume on the live view."""
+        if self._current is None:
+            return
+        if not self._repos[self._current].get("creds_volume"):
+            self.notify("Repo has no creds_volume configured.", severity="warning")
+            return
+        if self._login is None:  # standalone with no runner wired (e.g. tests) — nothing to attach
+            self.notify("Login is unavailable here.", severity="warning")
+            return
+        try:
+            with self.app.suspend():  # restore the terminal so the container's TTY is the operator's
+                self._login(self._current)  # the repo id — the hook resolves the volume + restarts
+        except Exception as exc:  # docker missing / login failed — don't crash the TUI
+            self.notify(f"Login failed: {exc}", severity="error")
+
 
 def _detail(exc: httpx.HTTPStatusError) -> str:
     """The task service's error detail for a failed request (falls back to the bare error)."""
@@ -427,23 +547,48 @@ class ArtifactScreen(_OptionListModal[tuple[str, str]]):
         self.dismiss((str(option_list.get_option_at_index(index).prompt), "local"))
 
 
-# The full keymap, single source of truth for the help screen (`?`). The footer shows only the
-# essential few (see ``Dashboard.BINDINGS``); every key — including the hidden ones — is listed
-# here, ordered most-common first, so the help screen stays the authoritative listing.
-_HOTKEYS: tuple[tuple[str, str], ...] = (
-    ("t", "Attach to the task's container tmux session"),
-    ("n", "New task (pick repo → workflow → describe)"),
-    ("x", "Drop the highlighted task"),
-    ("/", "Search tasks as you type"),
-    ("r", "Refresh from the task service now"),
-    ("R", "Respawn a down task (release its claim)"),
-    ("p", "Open the task's URL in the browser"),
-    ("g", "Repo config (list / create / edit repos)"),
-    ("a", "List the task's artifacts"),
-    ("s", "Switch to the task-service session"),
-    ("Esc", "Clear the search filter"),
-    ("?", "This help screen"),
-    ("q", "Quit"),
+# The full keymap, single source of truth for **both** the footer legend and the help screen
+# (`?`). Each ``Hotkey`` carries everything the two consumers need — the Textual key name, the
+# action, the short footer label, the long help description, whether it shows in the footer, and an
+# optional key display — so ``Dashboard.BINDINGS`` and ``HelpScreen`` are *derived* from this one
+# tuple rather than repeating it. Ordered most-common first: the footer renders the ``show=True``
+# subset (``t n x / d ? q``) in this order, and the help screen lists every key in it.
+@dataclass(frozen=True)
+class Hotkey:
+    key: str  # the Textual key name ("t", "question_mark", "escape")
+    action: str  # the bound ``action_*`` method ("attach", "help", "clear_search")
+    label: str  # the short footer-legend label ("Attach")
+    description: str  # the long help-screen description
+    show: bool = True  # visible in the footer legend? (hidden keys still dispatch)
+    display: str | None = None  # key_display override ("?" for question_mark, "Esc" for escape)
+
+    def binding(self) -> Binding:
+        """The Textual ``Binding`` this hotkey contributes to ``Dashboard.BINDINGS``.
+
+        ``key_display`` is left ``None`` (Textual's default — render the key itself) unless this
+        hotkey overrides it (``?`` for ``question_mark``, ``Esc`` for ``escape``)."""
+        return Binding(self.key, self.action, self.label, show=self.show, key_display=self.display)
+
+
+HOTKEYS: tuple[Hotkey, ...] = (
+    Hotkey("t", "attach", "Attach", "Attach to the task's container tmux session"),
+    Hotkey("n", "new_task", "New task", "New task (pick repo → workflow → describe)"),
+    Hotkey("x", "drop", "Drop", "Drop the highlighted task"),
+    Hotkey("/", "search", "Search", "Search tasks as you type"),
+    Hotkey("d", "toggle_detail", "Detail", "Show/hide the detail pane"),
+    Hotkey("r", "refresh", "Refresh", "Refresh from the task service now", show=False),
+    Hotkey("R", "respawn", "Respawn", "Respawn a down task (release its claim)", show=False),
+    Hotkey("p", "open_url", "Open URL", "Open the task's URL in the browser", show=False),
+    Hotkey("g", "repos", "Repos", "Repo config (list / create / edit repos)", show=False),
+    Hotkey("a", "artifacts", "Artifacts", "List the task's artifacts", show=False),
+    Hotkey("s", "service", "Service", "Switch to the task-service session", show=False),
+    Hotkey("u", "runner", "Runner", "Switch to the session-service (runner) session", show=False),
+    Hotkey(
+        "escape", "clear_search", "Clear search", "Clear the search filter",
+        show=False, display="Esc",
+    ),
+    Hotkey("question_mark", "help", "Help", "This help screen", display="?"),
+    Hotkey("q", "quit", "Quit", "Quit"),
 )
 
 
@@ -463,7 +608,9 @@ class HelpScreen(ModalScreen[None]):
     ]
 
     def compose(self) -> ComposeResult:
-        rows = "\n".join(f"  [b]{key:<5}[/b] {desc}" for key, desc in _HOTKEYS)
+        rows = "\n".join(
+            f"  [b]{(h.display or h.key):<5}[/b] {h.description}" for h in HOTKEYS
+        )
         with Vertical(id="help-box"):
             yield Label("panopticon — keys")
             yield Static(rows, id="help-keys")
@@ -473,30 +620,17 @@ class HelpScreen(ModalScreen[None]):
 
 
 class Dashboard(App[None]):
-    """The task view. On `t` it calls ``on_switch`` with the task's session (and `s` calls
-    ``on_service`` for the task-service session) and stays running; the supervisor handles the
-    attach/detach (ADR 0009)."""
+    """The task view. On `t` it calls ``on_switch`` with the task's session (and `s`/`u` call
+    ``on_service``/``on_runner`` for the task-service / session-service runner sessions) and stays
+    running; the supervisor handles the attach/detach (ADR 0009)."""
 
     CSS = "#tasks { width: 3fr; } #detail { width: 2fr; padding: 0 1; } #search { display: none; }"
     REFRESH_INTERVAL = 2.0  # seconds between automatic refreshes (0/None disables the timer)
     # Only the essential, most-used keys show in the footer legend; the rest still dispatch but
     # are hidden (``show=False``) to keep the legend uncluttered — `?` opens HelpScreen, which
-    # lists every key (the full keymap lives in ``_HOTKEYS``).
-    BINDINGS = [
-        ("t", "attach", "Attach"),
-        ("n", "new_task", "New task"),
-        ("x", "drop", "Drop"),
-        ("/", "search", "Search"),
-        Binding("question_mark", "help", "Help", key_display="?"),
-        ("q", "quit", "Quit"),
-        Binding("r", "refresh", "Refresh", show=False),
-        Binding("R", "respawn", "Respawn", show=False),
-        Binding("p", "open_url", "Open URL", show=False),
-        Binding("g", "repos", "Repos", show=False),
-        Binding("a", "artifacts", "Artifacts", show=False),
-        Binding("s", "service", "Service", show=False),
-        Binding("escape", "clear_search", "Clear search", show=False),
-    ]
+    # lists every key. Both the footer bindings and the help screen derive from the single
+    # ``HOTKEYS`` table, so a key can't drift between the two.
+    BINDINGS = [hotkey.binding() for hotkey in HOTKEYS]
     TITLE = "panopticon"
 
     def __init__(
@@ -505,6 +639,8 @@ class Dashboard(App[None]):
         *,
         on_switch: Callable[[str], None] | None = None,
         on_service: Callable[[], bool] | None = None,
+        on_runner: Callable[[], bool] | None = None,
+        login: Callable[[str], None] | None = None,
         artifacts_root: str | Path = DEFAULT_ARTIFACTS,
         refresh_interval: float | None = REFRESH_INTERVAL,
     ) -> None:
@@ -512,12 +648,16 @@ class Dashboard(App[None]):
         self._client = client
         self._on_switch = on_switch  # supervisor hook: record the pick + detach (None standalone)
         self._on_service = on_service  # `s` hook: switch to the service session; True if one exists
+        self._on_runner = on_runner  # `u` hook: switch to the runner session; True if one exists
+        self._login = login  # repos screen `l` hook: per-repo (by id) login + task restart (None → off)
         self._artifacts_root = artifacts_root  # for `a`'s `e` local-open (co-located store)
         self._refresh_interval = refresh_interval  # auto-refresh cadence (0/None → manual only)
         self._tasks: dict[str, JsonObj] = {}
         self._current: str | None = None
         self._query: str = ""  # active search filter ("" → no filter); see action_search
+        self._detail_visible = True  # detail pane shown; `d` toggles it (action_toggle_detail)
         self._respawning: set[str] = set()  # tasks awaiting re-claim after `R` (shown "respawning")
+        self._last_cursor_row = 0  # previous cursor row index → infer travel direction to skip the divider
         # one reused scratch dir for `a`'s REST-open (lazily made, cleaned on exit) — so opening
         # many artifacts doesn't leak a temp dir each.
         self._artifact_tmp: tempfile.TemporaryDirectory[str] | None = None
@@ -533,7 +673,8 @@ class Dashboard(App[None]):
     def on_mount(self) -> None:
         table = self.query_one("#tasks", DataTable)
         table.cursor_type = "row"
-        table.add_columns("id", "state", "turn", "run", "slug[description]")
+        # the slug header carries a literal "[" — pass it as Text so Textual doesn't eat it as markup
+        table.add_columns("state", "turn", "container", "tokens", Text("slug[description]"))
         table.focus()  # the (hidden) search Input would otherwise grab initial focus
         self.action_refresh()
         if self._refresh_interval:
@@ -574,10 +715,19 @@ class Dashboard(App[None]):
         ordered = sorted(self._client.list_tasks(), key=_sort_key)  # live/user/recent first
         visible = [t for t in ordered if _matches(t, self._query)]  # apply the search filter
         self._tasks = {t["id"]: t for t in visible}
+        # Draw the active↔terminal divider once, before the first terminal row — but only when an
+        # active row precedes it (an all-terminal list gets no divider).
+        seen_active = False
+        separated = False
         for task in visible:
+            terminal = task["state"] in TERMINAL_LABELS
+            if terminal and seen_active and not separated:
+                table.add_row(*_separator_cells(len(table.ordered_columns)), key=_SEPARATOR_KEY)
+                separated = True
+            seen_active = seen_active or not terminal
             table.add_row(
-                _short(task["id"]), task["state"], _turn_cell(task), self._run_status(task),
-                _slug_cell(task),
+                task["state"], _turn_cell(task), self._run_status(task),
+                _short_tokens(task.get("tokens_used")), _slug_cell(task),
                 key=task["id"],
             )
         target = selected if selected in self._tasks else next(iter(self._tasks), None)
@@ -586,10 +736,24 @@ class Dashboard(App[None]):
         self._update_detail(target)
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        table = self.query_one("#tasks", DataTable)
+        if event.row_key.value == _SEPARATOR_KEY:
+            # The arrow keys jump the divider: step one more row in the direction of travel
+            # (down → first terminal task, up → last active task). The divider always sits
+            # between groups, so there's a real row on both sides; move_cursor re-fires this
+            # handler on that real row, so we don't recurse on the sentinel.
+            step = 1 if table.cursor_row >= self._last_cursor_row else -1
+            table.move_cursor(row=table.cursor_row + step)
+            return
+        self._last_cursor_row = table.cursor_row
         key = event.row_key.value
         self._update_detail(str(key) if key is not None else None)
 
     def _update_detail(self, task_id: str | None) -> None:
+        if task_id == _SEPARATOR_KEY:  # the divider isn't a task — select nothing, blank the pane
+            self._current = None
+            self.query_one("#detail", Static).update("")
+            return
         self._current = task_id
         task = self._tasks.get(task_id) if task_id else None
         self.query_one("#detail", Static).update(render_detail(task) if task else "no tasks")
@@ -690,13 +854,22 @@ class Dashboard(App[None]):
         webbrowser.open(url)
         self.notify(f"opened {url}")
 
+    def action_toggle_detail(self) -> None:
+        """`d`: show/hide the right-hand detail pane. Hiding it (``display: none``) lets the task
+        table — the only remaining row child — take the full width; pressing `d` again restores
+        the pane (with the current task's detail already rendered)."""
+        self._detail_visible = not self._detail_visible
+        self.query_one("#detail", Static).styles.display = (
+            "block" if self._detail_visible else "none"
+        )
+
     def action_help(self) -> None:
         """`?`: open the help screen — the full keymap (the footer shows only the essentials)."""
         self.push_screen(HelpScreen())
 
     def action_repos(self) -> None:
-        """`g`: open the repo config screen — list repos and create/edit them (ADR 0002)."""
-        self.push_screen(ReposScreen(self._client))
+        """`g`: open the repo config screen — list repos, create/edit them, and `l` to log in (ADR 0002)."""
+        self.push_screen(ReposScreen(self._client, login=self._login))
 
     def action_artifacts(self) -> None:
         """`a`: open a modal listing the highlighted task's artifacts. Enter opens the selection
@@ -750,6 +923,18 @@ class Dashboard(App[None]):
         if not self._on_service():
             self.notify("No task-service session is running.", severity="warning")
 
+    def action_runner(self) -> None:
+        """`u`: switch to the session-service (runner) tmux session, when one is running (ADR 0009).
+
+        The runner is a sibling tmux session under `panopticon console`; ``on_runner`` switches
+        to it the same way `s` switches to the service (record + detach), returning whether a runner
+        session existed. Standalone (no supervisor) there is nothing to switch to."""
+        if self._on_runner is None:
+            self.notify("Runner shortcut is available when run via `panopticon console`.", severity="warning")
+            return
+        if not self._on_runner():
+            self.notify("No session-service (runner) session is running.", severity="warning")
+
     def action_search(self) -> None:
         """`/`: enter search-as-you-type — reveal the query box and focus it (cloude-cade's `/`).
 
@@ -796,11 +981,15 @@ def run(
     *,
     on_switch: Callable[[str], None] | None = None,
     on_service: Callable[[], bool] | None = None,
+    on_runner: Callable[[], bool] | None = None,
+    login: Callable[[str], None] | None = None,
     artifacts_root: str | Path = DEFAULT_ARTIFACTS,
 ) -> None:
-    """Run the dashboard. ``on_switch``/``on_service`` are the supervisor's `t`/`s` hooks
-    (ADR 0009); both ``None`` standalone. ``artifacts_root`` is the local artifact-store root
+    """Run the dashboard. ``on_switch``/``on_service``/``on_runner`` are the supervisor's `t`/`s`/`u`
+    hooks (ADR 0009); all ``None`` standalone. ``login`` is the repos screen's `l` hook — the
+    interactive per-repo creds login. ``artifacts_root`` is the local artifact-store root
     `a`'s `e` opens files from when the dashboard shares the task service's filesystem."""
     Dashboard(
-        client, on_switch=on_switch, on_service=on_service, artifacts_root=artifacts_root
+        client, on_switch=on_switch, on_service=on_service, on_runner=on_runner, login=login,
+        artifacts_root=artifacts_root,
     ).run()

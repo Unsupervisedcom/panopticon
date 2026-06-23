@@ -23,7 +23,9 @@ src/panopticon/
                    # branch/worktree ops; LLM-free, behind an injectable command-runner)
   workflows/       # built-in Workflow subclasses (Spike seed; GithubPeerReviewed [formerly Parity]
                    # = cloude-cade lifecycle; GithubSelfReviewed = same, sans the peer-review state,
-                   # the user self-reviews; both share the GithubForgeWorkflow base = gh tool/layer/skills) +
+                   # the user self-reviews; both share the GithubForgeWorkflow base = gh tool/layer/skills;
+                   # Orchestrator = an agent that creates + pre-plans other tasks, `orchestrates=True`
+                   # gating the create/list MCP tools to it, ready-to-approve via the spawn-task skill) +
                    # discovery.py = scan the package + an optional path for Workflow subclasses
                    # (the registry build_app runs on; drop a module in → registered, ADR 0004)
   taskservice/     # control plane: TaskService, FastAPI REST API, the SQLAlchemy store
@@ -35,7 +37,10 @@ src/panopticon/
                    # (ADR 0011: branch the per-task clone on slug, record it back); clones.py =
                    # per-repo clone cache; spawn.py = spawn-prep (clone --local the per-task
                    # checkout, mounted rw at /workspace); spawner.py = the spawn loop (claim an
-                   # unclaimed task → spawn its container); daemon.py = the provision-only pull loop;
+                   # unclaimed task → spawn its container; prefills claude's input box with the
+                   # task description on a first spawn); prefill.py = the detached input-box prefill
+                   # poller (mirrors cloude-cade: pipe-pane watch for ESC[?2004h → paste-buffer the
+                   # description, unsent); daemon.py = the provision-only pull loop;
                    # host.py = the unified per-host daemon (spawn + provision each pass;
                    # `python -m panopticon.sessionservice.host`); `python -m panopticon.sessionservice`
                    # spawns one task
@@ -89,7 +94,6 @@ make check       # typecheck + test (what CI runs)
 make serve       # run the task service over HTTP (python -m panopticon.taskservice)
 make dashboard   # run the dashboard once (no attach loop)
 make panopticon  # bring up everything: task service + session-service runner + dashboard supervisor
-make login REPO=<id>  # populate a repo's creds volume interactively (panopticon login)
 make build       # docker build the base task-container image (panopticon-base)
 make clean       # remove the base + composed panopticon-* images
 make migrate     # alembic upgrade head (uses $PANOPTICON_DB; override DB=<url>)
@@ -172,6 +176,11 @@ commands the Makefile wraps).
   container entrypoint loop (fakes; no Docker/LLM), plus a `skipif` docker integration test.
 - `tests/test_spawn.py` — spawn-prep (ADR 0011): unit tests pin the `clone --local` of the
   per-task checkout and the idempotency gate (skips when the checkout already exists).
+- `tests/test_prefill.py` — the input-box prefill poller: unit tests drive `prefill_pane` with a
+  fake tmux runner + injected `sleep`/raw-log — pin the `pipe-pane`/`load-buffer`/`paste-buffer -p`
+  commands when the box becomes ready, and every best-effort give-up (empty prompt, timeout,
+  vanished session). `test_local_runner.py` covers the first-spawn gate (config-volume probe) +
+  the `PANOPTICON_NO_PREFILL` opt-out.
 - `tests/test_provisioning_acceptance.py` — Slice 7 acceptance (`skipif` no git): the host-side
   provisioning path with **real git** — clone --local the per-task checkout → set slug → the daemon
   branches it (`panopticon/<slug>`) + repoints origin → the task service records branch + clone path.

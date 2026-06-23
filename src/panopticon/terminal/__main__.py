@@ -59,24 +59,50 @@ def main(
             print(f"repo {args.repo!r} has no creds_volume configured", file=sys.stderr)
             return 1
         from panopticon.sessionservice.local_runner import LocalRunner
+        from panopticon.sessionservice.restart import restart_repo_containers
 
-        (runner or LocalRunner(args.service_url)).login(creds, args.cmd or ["claude"])
+        runner = runner or LocalRunner(args.service_url)
+        runner.login(creds, args.cmd or ["claude"])
+        restarted = restart_repo_containers(client, runner, args.repo)  # so live tasks pick it up
+        if restarted:
+            print(f"restarted {len(restarted)} running container(s) to pick up the new credentials")
     elif args.command == "dashboard":
-        from panopticon.terminal.console import make_service_switch, switch_to
+        from panopticon.terminal.console import make_runner_switch, make_service_switch, switch_to
         from panopticon.terminal.dashboard import run
 
         on_switch = None
         on_service = None
-        if args.switch_file:  # run under the supervisor: report `t`/`s` picks via the switch-file
+        on_runner = None
+        if args.switch_file:  # run under the supervisor: report `t`/`s`/`u` picks via the switch-file
             switch_file = Path(args.switch_file)
             on_switch = lambda session: switch_to(session, switch_file=switch_file)  # noqa: E731
             on_service = make_service_switch(switch_file)
+            on_runner = make_runner_switch(switch_file)
         # Same env/default as the task service (shared DEFAULT_ARTIFACTS): when the dashboard shares
         # the store's filesystem, `a`'s `e` opens the on-disk artifact in place.
         from panopticon.taskservice.artifacts_fs import DEFAULT_ARTIFACTS
 
         artifacts_root = os.environ.get("PANOPTICON_ARTIFACTS", DEFAULT_ARTIFACTS)
-        run(client, on_switch=on_switch, on_service=on_service, artifacts_root=artifacts_root)
+        # The repos screen's `l` hook: log in to a repo's creds volume interactively (default
+        # command `claude`), the same flow as `panopticon login`, then restart the repo's running
+        # task containers so they pick up the new creds. Takes the repo id (resolves the volume +
+        # owns the runner here) so the dashboard stays free of a sessionservice dependency. Import
+        # lazily so the dashboard path doesn't pull in sessionservice at module load.
+        from panopticon.sessionservice.local_runner import LocalRunner
+        from panopticon.sessionservice.restart import restart_repo_containers
+
+        def login(repo_id: str) -> None:
+            creds = client.get_repo(repo_id).get("creds_volume")
+            if not creds:  # the dashboard pre-checks this, but guard anyway
+                return
+            runner = LocalRunner(args.service_url)
+            runner.login(creds, ["claude"])
+            restart_repo_containers(client, runner, repo_id)
+
+        run(
+            client, on_switch=on_switch, on_service=on_service, on_runner=on_runner, login=login,
+            artifacts_root=artifacts_root,
+        )
     else:  # default / "console"
         from panopticon.terminal.console import run_console_local
 

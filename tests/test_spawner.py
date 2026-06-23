@@ -33,8 +33,8 @@ class _FakeRunner:
     def __init__(self) -> None:
         self.spawned: list[dict[str, object]] = []
 
-    def spawn(self, task_id: str, *, env_file: str | None = None, creds_volume: str | None = None, workspace: str | None = None, image: str | None = None, docker_in_docker: bool = False) -> str:
-        self.spawned.append({"task_id": task_id, "env_file": env_file, "creds_volume": creds_volume, "workspace": workspace, "image": image, "docker_in_docker": docker_in_docker})
+    def spawn(self, task_id: str, *, env_file: str | None = None, creds_volume: str | None = None, workspace: str | None = None, image: str | None = None, docker_in_docker: bool = False, description: str | None = None) -> str:
+        self.spawned.append({"task_id": task_id, "env_file": env_file, "creds_volume": creds_volume, "workspace": workspace, "image": image, "docker_in_docker": docker_in_docker, "description": description})
         return f"panopticon-{task_id}"
 
 
@@ -83,6 +83,16 @@ def test_spawn_one_claims_then_spawns_a_fresh_task() -> None:
     assert runner.spawned[0]["env_file"] == "/sec/r1.env" and runner.spawned[0]["creds_volume"] == "creds-r1"
     assert runner.spawned[0]["image"] is None  # spike has no image layer → runner uses the base
     assert runner.spawned[0]["docker_in_docker"] is False  # no capability → unprivileged
+
+
+def test_spawn_one_passes_the_task_description_for_input_prefill() -> None:
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner()
+    _spawner(client, runner).spawn_one(
+        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING",
+         "claimed_by": None, "description": "build the thing"}
+    )
+    # the runner prefills claude's input box with this on a first spawn (left unsent)
+    assert runner.spawned[0]["description"] == "build the thing"
 
 
 def test_spawn_one_passes_the_docker_in_docker_capability() -> None:

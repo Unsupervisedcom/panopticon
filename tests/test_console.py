@@ -89,3 +89,20 @@ def test_make_service_switch_only_switches_when_a_service_session_exists(tmp_pat
     absent = make_service_switch(switch, exists=lambda: False, detach=lambda: None)
     assert absent() is False
     assert switch.read_text() == ""
+
+
+def test_make_runner_switch_only_switches_when_a_runner_session_exists(tmp_path: Path) -> None:
+    from panopticon.terminal.console import RUNNER_SESSION, make_runner_switch
+
+    switch = tmp_path / "switch"
+
+    # Runner running → records the runner session + detaches, reports True.
+    switched = make_runner_switch(switch, exists=lambda: True, detach=lambda: None)
+    assert switched() is True
+    assert switch.read_text() == RUNNER_SESSION
+
+    # No runner session → does nothing (no write, no detach), reports False.
+    switch.write_text("")
+    absent = make_runner_switch(switch, exists=lambda: False, detach=lambda: None)
+    assert absent() is False
+    assert switch.read_text() == ""

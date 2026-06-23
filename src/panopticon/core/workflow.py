@@ -18,7 +18,7 @@ from typing import ClassVar
 
 from panopticon.core.artifacts import ArtifactStore
 from panopticon.core.models import Actor, HistoryEntry, Responsibility, Skill, Task, Tool
-from panopticon.core.state import BaseState, Complete, Dropped, State, TerminalState
+from panopticon.core.state import BaseState, Complete, Dropped, InitialState, State, TerminalState
 
 _ABSTRACT_BASES = (BaseState, State, TerminalState)
 
@@ -74,6 +74,12 @@ class Workflow(ABC):
     name: ClassVar[str]
     #: The state a new task starts in — a nested ``State`` class or its label string.
     initial: ClassVar[type[BaseState] | str]
+    #: Whether this workflow's in-container agent may **orchestrate other tasks** — create new
+    #: tasks (in its own repo) and discover the available workflows through the control plane. The
+    #: orchestration MCP tools are gated to workflows that opt in (the task service checks this
+    #: flag for the acting task); default off, so an ordinary workflow's agent can mutate only
+    #: tasks it already knows, never create them.
+    orchestrates: ClassVar[bool] = False
 
     # -- build / validate (the resolution pass; answers "why not a free function?") -----
 
@@ -130,6 +136,10 @@ class Workflow(ABC):
         operations = {label: self._resolve_operations(cls, transitions[label]) for label, cls in states.items()}
 
         initial = label_of(self.initial)
+        if not issubclass(states[initial], InitialState):
+            raise InvalidWorkflow(
+                f"{self.name!r}: initial state {initial!r} must subclass InitialState"
+            )
         if "DROPPED" not in states:  # guaranteed by the built-in; assert the invariant
             raise InvalidWorkflow(f"{self.name!r}: a DROPPED terminal state is required")
         return _Graph(states=states, transitions=transitions, operations=operations, initial=initial)
@@ -209,6 +219,19 @@ class Workflow(ABC):
     def is_terminal(self, label: str) -> bool:
         return issubclass(self._state_class(label), TerminalState)
 
+    def ordered_phases(self) -> list[str]:
+        """The happy-path phase order: from the initial state, follow each state's ``advance`` edge
+        until a terminal state (or a state with no ``advance``). The lifecycle as a line — what the
+        overview numbers. A pure query against the resolved graph, beside :meth:`operations`."""
+        order: list[str] = []
+        label: str | None = self.initial_label
+        while label is not None and label not in order:  # the guard breaks any advance-edge cycle
+            order.append(label)
+            if self.is_terminal(label):
+                break
+            label = self.operations(label).get("advance")
+        return order
+
     def description(self, label: str) -> str:
         """The state's human-facing description — what the phase is *for* (may be empty)."""
         return self._state_class(label).description
@@ -250,6 +273,129 @@ class Workflow(ABC):
         the base image with what this workflow's skills need (e.g. `gh` for forge). Default none;
         the runner composes base → workflow → repo into the task's image."""
         return ""
+
+    # -- agent-facing briefing (the "where am I" prose; LLM-free string building) --------
+    #
+    # A workflow is a state machine, but the in-container agent only sees a flat set of skills + the
+    # `advance`/`drop` operations; nothing tells it which phase it's in or what that phase is *for*.
+    # So it can charge ahead — e.g. start implementing during a PLANNING phase. These render that
+    # context from the current state's metadata. The task service calls them; the container's
+    # user-prompt hook emits the briefing each turn and the overview goes in the system prompt.
+    #
+    # Rendering is a concern of the workflow so a subclass can inject/override pieces (e.g. a forge
+    # workflow surfacing its plan artifact's URI): the `_*_extras` hooks below are the seam.
+
+    def overview(self) -> str:
+        """A one-time **map** of the whole workflow (the agent gets this in its system prompt): the
+        ordered phases, what each is for, and how it advances. Static per workflow — the per-turn
+        :meth:`briefing` is the "you are here" pin on top of it. A workflow extends it via
+        :meth:`_overview_extras`."""
+        lines = [
+            f"# The `{self.name}` workflow",
+            "",
+            "This task moves through a fixed sequence of phases. You are always in exactly one phase: "
+            "do that phase's work, then it advances. Each turn you'll be reminded which phase you're in "
+            "and what it needs — **don't do a later phase's work early.** The phases, in order:",
+            "",
+        ]
+        for i, label in enumerate(self.ordered_phases(), 1):
+            desc = self.description(label)  # the phase's own description, then how it advances
+            if self.is_terminal(label):
+                tail = f"terminal. {desc}" if desc else "terminal; the task is finished."
+                lines.append(f"{i}. **{label}** — {tail}")
+                continue
+            responsibilities = list(self.responsibilities(label))
+            agent_advances = self.advanced_by(label) is Actor.AGENT
+            lead = f"{desc} " if desc else ""  # the phase's description, then how it advances
+            # Two orthogonal facts, as two sentences: the responsibilities gate the agent (it must
+            # always meet them before yielding), and `advanced_by` says who moves on afterward.
+            advance = (
+                "Automatically advance to the next state."
+                if agent_advances
+                else "The user will advance to the next state."
+            )
+            if responsibilities:
+                lines.append(f"{i}. **{label}** — {lead}You must meet these responsibilities before ending your turn:")
+                lines += [f"   - {r.key}: {r.description}" for r in responsibilities]
+                lines.append(f"   {advance}")
+            else:
+                lines.append(f"{i}. **{label}** — {lead}{advance}")
+        lines += [
+            "",
+            "Moving between phases: **`advance`** follows this sequence and is gated on the current "
+            "phase's responsibilities; **`drop`** abandons the task (→ DROPPED) from anywhere; and if the "
+            "user redirects you, you can move straight to any phase (a free move — e.g. back to an "
+            "earlier phase to redo work).",
+        ]
+
+        tools = list(self.tools())
+        if tools:
+            lines += [
+                "",
+                "## Tools",
+                "",
+                "Beyond the usual shell (git, bash, …), this workflow's container has:",
+            ]
+            lines += [f"- `{t.name}` — {t.description}" for t in tools]
+
+        extras = list(self._overview_extras())
+        if extras:
+            lines += ["", *extras]
+        return "\n".join(lines)
+
+    def briefing(self, task: Task, *, artifacts: ArtifactStore) -> str:
+        """A short briefing on the task's current phase: its responsibilities and how it advances.
+
+        The per-turn "you are here" pin (the container's user-prompt hook emits it). A workflow
+        extends it via :meth:`_briefing_extras`, which receives ``artifacts`` so it can surface
+        task-artifact context (e.g. a forge workflow pointing the agent at its plan's MCP URI)."""
+        label = task.state
+        if self.is_terminal(label):
+            return f"This task is in the terminal state **{label}** — it's finished; there's nothing to do."
+
+        desc = self.description(label)
+        lead = f" {desc}" if desc else ""  # remind the agent what this phase is for
+        # The opener stays neutral on how the phase ends — the closing line below says whether to hand
+        # back (user-advanced) or advance yourself (agent-advanced); "then hand back" would be wrong for
+        # an agent-advanced phase like MERGING.
+        lines = [
+            f"You are in the **{label}** phase of the `{self.name}` workflow.{lead} Do the work this "
+            f"phase calls for — **don't start work that belongs to a later phase.**"
+        ]
+
+        responsibilities = list(task.current_entry.responsibilities)
+        if responsibilities:
+            lines += ["", "This phase's responsibilities (resolve each before ending your turn):"]
+            lines += [f"- [{r.status.value}] {r.key}: {r.description}" for r in responsibilities]
+
+        target = self.operations(label).get("advance")
+        if target is not None:
+            lines.append("")
+            if self.advanced_by(label) is Actor.USER:
+                lines.append(
+                    f"When these are met, **stop and hand back to the user** — they review and decide "
+                    f"when to advance (→ {target}). Don't advance on your own."
+                )
+            else:
+                lines.append(f"When these are met, advance the task yourself (the `advance` operation → {target}).")
+
+        extras = list(self._briefing_extras(task, artifacts=artifacts))
+        if extras:
+            lines += ["", *extras]
+        return "\n".join(lines)
+
+    def _overview_extras(self) -> Sequence[str]:
+        """Extra lines a workflow appends to the static :meth:`overview` map. Default none; a
+        subclass overrides to inject its own — each returned string is one line/block, joined on
+        after a blank separator."""
+        return ()
+
+    def _briefing_extras(self, task: Task, *, artifacts: ArtifactStore) -> Sequence[str]:
+        """Extra lines a workflow injects into the per-turn :meth:`briefing`. Default none; a
+        subclass overrides to surface task-specific context — ``artifacts`` is the task's artifact
+        store so it can key off what's been written (e.g. point at the plan's URI once it exists).
+        Each returned string is one line/block, joined on after a blank separator."""
+        return ()
 
     # -- lifecycle hooks (deterministic; run in the control plane, no LLM) ---------------
 

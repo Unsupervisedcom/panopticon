@@ -10,16 +10,21 @@ import pytest
 from panopticon.core import (
     Complete,
     IllegalTransition,
+    InitialState,
     ResponsibilitiesNotMet,
-    State,
     Workflow,
 )
 from panopticon.core.models import Actor, Repo, Responsibility, Status
 from panopticon.core.store import NotFound
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 from panopticon.taskservice.store_sqlalchemy import SqlAlchemyStore
-from panopticon.taskservice.service import AlreadyClaimed, TaskService, UnknownWorkflow
-from panopticon.workflows import GithubPeerReviewed, Spike
+from panopticon.taskservice.service import (
+    AlreadyClaimed,
+    NotAuthorized,
+    TaskService,
+    UnknownWorkflow,
+)
+from panopticon.workflows import GithubPeerReviewed, Orchestrator, Spike
 
 
 def make_service(tmp_path: Path) -> TaskService:
@@ -27,7 +32,7 @@ def make_service(tmp_path: Path) -> TaskService:
     times: Iterator[str] = iter(f"t{i}" for i in range(1, 10_000))
     svc = TaskService(
         SqlAlchemyStore(),
-        {"spike": Spike(), "github-peer-reviewed": GithubPeerReviewed()},
+        {"spike": Spike(), "github-peer-reviewed": GithubPeerReviewed(), "orchestrator": Orchestrator()},
         FilesystemArtifactStore(tmp_path),
         clock=lambda: next(times),
         id_factory=lambda: next(ids),
@@ -36,12 +41,52 @@ def make_service(tmp_path: Path) -> TaskService:
     return svc
 
 
+def test_create_task_as_orchestrator_is_allowed(tmp_path: Path) -> None:
+    svc = make_service(tmp_path)
+    boss = svc.create_task("r1", "orchestrator")
+    child = svc.create_task_as(boss.id, "github-peer-reviewed", description="do a thing")
+    assert child.workflow == "github-peer-reviewed"
+    assert child.state == "PLANNING"  # the child's own workflow initial state
+    assert child.description == "do a thing"
+
+
+def test_create_task_as_uses_the_orchestrators_own_repo(tmp_path: Path) -> None:
+    svc = make_service(tmp_path)
+    svc.create_repo(Repo(id="r2", name="acme/other", git_url="https://x/r2.git"))
+    boss = svc.create_task("r2", "orchestrator")  # the orchestrator lives in r2
+    child = svc.create_task_as(boss.id, "github-peer-reviewed")
+    assert child.repo_id == "r2"  # first iteration: always the orchestrator's own repo
+
+
+def test_create_task_as_non_orchestrator_is_rejected(tmp_path: Path) -> None:
+    svc = make_service(tmp_path)
+    actor = svc.create_task("r1", "spike")  # spike does not orchestrate
+    with pytest.raises(NotAuthorized):
+        svc.create_task_as(actor.id, "spike")
+    assert len(svc.list_tasks()) == 1  # nothing created
+
+
+def test_create_task_as_unknown_actor_is_not_found(tmp_path: Path) -> None:
+    svc = make_service(tmp_path)
+    with pytest.raises(NotFound):
+        svc.create_task_as("ghost", "spike")
+
+
+def test_gated_discovery_requires_orchestrator(tmp_path: Path) -> None:
+    svc = make_service(tmp_path)
+    boss = svc.create_task("r1", "orchestrator")
+    spike = svc.create_task("r1", "spike")
+    assert "orchestrator" in svc.workflow_names_as(boss.id)
+    with pytest.raises(NotAuthorized):
+        svc.workflow_names_as(spike.id)
+
+
 def test_create_task_uses_engine_defaults(tmp_path: Path) -> None:
     svc = make_service(tmp_path)
     task = svc.create_task("r1", "spike")
     assert task.id == "id1"  # from the injected id factory
     assert task.state == "ITERATING"
-    assert task.turn is Actor.AGENT
+    assert task.turn is Actor.USER  # initial state → turn starts with the user
     assert task.slug is None
 
 
@@ -81,7 +126,7 @@ def test_skills_exposes_the_active_workflows_skills(tmp_path: Path) -> None:
     class Skilled(Workflow):
         name = "skilled"
 
-        class A(State):
+        class A(InitialState):
             label = "A"
             transitions = (Complete,)
 
@@ -110,7 +155,7 @@ def test_on_transition_hook_fires_through_the_service(tmp_path: Path) -> None:
     class Hooked(Workflow):
         name = "hooked"
 
-        class A(State):
+        class A(InitialState):
             label = "A"
             transitions = (Complete,)
 
@@ -131,7 +176,7 @@ def test_on_transition_hook_fires_through_the_service(tmp_path: Path) -> None:
 
 def test_set_turn_flips_within_a_state(tmp_path: Path) -> None:
     svc = make_service(tmp_path)
-    task = svc.create_task("r1", "spike")  # turn=AGENT on entry
+    task = svc.create_task("r1", "spike")  # turn=USER on entry (initial state)
     flipped = svc.set_turn(task.id, Actor.USER)  # e.g. the agent asked a question
     assert flipped.turn is Actor.USER
     assert svc.get_task(task.id).turn is Actor.USER
@@ -215,6 +260,28 @@ def test_set_slug(tmp_path: Path) -> None:
     assert svc.get_task(task.id).slug == "fix-widget"
 
 
+def test_set_slug_aliases_the_artifacts_dir(tmp_path: Path) -> None:
+    # Setting the slug exposes the task's artifacts under <root>/tasks/<slug> (the symlink).
+    svc = make_service(tmp_path)
+    task = svc.create_task("r1", "spike")
+    svc.put_artifact(task.id, "plan.md", b"# Plan\n")
+    svc.set_slug(task.id, "fix-widget")
+    alias = tmp_path / "tasks" / "fix-widget"
+    assert alias.is_symlink()
+    assert (alias / "plan.md").read_bytes() == b"# Plan\n"
+
+
+def test_re_slug_swaps_the_alias(tmp_path: Path) -> None:
+    # Re-slugging drops the stale alias and points a fresh one at the same task.
+    svc = make_service(tmp_path)
+    task = svc.create_task("r1", "spike")
+    svc.put_artifact(task.id, "plan.md", b"# Plan\n")
+    svc.set_slug(task.id, "old-name")
+    svc.set_slug(task.id, "new-name")
+    assert not (tmp_path / "tasks" / "old-name").exists()
+    assert (tmp_path / "tasks" / "new-name" / "plan.md").read_bytes() == b"# Plan\n"
+
+
 # -- artifacts ----------------------------------------------------------------------
 
 
@@ -230,6 +297,16 @@ def test_artifact_roundtrip(tmp_path: Path) -> None:
     svc.put_artifact(task.id, "plan.md", b"# Plan")
     assert svc.get_artifact(task.id, "plan.md") == b"# Plan"
     assert svc.list_artifacts(task.id) == ["plan.md"]
+
+
+def test_briefing_surfaces_the_plan_uri_once_the_plan_exists(tmp_path: Path) -> None:
+    # The briefing names the plan's canonical URI only after the plan.md artifact is written, so the
+    # agent reads it back at the right URI instead of guessing.
+    svc = make_service(tmp_path)
+    task = svc.create_task("r1", "github-peer-reviewed")
+    assert "panopticon://" not in svc.briefing(task.id)  # no plan yet → no URI
+    svc.put_artifact(task.id, "plan.md", b"# Plan")
+    assert f"panopticon://tasks/{task.id}/artifacts/plan.md" in svc.briefing(task.id)
 
 
 # -- liveness -----------------------------------------------------------------------
@@ -287,7 +364,7 @@ def test_heartbeat_unknown_registration(tmp_path: Path) -> None:
 class _Gated(Workflow):
     name = "gated"
 
-    class Working(State):
+    class Working(InitialState):
         label = "WORKING"
         responsibilities = (Responsibility(key="tests-pass", description="Tests pass"),)
         transitions = (Complete,)

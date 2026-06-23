@@ -139,7 +139,7 @@ def test_create_and_get_task_roundtrips(store: Store) -> None:
     got = store.get_task("t1")
     assert got is not None
     assert got.state == "ITERATING"
-    assert got.turn is Actor.AGENT
+    assert got.turn is Actor.USER  # spike's initial state → turn starts with the user
     assert got.workflow == "spike"
     assert got.slug is None  # create persisted before slug was set
     assert [(h.from_state, h.to_state) for h in got.history] == [(None, "ITERATING")]
@@ -191,6 +191,15 @@ def test_url_round_trips(store: Store) -> None:
     task.url = "https://github.com/acme/widgets/pull/7"
     store.save_task(task)
     assert store.get_task("t1").url == "https://github.com/acme/widgets/pull/7"  # type: ignore[union-attr]
+
+
+def test_tokens_used_round_trips(store: Store) -> None:
+    _seed_repo(store)
+    task = _new_task(store)
+    assert store.get_task("t1").tokens_used is None  # default on create  # type: ignore[union-attr]
+    task.tokens_used = 12750
+    store.save_task(task)
+    assert store.get_task("t1").tokens_used == 12750  # type: ignore[union-attr]
 
 
 def test_blocked_marker_round_trips(store: Store) -> None:
@@ -362,6 +371,7 @@ def _fully_populated_task() -> Task:
         branch="panopticon/fix-the-widget",
         clone="/clones/t-full",
         claimed_by="local",
+        tokens_used=87500,
         history=[
             HistoryEntry(
                 at="t0", from_state=None, to_state="PLAN", trigger="start", note="kickoff"

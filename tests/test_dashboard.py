@@ -5,15 +5,19 @@ real HTTP client is covered in test_terminal.py."""
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
+import pytest
 from textual.widgets import DataTable, Input, Static
 
 from panopticon.terminal import dashboard
 from panopticon.terminal.dashboard import (
     Dashboard,
+    _SEPARATOR_KEY,
     _matches,
+    _short_tokens,
     _slug_cell,
     _turn_cell,
     render_detail,
@@ -143,6 +147,10 @@ def test_render_detail_shows_state_turn_and_history() -> None:
     assert "tests-pass=pending" in text
 
 
+def test_render_detail_shows_the_id() -> None:
+    assert "id: task-abcdef0123" in render_detail(_TASK)
+
+
 def test_render_detail_shows_the_description() -> None:
     assert "make the widget green" not in render_detail(_TASK)
     text = render_detail({**_TASK, "description": "make the widget green"})
@@ -155,9 +163,23 @@ def test_render_detail_shows_the_url() -> None:
     assert "url: https://github.com/acme/widgets/pull/7" in text
 
 
+def test_render_detail_shows_the_tokens_used() -> None:
+    assert "tokens:" not in render_detail(_TASK)  # absent → no line
+    assert "tokens: 1.2K" in render_detail({**_TASK, "tokens_used": 1234})
+
+
 def test_render_detail_marks_blocked() -> None:
     assert "(blocked)" not in render_detail(_TASK)
     assert "turn: agent (blocked)" in render_detail({**_TASK, "blocked": True})
+
+
+def test_short_tokens_formats_human_short() -> None:
+    assert _short_tokens(None) == "-"  # not yet reported
+    assert _short_tokens(0) == "-"
+    assert _short_tokens(300) == "300"  # under 1000 verbatim
+    assert _short_tokens(1234) == "1.2K"
+    assert _short_tokens(1_100_000) == "1.1M"
+    assert _short_tokens(2_500_000_000) == "2.5B"
 
 
 def test_turn_cell_color_codes_like_cloude_cade() -> None:
@@ -180,6 +202,21 @@ async def test_dashboard_mounts_lists_tasks_and_shows_detail() -> None:
         assert "WORKING" in str(detail.render())
 
 
+async def test_pressing_d_toggles_the_detail_pane() -> None:
+    # `d` hides the detail pane (so the table takes the full width) and shows it again.
+    app = Dashboard(_FakeClient([_TASK]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        detail = app.query_one("#detail", Static)
+        assert app._detail_visible and detail.styles.display == "block"
+        await pilot.press("d")  # hide
+        await pilot.pause()
+        assert not app._detail_visible and detail.styles.display == "none"
+        await pilot.press("d")  # show again
+        await pilot.pause()
+        assert app._detail_visible and detail.styles.display == "block"
+
+
 async def test_tasks_are_sorted_live_then_user_then_recent() -> None:
     # The order: (1) non-terminal above terminal, (2) the user's turn above the agent's,
     # (3) most-recently-updated (latest history `at`) first.
@@ -198,12 +235,16 @@ async def test_tasks_are_sorted_live_then_user_then_recent() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
-        order = [str(k.value) for k in table.rows]
+        keys = [str(k.value) for k in table.rows]
+        order = [k for k in keys if k != _SEPARATOR_KEY]  # task order, ignoring the divider row
         assert order == [
             "t-user-new", "t-user-old",    # live, user's turn, newest first
             "t-agent-new", "t-agent-old",  # live, agent's turn, newest first
             "t-done", "t-drop",            # terminal last (their recent `at` doesn't lift them)
         ]
+        # the divider sits exactly between the last active row and the first terminal one
+        assert keys.index(_SEPARATOR_KEY) == keys.index("t-agent-old") + 1
+        assert keys.index(_SEPARATOR_KEY) == keys.index("t-done") - 1
 
 
 async def test_sort_breaks_ties_on_slug() -> None:
@@ -218,6 +259,86 @@ async def test_sort_breaks_ties_on_slug() -> None:
         await pilot.pause()
         order = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
         assert order == ["t1", "t2"]  # alpha < zebra
+
+
+# -- active/terminal divider --------------------------------------------------------
+
+_ACTIVE_A = {**_TASK, "id": "t-a", "slug": "alpha", "state": "WORKING", "turn": "user"}
+_ACTIVE_B = {**_TASK, "id": "t-b", "slug": "bravo", "state": "ITERATING", "turn": "user"}
+_TERM_A = {**_TASK, "id": "t-done", "slug": "done", "state": "COMPLETE", "turn": "user"}
+_TERM_B = {**_TASK, "id": "t-drop", "slug": "dropped", "state": "DROPPED", "turn": "user"}
+
+
+async def test_separator_divides_active_from_terminal() -> None:
+    # With both groups present, a single divider row splices in at the boundary.
+    app = Dashboard(_FakeClient([_ACTIVE_A, _TERM_A, _ACTIVE_B, _TERM_B]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        keys = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
+        assert keys == ["t-a", "t-b", _SEPARATOR_KEY, "t-done", "t-drop"]
+
+
+async def test_no_separator_when_all_active() -> None:
+    app = Dashboard(_FakeClient([_ACTIVE_A, _ACTIVE_B]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        keys = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
+        assert _SEPARATOR_KEY not in keys
+
+
+async def test_no_separator_when_all_terminal() -> None:
+    app = Dashboard(_FakeClient([_TERM_A, _TERM_B]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        keys = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
+        assert _SEPARATOR_KEY not in keys
+
+
+async def test_no_separator_when_filtered_to_one_group() -> None:
+    # A search filter that leaves only active tasks shows no divider.
+    app = Dashboard(_FakeClient([_ACTIVE_A, _ACTIVE_B, _TERM_A, _TERM_B]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("slash")
+        await pilot.press("a", "l", "p", "h", "a")  # matches only _ACTIVE_A's slug
+        await pilot.pause()
+        keys = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
+        assert keys == ["t-a"]  # only the match; no divider
+
+
+async def test_highlighting_the_separator_selects_no_task() -> None:
+    # If the cursor is forced onto the divider, it selects nothing and actions no-op.
+    fake = _FakeClient([_ACTIVE_A, _TERM_A])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        sep_index = [str(k.value) for k in table.rows].index(_SEPARATOR_KEY)
+        app._update_detail(_SEPARATOR_KEY)  # as a raw highlight on the sentinel would
+        await pilot.pause()
+        assert app._current is None  # no task selected
+        assert str(app.query_one("#detail", Static).render()) == ""  # blank pane
+        await pilot.press("x")  # drop no-ops with no current task
+        await pilot.pause()
+        assert fake.applied == []
+        assert sep_index == 1  # divider after the one active row
+
+
+async def test_arrow_keys_skip_the_separator() -> None:
+    # Arrowing across the boundary jumps the divider in both directions.
+    app = Dashboard(_FakeClient([_ACTIVE_A, _TERM_A]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        table.move_cursor(row=0)  # the active task
+        await pilot.pause()
+        assert app._current == "t-a"
+        await pilot.press("down")  # would land on the divider → skip to the terminal task
+        await pilot.pause()
+        assert app._current == "t-done"
+        await pilot.press("up")  # back up over the divider → the active task again
+        await pilot.pause()
+        assert app._current == "t-a"
 
 
 async def test_dashboard_auto_refreshes_on_the_interval() -> None:
@@ -306,6 +427,33 @@ async def test_pressing_s_with_no_service_session_does_nothing() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("s")
+        await pilot.pause()
+        assert app.is_running  # reported "none running"; stayed on the dashboard
+
+
+async def test_pressing_u_switches_to_the_runner_session_when_one_exists() -> None:
+    # `u` switches to the session-service (runner) tmux session via on_runner (record + detach,
+    # like `s`), and the dashboard stays alive; on_runner returns True when a runner session exists.
+    calls: list[str] = []
+
+    def on_runner() -> bool:
+        calls.append("runner")
+        return True
+
+    app = Dashboard(_FakeClient([_TASK]), on_runner=on_runner)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("u")
+        await pilot.pause()
+        assert calls == ["runner"]
+        assert app.is_running
+
+
+async def test_pressing_u_with_no_runner_session_does_nothing() -> None:
+    app = Dashboard(_FakeClient([_TASK]), on_runner=lambda: False)  # no runner session
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("u")
         await pilot.pause()
         assert app.is_running  # reported "none running"; stayed on the dashboard
 
@@ -431,7 +579,7 @@ def test_matches_is_a_case_insensitive_substring_over_identifying_fields() -> No
     assert _matches(task, "WIDGET")  # case-insensitive
     assert _matches(task, "working")  # state
     assert _matches(task, "spike")  # workflow
-    assert _matches(task, task["id"][:6])  # id
+    assert not _matches(task, task["id"][:6])  # id is not a search field
     assert not _matches(task, "nope")
     # description is searchable too
     assert _matches({**task, "description": "make it green"}, "green")
@@ -439,17 +587,30 @@ def test_matches_is_a_case_insensitive_substring_over_identifying_fields() -> No
 
 
 def test_slug_cell_combines_slug_and_description() -> None:
+    # Returns a Rich Text (not a markup str) so the "[" survives — compare on .plain.
     # both present → slug[description]
-    assert _slug_cell({**_TASK, "slug": "fix-widget", "description": "make it green"}) == (
+    assert _slug_cell({**_TASK, "slug": "fix-widget", "description": "make it green"}).plain == (
         "fix-widget[make it green]"
     )
     # slug, no description → bare slug
-    assert _slug_cell({**_TASK, "slug": "fix-widget", "description": None}) == "fix-widget"
-    assert _slug_cell({"slug": "fix-widget"}) == "fix-widget"  # description key absent
-    # no slug, with description → "-[description]"
-    assert _slug_cell({"slug": None, "description": "make it green"}) == "-[make it green]"
+    assert _slug_cell({**_TASK, "slug": "fix-widget", "description": None}).plain == "fix-widget"
+    assert _slug_cell({"slug": "fix-widget"}).plain == "fix-widget"  # description key absent
+    # no slug, with description → "[description]" (no leading dash)
+    assert _slug_cell({"slug": None, "description": "make it green"}).plain == "[make it green]"
+    assert _slug_cell({"description": "make it green"}).plain == "[make it green]"  # slug key absent
     # neither → "-"
-    assert _slug_cell({"slug": None}) == "-"
+    assert _slug_cell({"slug": None}).plain == "-"
+    assert _slug_cell({}).plain == "-"
+
+
+def test_slug_cell_is_text_so_brackets_arent_eaten_as_markup() -> None:
+    # The regression: a bare string cell is rendered through Textual markup, which swallows "[…]"
+    # (e.g. "fix-widget[make it green]" → "fix-widget"). A Text renders literally.
+    from rich.text import Text
+
+    cell = _slug_cell({"slug": "fix-widget", "description": "make it green"})
+    assert isinstance(cell, Text)
+    assert Text.from_markup(cell.plain).plain != cell.plain  # plain str WOULD be mangled by markup
 
 
 _FIX = {**_TASK, "id": "t-fix", "slug": "fix-widget", "state": "WORKING", "workflow": "spike"}
@@ -541,6 +702,23 @@ async def test_respawn_refuses_a_live_task() -> None:
 # -- repo config screen (`g`) -------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "url, expected",
+    [
+        ("https://github.com/acme/widgets.git", "widgets"),
+        ("git@github.com:acme/widgets.git", "widgets"),
+        ("https://github.com/acme/widgets", "widgets"),  # no .git suffix
+        ("https://github.com/acme/widgets/", "widgets"),  # trailing slash
+        ("ssh://git@host:22/acme/widgets.git", "widgets"),
+        ("", ""),  # empty
+        ("widgets", ""),  # bare token, no path → unparseable
+        ("   ", ""),  # whitespace only
+    ],
+)
+def test_repo_name_from_git_url(url: str, expected: str) -> None:
+    assert dashboard._repo_name_from_git_url(url) == expected
+
+
 async def test_pressing_g_opens_the_repos_screen_listing_repos() -> None:
     fake = _FakeClient([], repos=[{"id": "r1", "name": "acme/widgets", "git_url": "https://x/r1.git",
                                    "default_base": "main"}])
@@ -554,7 +732,7 @@ async def test_pressing_g_opens_the_repos_screen_listing_repos() -> None:
         assert table.row_count == 1
 
 
-async def test_repos_screen_creates_a_repo() -> None:
+async def test_repos_screen_creates_a_repo_autofilling_from_the_git_url() -> None:
     fake = _FakeClient([], repos=[])
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
@@ -563,15 +741,85 @@ async def test_repos_screen_creates_a_repo() -> None:
         await pilot.pause()
         await pilot.press("n")  # open the create form
         await pilot.pause()
-        app.screen.query_one("#field-id", Input).value = "r9"
-        app.screen.query_one("#field-name", Input).value = "acme/new"
-        app.screen.query_one("#field-git_url", Input).value = "https://x/r9.git"
+        # Only the git URL is typed; id, name and creds_volume auto-fill from it, default_base
+        # defaults to main.
+        app.screen.query_one("#field-git_url", Input).value = "git@github.com:acme/widgets.git"
         await pilot.press("enter")  # submit the form
         await pilot.pause()
         assert fake.created_repos == [
-            {"id": "r9", "name": "acme/new", "git_url": "https://x/r9.git",
-             "default_base": "main", "env_file": None, "creds_volume": None}
+            {"id": "widgets", "name": "widgets", "git_url": "git@github.com:acme/widgets.git",
+             "default_base": "main", "env_file": None, "creds_volume": "widgets-creds"}
         ]
+
+
+async def test_repo_form_autofill_only_fills_blank_fields() -> None:
+    fake = _FakeClient([], repos=[])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        app.screen.query_one("#field-git_url", Input).value = "https://x/widgets.git"
+        app.screen.query_one("#field-id", Input).value = "r9"  # pre-typed → kept
+        app.screen.query_one("#field-name", Input).value = "acme/new"  # pre-typed → kept
+        await pilot.press("enter")
+        await pilot.pause()
+        # id/name keep the user's values; only the blank creds_volume is derived.
+        assert fake.created_repos == [
+            {"id": "r9", "name": "acme/new", "git_url": "https://x/widgets.git",
+             "default_base": "main", "env_file": None, "creds_volume": "widgets-creds"}
+        ]
+
+
+async def test_repo_form_git_url_leads_and_default_base_prefills_main() -> None:
+    fake = _FakeClient([], repos=[])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        # git_url is the first Input on the form; default_base is pre-filled with main.
+        inputs = [w.id for w in app.screen.query(Input)]
+        assert inputs[0] == "field-git_url"
+        assert inputs.index("field-git_url") < inputs.index("field-id") < inputs.index("field-name")
+        assert app.screen.query_one("#field-default_base", Input).value == "main"
+
+
+async def test_repo_form_autofills_on_git_url_blur() -> None:
+    fake = _FakeClient([], repos=[])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        app.screen.query_one("#field-git_url", Input).value = "https://x/widgets.git"
+        app.screen.query_one("#field-name", Input).focus()  # blur git_url
+        await pilot.pause()
+        assert app.screen.query_one("#field-name", Input).value == "widgets"
+        assert app.screen.query_one("#field-creds_volume", Input).value == "widgets-creds"
+
+
+async def test_repo_form_edit_mode_does_not_autofill_blank_fields() -> None:
+    fake = _FakeClient([], repos=[{"id": "r1", "name": "", "git_url": "https://x/widgets.git",
+                                   "default_base": "main"}])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")  # edit
+        await pilot.pause()
+        # Editing an existing repo never derives values: blanks stay blank even on blur.
+        app.screen.query_one("#field-creds_volume", Input).focus()  # blur git_url
+        await pilot.pause()
+        assert app.screen.query_one("#field-name", Input).value == ""
+        assert app.screen.query_one("#field-creds_volume", Input).value == ""
 
 
 async def test_repos_screen_create_requires_id_name_and_git_url() -> None:
@@ -604,10 +852,42 @@ async def test_repos_screen_edits_a_repo_via_patch() -> None:
         await pilot.press("enter")
         await pilot.pause()
         # Only the core fields are sent; image_layer/capabilities are never touched (PATCH).
+        # Edit mode never auto-fills, so the blank creds_volume stays blank.
         assert fake.updated_repos == [
             ("r1", {"name": "new", "git_url": "https://x/r1.git", "default_base": "main",
                     "env_file": None, "creds_volume": None})
         ]
+
+
+async def test_repos_screen_login_runs_for_the_highlighted_repo() -> None:
+    fake = _FakeClient([], repos=[{"id": "r1", "name": "acme/widgets", "git_url": "https://x/r1.git",
+                                   "default_base": "main", "creds_volume": "creds-r1"}])
+    logged_in: list[str] = []
+    app = Dashboard(fake, login=logged_in.append)  # type: ignore[arg-type]
+    # The headless test driver can't suspend (real terminals can); stub it to a no-op so the
+    # login still runs — we're exercising the hook wiring, not the terminal hand-off.
+    app.suspend = lambda: nullcontext()  # type: ignore[method-assign]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("l")  # log in to the highlighted repo
+        await pilot.pause()
+        assert logged_in == ["r1"]  # the repo id, run through the login+restart hook
+
+
+async def test_repos_screen_login_warns_without_a_creds_volume() -> None:
+    fake = _FakeClient([], repos=[{"id": "r1", "name": "acme/widgets", "git_url": "https://x/r1.git",
+                                   "default_base": "main"}])  # no creds_volume configured
+    logged_in: list[str] = []
+    app = Dashboard(fake, login=logged_in.append)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("l")
+        await pilot.pause()
+        assert logged_in == []  # nothing to log in to → no-op (warned instead)
 
 
 def _record_popen(monkeypatch: Any) -> list[list[str]]:
@@ -741,16 +1021,23 @@ async def test_pressing_a_with_no_artifacts_warns_and_opens_no_modal(monkeypatch
 
 def test_footer_shows_only_the_essential_keys() -> None:
     # The legend keeps the few most-used keys; the rest still dispatch but are hidden (show=False)
-    # behind the `?` help screen. Tuple bindings show by default; Binding(...) carries `.show`.
-    shown: set[str] = set()
-    hidden: set[str] = set()
-    for binding in Dashboard.BINDINGS:
-        if isinstance(binding, tuple):
-            shown.add(binding[0])
-        else:
-            (shown if binding.show else hidden).add(binding.key)
-    assert shown == {"t", "n", "x", "/", "question_mark", "q"}
-    assert hidden == {"r", "R", "p", "g", "a", "s", "escape"}
+    # behind the `?` help screen. BINDINGS is derived from HOTKEYS, so every entry is a Binding.
+    shown = {b.key for b in Dashboard.BINDINGS if b.show}
+    hidden = {b.key for b in Dashboard.BINDINGS if not b.show}
+    assert shown == {"t", "n", "x", "/", "d", "question_mark", "q"}
+    assert hidden == {"r", "R", "p", "g", "a", "s", "u", "escape"}
+
+
+def test_bindings_and_help_derive_from_the_single_hotkey_table() -> None:
+    # The DRY invariant: the footer bindings and the help screen are *both* derived from HOTKEYS,
+    # so the keymap can't drift between them. Every binding traces back to a HOTKEYS entry, and
+    # every entry's action resolves to an action_* method on the dashboard (or Textual's built-in
+    # quit) — so a stale action name can't slip in.
+    assert [b.key for b in Dashboard.BINDINGS] == [h.key for h in dashboard.HOTKEYS]
+    shown = {h.key for h in dashboard.HOTKEYS if h.show}
+    assert {b.key for b in Dashboard.BINDINGS if b.show} == shown
+    for hotkey in dashboard.HOTKEYS:
+        assert hotkey.action == "quit" or hasattr(Dashboard, f"action_{hotkey.action}")
 
 
 async def test_pressing_question_mark_opens_the_help_screen() -> None:
@@ -763,7 +1050,7 @@ async def test_pressing_question_mark_opens_the_help_screen() -> None:
 
 
 async def test_help_screen_lists_every_hotkey() -> None:
-    # The help screen is the authoritative keymap: every entry in _HOTKEYS (key + description)
+    # The help screen is the authoritative keymap: every entry in HOTKEYS (key + description)
     # must render, so a future binding change can't quietly drop a key from the listing.
     app = Dashboard(_FakeClient([_TASK]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
@@ -771,10 +1058,11 @@ async def test_help_screen_lists_every_hotkey() -> None:
         await pilot.press("question_mark")
         await pilot.pause()
         text = str(app.screen.query_one("#help-keys", Static).render())
-        for key, description in dashboard._HOTKEYS:
-            assert description in text
+        for hotkey in dashboard.HOTKEYS:
+            assert hotkey.description in text
+            assert (hotkey.display or hotkey.key) in text
         # the non-essential keys (hidden from the footer) are reachable here
-        assert {"r", "R", "p", "g", "a", "s"} <= {key for key, _ in dashboard._HOTKEYS}
+        assert {"r", "R", "p", "g", "a", "s", "u"} <= {h.key for h in dashboard.HOTKEYS}
 
 
 async def test_help_screen_closes_on_escape() -> None:
