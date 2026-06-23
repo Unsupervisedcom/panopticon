@@ -16,6 +16,7 @@ from panopticon.terminal import dashboard
 from panopticon.terminal.dashboard import (
     Dashboard,
     _matches,
+    _short_tokens,
     _slug_cell,
     _turn_cell,
     render_detail,
@@ -157,9 +158,23 @@ def test_render_detail_shows_the_url() -> None:
     assert "url: https://github.com/acme/widgets/pull/7" in text
 
 
+def test_render_detail_shows_the_tokens_used() -> None:
+    assert "tokens:" not in render_detail(_TASK)  # absent → no line
+    assert "tokens: 1.2K" in render_detail({**_TASK, "tokens_used": 1234})
+
+
 def test_render_detail_marks_blocked() -> None:
     assert "(blocked)" not in render_detail(_TASK)
     assert "turn: agent (blocked)" in render_detail({**_TASK, "blocked": True})
+
+
+def test_short_tokens_formats_human_short() -> None:
+    assert _short_tokens(None) == "-"  # not yet reported
+    assert _short_tokens(0) == "-"
+    assert _short_tokens(300) == "300"  # under 1000 verbatim
+    assert _short_tokens(1234) == "1.2K"
+    assert _short_tokens(1_100_000) == "1.1M"
+    assert _short_tokens(2_500_000_000) == "2.5B"
 
 
 def test_turn_cell_color_codes_like_cloude_cade() -> None:

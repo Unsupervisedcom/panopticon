@@ -89,6 +89,19 @@ def _short(task_id: str) -> str:
     return task_id[:8]
 
 
+def _short_tokens(n: int | None) -> str:
+    """A token count in short human form for the table: ``None``/0 (not yet reported) → ``-``,
+    under 1000 shown as-is (``300``), otherwise scaled to ``K``/``M``/``B`` to one decimal
+    (``1.2K``, ``1.1M``). Plain ``str`` — the output has no markup-special chars (unlike the
+    slug cell), so Textual renders it verbatim."""
+    if not n:
+        return "-"
+    for limit, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")):
+        if n >= limit:
+            return f"{n / limit:.1f}{suffix}"
+    return str(n)
+
+
 def _slug_cell(task: JsonObj) -> Text:
     """The ``slug[description]`` column: the slug followed by the task's description in brackets
     (bare slug when there's no description; ``-`` when there's no slug).
@@ -139,6 +152,8 @@ def render_detail(task: JsonObj) -> str:
         lines += ["", task["description"]]
     if task.get("url"):
         lines += ["", f"url: {task['url']}"]
+    if task.get("tokens_used"):
+        lines += ["", f"tokens: {_short_tokens(task['tokens_used'])}"]
     lines += ["", "history:"]
     for entry in task["history"]:
         line = f"  {entry['from_state'] or '∅'} → {entry['to_state']}"
@@ -623,7 +638,7 @@ class Dashboard(App[None]):
         table = self.query_one("#tasks", DataTable)
         table.cursor_type = "row"
         # the slug header carries a literal "[" — pass it as Text so Textual doesn't eat it as markup
-        table.add_columns("id", "state", "turn", "run", Text("slug[description]"))
+        table.add_columns("id", "state", "turn", "run", "tokens", Text("slug[description]"))
         table.focus()  # the (hidden) search Input would otherwise grab initial focus
         self.action_refresh()
         if self._refresh_interval:
@@ -667,7 +682,7 @@ class Dashboard(App[None]):
         for task in visible:
             table.add_row(
                 _short(task["id"]), task["state"], _turn_cell(task), self._run_status(task),
-                _slug_cell(task),
+                _short_tokens(task.get("tokens_used")), _slug_cell(task),
                 key=task["id"],
             )
         target = selected if selected in self._tasks else next(iter(self._tasks), None)
