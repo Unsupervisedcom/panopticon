@@ -182,6 +182,17 @@ class TaskService:
     def list_tasks(self) -> list[Task]:
         return self._store.list_tasks()
 
+    def tasks_version(self) -> int:
+        """The store's change-feed version — bumped on every task mutation (ADR 0006 single
+        writer). Pair it with :meth:`subscribe_to_changes` to block until the task set changes
+        instead of re-polling :meth:`list_tasks`."""
+        return self._store.version()
+
+    def subscribe_to_changes(self, listener: Callable[[], None]) -> None:
+        """Register a callback fired (synchronously) after every task mutation. The HTTP layer
+        wires an async wake-up here so ``GET /tasks`` can long-poll for changes."""
+        self._store.subscribe(listener)
+
     def legal_transitions(self, task_id: str) -> list[str]:
         """The states the task may move to next (its workflow's edges out of the current state)."""
         task = self.get_task(task_id)

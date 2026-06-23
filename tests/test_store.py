@@ -252,6 +252,37 @@ def test_save_rejects_history_shrink(store: Store) -> None:
         store.save_task(truncated)
 
 
+# -- change feed (block-until-change cursor) ----------------------------------------
+
+
+def test_version_starts_at_zero_and_bumps_on_each_task_write(store: Store) -> None:
+    _seed_repo(store)  # repo writes are not task mutations
+    assert store.version() == 0
+
+    task = _new_task(store)  # create_task
+    v_after_create = store.version()
+    assert v_after_create > 0
+
+    WF.apply_transition(task, "COMPLETE", at="t1", trigger="finish")
+    store.save_task(task)  # save_task
+    assert store.version() > v_after_create
+
+
+def test_subscribed_listener_fires_on_every_task_mutation(store: Store) -> None:
+    bumps: list[int] = []
+    store.subscribe(lambda: bumps.append(store.version()))
+
+    _seed_repo(store)  # a repo write must not wake task-change subscribers
+    assert bumps == []
+
+    task = _new_task(store)
+    task.slug = "name-it"
+    store.save_task(task)
+
+    # One notification per task write (create + save), each carrying the bumped version.
+    assert bumps == [1, 2]
+
+
 # -- isolation ----------------------------------------------------------------------
 
 

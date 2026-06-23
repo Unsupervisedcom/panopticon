@@ -9,11 +9,12 @@ plane serves REST and MCP. ``create_app`` builds an app around an injected
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import asyncio
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -185,6 +186,54 @@ class RegistrationOut(BaseModel):
     last_seen: str
 
 
+# -- block-until-change feed --------------------------------------------------------
+
+#: The header carrying the store's change-feed version on every ``GET /tasks`` response — the
+#: cursor a client echoes back as ``?since=`` to long-poll for the next change.
+TASKS_VERSION_HEADER = "X-Tasks-Version"
+
+#: Ceiling on a single long-poll's hold time (seconds). A client asking to wait longer just gets
+#: a snapshot at the cap and re-requests — keeps a connection from parking indefinitely.
+MAX_WAIT_SECONDS = 60.0
+
+
+class ChangeFeed:
+    """An async broadcast over the store's change counter — the HTTP side of block-until-change.
+
+    The store bumps its synchronous :meth:`~panopticon.core.store.Store.version` on every task
+    mutation and calls :meth:`notify` (a subscribed listener). :meth:`wait` parks a request on an
+    :class:`asyncio.Event` until the next ``notify`` (or a timeout), then returns the current
+    version. The asyncio lives here, not in ``core`` — the store stays clock-free and push-free.
+
+    All mutations arrive over HTTP/MCP and run on the event loop, so ``notify`` (which sets the
+    event) and the waiters share one thread; no locking is needed.
+    """
+
+    def __init__(self, version: Callable[[], int]) -> None:
+        self._version = version
+        self._changed = asyncio.Event()
+
+    def notify(self) -> None:
+        """Wake every parked waiter, then arm a fresh event for the next round (broadcast)."""
+        self._changed.set()
+        self._changed = asyncio.Event()
+
+    async def wait(self, since: int, timeout: float) -> int:
+        """Return the current version once it differs from ``since``, or after ``timeout`` seconds.
+
+        Returns immediately when the version already moved (any difference — including a service
+        restart that reset the counter — counts, so a stale cursor never blocks forever).
+        """
+        if self._version() != since:
+            return self._version()
+        changed = self._changed  # capture before awaiting: notify() swaps in a fresh event
+        try:
+            await asyncio.wait_for(changed.wait(), timeout)
+        except (TimeoutError, asyncio.TimeoutError):
+            pass
+        return self._version()
+
+
 def create_app(service: TaskService) -> FastAPI:
     # MCP over streamable HTTP, mounted at /mcp on the same control plane (operations=tools,
     # artifacts=resources). Its path is set to "/" so the mount point *is* the endpoint (/mcp).
@@ -203,6 +252,11 @@ def create_app(service: TaskService) -> FastAPI:
             yield
 
     app = FastAPI(title="panopticon task service", version="0.0.1", lifespan=lifespan)
+
+    # The block-until-change feed: a store mutation bumps the version + wakes parked GET /tasks
+    # long-polls (the seam the daemons/dashboard migrate onto, replacing their interval re-polls).
+    feed = ChangeFeed(service.tasks_version)
+    service.subscribe_to_changes(feed.notify)
 
     # -- error mapping: domain exceptions -> HTTP status --------------------------
 
@@ -288,8 +342,32 @@ def create_app(service: TaskService) -> FastAPI:
         )
 
     @app.get("/tasks")
-    async def list_tasks() -> list[TaskOut]:
-        return [TaskOut.model_validate(t) for t in service.list_tasks()]
+    async def list_tasks(
+        response: Response,
+        wait: float | None = Query(
+            default=None,
+            ge=0,
+            description="Block up to this many seconds for a change past ?since before returning "
+            f"(capped at {MAX_WAIT_SECONDS:g}s). Omit for an immediate snapshot.",
+        ),
+        since: int = Query(
+            default=0,
+            description="The X-Tasks-Version a client last saw; with ?wait, return once the "
+            "version differs from it (block-until-change).",
+        ),
+    ) -> list[TaskOut]:
+        # Every response carries the current version in X-Tasks-Version so a client can echo it
+        # back as ?since=. With ?wait the request parks until the version moves past ?since (or
+        # the cap elapses); without it, it's an immediate snapshot — today's behaviour.
+        if wait is not None:
+            version = await feed.wait(since=since, timeout=min(wait, MAX_WAIT_SECONDS))
+        else:
+            version = service.tasks_version()
+        # No await between reading the version and the snapshot, so they're consistent: a mutation
+        # (which runs on this same loop) can't interleave to leave the body ahead of the header.
+        tasks = [TaskOut.model_validate(t) for t in service.list_tasks()]
+        response.headers[TASKS_VERSION_HEADER] = str(version)
+        return tasks
 
     @app.get("/tasks/{task_id}")
     async def get_task(task_id: str) -> TaskOut:

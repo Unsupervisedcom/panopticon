@@ -240,6 +240,7 @@ class SqlAlchemyStore(Store):
     """A :class:`~panopticon.core.store.Store` backed by SQLAlchemy."""
 
     def __init__(self, url: str = "sqlite://") -> None:
+        super().__init__()  # the base Store's change-feed counter + listeners
         if url in _IN_MEMORY:
             # An in-memory SQLite DB lives only as long as its single connection — pin one.
             self._engine = create_engine(

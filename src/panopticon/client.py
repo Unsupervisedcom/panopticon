@@ -46,6 +46,30 @@ class TaskServiceClient:
     def list_tasks(self) -> list[JsonObj]:
         return cast("list[JsonObj]", self._json(self._http.get("/tasks")))
 
+    def list_tasks_versioned(
+        self, *, since: int = 0, wait: float | None = None
+    ) -> tuple[list[JsonObj], int]:
+        """Block-until-change ``GET /tasks``: return ``(tasks, version)`` where ``version`` is the
+        store's change-feed cursor (the ``X-Tasks-Version`` header).
+
+        With ``wait`` set, the call long-polls — it parks on the server until a task changes past
+        ``since`` (the last version this caller saw) or ``wait`` seconds elapse, then returns the
+        current snapshot + version. Without ``wait`` it's an immediate snapshot + version. Feed the
+        returned ``version`` back as ``since`` on the next call to wait for the *next* change —
+        replacing a ``list_tasks()`` + ``sleep`` poll loop with one event-driven call.
+        """
+        params: dict[str, Any] = {"since": since}
+        if wait is None:
+            resp = self._http.get("/tasks", params=params)
+        else:
+            # Give the socket headroom past the server-side hold so the long-poll isn't cut short
+            # by httpx's default read timeout.
+            params["wait"] = wait
+            resp = self._http.get("/tasks", params=params, timeout=httpx.Timeout(wait + 10.0))
+        resp.raise_for_status()
+        version = int(resp.headers.get("X-Tasks-Version", "0"))
+        return cast("list[JsonObj]", resp.json()), version
+
     def get_task(self, task_id: str) -> JsonObj:
         return cast(JsonObj, self._json(self._http.get(f"/tasks/{task_id}")))
 
