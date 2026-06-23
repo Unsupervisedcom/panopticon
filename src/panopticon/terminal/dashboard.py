@@ -273,8 +273,10 @@ class RepoFormScreen(ModalScreen["dict[str, str] | None"]):
     # git_url leads (the auto-fill source); the rest follow. ``id`` is rendered between git_url
     # and these, separately, since it's editable only in create mode.
     FIELDS = ("git_url", "name", "default_base", "creds_volume", "env_file")
-    # Fields auto-derived from git_url → how to derive each (id is added in create mode).
+    # Fields auto-derived from git_url → how to derive each (create mode only; see
+    # _autofill_from_git_url). id and name are the bare repo name; creds_volume a convention.
     _DERIVED: dict[str, Callable[[str], str]] = {
+        "id": lambda repo: repo,
         "name": lambda repo: repo,
         "creds_volume": lambda repo: f"{repo}-creds",
     }
@@ -316,8 +318,7 @@ class RepoFormScreen(ModalScreen["dict[str, str] | None"]):
         repo = _repo_name_from_git_url(self.query_one("#field-git_url", Input).value)
         if not repo:
             return
-        derived: dict[str, Callable[[str], str]] = {**self._DERIVED, "id": lambda r: r}
-        for field, derive in derived.items():
+        for field, derive in self._DERIVED.items():
             widget = self.query_one(f"#field-{field}", Input)
             if not widget.value.strip():
                 widget.value = derive(repo)
