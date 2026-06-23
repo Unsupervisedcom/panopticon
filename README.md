@@ -5,15 +5,25 @@ seat of mission control.
 
 ## What this is for
 
-panopticon parallelizes and manages agent-driven development end to end: you create a task, an
-agent plans it, writes the code and tests, opens a pull request, shepherds it through CI and the
-merge queue, and lands it — while you watch a fleet of them from a single dashboard.
+panopticon is a system for parallelizing and managing agent-driven development end to end — from
+picking up a task to landing it.
 
-It draws a hard line between **foreground** work (a decision that's yours to make) and
-**background** work (the agent runs autonomously). Every task carries a **turn** marker — agent
-or you — and a **blocked** marker for when it's waiting on something external. The dashboard
-colors them so you can see, at a glance, exactly which tasks want you and which are humming along
-on their own.
+Beyond the operational overhead, the system manages the workflow of development tasks from start
+to finish. Agents change the shape of that workflow: they enable — and require — far more
+multitasking than unassisted development, with several pieces of work in flight at once and agents
+running unattended in the background.
+
+The tooling establishes a critical distinction between two types of work:
+
+- **Foreground work** — tasks that need active developer attention (decisions, reviews, ambiguous
+  requirements, risky changes).
+- **Background work** — tasks an agent can run to completion alone, with the developer only
+  checking results when they land.
+
+The tools here exist to make that distinction explicit and to keep the right things flowing
+through the right lane. Every task carries a **turn** marker — agent or you — and a **blocked**
+marker for when it's waiting on something external, and the dashboard colors them so you can see
+at a glance which tasks want you and which are humming along on their own.
 
 > **The one rule that matters most — the determinism invariant.** The control plane makes **no
 > LLM calls**. Every LLM call happens **inside a task container**. The task service, the runner,
