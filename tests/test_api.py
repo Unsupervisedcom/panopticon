@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from panopticon.core.models import Repo, Responsibility
-from panopticon.core.state import Complete, State
+from panopticon.core.state import Complete, InitialState
 from panopticon.core.workflow import Workflow
 from panopticon.taskservice.api import create_app
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
@@ -23,7 +23,7 @@ class _GatedWorkflow(Workflow):
 
     name = "gated"
 
-    class Working(State):
+    class Working(InitialState):
         label = "WORKING"
         responsibilities = (Responsibility(key="tests-pass", description="Tests pass"),)
         transitions = (Complete,)
@@ -81,7 +81,7 @@ def test_create_and_get_task(client: TestClient) -> None:
     assert got.status_code == 200
     body = got.json()
     assert body["state"] == "ITERATING"
-    assert body["turn"] == "agent"
+    assert body["turn"] == "user"  # spike's initial state → turn starts with the user
     assert body["slug"] is None
     assert body["description"] is None  # none given at creation
     assert body["provisioned"] is False  # no branch yet (computed Task.provisioned)

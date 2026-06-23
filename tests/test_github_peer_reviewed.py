@@ -30,10 +30,10 @@ def _advance(task: Task, to_state: str) -> None:
 # -- shape: states, transitions, policy ---------------------------------------------
 
 
-def test_starts_in_planning_on_the_agents_turn() -> None:
+def test_starts_in_planning_on_the_users_turn() -> None:
     task = WF.start_task("t1", "r1", at="t0")
     assert task.state == "PLANNING"
-    assert task.turn is Actor.AGENT  # the agent drafts the plan first
+    assert task.turn is Actor.USER  # initial state → the agent waits for the user's first input
     assert task.workflow == "github-peer-reviewed"
     assert [h.to_state for h in task.history] == ["PLANNING"]
 
@@ -119,11 +119,13 @@ def test_full_lifecycle_planning_to_complete() -> None:
 
 
 def test_turn_flips_to_user_on_entering_a_foreground_state() -> None:
-    # Every state enters on the agent's turn here (the agent acts first); the *advance* policy
-    # is what makes the foreground states user-driven. Entry turn is AGENT throughout.
+    # PLANNING (the initial state) enters on the user's turn; every *non-initial* state enters
+    # on the agent's turn (the agent acts first). The *advance* policy is what makes the
+    # foreground states user-driven, independent of the entry turn.
     task = WF.start_task("t1", "r1", at="t0")
+    assert task.turn is Actor.USER  # PLANNING is the initial state
     _advance(task, "ITERATING")
-    assert task.turn is Actor.AGENT
+    assert task.turn is Actor.AGENT  # a non-initial state enters on the agent's turn
 
 
 # -- gating -------------------------------------------------------------------------

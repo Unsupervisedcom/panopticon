@@ -10,14 +10,14 @@ import pytest
 from panopticon.workflows.discovery import discover_workflows
 
 _CUSTOM_WORKFLOW = '''\
-from panopticon.core.state import Complete, State
+from panopticon.core.state import Complete, InitialState
 from panopticon.core.workflow import Workflow
 
 
 class Custom(Workflow):
     name = "custom"
 
-    class Only(State):
+    class Only(InitialState):
         label = "ONLY"
         transitions = (Complete,)
 

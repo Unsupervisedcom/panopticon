@@ -31,10 +31,10 @@ def _advance(task: Task, to_state: str) -> None:
 # -- shape: states, transitions, policy ---------------------------------------------
 
 
-def test_starts_in_planning_on_the_agents_turn() -> None:
+def test_starts_in_planning_on_the_users_turn() -> None:
     task = WF.start_task("t1", "r1", at="t0")
     assert task.state == "PLANNING"
-    assert task.turn is Actor.AGENT  # the agent drafts the plan first
+    assert task.turn is Actor.USER  # initial state → the agent waits for the user's first input
     assert task.workflow == "github-self-reviewed"
     assert [h.to_state for h in task.history] == ["PLANNING"]
 

@@ -11,10 +11,10 @@ from panopticon.workflows import Orchestrator
 WF = Orchestrator()
 
 
-def test_starts_orchestrating_with_agent_turn() -> None:
+def test_starts_orchestrating_with_user_turn() -> None:
     task = WF.start_task("t1", "r1", at="2026-06-23T00:00:00Z")
     assert task.state == "ORCHESTRATING"
-    assert task.turn is Actor.AGENT  # agent-driven, like the spike seed
+    assert task.turn is Actor.USER  # initial state → the agent waits for the user's request first
     assert task.workflow == "orchestrator"
     assert [h.to_state for h in task.history] == ["ORCHESTRATING"]
 

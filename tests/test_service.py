@@ -10,8 +10,8 @@ import pytest
 from panopticon.core import (
     Complete,
     IllegalTransition,
+    InitialState,
     ResponsibilitiesNotMet,
-    State,
     Workflow,
 )
 from panopticon.core.models import Actor, Repo, Responsibility, Status
@@ -86,7 +86,7 @@ def test_create_task_uses_engine_defaults(tmp_path: Path) -> None:
     task = svc.create_task("r1", "spike")
     assert task.id == "id1"  # from the injected id factory
     assert task.state == "ITERATING"
-    assert task.turn is Actor.AGENT
+    assert task.turn is Actor.USER  # initial state → turn starts with the user
     assert task.slug is None
 
 
@@ -126,7 +126,7 @@ def test_skills_exposes_the_active_workflows_skills(tmp_path: Path) -> None:
     class Skilled(Workflow):
         name = "skilled"
 
-        class A(State):
+        class A(InitialState):
             label = "A"
             transitions = (Complete,)
 
@@ -155,7 +155,7 @@ def test_on_transition_hook_fires_through_the_service(tmp_path: Path) -> None:
     class Hooked(Workflow):
         name = "hooked"
 
-        class A(State):
+        class A(InitialState):
             label = "A"
             transitions = (Complete,)
 
@@ -176,7 +176,7 @@ def test_on_transition_hook_fires_through_the_service(tmp_path: Path) -> None:
 
 def test_set_turn_flips_within_a_state(tmp_path: Path) -> None:
     svc = make_service(tmp_path)
-    task = svc.create_task("r1", "spike")  # turn=AGENT on entry
+    task = svc.create_task("r1", "spike")  # turn=USER on entry (initial state)
     flipped = svc.set_turn(task.id, Actor.USER)  # e.g. the agent asked a question
     assert flipped.turn is Actor.USER
     assert svc.get_task(task.id).turn is Actor.USER
@@ -354,7 +354,7 @@ def test_heartbeat_unknown_registration(tmp_path: Path) -> None:
 class _Gated(Workflow):
     name = "gated"
 
-    class Working(State):
+    class Working(InitialState):
         label = "WORKING"
         responsibilities = (Responsibility(key="tests-pass", description="Tests pass"),)
         transitions = (Complete,)

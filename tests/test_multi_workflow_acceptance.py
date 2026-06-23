@@ -14,14 +14,14 @@ from fastapi.testclient import TestClient
 from panopticon.taskservice.__main__ import build_app
 
 _CUSTOM_WORKFLOW = '''\
-from panopticon.core.state import Complete, State
+from panopticon.core.state import Complete, InitialState
 from panopticon.core.workflow import Workflow
 
 
 class Custom(Workflow):
     name = "custom"
 
-    class Only(State):
+    class Only(InitialState):
         label = "ONLY"
         transitions = (Complete,)
 

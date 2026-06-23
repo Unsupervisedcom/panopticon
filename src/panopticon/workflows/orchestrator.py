@@ -21,7 +21,7 @@ from collections.abc import Sequence
 from typing import ClassVar
 
 from panopticon.core.models import Skill
-from panopticon.core.state import Complete, State
+from panopticon.core.state import Complete, InitialState
 from panopticon.core.workflow import Workflow
 
 #: The per-child recipe the orchestrator's agent follows. Spelled out because it spans several
@@ -59,7 +59,7 @@ class Orchestrator(Workflow):
     name: ClassVar[str] = "orchestrator"
     orchestrates: ClassVar[bool] = True
 
-    class Orchestrating(State):
+    class Orchestrating(InitialState):
         label = "ORCHESTRATING"
         description = "Decompose the request into tasks; create and pre-plan each one for the user to approve."
         transitions = (Complete,)  # + DROPPED inherited from State; `advance` derives → COMPLETE
