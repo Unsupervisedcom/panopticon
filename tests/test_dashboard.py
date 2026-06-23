@@ -449,10 +449,12 @@ def test_slug_cell_combines_slug_and_description() -> None:
     # slug, no description → bare slug
     assert _slug_cell({**_TASK, "slug": "fix-widget", "description": None}).plain == "fix-widget"
     assert _slug_cell({"slug": "fix-widget"}).plain == "fix-widget"  # description key absent
-    # no slug, with description → "-[description]"
-    assert _slug_cell({"slug": None, "description": "make it green"}).plain == "-[make it green]"
+    # no slug, with description → "[description]" (no leading dash)
+    assert _slug_cell({"slug": None, "description": "make it green"}).plain == "[make it green]"
+    assert _slug_cell({"description": "make it green"}).plain == "[make it green]"  # slug key absent
     # neither → "-"
     assert _slug_cell({"slug": None}).plain == "-"
+    assert _slug_cell({}).plain == "-"
 
 
 def test_slug_cell_is_text_so_brackets_arent_eaten_as_markup() -> None:

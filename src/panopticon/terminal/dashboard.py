@@ -90,15 +90,19 @@ def _short(task_id: str) -> str:
 
 
 def _slug_cell(task: JsonObj) -> Text:
-    """The ``slug[description]`` column: the slug followed by the task's description in brackets
-    (bare slug when there's no description; ``-`` when there's no slug).
+    """The ``slug[description]`` column: the slug followed by the task's description in brackets.
+
+    Bare slug when there's no description; bare ``[description]`` (no leading dash) when there's a
+    description but no slug; ``-`` only when neither is set.
 
     Returned as a Rich ``Text`` (like :func:`_turn_cell`), **not** a markup string: Textual renders
     bare ``str`` cells through console markup, which swallows the ``[…]`` — so a plain string would
     show just the bare slug (the bug that hid descriptions; the header had the same problem)."""
-    slug = task.get("slug") or "-"
+    slug = task.get("slug") or ""
     desc = task.get("description")
-    return Text(f"{slug}[{desc}]" if desc else slug)
+    if desc:
+        return Text(f"{slug}[{desc}]")
+    return Text(slug or "-")
 
 
 # Fields a search query matches against (cloude-cade filters on the task title; our nearest
