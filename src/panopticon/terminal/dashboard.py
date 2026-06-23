@@ -81,6 +81,15 @@ def _short(task_id: str) -> str:
     return task_id[:8]
 
 
+def _slug_cell(task: JsonObj) -> str:
+    """The ``slug[description]`` column: the slug followed by the task's description in
+    brackets. Falls back to the bare slug when there's no description, and to ``-`` when
+    there's no slug (an unprovisioned task still shows its description)."""
+    slug = task.get("slug") or "-"
+    desc = task.get("description")
+    return f"{slug}[{desc}]" if desc else slug
+
+
 # Fields a search query matches against (cloude-cade filters on the task title; our nearest
 # analogs are the task's identifying text). Joined and lowercased into one haystack per task.
 _SEARCH_FIELDS = ("slug", "id", "state", "workflow", "description")
@@ -470,7 +479,7 @@ class Dashboard(App[None]):
     def on_mount(self) -> None:
         table = self.query_one("#tasks", DataTable)
         table.cursor_type = "row"
-        table.add_columns("id", "state", "turn", "run", "slug")
+        table.add_columns("id", "state", "turn", "run", "slug[description]")
         table.focus()  # the (hidden) search Input would otherwise grab initial focus
         self.action_refresh()
         if self._refresh_interval:
@@ -514,7 +523,7 @@ class Dashboard(App[None]):
         for task in visible:
             table.add_row(
                 _short(task["id"]), task["state"], _turn_cell(task), self._run_status(task),
-                task["slug"] or "-",
+                _slug_cell(task),
                 key=task["id"],
             )
         target = selected if selected in self._tasks else next(iter(self._tasks), None)

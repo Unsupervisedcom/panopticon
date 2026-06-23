@@ -11,7 +11,13 @@ from typing import Any
 from textual.widgets import DataTable, Input, Static
 
 from panopticon.terminal import dashboard
-from panopticon.terminal.dashboard import Dashboard, _matches, _turn_cell, render_detail
+from panopticon.terminal.dashboard import (
+    Dashboard,
+    _matches,
+    _slug_cell,
+    _turn_cell,
+    render_detail,
+)
 
 _TASK: dict[str, Any] = {
     "id": "task-abcdef0123",
@@ -430,6 +436,20 @@ def test_matches_is_a_case_insensitive_substring_over_identifying_fields() -> No
     # description is searchable too
     assert _matches({**task, "description": "make it green"}, "green")
     assert _matches({**_TASK, "description": None}, "")  # None description doesn't blow up
+
+
+def test_slug_cell_combines_slug_and_description() -> None:
+    # both present → slug[description]
+    assert _slug_cell({**_TASK, "slug": "fix-widget", "description": "make it green"}) == (
+        "fix-widget[make it green]"
+    )
+    # slug, no description → bare slug
+    assert _slug_cell({**_TASK, "slug": "fix-widget", "description": None}) == "fix-widget"
+    assert _slug_cell({"slug": "fix-widget"}) == "fix-widget"  # description key absent
+    # no slug, with description → "-[description]"
+    assert _slug_cell({"slug": None, "description": "make it green"}) == "-[make it green]"
+    # neither → "-"
+    assert _slug_cell({"slug": None}) == "-"
 
 
 _FIX = {**_TASK, "id": "t-fix", "slug": "fix-widget", "state": "WORKING", "workflow": "spike"}
