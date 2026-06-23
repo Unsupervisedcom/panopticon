@@ -382,7 +382,7 @@ class ReposScreen(ModalScreen[None]):
     ) -> None:
         super().__init__()
         self._client = client
-        self._login = login  # `l` hook: log in to a repo's creds volume (None → unavailable)
+        self._login = login  # `l` hook: log in a repo (by id) + restart its tasks (None → unavailable)
         self._repos: dict[str, JsonObj] = {}
         self._current: str | None = None
 
@@ -457,12 +457,12 @@ class ReposScreen(ModalScreen[None]):
 
     def action_login(self) -> None:
         """`l`: log in to the highlighted repo — run its interactive creds-volume login (the same
-        flow as `panopticon login <repo>`, default command `claude`). The dashboard owns the TTY, so
-        we suspend the app while the docker login holds the terminal, then resume on the live view."""
+        flow as `panopticon login <repo>`, default command `claude`), then restart the repo's
+        running task containers so they pick up the new creds. The dashboard owns the TTY, so we
+        suspend the app while the docker login holds the terminal, then resume on the live view."""
         if self._current is None:
             return
-        creds = self._repos[self._current].get("creds_volume")
-        if not creds:
+        if not self._repos[self._current].get("creds_volume"):
             self.notify("Repo has no creds_volume configured.", severity="warning")
             return
         if self._login is None:  # standalone with no runner wired (e.g. tests) — nothing to attach
@@ -470,7 +470,7 @@ class ReposScreen(ModalScreen[None]):
             return
         try:
             with self.app.suspend():  # restore the terminal so the container's TTY is the operator's
-                self._login(str(creds))
+                self._login(self._current)  # the repo id — the hook resolves the volume + restarts
         except Exception as exc:  # docker missing / login failed — don't crash the TUI
             self.notify(f"Login failed: {exc}", severity="error")
 
@@ -600,7 +600,7 @@ class Dashboard(App[None]):
         self._client = client
         self._on_switch = on_switch  # supervisor hook: record the pick + detach (None standalone)
         self._on_service = on_service  # `s` hook: switch to the service session; True if one exists
-        self._login = login  # repos screen `l` hook: interactive per-repo creds login (None → off)
+        self._login = login  # repos screen `l` hook: per-repo (by id) login + task restart (None → off)
         self._artifacts_root = artifacts_root  # for `a`'s `e` local-open (co-located store)
         self._refresh_interval = refresh_interval  # auto-refresh cadence (0/None → manual only)
         self._tasks: dict[str, JsonObj] = {}

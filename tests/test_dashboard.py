@@ -725,7 +725,7 @@ async def test_repos_screen_login_runs_for_the_highlighted_repo() -> None:
         await pilot.pause()
         await pilot.press("l")  # log in to the highlighted repo
         await pilot.pause()
-        assert logged_in == ["creds-r1"]  # the repo's creds volume, run through the login hook
+        assert logged_in == ["r1"]  # the repo id, run through the login+restart hook
 
 
 async def test_repos_screen_login_warns_without_a_creds_volume() -> None:

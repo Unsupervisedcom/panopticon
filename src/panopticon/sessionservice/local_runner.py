@@ -194,10 +194,8 @@ class LocalRunner(Runner):
         before running ``command``. So the creds it writes are owned by that user — the task
         container, running as the same user, can then read and refresh them.
 
-        After writing the creds we **propagate** them into the repo's already-running task
-        containers (:meth:`_propagate_credentials`), so a live agent doesn't stay logged out until
-        respawn. A running ``claude`` reads refreshed tokens live through the linked credential
-        file; a full logged-out → logged-in switch takes effect on its next launch (now authed)."""
+        Propagating the fresh creds to the repo's already-running task containers is handled by the
+        caller restarting them (``sessionservice.restart``), not here — this only writes the volume."""
         puid, _, pgid = self._user.partition(":")
         self._run(
             ["docker", "run", "--interactive", "--tty", "--rm",
@@ -208,22 +206,3 @@ class LocalRunner(Runner):
             check=False,
             interactive=True,  # attach the operator's terminal to the container's TTY (else it hangs)
         )
-        self._propagate_credentials(creds_volume)  # push the fresh creds into live task containers
-
-    def _propagate_credentials(self, creds_volume: str) -> None:
-        """Re-seed the just-written creds into every running task container of this repo, so a
-        live agent picks up the new auth without a respawn (the launch-time bootstrap only runs at
-        spawn). We find the containers by the creds volume they mount, then `docker exec` the
-        agent's credential bootstrap into each. Best-effort: an exited/failing container doesn't
-        abort the rest, mirroring `stop()`."""
-        out = self._run(
-            ["docker", "ps", "--filter", f"volume={creds_volume}",
-             "--filter", "label=panopticon.task", "--format", "{{.Names}}"],
-            check=False,
-        )
-        for container in out.split():
-            self._run(
-                ["docker", "exec", "--user", CONTAINER_USER, container,
-                 "python", "-m", "panopticon.container.refresh_credentials"],
-                check=False,
-            )
