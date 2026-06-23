@@ -299,6 +299,16 @@ def test_artifact_roundtrip(tmp_path: Path) -> None:
     assert svc.list_artifacts(task.id) == ["plan.md"]
 
 
+def test_briefing_surfaces_the_plan_uri_once_the_plan_exists(tmp_path: Path) -> None:
+    # The briefing names the plan's canonical URI only after the plan.md artifact is written, so the
+    # agent reads it back at the right URI instead of guessing.
+    svc = make_service(tmp_path)
+    task = svc.create_task("r1", "github-peer-reviewed")
+    assert "panopticon://" not in svc.briefing(task.id)  # no plan yet → no URI
+    svc.put_artifact(task.id, "plan.md", b"# Plan")
+    assert f"panopticon://tasks/{task.id}/artifacts/plan.md" in svc.briefing(task.id)
+
+
 # -- liveness -----------------------------------------------------------------------
 
 

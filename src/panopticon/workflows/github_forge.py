@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from panopticon.core.artifacts import PLAN_ARTIFACT_NAME
 from panopticon.core.models import Responsibility, Skill, Tool
 from panopticon.core.workflow import Workflow
 
@@ -24,13 +25,13 @@ from panopticon.core.workflow import Workflow
 #: and it's a task **artifact** — uploaded with the ``put_artifact`` tool, not just written to the
 #: ``/workspace`` tree — so the operator can open it from the dashboard (the `a` hotkey hands it to
 #: the host's default handler, which keys off the extension); hence it's a **markdown** file named
-#: ``plan.md``. One frozen instance, referenced by each workflow's PLANNING state, keeps the
-#: guidance single-sourced.
+#: :data:`~panopticon.core.artifacts.PLAN_ARTIFACT_NAME`. One frozen instance, referenced by each
+#: workflow's PLANNING state, keeps the guidance single-sourced.
 PLAN_WRITTEN = Responsibility(
     key="plan-written",
     description=(
-        "The plan is uploaded to the plan artifact `plan.md` (a markdown file) with the "
-        "`put_artifact` tool — not just written to the working tree."
+        f"The plan is uploaded to the plan artifact `{PLAN_ARTIFACT_NAME}` (a markdown file) with "
+        "the `put_artifact` tool — not just written to the working tree."
     ),
 )
 
@@ -63,8 +64,8 @@ class GithubForgeWorkflow(Workflow):
                 "open-pr",
                 "Open a draft PR for this task's branch.",
                 "Push the task's branch and open a **draft** PR against the repo's base branch with "
-                "`gh pr create --draft`. Title it for the change and reference the plan artifact "
-                "(`plan.md`). "
+                f"`gh pr create --draft`. Title it for the change and reference the plan artifact "
+                f"(`{PLAN_ARTIFACT_NAME}`). "
                 "Then record the PR's URL on the task with the `set_url` tool, so the dashboard's "
                 "`p` hotkey opens it.",
             ),

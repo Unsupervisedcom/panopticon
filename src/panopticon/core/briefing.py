@@ -13,6 +13,7 @@ Pure data → string (LLM-free, lives in `core`); the task service renders it, t
 
 from __future__ import annotations
 
+from panopticon.core.artifacts import PLAN_ARTIFACT_NAME
 from panopticon.core.models import Actor, Task
 from panopticon.core.workflow import Workflow
 
@@ -85,8 +86,13 @@ def render_workflow_overview(workflow: Workflow) -> str:
     return "\n".join(lines)
 
 
-def render_state_briefing(workflow: Workflow, task: Task) -> str:
-    """A short briefing on the task's current phase: its responsibilities and how it advances."""
+def render_state_briefing(workflow: Workflow, task: Task, *, plan_uri: str | None = None) -> str:
+    """A short briefing on the task's current phase: its responsibilities and how it advances.
+
+    ``plan_uri`` is the canonical MCP URI of the task's plan artifact, passed in by the caller when
+    one exists (the renderer stays I/O-free). When set, the briefing tells the agent the exact URI
+    to read the plan back at — so an orchestrator-spawned agent handed a pre-written plan reads it
+    instead of guessing (``artifact://<id>/plan.md`` → "Unknown resource")."""
     label = task.state
     if workflow.is_terminal(label):
         return f"This task is in the terminal state **{label}** — it's finished; there's nothing to do."
@@ -116,4 +122,11 @@ def render_state_briefing(workflow: Workflow, task: Task) -> str:
             )
         else:
             lines.append(f"When these are met, advance the task yourself (the `advance` operation → {target}).")
+
+    if plan_uri is not None:
+        lines += [
+            "",
+            f"This task's plan is the `{PLAN_ARTIFACT_NAME}` artifact — read it at this exact MCP "
+            f"resource URI: `{plan_uri}` (don't guess the URI).",
+        ]
     return "\n".join(lines)

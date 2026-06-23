@@ -50,6 +50,21 @@ def test_briefing_names_the_phase_responsibilities_and_user_advance() -> None:
     assert "hand back to the user" in text and "Don't advance on your own" in text
 
 
+def test_briefing_surfaces_the_plan_uri_when_given() -> None:
+    wf = GithubPeerReviewed()
+    task = wf.start_task("t1", "r1", at="t0")  # PLANNING
+    uri = "panopticon://tasks/t1/artifacts/plan.md"
+
+    # Default: no plan URI passed → the briefing doesn't mention one (an artifact-store check the
+    # renderer doesn't do; the caller passes the URI only when the plan exists).
+    assert "panopticon://" not in render_state_briefing(wf, task)
+
+    # When given, the agent is told the exact URI to read the plan back at (don't guess).
+    text = render_state_briefing(wf, task, plan_uri=uri)
+    assert uri in text
+    assert "don't guess" in text
+
+
 def test_briefing_for_an_agent_advanced_phase() -> None:
     wf = GithubPeerReviewed()
     task = wf.force_transition(wf.start_task("t1", "r1", at="t0"), "MERGING", at="t1")

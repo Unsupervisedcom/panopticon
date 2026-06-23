@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from panopticon.core.artifacts import InvalidArtifactName, mcp_uri
+from panopticon.core.artifacts import (
+    PLAN_ARTIFACT_NAME,
+    InvalidArtifactName,
+    mcp_uri,
+    plan_uri,
+)
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 
 
@@ -125,3 +130,9 @@ def test_mcp_uri_resolver() -> None:
     assert mcp_uri("t1", "plan.md") == "panopticon://tasks/t1/artifacts/plan.md"
     with pytest.raises(InvalidArtifactName):
         mcp_uri("t1", "../escape")
+
+
+def test_plan_artifact_constant_and_uri() -> None:
+    # The single source of truth for the plan artifact name, and the canonical URI agents read it at.
+    assert PLAN_ARTIFACT_NAME == "plan.md"
+    assert plan_uri("t1") == mcp_uri("t1", PLAN_ARTIFACT_NAME) == "panopticon://tasks/t1/artifacts/plan.md"
