@@ -105,6 +105,16 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
         service.put_artifact(task_id, name, content.encode())
         return mcp_uri(task_id, name)
 
+    @mcp.tool(
+        description=(
+            "List a task's artifacts: each name and its canonical MCP URI (read the URI as a "
+            "resource to fetch the contents). The read resource is a non-enumerable URI "
+            "template, so this is how you discover artifacts you did not write yourself."
+        )
+    )
+    def list_artifacts(task_id: str) -> list[dict[str, str]]:
+        return [{"name": name, "uri": mcp_uri(task_id, name)} for name in service.list_artifacts(task_id)]
+
     @mcp.resource(ARTIFACT_URI, description="A task's file-backed artifact (plan, notes).")
     def artifact(task_id: str, name: str) -> str:
         data = service.get_artifact(task_id, name)

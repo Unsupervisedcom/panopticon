@@ -35,6 +35,7 @@ async def test_tools_are_exposed_and_drive_the_task(tmp_path: Path) -> None:
         assert {
             "get_task", "set_slug", "set_url", "apply_operation", "set_state",
             "resolve_responsibility", "set_turn", "set_blocked", "put_artifact",
+            "list_artifacts",
         } <= names
         result = await s.call_tool("apply_operation", {"task_id": task.id, "operation": "advance"})
         assert result.isError is False
@@ -52,6 +53,36 @@ async def test_artifacts_round_trip_via_tool_and_resource(tmp_path: Path) -> Non
         res = await s.read_resource(f"panopticon://tasks/{task.id}/artifacts/plan.md")
         assert res.contents[0].text == "# Plan"  # type: ignore[union-attr]
     assert svc.get_artifact(task.id, "plan.md") == b"# Plan"
+
+
+async def test_list_artifacts_returns_names_and_readable_uris(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    task = svc.create_task("r1", "spike")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        await s.call_tool("put_artifact", {"task_id": task.id, "name": "plan.md", "content": "# Plan"})
+        await s.call_tool("put_artifact", {"task_id": task.id, "name": "notes.md", "content": "notes"})
+
+        result = await s.call_tool("list_artifacts", {"task_id": task.id})
+        assert result.isError is False
+        listed = result.structuredContent["result"]  # type: ignore[index]
+        by_name = {entry["name"]: entry["uri"] for entry in listed}
+        assert set(by_name) == {"plan.md", "notes.md"}
+        assert by_name["plan.md"] == f"panopticon://tasks/{task.id}/artifacts/plan.md"
+
+        # the listed URI is the real, readable resource — the path that failed before this tool.
+        res = await s.read_resource(by_name["plan.md"])
+        assert res.contents[0].text == "# Plan"  # type: ignore[union-attr]
+
+
+async def test_list_artifacts_is_empty_when_none(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    task = svc.create_task("r1", "spike")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        result = await s.call_tool("list_artifacts", {"task_id": task.id})
+        assert result.isError is False
+        assert result.structuredContent["result"] == []  # type: ignore[index]
 
 
 async def test_set_turn_via_tool(tmp_path: Path) -> None:
