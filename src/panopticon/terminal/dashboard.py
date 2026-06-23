@@ -19,7 +19,7 @@ triggered by an in-container agent skill (`advance` over REST/MCP; going back to
 `set_state` move), not the operator (ADR 0004).
 
 `/` enters **search-as-you-type** (cloude-cade's `/`): a query box reveals at the bottom and the
-table filters live to tasks whose slug/id/state/workflow/description contains the query
+table filters live to tasks whose slug/state/workflow/description contains the query
 (case-insensitive substring). `Enter` **locks** the filter — the box hides and normal navigation
 keys return while the filter stays applied; `Esc` **clears** it (from typing or locked). The
 filter is applied in ``action_refresh``, so the auto-refresh timer preserves it across rebuilds.
@@ -85,10 +85,6 @@ def _sort_key(task: JsonObj) -> tuple[bool, bool, float, str]:
     )
 
 
-def _short(task_id: str) -> str:
-    return task_id[:8]
-
-
 def _short_tokens(n: int | None) -> str:
     """A token count in short human form for the table: ``None``/0 (not yet reported) → ``-``,
     under 1000 shown as-is (``300``), otherwise scaled to ``K``/``M``/``B`` to one decimal
@@ -116,7 +112,7 @@ def _slug_cell(task: JsonObj) -> Text:
 
 # Fields a search query matches against (cloude-cade filters on the task title; our nearest
 # analogs are the task's identifying text). Joined and lowercased into one haystack per task.
-_SEARCH_FIELDS = ("slug", "id", "state", "workflow", "description")
+_SEARCH_FIELDS = ("slug", "state", "workflow", "description")
 
 
 def _matches(task: JsonObj, query: str) -> bool:
@@ -638,7 +634,7 @@ class Dashboard(App[None]):
         table = self.query_one("#tasks", DataTable)
         table.cursor_type = "row"
         # the slug header carries a literal "[" — pass it as Text so Textual doesn't eat it as markup
-        table.add_columns("id", "state", "turn", "run", "tokens", Text("slug[description]"))
+        table.add_columns("state", "turn", "run", "tokens", Text("slug[description]"))
         table.focus()  # the (hidden) search Input would otherwise grab initial focus
         self.action_refresh()
         if self._refresh_interval:
@@ -681,7 +677,7 @@ class Dashboard(App[None]):
         self._tasks = {t["id"]: t for t in visible}
         for task in visible:
             table.add_row(
-                _short(task["id"]), task["state"], _turn_cell(task), self._run_status(task),
+                task["state"], _turn_cell(task), self._run_status(task),
                 _short_tokens(task.get("tokens_used")), _slug_cell(task),
                 key=task["id"],
             )

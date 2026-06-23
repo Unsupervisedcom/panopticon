@@ -448,7 +448,7 @@ def test_matches_is_a_case_insensitive_substring_over_identifying_fields() -> No
     assert _matches(task, "WIDGET")  # case-insensitive
     assert _matches(task, "working")  # state
     assert _matches(task, "spike")  # workflow
-    assert _matches(task, task["id"][:6])  # id
+    assert not _matches(task, task["id"][:6])  # id is not a search field
     assert not _matches(task, "nope")
     # description is searchable too
     assert _matches({**task, "description": "make it green"}, "green")
