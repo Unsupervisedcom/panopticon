@@ -3,9 +3,6 @@
 Run a fleet of coding agents across isolated tasks and **configurable workflows** — from one
 seat of mission control.
 
-The full design lives on the [`design-docs`](../../tree/design-docs) branch (goals, architecture,
-roadmap, and ADRs).
-
 ## What this is for
 
 panopticon parallelizes and manages agent-driven development end to end: you create a task, an
@@ -29,7 +26,7 @@ state machine; it is the sole DB authority. A per-machine **session service** (t
 new tasks and spawns a container for each — a self-contained git clone on its own branch — plus
 the host tmux sessions you attach to. A **terminal controller** runs the dashboard you steer it
 all from. Tasks talk back over a REST + MCP surface. See [`CLAUDE.md`](CLAUDE.md) for the
-operating manual and the `design-docs` branch for the full picture.
+operating manual.
 
 ## Quickstart
 
@@ -52,7 +49,7 @@ panopticon login <repo>   # populate the repo's credentials volume interactively
 ```
 
 `panopticon login` writes into a **per-repo** credentials volume, so a task only ever sees its
-own repo's secrets (ADR 0007). `make check` runs the typecheck + test suite (what CI runs), and
+own repo's secrets. `make check` runs the typecheck + test suite (what CI runs), and
 `make help` lists every target.
 
 ### Bring it up
@@ -137,7 +134,7 @@ dashboard. `s` jumps to the task-service session, `u` to the runner.
 ## Tasks & state
 
 Tasks live in the **task service**, not in files: a structured store (SQLite to start,
-backend-agnostic) that is the single writer of task state (ADR 0006). A task's identity is its
+backend-agnostic) that is the single writer of task state. A task's identity is its
 internal `id`; the human-readable **`slug`** is a label, set from inside the container when the
 agent provisions. Every state transition is recorded in the task's history.
 
@@ -178,7 +175,7 @@ The dashboard colors both, so foreground tasks (your turn) stand out from backgr
 ## Workflows are code
 
 A workflow is a **`Workflow` subclass** whose states are nested, declarative `State` classes. The lifecycle is code — transitions, the actor
-who holds the turn, the responsibility gates — not hardcoded control flow (ADR 0004). Workflows
+who holds the turn, the responsibility gates — not hardcoded control flow. Workflows
 are **discovered** from the built-in package plus an optional path: drop a module in and it
 registers, no core change. The built-ins:
 
@@ -234,20 +231,16 @@ The `Orchestrator` workflow additionally exposes a spawn-task skill for creating
 
 A **repo** holds *references* to its secrets, never the values: an `env_file` (API-key env file)
 and a `creds_volume` (the OAuth creds volume `panopticon login` populates). The runner injects
-each repo's own secrets at launch, so tasks stay isolated (ADR 0007). A repo also carries an
+each repo's own secrets at launch, so tasks stay isolated. A repo also carries an
 `image_layer` — a Dockerfile fragment the runner composes onto base → workflow → **repo** to bake
-in the repo's toolchain (ADR 0005) — and a `capabilities` opt-in map for elevated container
+in the repo's toolchain — and a `capabilities` opt-in map for elevated container
 privileges (e.g. Docker-in-Docker), off by default.
 
 ## Internals & where to go next
 
-- [`CLAUDE.md`](CLAUDE.md) — the operating manual: the determinism invariant, the module map, and
-  conventions.
-- The [`design-docs`](../../tree/design-docs) branch — GOALS, PARITY, ARCHITECTURE, ROADMAP, and
-  the ADRs (`docs/decisions/`).
-
-Humans normally don't need any of that to drive panopticon — the dashboard and the agents do the
-work.
+For the determinism invariant, the module map, and the conventions agents follow in this repo,
+see [`CLAUDE.md`](CLAUDE.md). Humans normally don't need any of that to drive panopticon — the
+dashboard and the agents do the work.
 
 ## Development
 
