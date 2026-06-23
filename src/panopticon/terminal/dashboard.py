@@ -581,6 +581,7 @@ HOTKEYS: tuple[Hotkey, ...] = (
     Hotkey("g", "repos", "Repos", "Repo config (list / create / edit repos)", show=False),
     Hotkey("a", "artifacts", "Artifacts", "List the task's artifacts", show=False),
     Hotkey("s", "service", "Service", "Switch to the task-service session", show=False),
+    Hotkey("u", "runner", "Runner", "Switch to the session-service (runner) session", show=False),
     Hotkey(
         "escape", "clear_search", "Clear search", "Clear the search filter",
         show=False, display="Esc",
@@ -618,9 +619,9 @@ class HelpScreen(ModalScreen[None]):
 
 
 class Dashboard(App[None]):
-    """The task view. On `t` it calls ``on_switch`` with the task's session (and `s` calls
-    ``on_service`` for the task-service session) and stays running; the supervisor handles the
-    attach/detach (ADR 0009)."""
+    """The task view. On `t` it calls ``on_switch`` with the task's session (and `s`/`u` call
+    ``on_service``/``on_runner`` for the task-service / session-service runner sessions) and stays
+    running; the supervisor handles the attach/detach (ADR 0009)."""
 
     CSS = "#tasks { width: 3fr; } #detail { width: 2fr; padding: 0 1; } #search { display: none; }"
     REFRESH_INTERVAL = 2.0  # seconds between automatic refreshes (0/None disables the timer)
@@ -637,6 +638,7 @@ class Dashboard(App[None]):
         *,
         on_switch: Callable[[str], None] | None = None,
         on_service: Callable[[], bool] | None = None,
+        on_runner: Callable[[], bool] | None = None,
         login: Callable[[str], None] | None = None,
         artifacts_root: str | Path = DEFAULT_ARTIFACTS,
         refresh_interval: float | None = REFRESH_INTERVAL,
@@ -645,6 +647,7 @@ class Dashboard(App[None]):
         self._client = client
         self._on_switch = on_switch  # supervisor hook: record the pick + detach (None standalone)
         self._on_service = on_service  # `s` hook: switch to the service session; True if one exists
+        self._on_runner = on_runner  # `u` hook: switch to the runner session; True if one exists
         self._login = login  # repos screen `l` hook: per-repo (by id) login + task restart (None → off)
         self._artifacts_root = artifacts_root  # for `a`'s `e` local-open (co-located store)
         self._refresh_interval = refresh_interval  # auto-refresh cadence (0/None → manual only)
@@ -919,6 +922,18 @@ class Dashboard(App[None]):
         if not self._on_service():
             self.notify("No task-service session is running.", severity="warning")
 
+    def action_runner(self) -> None:
+        """`u`: switch to the session-service (runner) tmux session, when one is running (ADR 0009).
+
+        The runner is a sibling tmux session under `panopticon console`; ``on_runner`` switches
+        to it the same way `s` switches to the service (record + detach), returning whether a runner
+        session existed. Standalone (no supervisor) there is nothing to switch to."""
+        if self._on_runner is None:
+            self.notify("Runner shortcut is available when run via `panopticon console`.", severity="warning")
+            return
+        if not self._on_runner():
+            self.notify("No session-service (runner) session is running.", severity="warning")
+
     def action_search(self) -> None:
         """`/`: enter search-as-you-type — reveal the query box and focus it (cloude-cade's `/`).
 
@@ -965,14 +980,15 @@ def run(
     *,
     on_switch: Callable[[str], None] | None = None,
     on_service: Callable[[], bool] | None = None,
+    on_runner: Callable[[], bool] | None = None,
     login: Callable[[str], None] | None = None,
     artifacts_root: str | Path = DEFAULT_ARTIFACTS,
 ) -> None:
-    """Run the dashboard. ``on_switch``/``on_service`` are the supervisor's `t`/`s` hooks
-    (ADR 0009); both ``None`` standalone. ``login`` is the repos screen's `l` hook — the
+    """Run the dashboard. ``on_switch``/``on_service``/``on_runner`` are the supervisor's `t`/`s`/`u`
+    hooks (ADR 0009); all ``None`` standalone. ``login`` is the repos screen's `l` hook — the
     interactive per-repo creds login. ``artifacts_root`` is the local artifact-store root
     `a`'s `e` opens files from when the dashboard shares the task service's filesystem."""
     Dashboard(
-        client, on_switch=on_switch, on_service=on_service, login=login,
+        client, on_switch=on_switch, on_service=on_service, on_runner=on_runner, login=login,
         artifacts_root=artifacts_root,
     ).run()

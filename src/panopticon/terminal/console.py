@@ -37,6 +37,8 @@ from panopticon.terminal.attach import attach_command
 DASHBOARD_SESSION = "dashboard"
 #: tmux session name the task service runs in under `make panopticon` (beside the dashboard).
 SERVICE_SESSION = "service"
+#: tmux session name the session-service runner runs in under `make panopticon`.
+RUNNER_SESSION = "runner"
 
 def switch_file_path(socket: str) -> Path:
     """The supervisor↔dashboard switch-file, **deterministic per socket**.
@@ -71,11 +73,43 @@ def switch_to(
     detach()
 
 
+def session_exists(session: str, *, socket: str = TMUX_SOCKET) -> bool:
+    """Whether the named tmux session is running on the panopticon socket."""
+    return subprocess.run(
+        ["tmux", "-L", socket, "has-session", "-t", session], capture_output=True
+    ).returncode == 0
+
+
 def service_session_exists(*, socket: str = TMUX_SOCKET) -> bool:
     """Whether the task-service tmux session is running on the panopticon socket."""
-    return subprocess.run(
-        ["tmux", "-L", socket, "has-session", "-t", SERVICE_SESSION], capture_output=True
-    ).returncode == 0
+    return session_exists(SERVICE_SESSION, socket=socket)
+
+
+def runner_session_exists(*, socket: str = TMUX_SOCKET) -> bool:
+    """Whether the session-service (runner) tmux session is running on the panopticon socket."""
+    return session_exists(RUNNER_SESSION, socket=socket)
+
+
+def make_session_switch(
+    session: str,
+    switch_file: Path,
+    *,
+    socket: str = TMUX_SOCKET,
+    exists: Callable[[], bool] | None = None,
+    detach: Callable[[], None] = _tmux_detach,
+) -> Callable[[], bool]:
+    """Build a dashboard sibling-session hook: switch to ``session`` **when it exists**, returning
+    whether it did. Like the `t` hook it records the pick + detaches (:func:`switch_to`); with no
+    such session it does nothing (no detach), so the dashboard can report it."""
+    is_running = exists or (lambda: session_exists(session, socket=socket))
+
+    def switch() -> bool:
+        if not is_running():
+            return False
+        switch_to(session, switch_file=switch_file, detach=detach)
+        return True
+
+    return switch
 
 
 def make_service_switch(
@@ -85,18 +119,19 @@ def make_service_switch(
     exists: Callable[[], bool] | None = None,
     detach: Callable[[], None] = _tmux_detach,
 ) -> Callable[[], bool]:
-    """Build the dashboard's `s` hook: switch to the task-service session **when one exists**,
-    returning whether it did. Like the `t` hook it records the pick + detaches (:func:`switch_to`);
-    with no service session it does nothing (no detach), so the dashboard can report it."""
-    is_running = exists or (lambda: service_session_exists(socket=socket))
+    """Build the dashboard's `s` hook: switch to the task-service session when one exists."""
+    return make_session_switch(SERVICE_SESSION, switch_file, socket=socket, exists=exists, detach=detach)
 
-    def switch() -> bool:
-        if not is_running():
-            return False
-        switch_to(SERVICE_SESSION, switch_file=switch_file, detach=detach)
-        return True
 
-    return switch
+def make_runner_switch(
+    switch_file: Path,
+    *,
+    socket: str = TMUX_SOCKET,
+    exists: Callable[[], bool] | None = None,
+    detach: Callable[[], None] = _tmux_detach,
+) -> Callable[[], bool]:
+    """Build the dashboard's `u` hook: switch to the session-service (runner) session when one exists."""
+    return make_session_switch(RUNNER_SESSION, switch_file, socket=socket, exists=exists, detach=detach)
 
 
 def _service_ready(service_url: str) -> bool:

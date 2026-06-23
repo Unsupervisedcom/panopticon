@@ -112,16 +112,16 @@ def test_cli_login_errors_without_creds_volume() -> None:
 
 def test_dashboard_under_supervisor_wires_the_switch_hooks(monkeypatch: pytest.MonkeyPatch) -> None:
     # With --switch-file (set by the supervisor, ADR 0009 §6) the dashboard is wired with the
-    # `t` (on_switch) and `s` (on_service) hooks; the dashboard itself stays running.
+    # `t` (on_switch), `s` (on_service), and `u` (on_runner) hooks; the dashboard stays running.
     from panopticon.terminal import dashboard
 
     seen: dict[str, Any] = {}
     monkeypatch.setattr(
         dashboard, "run",
-        lambda _c, *, on_switch=None, on_service=None, login=None, artifacts_root=None: seen.update(on_switch=on_switch, on_service=on_service, login=login),
+        lambda _c, *, on_switch=None, on_service=None, on_runner=None, login=None, artifacts_root=None: seen.update(on_switch=on_switch, on_service=on_service, on_runner=on_runner, login=login),
     )
     cli.main(["dashboard", "--switch-file", "/tmp/x"], client=_FakeClient())  # type: ignore[arg-type]
-    assert seen["on_switch"] is not None and seen["on_service"] is not None
+    assert seen["on_switch"] is not None and seen["on_service"] is not None and seen["on_runner"] is not None
     assert seen["login"] is not None  # the repos screen's `l` hook is wired
 
 
@@ -131,8 +131,8 @@ def test_standalone_dashboard_has_no_switch_hooks(monkeypatch: pytest.MonkeyPatc
     seen: dict[str, Any] = {}
     monkeypatch.setattr(
         dashboard, "run",
-        lambda _c, *, on_switch=None, on_service=None, login=None, artifacts_root=None: seen.update(on_switch=on_switch, on_service=on_service, login=login),
+        lambda _c, *, on_switch=None, on_service=None, on_runner=None, login=None, artifacts_root=None: seen.update(on_switch=on_switch, on_service=on_service, on_runner=on_runner, login=login),
     )
     cli.main(["dashboard"], client=_FakeClient())  # type: ignore[arg-type]
-    assert seen["on_switch"] is None and seen["on_service"] is None
+    assert seen["on_switch"] is None and seen["on_service"] is None and seen["on_runner"] is None
     assert seen["login"] is not None  # login works standalone (unlike the switch hooks)

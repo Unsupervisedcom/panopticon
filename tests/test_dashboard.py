@@ -427,6 +427,33 @@ async def test_pressing_s_with_no_service_session_does_nothing() -> None:
         assert app.is_running  # reported "none running"; stayed on the dashboard
 
 
+async def test_pressing_u_switches_to_the_runner_session_when_one_exists() -> None:
+    # `u` switches to the session-service (runner) tmux session via on_runner (record + detach,
+    # like `s`), and the dashboard stays alive; on_runner returns True when a runner session exists.
+    calls: list[str] = []
+
+    def on_runner() -> bool:
+        calls.append("runner")
+        return True
+
+    app = Dashboard(_FakeClient([_TASK]), on_runner=on_runner)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("u")
+        await pilot.pause()
+        assert calls == ["runner"]
+        assert app.is_running
+
+
+async def test_pressing_u_with_no_runner_session_does_nothing() -> None:
+    app = Dashboard(_FakeClient([_TASK]), on_runner=lambda: False)  # no runner session
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("u")
+        await pilot.pause()
+        assert app.is_running  # reported "none running"; stayed on the dashboard
+
+
 async def test_pressing_n_creates_a_task_via_repo_workflow_then_description() -> None:
     fake = _FakeClient([], repos=["r1", "r2"], workflows=["spike"])
     app = Dashboard(fake)  # type: ignore[arg-type]
@@ -994,7 +1021,7 @@ def test_footer_shows_only_the_essential_keys() -> None:
     shown = {b.key for b in Dashboard.BINDINGS if b.show}
     hidden = {b.key for b in Dashboard.BINDINGS if not b.show}
     assert shown == {"t", "n", "x", "/", "d", "question_mark", "q"}
-    assert hidden == {"r", "R", "p", "g", "a", "s", "escape"}
+    assert hidden == {"r", "R", "p", "g", "a", "s", "u", "escape"}
 
 
 def test_bindings_and_help_derive_from_the_single_hotkey_table() -> None:
@@ -1031,7 +1058,7 @@ async def test_help_screen_lists_every_hotkey() -> None:
             assert hotkey.description in text
             assert (hotkey.display or hotkey.key) in text
         # the non-essential keys (hidden from the footer) are reachable here
-        assert {"r", "R", "p", "g", "a", "s"} <= {h.key for h in dashboard.HOTKEYS}
+        assert {"r", "R", "p", "g", "a", "s", "u"} <= {h.key for h in dashboard.HOTKEYS}
 
 
 async def test_help_screen_closes_on_escape() -> None:
