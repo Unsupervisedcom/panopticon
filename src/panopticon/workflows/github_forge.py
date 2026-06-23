@@ -16,30 +16,47 @@ string `name` defined in the scanned module.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import ClassVar
 
-from panopticon.core.artifacts import PLAN_ARTIFACT_NAME, ArtifactStore, plan_uri
+from panopticon.core.artifacts import ArtifactStore, mcp_uri
 from panopticon.core.models import Responsibility, Skill, Task, Tool
 from panopticon.core.workflow import Workflow
-
-#: The shared PLANNING responsibility for the forge workflows. Both lifecycles produce a plan,
-#: and it's a task **artifact** — uploaded with the ``put_artifact`` tool, not just written to the
-#: ``/workspace`` tree — so the operator can open it from the dashboard (the `a` hotkey hands it to
-#: the host's default handler, which keys off the extension); hence it's a **markdown** file named
-#: :data:`~panopticon.core.artifacts.PLAN_ARTIFACT_NAME`. One frozen instance, referenced by each
-#: workflow's PLANNING state, keeps the guidance single-sourced.
-PLAN_WRITTEN = Responsibility(
-    key="plan-written",
-    description=(
-        f"The plan is uploaded to the plan artifact `{PLAN_ARTIFACT_NAME}` (a markdown file) with "
-        "the `put_artifact` tool — not just written to the working tree."
-    ),
-)
 
 
 class GithubForgeWorkflow(Workflow):
     """Abstract base for GitHub-forge workflows: shared `gh` tool, image layer, and forge
     skills. Concrete subclasses add a ``name`` and their states; they inherit the plumbing
-    below. Not a registrable workflow on its own (no ``name``, no states)."""
+    below. Not a registrable workflow on its own (no ``name``, no states).
+
+    Owns the **plan convention** for the forge lifecycles: the plan is a markdown
+    :attr:`PLAN_ARTIFACT_NAME` artifact (not a working-tree file), read back at
+    :meth:`plan_uri`. Single-sourced here — the only workflows with a plan gate — and referenced
+    by the subclasses' PLANNING state and the orchestrator's spawn recipe."""
+
+    #: The canonical artifact name for a forge task's plan. By convention the plan is a markdown
+    #: ``plan.md`` **artifact** — uploaded with ``put_artifact``, not just written to ``/workspace``
+    #: — so the operator can open it from the dashboard (the `a` hotkey keys off the extension).
+    PLAN_ARTIFACT_NAME: ClassVar[str] = "plan.md"
+
+    #: The shared PLANNING responsibility for the forge workflows. Both lifecycles produce a plan;
+    #: one frozen instance, referenced by each workflow's PLANNING state, keeps the guidance
+    #: single-sourced (wording keyed off :attr:`PLAN_ARTIFACT_NAME`).
+    PLAN_WRITTEN: ClassVar[Responsibility] = Responsibility(
+        key="plan-written",
+        description=(
+            f"The plan is uploaded to the plan artifact `{PLAN_ARTIFACT_NAME}` (a markdown file) with "
+            "the `put_artifact` tool — not just written to the working tree."
+        ),
+    )
+
+    @classmethod
+    def plan_uri(cls, task_id: str) -> str:
+        """The canonical MCP resource URI for a task's plan artifact (:attr:`PLAN_ARTIFACT_NAME`).
+
+        The one URI an agent should read the plan back at — surfaced in the state briefing so
+        orchestrator-spawned agents don't guess (e.g. ``artifact://<id>/plan.md`` → "Unknown resource").
+        """
+        return mcp_uri(task_id, cls.PLAN_ARTIFACT_NAME)
 
     def tools(self) -> Sequence[Tool]:
         """`gh` is in the image (see `image_layer`); name it so the agent reaches for it."""
@@ -61,11 +78,11 @@ class GithubForgeWorkflow(Workflow):
         the agent reads the plan back at the right URI instead of guessing (e.g. an orchestrator-
         spawned agent handed a pre-written plan — ``artifact://<id>/plan.md`` → "Unknown resource").
         Gated on existence so a still-to-be-planned PLANNING turn doesn't point at a missing file."""
-        if PLAN_ARTIFACT_NAME not in artifacts.list(task.id):
+        if self.PLAN_ARTIFACT_NAME not in artifacts.list(task.id):
             return ()
         return [
-            f"This task's plan is the `{PLAN_ARTIFACT_NAME}` artifact — read it at this exact MCP "
-            f"resource URI: `{plan_uri(task.id)}` (don't guess the URI)."
+            f"This task's plan is the `{self.PLAN_ARTIFACT_NAME}` artifact — read it at this exact MCP "
+            f"resource URI: `{self.plan_uri(task.id)}` (don't guess the URI)."
         ]
 
     def skills(self) -> Sequence[Skill]:
@@ -77,7 +94,7 @@ class GithubForgeWorkflow(Workflow):
                 "Open a draft PR for this task's branch.",
                 "Push the task's branch and open a **draft** PR against the repo's base branch with "
                 f"`gh pr create --draft`. Title it for the change and reference the plan artifact "
-                f"(`{PLAN_ARTIFACT_NAME}`). "
+                f"(`{self.PLAN_ARTIFACT_NAME}`). "
                 "Then record the PR's URL on the task with the `set_url` tool, so the dashboard's "
                 "`p` hotkey opens it.",
             ),

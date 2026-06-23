@@ -20,10 +20,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import ClassVar
 
-from panopticon.core.artifacts import PLAN_ARTIFACT_NAME
 from panopticon.core.models import Skill
 from panopticon.core.state import Complete, InitialState
 from panopticon.core.workflow import Workflow
+from panopticon.workflows.github_forge import GithubForgeWorkflow
 
 #: The per-child recipe the orchestrator's agent follows. Spelled out because it spans several
 #: tools across *another* task's id, and the order matters (the gate clears only once the plan
@@ -39,7 +39,7 @@ you want to spawn. Throughout, your *own* task id is shown below; the new task h
    id, plus `workflow`, and a `description` (put the intent/provenance here). Record the **new
    task's id** from the result.
 3. **Name it.** `set_slug` on the new id with a short kebab-case slug.
-4. **Write its plan.** `put_artifact` on the new id with `name="{PLAN_ARTIFACT_NAME}"` and the full
+4. **Write its plan.** `put_artifact` on the new id with `name="{GithubForgeWorkflow.PLAN_ARTIFACT_NAME}"` and the full
    markdown plan for *that* task.
 5. **Clear the plan gate.** `resolve_responsibility` on the new id with `key="plan-written"`,
    `status="met"`.

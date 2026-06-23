@@ -11,12 +11,6 @@ from abc import ABC, abstractmethod
 
 MCP_URI_SCHEME = "panopticon"
 
-#: The canonical artifact name for a task's plan. The "plan" is, by convention, a markdown
-#: ``plan.md`` artifact (not a working-tree file) — the forge workflows gate PLANNING on it and the
-#: orchestrator seeds it for the children it spawns. Single-sourced here, beside the URI resolver,
-#: so every surface agrees on the name *and* the URI agents read it back at (:func:`plan_uri`).
-PLAN_ARTIFACT_NAME = "plan.md"
-
 
 class ArtifactError(Exception):
     """Base class for artifact-store failures."""
@@ -43,15 +37,6 @@ def mcp_uri(task_id: str, name: str) -> str:
     validate_segment(task_id)
     validate_segment(name)
     return f"{MCP_URI_SCHEME}://tasks/{task_id}/artifacts/{name}"
-
-
-def plan_uri(task_id: str) -> str:
-    """The canonical MCP resource URI for a task's plan artifact (:data:`PLAN_ARTIFACT_NAME`).
-
-    The one URI an agent should read the plan back at — surfaced in the state briefing so
-    orchestrator-spawned agents don't guess (e.g. ``artifact://<id>/plan.md`` → "Unknown resource").
-    """
-    return mcp_uri(task_id, PLAN_ARTIFACT_NAME)
 
 
 class ArtifactStore(ABC):

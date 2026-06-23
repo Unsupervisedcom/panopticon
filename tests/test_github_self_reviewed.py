@@ -13,9 +13,11 @@ from pathlib import Path
 import pytest
 
 from panopticon.core import Actor, IllegalTransition, ResponsibilitiesNotMet
+from panopticon.core.artifacts import mcp_uri
 from panopticon.core.models import Status, Task
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 from panopticon.workflows import GithubSelfReviewed
+from panopticon.workflows.github_forge import GithubForgeWorkflow
 
 WF = GithubSelfReviewed()
 
@@ -76,6 +78,13 @@ def test_github_self_reviewed_inherits_the_forge_skills() -> None:
     skills = WF.skills()
     assert {s.name for s in skills} == {"open-pr", "babysit-ci", "babysit-merge"}
     assert all(s.description and s.instructions for s in skills)  # functional specs, not stubs
+
+
+def test_plan_artifact_name_and_uri_are_single_sourced_on_the_forge_base() -> None:
+    # The forge base owns the plan convention; the subclass inherits the name + URI resolver.
+    assert GithubForgeWorkflow.PLAN_ARTIFACT_NAME == "plan.md"
+    assert GithubSelfReviewed.PLAN_ARTIFACT_NAME == "plan.md"  # inherited
+    assert GithubForgeWorkflow.plan_uri("t1") == mcp_uri("t1", "plan.md") == "panopticon://tasks/t1/artifacts/plan.md"
 
 
 def test_briefing_surfaces_the_plan_uri_once_the_plan_artifact_exists(tmp_path: Path) -> None:
