@@ -65,7 +65,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widget import Widget
-from textual.widgets import DataTable, Footer, Header, Input, Label, OptionList, Static
+from textual.widgets import Checkbox, DataTable, Footer, Header, Input, Label, OptionList, Static
 from textual.worker import get_current_worker
 
 from panopticon.client import JsonObj, TaskServiceClient
@@ -304,9 +304,10 @@ def _repo_name_from_git_url(url: str) -> str:
     return tail[:-len(".git")] if tail.endswith(".git") else tail
 
 
-class RepoFormScreen(ModalScreen["dict[str, str] | None"]):
-    """A modal form for a repo's core fields. Submits a ``{field: value}`` dict on save (Enter
-    or Ctrl+S), or ``None`` on cancel (Escape).
+class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
+    """A modal form for a repo's fields. Submits a ``{field: value}`` dict on save (Enter
+    or Ctrl+S), or ``None`` on cancel (Escape). The text fields are strings; the privileged
+    toggle is the bool ``docker_in_docker``.
 
     The **git URL leads** the form. In **create mode** the still-blank ``id``, ``name`` and
     ``creds_volume`` (a ``<repo>-creds`` convention) auto-fill from it when the URL field loses
@@ -316,13 +317,15 @@ class RepoFormScreen(ModalScreen["dict[str, str] | None"]):
 
     Create mode (no ``repo``): every field is an editable :class:`Input`, including ``id``.
     Edit mode: ``id`` is shown read-only (the primary key can't change) and the rest are
-    pre-populated. Only the **core** fields are here; ``image_layer``/``capabilities`` aren't
-    edited in the TUI, and a PATCH update leaves them untouched."""
+    pre-populated. The **privileged docker** checkbox maps to the repo's
+    ``capabilities["docker_in_docker"]`` (runs the task container ``--privileged``); ``image_layer``
+    and any other capability keys aren't edited in the TUI and a PATCH update leaves them untouched."""
 
     CSS = """
     RepoFormScreen { align: center middle; }
     #repo-form { width: 72; height: auto; padding: 1 2; border: round $accent; background: $surface; }
     #repo-form Input { margin-bottom: 1; }
+    #repo-form Checkbox { margin-bottom: 1; }
     """
     BINDINGS = [("escape", "cancel", "Cancel"), ("ctrl+s", "submit", "Save")]
 
@@ -361,6 +364,11 @@ class RepoFormScreen(ModalScreen["dict[str, str] | None"]):
                 yield Input(placeholder="id", id="field-id")
             for name in self.FIELDS[1:]:  # git_url already rendered above
                 yield Input(value=self._initial(name), placeholder=name, id=f"field-{name}")
+            yield Checkbox(
+                "privileged docker (docker-in-docker)",
+                value=bool(self._repo.get("capabilities", {}).get("docker_in_docker")),
+                id="field-docker_in_docker",
+            )
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
@@ -388,11 +396,12 @@ class RepoFormScreen(ModalScreen["dict[str, str] | None"]):
 
     def action_submit(self) -> None:
         self._autofill_from_git_url()  # backstop: fill blanks even if git_url never blurred
-        values: dict[str, str] = {}
+        values: dict[str, Any] = {}
         if not self._editing:
             values["id"] = self.query_one("#field-id", Input).value.strip()
         for name in self.FIELDS:
             values[name] = self.query_one(f"#field-{name}", Input).value.strip()
+        values["docker_in_docker"] = self.query_one("#field-docker_in_docker", Checkbox).value
         self.dismiss(values)
 
     def action_cancel(self) -> None:
@@ -432,7 +441,7 @@ class ReposScreen(ModalScreen[None]):
     def on_mount(self) -> None:
         table = self.query_one("#repos", DataTable)
         table.cursor_type = "row"
-        table.add_columns("id", "name", "git_url", "default_base")
+        table.add_columns("id", "name", "git_url", "default_base", "priv")
         table.focus()
         self._refresh()
 
@@ -441,8 +450,10 @@ class ReposScreen(ModalScreen[None]):
         table.clear()
         self._repos = {str(r["id"]): r for r in self._client.list_repos()}
         for repo in self._repos.values():
+            priv = "✓" if (repo.get("capabilities") or {}).get("docker_in_docker") else "–"
             table.add_row(
-                repo["id"], repo["name"], repo["git_url"], repo["default_base"], key=str(repo["id"])
+                repo["id"], repo["name"], repo["git_url"], repo["default_base"], priv,
+                key=str(repo["id"]),
             )
         self._current = self._current if self._current in self._repos else next(iter(self._repos), None)
 
@@ -454,7 +465,7 @@ class ReposScreen(ModalScreen[None]):
         self.dismiss(None)
 
     def action_new_repo(self) -> None:
-        def create(values: dict[str, str] | None) -> None:
+        def create(values: dict[str, Any] | None) -> None:
             if values is None:  # backed out
                 return
             if not (values["id"] and values["name"] and values["git_url"]):
@@ -464,6 +475,7 @@ class ReposScreen(ModalScreen[None]):
                 self._client.create_repo(
                     values["id"], values["name"], values["git_url"], values["default_base"] or "main",
                     env_file=values["env_file"] or None, creds_volume=values["creds_volume"] or None,
+                    capabilities={"docker_in_docker": values["docker_in_docker"]},
                 )
             except httpx.HTTPStatusError as exc:
                 self.notify(f"Can't create: {_detail(exc)}", severity="error")
@@ -477,14 +489,21 @@ class ReposScreen(ModalScreen[None]):
             return
         repo_id = self._current
 
-        def save(values: dict[str, str] | None) -> None:
+        def save(values: dict[str, Any] | None) -> None:
             if values is None:
                 return
-            try:  # PATCH: only the core fields move; image_layer/capabilities are left intact.
+            # PATCH the core fields; image_layer is left intact. The privileged toggle is merged
+            # onto the repo's existing capabilities so other keys (if any) survive.
+            capabilities = {
+                **self._repos[repo_id].get("capabilities", {}),
+                "docker_in_docker": values["docker_in_docker"],
+            }
+            try:
                 self._client.update_repo(
                     repo_id, name=values["name"], git_url=values["git_url"],
                     default_base=values["default_base"] or "main",
                     env_file=values["env_file"] or None, creds_volume=values["creds_volume"] or None,
+                    capabilities=capabilities,
                 )
             except httpx.HTTPStatusError as exc:
                 self.notify(f"Can't update: {_detail(exc)}", severity="error")

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from textual.widgets import DataTable, Input, Static
+from textual.widgets import Checkbox, DataTable, Input, Static
 
 from panopticon.terminal import dashboard
 from panopticon.terminal.dashboard import (
@@ -137,9 +137,14 @@ class _FakeClient:
     def create_repo(
         self, repo_id: str, name: str, git_url: str, default_base: str = "main",
         *, env_file: str | None = None, creds_volume: str | None = None,
+        capabilities: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        repo = {"id": repo_id, "name": name, "git_url": git_url, "default_base": default_base,
-                "env_file": env_file, "creds_volume": creds_volume}
+        repo: dict[str, Any] = {
+            "id": repo_id, "name": name, "git_url": git_url, "default_base": default_base,
+            "env_file": env_file, "creds_volume": creds_volume,
+        }
+        if capabilities is not None:
+            repo["capabilities"] = capabilities
         self.created_repos.append(repo)
         self._repos.append(repo)
         return repo
@@ -851,7 +856,8 @@ async def test_repos_screen_creates_a_repo_autofilling_from_the_git_url() -> Non
         await pilot.pause()
         assert fake.created_repos == [
             {"id": "widgets", "name": "widgets", "git_url": "git@github.com:acme/widgets.git",
-             "default_base": "main", "env_file": None, "creds_volume": "widgets-creds"}
+             "default_base": "main", "env_file": None, "creds_volume": "widgets-creds",
+             "capabilities": {"docker_in_docker": False}}
         ]
 
 
@@ -872,7 +878,8 @@ async def test_repo_form_autofill_only_fills_blank_fields() -> None:
         # id/name keep the user's values; only the blank creds_volume is derived.
         assert fake.created_repos == [
             {"id": "r9", "name": "acme/new", "git_url": "https://x/widgets.git",
-             "default_base": "main", "env_file": None, "creds_volume": "widgets-creds"}
+             "default_base": "main", "env_file": None, "creds_volume": "widgets-creds",
+             "capabilities": {"docker_in_docker": False}}
         ]
 
 
@@ -954,12 +961,66 @@ async def test_repos_screen_edits_a_repo_via_patch() -> None:
         app.screen.query_one("#field-name", Input).value = "new"
         await pilot.press("enter")
         await pilot.pause()
-        # Only the core fields are sent; image_layer/capabilities are never touched (PATCH).
-        # Edit mode never auto-fills, so the blank creds_volume stays blank.
+        # Core fields plus the privileged capability are sent; image_layer is untouched (PATCH).
+        # Edit mode never auto-fills, so the blank creds_volume stays blank. The checkbox is
+        # unchecked here, so docker_in_docker is False.
         assert fake.updated_repos == [
             ("r1", {"name": "new", "git_url": "https://x/r1.git", "default_base": "main",
-                    "env_file": None, "creds_volume": None})
+                    "env_file": None, "creds_volume": None,
+                    "capabilities": {"docker_in_docker": False}})
         ]
+
+
+async def test_repos_screen_creates_a_repo_with_privileged_docker_enabled() -> None:
+    fake = _FakeClient([], repos=[])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        app.screen.query_one("#field-git_url", Input).value = "https://x/widgets.git"
+        app.screen.query_one("#field-docker_in_docker", Checkbox).value = True  # toggle privileged on
+        await pilot.press("enter")
+        await pilot.pause()
+        # The toggle maps to capabilities.docker_in_docker, which drives the runner's --privileged.
+        assert fake.created_repos[0]["capabilities"] == {"docker_in_docker": True}
+
+
+async def test_repos_screen_edit_toggles_privileged_on_merging_existing_capabilities() -> None:
+    fake = _FakeClient([], repos=[{"id": "r1", "name": "old", "git_url": "https://x/r1.git",
+                                   "default_base": "main",
+                                   "capabilities": {"some_other_cap": True}}])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")  # edit the highlighted repo
+        await pilot.pause()
+        app.screen.query_one("#field-docker_in_docker", Checkbox).value = True
+        await pilot.press("enter")
+        await pilot.pause()
+        # docker_in_docker is set; the pre-existing unrelated capability is preserved (merged).
+        repo_id, changes = fake.updated_repos[0]
+        assert repo_id == "r1"
+        assert changes["capabilities"] == {"some_other_cap": True, "docker_in_docker": True}
+
+
+async def test_repo_form_prechecks_the_toggle_for_a_privileged_repo() -> None:
+    fake = _FakeClient([], repos=[{"id": "r1", "name": "old", "git_url": "https://x/r1.git",
+                                   "default_base": "main",
+                                   "capabilities": {"docker_in_docker": True}}])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")  # edit the highlighted repo
+        await pilot.pause()
+        # A repo already opted into privileged docker opens the form with the box checked.
+        assert app.screen.query_one("#field-docker_in_docker", Checkbox).value is True
 
 
 async def test_repos_screen_login_runs_for_the_highlighted_repo() -> None:

@@ -103,9 +103,16 @@ def test_update_repo_patches_only_sent_fields(client: TaskServiceClient) -> None
     assert client.get_repo("r4")["name"] == "renamed"  # persisted
 
 
+def test_create_repo_carries_capabilities(client: TaskServiceClient) -> None:
+    # The dashboard's privileged-docker toggle creates a repo with docker_in_docker set.
+    client.create_repo("r6", "svc", "https://x/r6.git",
+                       capabilities={"docker_in_docker": True})
+    assert client.get_repo("r6")["capabilities"] == {"docker_in_docker": True}  # persisted
+
+
 def test_update_repo_preserves_image_layer_and_capabilities(client: TaskServiceClient) -> None:
     # POST the full repo (incl. extras), then PATCH only a core field: the extras must survive.
-    client._http.post(  # the client's create_repo doesn't carry extras; go raw for the seed
+    client._http.post(  # the client's create_repo doesn't carry image_layer; go raw for the seed
         "/repos",
         json={"id": "r5", "name": "svc", "git_url": "https://x/r5.git",
               "image_layer": "RUN pip install uv", "capabilities": {"docker_in_docker": True}},
