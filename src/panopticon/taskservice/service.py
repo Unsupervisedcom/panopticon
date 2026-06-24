@@ -19,6 +19,7 @@ from typing import Any
 from panopticon.core.artifacts import ArtifactStore
 from panopticon.core.models import Actor, Repo, Skill, Status, Task
 from panopticon.core.provisioning import PROVISION_SKILL
+from panopticon.core.state import TERMINAL_LABELS
 from panopticon.core.store import NotFound, Store
 from panopticon.core.workflow import Workflow
 
@@ -60,6 +61,22 @@ class Registration:
     registered_at: str
 
 
+@dataclass
+class RunnerRegistration:
+    """A session-service (runner) host's standing signal that it is alive and managing its tasks.
+
+    The host-liveness counterpart of a container :class:`Registration`, one layer up: it exists for
+    exactly as long as the runner holds its ``/runners/{id}/live`` connection open — the connection
+    *is* the signal. The daemon dying (clean stop or crash) drops it, and the runner falls out of
+    :meth:`TaskService.live_runners`; no heartbeat, no ``last_seen``, no TTL. Each connection gets a
+    fresh ``id`` (not keyed by ``runner_id``) so an overlapping reconnect during a blip can't have
+    the *old* connection's disconnect reap the *new* one."""
+
+    id: str
+    runner_id: str
+    registered_at: str
+
+
 class TaskService:
     def __init__(
         self,
@@ -76,6 +93,7 @@ class TaskService:
         self._clock = clock
         self._id = id_factory
         self._registrations: dict[str, Registration] = {}
+        self._runner_registrations: dict[str, RunnerRegistration] = {}
 
     # -- repos --------------------------------------------------------------------
 
@@ -406,3 +424,43 @@ class TaskService:
         return [
             r for r in self._registrations.values() if task_id is None or r.task_id == task_id
         ]
+
+    # -- host (runner) liveness + reclaim ------------------------------------------
+    #
+    # The same connection-drop liveness as containers, one layer up: a runner (session service)
+    # holds the ``/runners/{id}/live`` stream open for its whole life, so the control plane knows
+    # which hosts are alive without a heartbeat or a wall-clock TTL. This is what makes **reclaim**
+    # possible — a claim (``claimed_by``) used to linger forever when its runner died, with no way
+    # to tell "runner dead" from "runner idle"; now a dead runner falls out of ``live_runners`` and
+    # an operator (or a future supervisor) can release its claims so a healthy host respawns them.
+
+    def register_runner(self, runner_id: str) -> RunnerRegistration:
+        reg = RunnerRegistration(id=self._id(), runner_id=runner_id, registered_at=self._clock())
+        self._runner_registrations[reg.id] = reg
+        return reg
+
+    def deregister_runner(self, registration_id: str) -> None:
+        self._runner_registrations.pop(registration_id, None)
+
+    def live_runners(self) -> set[str]:
+        """The set of runner ids currently holding a host-liveness connection (no clock read)."""
+        return {r.runner_id for r in self._runner_registrations.values()}
+
+    def reclaim(self, runner_id: str) -> list[Task]:
+        """Release every non-terminal task claimed by ``runner_id`` so a healthy host can re-claim
+        and respawn it. The operator-gated answer to a dead runner (justification 2): its containers
+        died with it, but its claims would otherwise linger forever.
+
+        Connection-driven and **clock-free** — "dead" is the caller's judgement (the runner is
+        absent from :meth:`live_runners`); reclaim only releases the claims, it adds no TTL. Skips
+        terminal tasks (nothing to respawn) and is idempotent (a second call finds nothing to do).
+        Auto-triggering this on disconnect is deliberately *not* done here: with the auto-claiming
+        spawner it would respawn a duplicate container on a transient host blip, so the release stays
+        a deliberate action until spawn-dedup exists."""
+        reclaimed = []
+        for task in self._store.list_tasks():
+            if task.claimed_by == runner_id and task.state not in TERMINAL_LABELS:
+                task.claimed_by = None
+                self._store.save_task(task)
+                reclaimed.append(task)
+        return reclaimed

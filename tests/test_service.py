@@ -223,6 +223,55 @@ def test_release_returns_the_task_to_unclaimed(tmp_path: Path) -> None:
     assert svc.claim(task.id, "host-2").claimed_by == "host-2"  # now another runner can claim
 
 
+# -- host (runner) liveness + reclaim: connection-scoped, clock-free (mirror of container liveness) --
+
+
+def test_register_runner_is_live_until_deregistered(tmp_path: Path) -> None:
+    svc = make_service(tmp_path)
+    assert svc.live_runners() == set()
+    reg = svc.register_runner("host-1")
+    assert svc.live_runners() == {"host-1"}  # a held connection => the runner is live
+    svc.deregister_runner(reg.id)
+    assert svc.live_runners() == set()  # dropped connection => no longer live (no clock read)
+
+
+def test_register_runner_reconnect_overlap_keeps_the_runner_live(tmp_path: Path) -> None:
+    # A reconnect during a blip can briefly hold two connections; the *old* one's disconnect must
+    # not drop the runner while the *new* one is up (each connection has its own id, not keyed by
+    # runner_id), so the runner stays continuously live across the reconnect.
+    svc = make_service(tmp_path)
+    old = svc.register_runner("host-1")
+    svc.register_runner("host-1")  # the reconnect opens before the old finally fires
+    svc.deregister_runner(old.id)  # the old connection's disconnect lands late
+    assert svc.live_runners() == {"host-1"}  # still live on the fresh connection
+
+
+def test_reclaim_releases_the_runners_non_terminal_claims(tmp_path: Path) -> None:
+    svc = make_service(tmp_path)
+    mine = svc.create_task("r1", "spike")
+    other = svc.create_task("r1", "spike")
+    svc.claim(mine.id, "host-dead")
+    svc.claim(other.id, "host-live")
+
+    reclaimed = svc.reclaim("host-dead")
+
+    assert [t.id for t in reclaimed] == [mine.id]
+    assert svc.get_task(mine.id).claimed_by is None  # released for a healthy host to respawn
+    assert svc.get_task(other.id).claimed_by == "host-live"  # another runner's claim untouched
+    assert svc.reclaim("host-dead") == []  # idempotent
+
+
+def test_reclaim_skips_terminal_tasks(tmp_path: Path) -> None:
+    # A terminal task has nothing to respawn, so reclaim leaves its claim alone (no churn).
+    svc = make_service(tmp_path)
+    done = svc.create_task("r1", "spike")
+    svc.claim(done.id, "host-dead")
+    svc.apply_operation(done.id, "drop")  # -> DROPPED (terminal)
+
+    assert svc.reclaim("host-dead") == []
+    assert svc.get_task(done.id).claimed_by == "host-dead"  # unchanged
+
+
 # -- provisioning: the session service does the host git; the service only records it (ADR 0010) --
 
 

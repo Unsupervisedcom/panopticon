@@ -10,6 +10,11 @@ It doesn't re-poll on a fixed interval: it *blocks* on the task service's change
 (``list_tasks_versioned(wait=…, since=…)``), waking only when a task actually changes (or the wait
 elapses), so an idle host does no work.
 
+Alongside that loop it **holds a host-liveness connection** (``/runners/{id}/live``,
+:func:`hold_runner_liveness`) open for its whole life — the connection-drop liveness PR #146 gave
+containers, one layer up — so the control plane knows the host is alive and can **reclaim** its
+claims (release them for a healthy host to respawn) when it isn't.
+
 **Two URLs.** The daemon talks to the task service at ``--service-url`` (the host's own view, e.g.
 ``localhost:8000``), but spawns containers pointed at ``--container-service-url`` (the in-container
 view, e.g. ``host.docker.internal:8000``). LLM-free.
@@ -20,6 +25,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import threading
 import time
 from collections.abc import Callable
 
@@ -93,6 +99,44 @@ class HostDaemon:
                 self._sleep(self._interval)
 
 
+#: Backoff before re-opening the host-liveness connection after it drops underneath a still-running
+#: daemon (a transient blip). Small: the gap is a brief window where the runner reads as down, which
+#: only an operator-gated reclaim acts on, so nothing auto-acts on the flicker.
+RUNNER_RECONNECT_BACKOFF_SECONDS = 1.0
+
+
+def hold_runner_liveness(
+    client: TaskServiceClient,
+    runner_id: str,
+    *,
+    running: Callable[[], bool],
+    reconnect_backoff: float = RUNNER_RECONNECT_BACKOFF_SECONDS,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Hold this host's liveness connection open while ``running()`` — the container's ``serve``
+    loop, one layer up.
+
+    The open ``/runners/{id}/live`` stream *is* the host-liveness signal: the task service marks the
+    runner live on connect and drops it from ``live_runners`` the instant the stream closes. On a
+    clean stop ``running()`` flips and we close it (a clean deregister); on a crash the dropped
+    socket reaps it. If it drops while still running (a transient blip) we reconnect after a short
+    backoff, re-asserting the same ``runner_id``, so a dead host stays distinguishable from a flake.
+    No heartbeat, no TTL — the connection-drop liveness PR #146 gave containers, now for the host.
+    """
+    while running():
+        live = client.live_runner(runner_id)
+        try:
+            for _ in live:  # each tick is a server keepalive; recheck whether to stop
+                if not running():
+                    break
+        except httpx.HTTPError:
+            pass  # connection dropped underneath us — fall through to reconnect
+        finally:
+            live.close()  # close the stream → drop the connection → service drops the runner
+        if running():
+            sleep(reconnect_backoff)
+
+
 def run_host(
     client: TaskServiceClient,
     runner: LocalRunner,
@@ -140,6 +184,16 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
     args = parser.parse_args(argv)
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
     runner = LocalRunner(args.container_service_url, image=args.image, runner_id=args.runner_id)
+    # Hold this host's liveness connection for the daemon's whole life, alongside the spawn/provision
+    # loop, so the control plane knows the host is alive (and can reclaim its claims when it isn't).
+    # A daemon thread: it dies with the process, dropping the connection (a clean deregister).
+    liveness = threading.Thread(
+        target=hold_runner_liveness,
+        args=(client, args.runner_id),
+        kwargs={"running": lambda: True},
+        daemon=True,
+    )
+    liveness.start()
     run_host(
         client, runner,
         runner_id=args.runner_id, tasks_root=args.tasks_root,

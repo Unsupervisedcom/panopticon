@@ -4,16 +4,17 @@ spawn→slug→provision flow against the real task service over REST. No Docker
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from pathlib import Path
 
+import httpx
 from fastapi.testclient import TestClient
 
 from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.git import GitClones
 from panopticon.core.models import Repo
 from panopticon.sessionservice.clones import CloneCache
-from panopticon.sessionservice.host import HostDaemon, run_host
+from panopticon.sessionservice.host import HostDaemon, hold_runner_liveness, run_host
 from panopticon.taskservice.api import create_app
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 from panopticon.taskservice.service import TaskService
@@ -117,6 +118,26 @@ def test_run_survives_a_whole_pass_failure() -> None:
     daemon = HostDaemon(_FlakyClient(), _Spawner(), _Provisioner(), sleep=lambda _s: None)  # type: ignore[arg-type]
     daemon.run(until=until)
     assert passes["n"] >= 3  # did not die on the first pass's error; kept going
+
+
+def test_hold_runner_liveness_reconnects_after_a_drop_until_stopped() -> None:
+    # The host-liveness loop re-opens the connection if it drops underneath a still-running daemon
+    # (a transient blip), and stops cleanly when `running()` flips — no heartbeat, no clock.
+    opens = {"n": 0}
+
+    class _DroppingClient:
+        def live_runner(self, runner_id: str) -> Generator[None, None, None]:
+            opens["n"] += 1
+
+            def gen() -> Generator[None, None, None]:
+                yield None  # connected
+                raise httpx.ConnectError("dropped")  # then the connection drops underneath us
+
+            return gen()
+
+    daemon_running = lambda: opens["n"] < 3  # flip after a couple of reconnects  # noqa: E731
+    hold_runner_liveness(_DroppingClient(), "host-1", running=daemon_running, sleep=lambda _s: None)  # type: ignore[arg-type]
+    assert opens["n"] == 3  # reconnected after each drop until `running()` said stop
 
 
 def test_run_host_spawns_then_provisions_end_to_end(tmp_path: Path) -> None:

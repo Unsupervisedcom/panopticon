@@ -231,3 +231,31 @@ class TaskServiceClient:
 
     def deregister(self, registration_id: str) -> None:
         self._http.delete(f"/registrations/{registration_id}").raise_for_status()
+
+    # -- host (runner) liveness + reclaim -----------------------------------------
+
+    def live_runner(self, runner_id: str) -> Generator[None, None, None]:
+        """Hold this host's liveness connection open, yielding once per server keepalive.
+
+        The host-liveness mirror of :meth:`live` one layer up: the open ``/runners/{id}/live`` stream
+        is the signal that this session-service daemon is alive. The task service marks the runner
+        live on connect and drops it from ``live_runners`` the instant this stream closes (a clean
+        ``close()`` or the daemon dying). The caller (the daemon) holds it for its whole life,
+        reconnecting if it drops underneath.
+        """
+        with self._http.stream(
+            "GET",
+            f"/runners/{runner_id}/live",
+            timeout=None,  # the connection is meant to stay open for the daemon's lifetime
+        ) as resp:
+            resp.raise_for_status()
+            for _ in resp.iter_lines():
+                yield None
+
+    def live_runners(self) -> list[str]:
+        """The runner ids currently holding a host-liveness connection."""
+        return cast(list[str], self._json(self._http.get("/runners")))
+
+    def reclaim_runner(self, runner_id: str) -> list[JsonObj]:
+        """Release a (dead) runner's non-terminal claims so a healthy host respawns them."""
+        return cast(list[JsonObj], self._json(self._http.post(f"/runners/{runner_id}/reclaim")))

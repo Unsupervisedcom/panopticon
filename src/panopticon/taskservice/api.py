@@ -535,5 +535,46 @@ def create_app(service: TaskService) -> FastAPI:
         service.deregister(registration_id)
         return Response(status_code=204)
 
+    # -- host (runner) liveness + reclaim ----------------------------------------------
+    #
+    # Container liveness one layer up: the session-service daemon holds ``/runners/{id}/live`` open
+    # for its whole life, so the control plane knows which hosts are alive. ``GET /runners`` surfaces
+    # the live set; ``POST /runners/{id}/reclaim`` is the operator-gated release of a dead host's
+    # claims (so a healthy host respawns them) — see :meth:`TaskService.reclaim`.
+
+    @app.get("/runners/{runner_id}/live")
+    async def runner_live(runner_id: str, request: Request) -> StreamingResponse:
+        """The host-liveness connection: a runner holds this stream open for its whole lifetime.
+
+        Mirrors ``/tasks/{id}/live`` one layer up. Registering happens on connect and is removed on
+        disconnect — the open connection *is* the signal the runner is alive. When the daemon dies
+        (clean stop or crash) the stream drops and Starlette cancels the body generator, so the
+        ``finally`` removes it from ``live_runners`` **immediately** — no heartbeat, no TTL. A flaky
+        drop removes it too, but the daemon re-opens this connection (its reconnect loop), so a
+        transient blip self-heals.
+        """
+        reg = service.register_runner(runner_id)
+
+        async def hold() -> AsyncIterator[bytes]:
+            try:
+                yield b":ok\n"  # flush headers + confirm host liveness is established
+                while True:
+                    await asyncio.sleep(LIVENESS_KEEPALIVE_SECONDS)
+                    yield b":keepalive\n"
+            finally:  # daemon disconnected (Starlette cancels us) or the loop ended — drop it now
+                service.deregister_runner(reg.id)
+
+        return StreamingResponse(hold(), media_type="text/event-stream")
+
+    @app.get("/runners")
+    async def list_runners() -> list[str]:
+        """The runner ids currently holding a host-liveness connection (sorted, for stable reads)."""
+        return sorted(service.live_runners())
+
+    @app.post("/runners/{runner_id}/reclaim")
+    async def reclaim(runner_id: str) -> list[TaskOut]:
+        """Release a (dead) runner's non-terminal claims so a healthy host respawns them."""
+        return [TaskOut.model_validate(t) for t in service.reclaim(runner_id)]
+
     app.mount("/mcp", mcp_app)  # in-container agents connect here for task operations + artifacts
     return app
