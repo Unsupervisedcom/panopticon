@@ -68,13 +68,14 @@ class _RepoRow(_Base):
     default_base: Mapped[str]
     env_file: Mapped[str | None] = mapped_column(default=None)
     creds_volume: Mapped[str | None] = mapped_column(default=None)
-    image_layer: Mapped[str | None] = mapped_column(default=None)
+    image_layer_file: Mapped[str | None] = mapped_column(default=None)
     capabilities: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
     def to_domain(self) -> Repo:
         return Repo(
             id=self.id, name=self.name, git_url=self.git_url, default_base=self.default_base,
-            env_file=self.env_file, creds_volume=self.creds_volume, image_layer=self.image_layer,
+            env_file=self.env_file, creds_volume=self.creds_volume,
+            image_layer_file=self.image_layer_file,
             capabilities=dict(self.capabilities or {}),
         )
 
@@ -82,7 +83,8 @@ class _RepoRow(_Base):
     def from_domain(cls, repo: Repo) -> _RepoRow:
         return cls(
             id=repo.id, name=repo.name, git_url=repo.git_url, default_base=repo.default_base,
-            env_file=repo.env_file, creds_volume=repo.creds_volume, image_layer=repo.image_layer,
+            env_file=repo.env_file, creds_volume=repo.creds_volume,
+            image_layer_file=repo.image_layer_file,
             capabilities=dict(repo.capabilities),
         )
 
@@ -284,7 +286,7 @@ class SqlAlchemyStore(Store):
             row.default_base = repo.default_base
             row.env_file = repo.env_file
             row.creds_volume = repo.creds_volume
-            row.image_layer = repo.image_layer
+            row.image_layer_file = repo.image_layer_file
             row.capabilities = dict(repo.capabilities)
 
     # -- tasks: reads + persistence primitives (the base's template methods drive these) --

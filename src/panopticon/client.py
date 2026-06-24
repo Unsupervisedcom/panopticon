@@ -41,6 +41,12 @@ class TaskServiceClient:
     def get_repo(self, repo_id: str) -> JsonObj:
         return cast(JsonObj, self._json(self._http.get(f"/repos/{repo_id}")))
 
+    def repo_image_layer(self, repo_id: str) -> str:
+        """The repo's Dockerfile layer (ADR 0005), read from its ``image_layer_file``; empty when
+        it declares none. Mirrors :meth:`workflow_image_layer`."""
+        body = cast(JsonObj, self._json(self._http.get(f"/repos/{repo_id}/image-layer")))
+        return cast(str, body["layer"])
+
     def list_repos(self) -> list[JsonObj]:
         return cast("list[JsonObj]", self._json(self._http.get("/repos")))
 
@@ -124,7 +130,7 @@ class TaskServiceClient:
 
     def update_repo(self, repo_id: str, **changes: Any) -> JsonObj:
         """Partially update a repo (PATCH): only the supplied fields are sent, and the service
-        merges them onto the stored repo — so untouched fields (e.g. image_layer/capabilities)
+        merges them onto the stored repo — so untouched fields (e.g. image_layer_file/capabilities)
         are preserved."""
         return cast(JsonObj, self._json(self._http.patch(f"/repos/{repo_id}", json=changes)))
 

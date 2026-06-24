@@ -112,15 +112,15 @@ def test_create_repo_carries_capabilities(client: TaskServiceClient) -> None:
 
 def test_update_repo_preserves_image_layer_and_capabilities(client: TaskServiceClient) -> None:
     # POST the full repo (incl. extras), then PATCH only a core field: the extras must survive.
-    client._http.post(  # the client's create_repo doesn't carry image_layer; go raw for the seed
+    client._http.post(  # the client's create_repo doesn't carry image_layer_file; go raw for the seed
         "/repos",
         json={"id": "r5", "name": "svc", "git_url": "https://x/r5.git",
-              "image_layer": "RUN pip install uv", "capabilities": {"docker_in_docker": True}},
+              "image_layer_file": "r5.layer", "capabilities": {"docker_in_docker": True}},
     ).raise_for_status()
     client.update_repo("r5", name="svc-2")
     got = client.get_repo("r5")
     assert got["name"] == "svc-2"
-    assert got["image_layer"] == "RUN pip install uv"  # the anti-footgun: PATCH left it intact
+    assert got["image_layer_file"] == "r5.layer"  # the anti-footgun: PATCH left it intact
     assert got["capabilities"] == {"docker_in_docker": True}
 
 

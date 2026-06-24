@@ -50,9 +50,10 @@ class _FakeClient:
     """Captures claims + reported lifecycle phases; serves one repo. `claim` 409s when already held
     by another runner."""
 
-    def __init__(self, *, repo: JsonObj, image_layer: str = "") -> None:
+    def __init__(self, *, repo: JsonObj, image_layer: str = "", repo_layer: str = "") -> None:
         self._repo = repo
         self._image_layer = image_layer
+        self._repo_layer = repo_layer
         self.claims: list[tuple[str, str]] = []
         self._held_by: dict[str, str] = {}
         self.phases: list[tuple[str, str, str | None]] = []  # (task_id, phase, detail)
@@ -60,6 +61,9 @@ class _FakeClient:
 
     def workflow_image_layer(self, name: str) -> str:
         return self._image_layer
+
+    def repo_image_layer(self, repo_id: str) -> str:
+        return self._repo_layer
 
     def claim(self, task_id: str, runner_id: str) -> JsonObj:
         holder = self._held_by.get(task_id)
@@ -148,9 +152,10 @@ def test_spawn_one_composes_the_workflow_image_when_it_has_a_layer() -> None:
 
 
 def test_spawn_one_composes_workflow_then_repo_layers() -> None:
-    # base → workflow (gh) → repo (toolchain), in that order (ADR 0005 tiers).
-    repo = {**_REPO, "image_layer": "RUN pip install uv"}
-    client = _FakeClient(repo=repo, image_layer="RUN apt-get install --yes gh")
+    # base → workflow (gh) → repo (toolchain), in that order (ADR 0005 tiers). The repo layer is
+    # fetched over REST (repo_image_layer), not read inline off the repo record.
+    repo = {**_REPO, "image_layer_file": "r1.layer"}
+    client = _FakeClient(repo=repo, image_layer="RUN apt-get install --yes gh", repo_layer="RUN pip install uv")
     runner, images = _FakeRunner(), _FakeImageBuilder()
     cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True)  # type: ignore[arg-type]
     spawner = Spawner(

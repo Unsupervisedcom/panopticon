@@ -91,7 +91,7 @@ class RepoIn(BaseModel):
     default_base: str = "main"
     env_file: str | None = None
     creds_volume: str | None = None
-    image_layer: str | None = None
+    image_layer_file: str | None = None
     capabilities: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -104,7 +104,7 @@ class RepoOut(BaseModel):
     default_base: str
     env_file: str | None = None
     creds_volume: str | None = None
-    image_layer: str | None = None
+    image_layer_file: str | None = None
     capabilities: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -119,7 +119,7 @@ class RepoPatchIn(BaseModel):
     default_base: str | None = None
     env_file: str | None = None
     creds_volume: str | None = None
-    image_layer: str | None = None
+    image_layer_file: str | None = None
     capabilities: dict[str, Any] | None = None
 
 
@@ -354,10 +354,16 @@ def create_app(service: TaskService) -> FastAPI:
     async def get_repo(repo_id: str) -> RepoOut:
         return RepoOut.model_validate(service.get_repo(repo_id))
 
+    @app.get("/repos/{repo_id}/image-layer")
+    async def repo_image_layer(repo_id: str) -> dict[str, str]:
+        """The repo's Dockerfile layer (ADR 0005), read from its ``image_layer_file`` reference;
+        the runner composes it onto base → workflow. Empty when the repo declares none."""
+        return {"layer": service.repo_image_layer(repo_id)}
+
     @app.patch("/repos/{repo_id}")
     async def update_repo(repo_id: str, body: RepoPatchIn) -> RepoOut:
         # exclude_unset → only the fields the caller actually sent; the service merges them
-        # onto the stored repo (untouched fields, e.g. image_layer/capabilities, are preserved).
+        # onto the stored repo (untouched fields, e.g. image_layer_file/capabilities, are preserved).
         changes = body.model_dump(exclude_unset=True)
         try:
             repo = service.update_repo(repo_id, changes)

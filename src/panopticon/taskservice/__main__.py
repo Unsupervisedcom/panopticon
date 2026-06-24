@@ -22,6 +22,7 @@ from fastapi import FastAPI
 
 from panopticon.taskservice.api import create_app
 from panopticon.taskservice.artifacts_fs import DEFAULT_ARTIFACTS, FilesystemArtifactStore
+from panopticon.taskservice.layers_fs import DEFAULT_LAYERS, FilesystemLayerStore
 from panopticon.taskservice.service import TaskService
 from panopticon.taskservice.store_sqlalchemy import SqlAlchemyStore
 from panopticon.workflows.discovery import discover_workflows
@@ -30,16 +31,22 @@ DEFAULT_DB = "sqlite:///panopticon.db"
 
 
 def build_app(
-    *, db: str = DEFAULT_DB, artifacts_root: str = DEFAULT_ARTIFACTS, workflows_path: str | None = None
+    *,
+    db: str = DEFAULT_DB,
+    artifacts_root: str = DEFAULT_ARTIFACTS,
+    layers_root: str = DEFAULT_LAYERS,
+    workflows_path: str | None = None,
 ) -> FastAPI:
     """Build the task-service app around the default control-plane wiring (no LLM).
 
     Workflows are discovered from the built-in package plus an optional ``workflows_path`` dir.
+    Repo image layers are read as files under ``layers_root`` (served over REST, ADR 0005).
     """
     service = TaskService(
         SqlAlchemyStore(db),
         discover_workflows(path=workflows_path),
         FilesystemArtifactStore(artifacts_root),
+        layers=FilesystemLayerStore(layers_root),
     )
     return create_app(service)
 
@@ -57,12 +64,19 @@ def main(argv: Sequence[str] | None = None) -> None:
         "--artifacts", default=os.environ.get("PANOPTICON_ARTIFACTS", DEFAULT_ARTIFACTS)
     )
     parser.add_argument(
+        "--layers", default=os.environ.get("PANOPTICON_LAYERS", DEFAULT_LAYERS),
+        help="directory of repo Dockerfile layer files (referenced by Repo.image_layer_file)",
+    )
+    parser.add_argument(
         "--workflows-path",
         default=os.environ.get("PANOPTICON_WORKFLOWS_PATH"),
         help="extra directory to discover Workflow subclasses in (beyond the built-ins)",
     )
     args = parser.parse_args(argv)
-    app = build_app(db=args.db, artifacts_root=args.artifacts, workflows_path=args.workflows_path)
+    app = build_app(
+        db=args.db, artifacts_root=args.artifacts, layers_root=args.layers,
+        workflows_path=args.workflows_path,
+    )
     uvicorn.run(app, host=args.host, port=args.port)
 
 
