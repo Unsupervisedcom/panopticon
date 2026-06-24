@@ -162,6 +162,30 @@ def _turn_cell(task: JsonObj) -> Text:
     return Text(task["turn"], style=color)
 
 
+# Container-status colors. The status is composed by the **task service** (folding the session
+# service's reported spawn phase with registration presence + runner liveness) and the dashboard
+# just displays it: green = live; yellow = a spawn in flight (queued → … → awaiting); red = needs
+# attention (down/failed/disconnected); the em-dash (terminal task) is dimmed.
+_STATUS_COLORS = {
+    "live": "green",
+    "queued": "yellow",
+    "claiming": "yellow",
+    "preparing": "yellow",
+    "building": "yellow",
+    "starting": "yellow",
+    "awaiting": "yellow",
+    "down": "red",
+    "failed": "red",
+    "disconnected": "red",
+}
+
+
+def _status_cell(task: JsonObj) -> Text:
+    """The container column: the task service's composed ``container_status``, color-coded."""
+    status = task.get("container_status") or "–"
+    return Text(status, style=_STATUS_COLORS.get(status, "dim"))
+
+
 def render_detail(task: JsonObj) -> str:
     """The right-pane text for one task: identity, state/turn, and history."""
     turn = f"{task['turn']}{' (blocked)' if task.get('blocked') else ''}"
@@ -171,6 +195,10 @@ def render_detail(task: JsonObj) -> str:
         f"id: {task['id']}",
         f"state: {task['state']}    turn: {turn}    workflow: {task['workflow']}{claim}",
     ]
+    status = task.get("container_status")
+    if status:
+        detail = task.get("lifecycle_detail")
+        lines += ["", f"container: {status}" + (f" — {detail}" if detail else "")]
     if task.get("memo"):
         lines += ["", task["memo"]]
     if task.get("url"):
@@ -690,7 +718,6 @@ class Dashboard(App[None]):
         self._current: str | None = None
         self._query: str = ""  # active search filter ("" → no filter); see action_search
         self._detail_visible = False  # detail pane hidden by default; `d` toggles it (action_toggle_detail)
-        self._respawning: set[str] = set()  # tasks awaiting re-claim after `R` (shown "respawning")
         self._last_cursor_row = 0  # previous cursor row index → infer travel direction to skip the divider
         # one reused scratch dir for `a`'s REST-open (lazily made, cleaned on exit) — so opening
         # many artifacts doesn't leak a temp dir each.
@@ -770,23 +797,6 @@ class Dashboard(App[None]):
             self._artifact_tmp = tempfile.TemporaryDirectory(prefix="panopticon-artifacts-")
         return self._artifact_tmp.name
 
-    def _run_status(self, task: JsonObj) -> str:
-        """A task's container status: `live` (a registered container), `down` (was up, container
-        gone — respawn with `R`), `starting` (claimed, container still coming up — no registration
-        yet), `–` (unclaimed), or `respawning` (just released by `R`, awaiting the runner's re-claim —
-        shown instead of the bare `–` so a respawn doesn't read as the task losing its runner).
-
-        Liveness is the **registration**, not provisioning: a task can be live and working (e.g. an
-        unprovisioned PLANNING task that hasn't set its slug yet) — so registration is checked first.
-        """
-        tid = task["id"]
-        if not task.get("claimed_by"):
-            return "respawning" if tid in self._respawning else "–"
-        self._respawning.discard(tid)  # re-claimed → the normal down→live boot takes over
-        if self._client.list_registrations(tid):
-            return "live"  # a registered container — regardless of whether it's provisioned yet
-        return "down" if task.get("provisioned") else "starting"
-
     def action_refresh(self) -> None:
         table = self.query_one("#tasks", DataTable)
         selected = self._current  # keep the operator's highlight across the rebuild (feed refresh)
@@ -805,7 +815,7 @@ class Dashboard(App[None]):
                 separated = True
             seen_active = seen_active or not terminal
             table.add_row(
-                task["state"], _turn_cell(task), self._run_status(task), _slug_cell(task),
+                task["state"], _turn_cell(task), _status_cell(task), _slug_cell(task),
                 key=task["id"],
             )
         target = selected if selected in self._tasks else next(iter(self._tasks), None)
@@ -891,10 +901,9 @@ class Dashboard(App[None]):
         if not task or not task.get("claimed_by"):
             self.notify("Task isn't claimed by a runner — nothing to respawn.", severity="warning")
             return
-        if self._client.list_registrations(task_id):
+        if task.get("container_status") == "live":
             self.notify("Container is live; drop it or let it finish.", severity="warning")
             return
-        self._respawning.add(task_id)  # show "respawning" until the runner re-claims it
         self._client.release(task_id)  # back to unclaimed → the host runner re-claims + re-spawns
         self.notify("Released the claim; the runner will respawn it.")
         self.action_refresh()

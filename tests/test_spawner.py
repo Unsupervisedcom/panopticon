@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.git import GitClones
-from panopticon.core.models import Repo
+from panopticon.core.models import LifecyclePhase, Repo
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.spawner import Spawner, spawnable_tasks
 from panopticon.taskservice.api import create_app
@@ -28,24 +28,35 @@ def _no_op_run(args: object, *, check: bool = True) -> str:
 
 
 class _FakeRunner:
-    """Records spawn calls; stands in for LocalRunner."""
+    """Records spawn calls; stands in for LocalRunner. Mimics its ``progress`` callbacks (STARTING
+    then AWAITING) and ``is_running`` (configurable, for reconcile/down-detection tests)."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, running: bool = True) -> None:
         self.spawned: list[dict[str, object]] = []
+        self._running = running
 
-    def spawn(self, task_id: str, *, env_file: str | None = None, creds_volume: str | None = None, workspace: str | None = None, image: str | None = None, docker_in_docker: bool = False, memo: str | None = None) -> str:
+    def spawn(self, task_id: str, *, env_file: str | None = None, creds_volume: str | None = None, workspace: str | None = None, image: str | None = None, docker_in_docker: bool = False, memo: str | None = None, progress: Callable[[LifecyclePhase], None] | None = None) -> str:
         self.spawned.append({"task_id": task_id, "env_file": env_file, "creds_volume": creds_volume, "workspace": workspace, "image": image, "docker_in_docker": docker_in_docker, "memo": memo})
+        if progress is not None:  # the real runner reports these two sub-steps
+            progress(LifecyclePhase.STARTING)
+            progress(LifecyclePhase.AWAITING)
         return f"panopticon-{task_id}"
+
+    def is_running(self, task_id: str) -> bool:
+        return self._running
 
 
 class _FakeClient:
-    """Captures claims; serves one repo. `claim` 409s when already held by another runner."""
+    """Captures claims + reported lifecycle phases; serves one repo. `claim` 409s when already held
+    by another runner."""
 
     def __init__(self, *, repo: JsonObj, image_layer: str = "") -> None:
         self._repo = repo
         self._image_layer = image_layer
         self.claims: list[tuple[str, str]] = []
         self._held_by: dict[str, str] = {}
+        self.phases: list[tuple[str, str, str | None]] = []  # (task_id, phase, detail)
+        self.cleared: list[str] = []
 
     def workflow_image_layer(self, name: str) -> str:
         return self._image_layer
@@ -64,6 +75,14 @@ class _FakeClient:
 
     def get_repo(self, repo_id: str) -> JsonObj:
         return self._repo
+
+    def report_lifecycle(self, task_id: str, runner_id: str, phase: str, detail: str | None = None) -> JsonObj:
+        self.phases.append((task_id, phase, detail))
+        return {"id": task_id}
+
+    def clear_lifecycle(self, task_id: str) -> JsonObj:
+        self.cleared.append(task_id)
+        return {"id": task_id}
 
 
 def _spawner(client: object, runner: object) -> Spawner:
@@ -141,6 +160,57 @@ def test_spawn_one_composes_workflow_then_repo_layers() -> None:
     spawner.spawn_one({"id": "t1", "repo_id": "r1", "workflow": "github-peer-reviewed", "state": "PLANNING", "claimed_by": None})
     assert images.built == [("github-peer-reviewed", "r1", ["RUN apt-get install --yes gh", "RUN pip install uv"])]
     assert runner.spawned[0]["image"] == "panopticon-github-peer-reviewed-r1"
+
+
+def test_spawn_one_reports_the_phase_sequence() -> None:
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner()
+    _spawner(client, runner).spawn_one(
+        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None}
+    )
+    # claiming → preparing → building (in spawn_one), then starting → awaiting (from the runner)
+    assert [p for _, p, _ in client.phases] == ["claiming", "preparing", "building", "starting", "awaiting"]
+    assert all(tid == "t1" for tid, _, _ in client.phases)
+
+
+def test_spawn_one_reports_failed_with_the_error_when_a_step_raises() -> None:
+    class _BoomRunner(_FakeRunner):
+        def spawn(self, *args: object, **kwargs: object) -> str:
+            raise RuntimeError("docker run blew up")
+
+    client = _FakeClient(repo=_REPO)
+    with pytest.raises(RuntimeError):
+        _spawner(client, _BoomRunner()).spawn_one(
+            {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None}
+        )
+    last_task, last_phase, last_detail = client.phases[-1]
+    assert (last_task, last_phase) == ("t1", "failed")
+    assert "docker run blew up" in (last_detail or "")  # the failure reason is surfaced
+
+
+def test_reconcile_clears_a_stale_phase_when_the_container_is_gone() -> None:
+    # claimed by us, an in-flight phase, but the container isn't running → clear → composes `down`.
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner(running=False)
+    _spawner(client, runner).reconcile(
+        {"id": "t1", "claimed_by": "host-1", "container_status": "awaiting", "state": "ITERATING"}
+    )
+    assert client.cleared == ["t1"]
+
+
+def test_reconcile_leaves_a_still_running_container_alone() -> None:
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner(running=True)
+    _spawner(client, runner).reconcile(
+        {"id": "t1", "claimed_by": "host-1", "container_status": "awaiting", "state": "ITERATING"}
+    )
+    assert client.cleared == []  # container present, just not registered yet — keep coming up
+
+
+def test_reconcile_ignores_tasks_not_in_flight_or_not_ours() -> None:
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner(running=False)
+    spawner = _spawner(client, runner)
+    spawner.reconcile({"id": "t1", "claimed_by": "host-1", "container_status": "live", "state": "ITERATING"})
+    spawner.reconcile({"id": "t2", "claimed_by": "host-1", "container_status": "failed", "state": "ITERATING"})
+    spawner.reconcile({"id": "t3", "claimed_by": "host-9", "container_status": "awaiting", "state": "ITERATING"})
+    assert client.cleared == []  # live/failed are left as-is; t3 belongs to another runner
 
 
 def test_spawn_one_skips_terminal_and_already_claimed_tasks() -> None:

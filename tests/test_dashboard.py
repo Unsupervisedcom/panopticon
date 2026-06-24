@@ -20,6 +20,7 @@ from panopticon.terminal.dashboard import (
     _matches,
     _short_tokens,
     _slug_cell,
+    _status_cell,
     _turn_cell,
     render_detail,
 )
@@ -615,35 +616,34 @@ def test_render_detail_shows_the_claim() -> None:
     assert "claimed: host-1" in render_detail({**_TASK, "claimed_by": "host-1"})
 
 
-def test_run_status_reflects_claim_liveness_and_provisioning() -> None:
-    fake = _FakeClient([], {"t-live": [{"container_id": "c"}], "t-planning": [{"container_id": "c"}]})
-    app = Dashboard(fake)  # type: ignore[arg-type]
-    live = {"id": "t-live", "claimed_by": "h", "provisioned": True}
-    down = {"id": "t-down", "claimed_by": "h", "provisioned": True}
-    starting = {"id": "t-start", "claimed_by": "h", "provisioned": False}
-    # registered but not provisioned yet — a PLANNING task that hasn't set its slug; it IS live
-    planning = {"id": "t-planning", "claimed_by": "h", "provisioned": False}
-    assert app._run_status({"id": "t-x"}) == "–"  # unclaimed → not spawned
-    assert app._run_status(live) == "live"  # claimed + registered
-    assert app._run_status(down) == "down"  # claimed + provisioned, no container
-    assert app._run_status(starting) == "starting"  # claimed, no registration yet (booting)
-    assert app._run_status(planning) == "live"  # registered → live even though unprovisioned
+def test_status_cell_displays_the_composed_status_color_coded() -> None:
+    # The dashboard no longer computes status — the task service composes `container_status` and the
+    # cell just renders it (color-coded). No per-task registration calls anymore.
+    assert _status_cell({"container_status": "live"}).plain == "live"
+    assert _status_cell({"container_status": "live"}).style == "green"
+    assert _status_cell({"container_status": "building"}).style == "yellow"  # spawn in flight
+    assert _status_cell({"container_status": "down"}).style == "red"  # needs attention
+    assert _status_cell({"container_status": "failed"}).style == "red"
+    assert _status_cell({"container_status": "disconnected"}).style == "red"
+    assert _status_cell({"container_status": "–"}).plain == "–"  # terminal task
+    assert _status_cell({}).plain == "–"  # missing → em-dash, no crash
 
 
-def test_run_status_shows_respawning_until_reclaimed() -> None:
-    fake = _FakeClient([], {"t1": [{"container_id": "c"}]})
-    app = Dashboard(fake)  # type: ignore[arg-type]
-    app._respawning.add("t1")
-    # released by R (unclaimed) → "respawning", not the bare "–" that reads as a lost runner
-    assert app._run_status({"id": "t1"}) == "respawning"
-    # once the runner re-claims it, the flag clears and the normal down→live boot shows through
-    assert app._run_status({"id": "t1", "claimed_by": "h", "provisioned": True}) == "live"
-    assert "t1" not in app._respawning
-    assert app._run_status({"id": "t1"}) == "–"  # no longer respawning
+async def test_status_cell_is_used_without_per_task_registration_calls() -> None:
+    # Building the table must not fan out a registrations request per row (the old N+1) — the status
+    # rides on each task dict from the single list_tasks. A registrations call here would raise.
+    class _NoRegClient(_FakeClient):
+        def list_registrations(self, task_id: str) -> list[dict[str, Any]]:
+            raise AssertionError("the table must not call list_registrations per task")
+
+    task = {**_TASK, "container_status": "live"}
+    app = Dashboard(_NoRegClient([task]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:  # mounts + paints the table via action_refresh
+        await pilot.pause()
 
 
 async def test_respawn_releases_a_down_tasks_claim() -> None:
-    task = {**_TASK, "claimed_by": "host-1"}  # claimed but no registration → down
+    task = {**_TASK, "claimed_by": "host-1", "container_status": "down"}
     fake = _FakeClient([task], {})
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
@@ -651,7 +651,6 @@ async def test_respawn_releases_a_down_tasks_claim() -> None:
         await pilot.press("R")
         await pilot.pause()
         assert fake.released == [task["id"]]  # released → the runner re-spawns it
-        assert task["id"] in app._respawning  # marked respawning (shown instead of bare "–")
 
 
 def test_matches_is_a_case_insensitive_substring_over_identifying_fields() -> None:
@@ -771,7 +770,7 @@ async def test_search_filter_survives_auto_refresh() -> None:
 
 
 async def test_respawn_refuses_a_live_task() -> None:
-    task = {**_TASK, "claimed_by": "host-1"}
+    task = {**_TASK, "claimed_by": "host-1", "container_status": "live"}
     fake = _FakeClient([task], {task["id"]: [{"container_id": "c"}]})  # live
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:

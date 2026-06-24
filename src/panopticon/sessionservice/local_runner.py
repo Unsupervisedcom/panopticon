@@ -18,6 +18,7 @@ import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
 
+from panopticon.core.models import LifecyclePhase
 from panopticon.sessionservice.runner import Runner
 
 #: Default composed image (base layer, ADR 0005); built in a later PR of this slice.
@@ -144,6 +145,7 @@ class LocalRunner(Runner):
         image: str | None = None,
         docker_in_docker: bool = False,
         memo: str | None = None,
+        progress: Callable[[LifecyclePhase], None] | None = None,
     ) -> str:
         """Spawn the task container. ``env_file``/``creds_volume`` are the task's repo's secret
         references (ADR 0007), injected at launch — never baked into the image. ``workspace`` is the
@@ -153,7 +155,14 @@ class LocalRunner(Runner):
         (the repo's ``capabilities``) runs the container ``--privileged`` and tells the entrypoint to
         start a nested Docker daemon — a trust escalation, opt-in per repo. ``memo`` (the
         task's brief one-line reminder of what it is) is pre-filled into claude's input box on a
-        **first** spawn, left unsent — see :func:`_maybe_prefill`."""
+        **first** spawn, left unsent — see :func:`_maybe_prefill`. ``progress`` (optional) is called
+        with each spawn phase the runner passes through (``STARTING`` before ``docker run``,
+        ``AWAITING`` once the tmux session is up) so the caller can surface it — see
+        :class:`~panopticon.core.models.LifecyclePhase`."""
+        def _report(phase: LifecyclePhase) -> None:
+            if progress is not None:
+                progress(phase)
+
         # The container name doubles as the tmux session name, so stop() needs only the id.
         container = f"panopticon-{task_id}"
         # Decide *before* `docker run` (which creates the config volume) whether this is the task's
@@ -196,6 +205,7 @@ class LocalRunner(Runner):
         # (dashboard `R` releases the claim but doesn't stop the dead container) — so `--name`
         # doesn't fail "name already in use". Makes spawn idempotent. (`stop()` also removes it.)
         self._run(["docker", "rm", "--force", container], check=False)
+        _report(LifecyclePhase.STARTING)  # docker run + the tmux session coming up
         self._run(docker_run)
         # `docker run --detach` returns once the container is running (the entrypoint has remapped +
         # dropped), so the pane execs in as the unprivileged `panopticon` user — `tmux attach` and
@@ -209,7 +219,22 @@ class LocalRunner(Runner):
         )
         if first_spawn and memo is not None:
             self._maybe_prefill(container, memo)
+        _report(LifecyclePhase.AWAITING)  # container + tmux up; waiting for its /live registration
         return container
+
+    def is_running(self, task_id: str) -> bool:
+        """Whether the task's container is currently running on this host's Docker daemon.
+
+        A ``docker ps`` (running containers only) filtered to the task's container name: empty
+        output means the container is gone or exited — i.e. the task is **down** and should be
+        respawned. Used by the host daemon to reconcile a claimed task that never came up (or
+        died) into the displayed ``down`` status."""
+        container = f"panopticon-{task_id}"
+        names = self._run(
+            ["docker", "ps", "--filter", f"name=^{container}$", "--format", "{{.Names}}"],
+            check=False,
+        )
+        return bool(names.strip())
 
     @staticmethod
     def _wants_prefill(memo: str | None) -> bool:

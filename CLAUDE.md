@@ -156,9 +156,16 @@ commands the Makefile wraps).
   branch + clone path are recorded and a second pass is a no-op (idempotent).
 - `tests/test_clones.py` — the per-repo clone cache: unit tests pin the clone-on-first-use vs
   fetch-when-present decision (fakes); a `skipif` integration test clones a real local repo.
+- `tests/test_models.py` — the pure **container-status composition** (`compose_container_status`):
+  the truth table folding the session service's reported `LifecyclePhase` with registration
+  presence + runner liveness into the displayed `ContainerStatus` (queued/…/live/down/failed/
+  disconnected), order-of-precedence and all.
 - `tests/test_spawner.py` — the spawn loop (ADR 0008): unit tests pin `spawn_one` (claim → spawn,
-  skip terminal/claimed, skip on a 409 lost claim) and the `spawnable_tasks` filter; an integration
-  test claims + spawns against the real task service over REST (fake git/runner).
+  skip terminal/claimed, skip on a 409 lost claim), the **reported phase sequence** (claiming →
+  preparing → building → starting → awaiting, and `failed` with the error when a step raises), the
+  `reconcile` down-detection (a claimed-by-us in-flight task whose container is gone → clear the
+  phase → composes `down`), and the `spawnable_tasks` filter; an integration test claims + spawns
+  against the real task service over REST (fake git/runner).
 - `tests/test_host.py` — the unified per-host daemon (ADR 0008/0011): a unit test isolates a
   failing task; an integration test drives spawn → set slug → provision against the real task
   service over REST (claimed + spawned, then branched, no re-spawn).
@@ -251,6 +258,17 @@ commands the Makefile wraps).
   fulfils each one at a time (`MET`, or `FAILED` with a comment) — mutating that entry — and a
   later advance is gated on all being resolved. Agent-only.
 - **Registration / liveness** — a container's standing claim that it is working on a task.
+- **Container lifecycle / status** — the session service (the runner) reports its spawn progress
+  as a `LifecyclePhase` (`claiming → preparing → building → starting → awaiting`, or `failed` with a
+  detail) via `PUT /tasks/{id}/lifecycle` — ephemeral, like a registration, cleared on claim
+  release/reclaim. The task service folds that phase with registration presence + runner liveness
+  into one `ContainerStatus` on `TaskOut.container_status` (`compose_container_status`):
+  queued/claiming/preparing/building/starting/awaiting/**live**/**down**/**failed**/**disconnected**
+  (or `–` for terminal). `live` = an open container registration; `down` = claimed + runner live +
+  no phase + no registration (the host daemon's `reconcile` clears a stale phase when the container
+  has vanished, via `LocalRunner.is_running`); `disconnected` = claimed by a runner no longer in
+  `live_runners`. The dashboard **only displays** it — it does no live/dead/respawn computation of
+  its own. Ephemeral changes bump the change-feed version so the dashboard's long-poll wakes on them.
 - **Claim** — `Task.claimed_by` (a runner's id, nullable): which session service *owns* a task.
   A runner **claims** an unclaimed task (`PUT …/claim`, compare-and-set, 409 if another holds it)
   before spawning its container — the spawn gate so exactly one host runs it (ADR 0008). **Release**

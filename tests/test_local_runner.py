@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from panopticon.core.models import LifecyclePhase
 from panopticon.sessionservice.local_runner import LocalRunner
 from panopticon.sessionservice.runner import Runner
 
@@ -60,6 +61,40 @@ def test_spawn_runs_detached_container_then_tmux_pane_execing_in() -> None:
         "docker", "exec", "--interactive", "--tty", "--user", "panopticon", "panopticon-t1",
         "python", "-m", "panopticon.container.agent",
     ]
+
+
+def test_spawn_reports_starting_then_awaiting_via_the_progress_callback() -> None:
+    runner = LocalRunner("http://svc:8000", run=_Recorder())
+    phases: list[LifecyclePhase] = []
+    runner.spawn("t1", progress=phases.append)
+    # STARTING just before `docker run`, AWAITING once the container + tmux session are up
+    assert phases == [LifecyclePhase.STARTING, LifecyclePhase.AWAITING]
+
+
+class _ReturningRecorder(_Recorder):
+    """A recorder whose calls return a canned stdout (for parsing ``docker ps`` output)."""
+
+    def __init__(self, output: str) -> None:
+        super().__init__()
+        self._output = output
+
+    def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False) -> str:
+        super().__call__(args, check=check, interactive=interactive)
+        return self._output
+
+
+def test_is_running_queries_docker_ps_by_container_name() -> None:
+    rec = _ReturningRecorder("panopticon-t1\n")
+    runner = LocalRunner("http://svc:8000", run=rec)
+    assert runner.is_running("t1") is True
+    (ps, check), = rec.calls
+    assert ps == ["docker", "ps", "--filter", "name=^panopticon-t1$", "--format", "{{.Names}}"]
+    assert check is False  # tolerate a daemon hiccup rather than raise
+
+
+def test_is_running_is_false_when_no_container_is_listed() -> None:
+    runner = LocalRunner("http://svc:8000", run=_Recorder())  # records, returns "" → not running
+    assert runner.is_running("t1") is False
 
 
 def test_spawn_runs_container_unprivileged_as_the_invoking_user() -> None:

@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 LIVENESS_KEEPALIVE_SECONDS = 5.0
 
 from panopticon.core.artifacts import ArtifactError
-from panopticon.core.models import Actor, Repo, Status
+from panopticon.core.models import Actor, LifecyclePhase, Repo, Status, Task
 from panopticon.core.store import AlreadyExists, NotFound, StoreError
 from panopticon.core.workflow import IllegalTransition, InvalidWorkflow, ResponsibilitiesNotMet
 from panopticon.taskservice.service import AlreadyClaimed, TaskService, UnknownWorkflow
@@ -76,6 +76,11 @@ class TaskOut(BaseModel):
     tokens_used: int | None  # cumulative tokens the container's claude has used (None until reported)
     token_estimate: int | None  # the agent's forecast of total tokens (set in planning; None until then)
     provisioned: bool  # computed (Task.provisioned): branch + clone recorded
+    #: The composed container-lifecycle status the dashboard displays (the task service folds the
+    #: session service's reported phase with registration presence + runner liveness). Not a domain
+    #: field — attached on serialization (see ``_task_out``), defaulted for the bare-validate path.
+    container_status: str = "–"
+    lifecycle_detail: str | None = None  # the reported phase's detail, e.g. the build layers / failure
     history: list[HistoryOut]
 
 
@@ -186,6 +191,12 @@ class RegisterIn(BaseModel):
     runner_id: str | None = None
 
 
+class LifecycleIn(BaseModel):
+    runner_id: str
+    phase: LifecyclePhase
+    detail: str | None = None
+
+
 class RegistrationOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -268,6 +279,17 @@ def create_app(service: TaskService) -> FastAPI:
     feed = ChangeFeed(service.tasks_version)
     service.subscribe_to_changes(feed.notify)
 
+    def _task_out(task: Task) -> TaskOut:
+        """Serialize a task **with** its computed container-lifecycle fields. These aren't domain
+        attributes (the status is composed from ephemeral runner-reported phase + registrations +
+        runner liveness), so they're attached here rather than read off the Task by ``model_validate``.
+        Every task-returning handler routes through this so the dashboard always sees them."""
+        out = TaskOut.model_validate(task)
+        out.container_status = service.container_status(task).value
+        lifecycle = service.lifecycle(task.id)
+        out.lifecycle_detail = lifecycle.detail if lifecycle is not None else None
+        return out
+
     # -- error mapping: domain exceptions -> HTTP status --------------------------
 
     @app.exception_handler(NotFound)
@@ -347,7 +369,7 @@ def create_app(service: TaskService) -> FastAPI:
 
     @app.post("/tasks", status_code=201)
     async def create_task(body: CreateTaskIn) -> TaskOut:
-        return TaskOut.model_validate(
+        return _task_out(
             service.create_task(body.repo_id, body.workflow, memo=body.memo)
         )
 
@@ -375,13 +397,13 @@ def create_app(service: TaskService) -> FastAPI:
             version = service.tasks_version()
         # No await between reading the version and the snapshot, so they're consistent: a mutation
         # (which runs on this same loop) can't interleave to leave the body ahead of the header.
-        tasks = [TaskOut.model_validate(t) for t in service.list_tasks()]
+        tasks = [_task_out(t) for t in service.list_tasks()]
         response.headers[TASKS_VERSION_HEADER] = str(version)
         return tasks
 
     @app.get("/tasks/{task_id}")
     async def get_task(task_id: str) -> TaskOut:
-        return TaskOut.model_validate(service.get_task(task_id))
+        return _task_out(service.get_task(task_id))
 
     @app.get("/tasks/{task_id}/transitions")
     async def list_transitions(task_id: str) -> list[str]:
@@ -393,7 +415,7 @@ def create_app(service: TaskService) -> FastAPI:
 
     @app.post("/tasks/{task_id}/operations/{operation}")
     async def apply_operation(task_id: str, operation: str) -> TaskOut:
-        return TaskOut.model_validate(service.apply_operation(task_id, operation))
+        return _task_out(service.apply_operation(task_id, operation))
 
     @app.get("/tasks/{task_id}/states")
     async def list_states(task_id: str) -> list[str]:
@@ -415,11 +437,11 @@ def create_app(service: TaskService) -> FastAPI:
 
     @app.put("/tasks/{task_id}/state")
     async def set_state(task_id: str, body: StateIn) -> TaskOut:
-        return TaskOut.model_validate(service.set_state(task_id, body.state))
+        return _task_out(service.set_state(task_id, body.state))
 
     @app.post("/tasks/{task_id}/transition")
     async def transition(task_id: str, body: TransitionIn) -> TaskOut:
-        return TaskOut.model_validate(
+        return _task_out(
             service.request_transition(
                 task_id, body.to_state, trigger=body.trigger, note=body.note
             )
@@ -433,19 +455,19 @@ def create_app(service: TaskService) -> FastAPI:
             )
         except ValueError as exc:  # unknown key / PENDING / FAILED without a comment
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return TaskOut.model_validate(task)
+        return _task_out(task)
 
     @app.put("/tasks/{task_id}/slug")
     async def set_slug(task_id: str, body: SlugIn) -> TaskOut:
-        return TaskOut.model_validate(service.set_slug(task_id, body.slug))
+        return _task_out(service.set_slug(task_id, body.slug))
 
     @app.put("/tasks/{task_id}/url")
     async def set_url(task_id: str, body: UrlIn) -> TaskOut:
-        return TaskOut.model_validate(service.set_url(task_id, body.url))
+        return _task_out(service.set_url(task_id, body.url))
 
     @app.put("/tasks/{task_id}/tokens-used")
     async def set_tokens_used(task_id: str, body: TokensUsedIn) -> TaskOut:
-        return TaskOut.model_validate(service.set_tokens_used(task_id, body.tokens_used))
+        return _task_out(service.set_tokens_used(task_id, body.tokens_used))
 
     @app.put("/tasks/{task_id}/token-estimate")
     async def set_token_estimate(task_id: str, body: TokenEstimateIn) -> TaskOut:
@@ -453,11 +475,11 @@ def create_app(service: TaskService) -> FastAPI:
 
     @app.put("/tasks/{task_id}/turn")
     async def set_turn(task_id: str, body: TurnIn) -> TaskOut:
-        return TaskOut.model_validate(service.set_turn(task_id, body.turn))
+        return _task_out(service.set_turn(task_id, body.turn))
 
     @app.put("/tasks/{task_id}/blocked")
     async def set_blocked(task_id: str, body: BlockedIn) -> TaskOut:
-        return TaskOut.model_validate(service.set_blocked(task_id, body.blocked))
+        return _task_out(service.set_blocked(task_id, body.blocked))
 
     @app.put("/tasks/{task_id}/claim")
     async def claim(task_id: str, body: ClaimIn) -> TaskOut:
@@ -465,11 +487,11 @@ def create_app(service: TaskService) -> FastAPI:
             task = service.claim(task_id, body.runner_id)
         except AlreadyClaimed as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return TaskOut.model_validate(task)
+        return _task_out(task)
 
     @app.delete("/tasks/{task_id}/claim")
     async def release(task_id: str) -> TaskOut:
-        return TaskOut.model_validate(service.release(task_id))
+        return _task_out(service.release(task_id))
 
     @app.put("/tasks/{task_id}/provisioning")
     async def record_provisioning(task_id: str, body: ProvisioningIn) -> TaskOut:
@@ -479,7 +501,7 @@ def create_app(service: TaskService) -> FastAPI:
             )
         except ValueError as exc:  # slug not set yet
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return TaskOut.model_validate(task)
+        return _task_out(task)
 
     # -- artifacts ----------------------------------------------------------------
 
@@ -544,6 +566,23 @@ def create_app(service: TaskService) -> FastAPI:
         service.deregister(registration_id)
         return Response(status_code=204)
 
+    # -- container lifecycle (the session service reports its spawn progress) ----------
+    #
+    # The runner pushes its spawn phase here as it claims → prepares → builds → starts a container,
+    # so the dashboard can surface the steps to becoming live (and a failure) instead of guessing.
+    # Folded into TaskOut.container_status; cleared on claim release/reclaim (see the service).
+
+    @app.put("/tasks/{task_id}/lifecycle")
+    async def report_lifecycle(task_id: str, body: LifecycleIn) -> TaskOut:
+        service.report_lifecycle(task_id, body.runner_id, body.phase, body.detail)
+        return _task_out(service.get_task(task_id))
+
+    @app.delete("/tasks/{task_id}/lifecycle")
+    async def clear_lifecycle(task_id: str) -> TaskOut:
+        service.get_task(task_id)  # 404 if the task is unknown
+        service.clear_lifecycle(task_id)
+        return _task_out(service.get_task(task_id))
+
     # -- host (runner) liveness + reclaim ----------------------------------------------
     #
     # Container liveness one layer up: the session-service daemon holds ``/runners/{id}/live`` open
@@ -583,7 +622,7 @@ def create_app(service: TaskService) -> FastAPI:
     @app.post("/runners/{runner_id}/reclaim")
     async def reclaim(runner_id: str) -> list[TaskOut]:
         """Release a (dead) runner's non-terminal claims so a healthy host respawns them."""
-        return [TaskOut.model_validate(t) for t in service.reclaim(runner_id)]
+        return [_task_out(t) for t in service.reclaim(runner_id)]
 
     app.mount("/mcp", mcp_app)  # in-container agents connect here for task operations + artifacts
     return app

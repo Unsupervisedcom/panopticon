@@ -240,6 +240,20 @@ class TaskServiceClient:
     def deregister(self, registration_id: str) -> None:
         self._http.delete(f"/registrations/{registration_id}").raise_for_status()
 
+    # -- container lifecycle (the session service reports its spawn progress) -----
+
+    def report_lifecycle(
+        self, task_id: str, runner_id: str, phase: str, detail: str | None = None
+    ) -> JsonObj:
+        """Report this runner's latest spawn phase for a task (claiming → … → awaiting, or failed),
+        so the dashboard can surface the steps to becoming live. Cleared on claim release/reclaim."""
+        body: JsonObj = {"runner_id": runner_id, "phase": phase, "detail": detail}
+        return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/lifecycle", json=body)))
+
+    def clear_lifecycle(self, task_id: str) -> JsonObj:
+        """Drop a task's reported spawn phase (e.g. its container vanished → composes ``down``)."""
+        return cast(JsonObj, self._json(self._http.delete(f"/tasks/{task_id}/lifecycle")))
+
     # -- host (runner) liveness + reclaim -----------------------------------------
 
     def live_runner(self, runner_id: str) -> Generator[None, None, None]:

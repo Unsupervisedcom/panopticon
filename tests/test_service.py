@@ -14,7 +14,7 @@ from panopticon.core import (
     ResponsibilitiesNotMet,
     Workflow,
 )
-from panopticon.core.models import Actor, Repo, Responsibility, Status
+from panopticon.core.models import Actor, LifecyclePhase, Repo, Responsibility, Status
 from panopticon.core.store import NotFound
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 from panopticon.taskservice.store_sqlalchemy import SqlAlchemyStore
@@ -270,6 +270,85 @@ def test_reclaim_skips_terminal_tasks(tmp_path: Path) -> None:
 
     assert svc.reclaim("host-dead") == []
     assert svc.get_task(done.id).claimed_by == "host-dead"  # unchanged
+
+
+# -- container lifecycle: the session service's reported spawn phase, folded into a status ---------
+
+
+def test_container_status_folds_phase_registration_and_runner_liveness(tmp_path: Path) -> None:
+    svc = make_service(tmp_path)
+    task = svc.create_task("r1", "spike")
+    status = lambda: svc.container_status(svc.get_task(task.id)).value  # noqa: E731
+
+    assert status() == "queued"  # unclaimed, non-terminal → waiting for a runner
+    svc.claim(task.id, "host-1")
+    svc.register_runner("host-1")  # the runner holds its host-liveness connection
+    svc.report_lifecycle(task.id, "host-1", LifecyclePhase.BUILDING, "gh + uv")
+    assert status() == "building"  # the reported spawn phase shows through
+    reg = svc.register(task.id, "c1", "host-1")
+    assert status() == "live"  # an open container registration trumps the phase
+    svc.deregister(reg.id)
+    assert status() == "building"  # container gone but phase still in flight (reconcile not yet run)
+    svc.clear_lifecycle(task.id)  # the daemon's reconcile clears the stale phase
+    assert status() == "down"  # claimed + runner live + no phase + no registration → down
+
+
+def test_container_status_is_disconnected_when_the_claiming_runner_is_gone(tmp_path: Path) -> None:
+    svc = make_service(tmp_path)
+    task = svc.create_task("r1", "spike")
+    svc.claim(task.id, "host-1")
+    svc.report_lifecycle(task.id, "host-1", LifecyclePhase.AWAITING)
+    # no runner-liveness connection held → claimed by a runner not connected to the task service
+    assert svc.container_status(svc.get_task(task.id)).value == "disconnected"
+    svc.apply_operation(task.id, "drop")  # terminal → no container concept
+    assert svc.container_status(svc.get_task(task.id)).value == "–"
+
+
+def test_lifecycle_phase_is_cleared_on_release_and_reclaim(tmp_path: Path) -> None:
+    svc = make_service(tmp_path)
+    task = svc.create_task("r1", "spike")
+    svc.claim(task.id, "host-1")
+    svc.report_lifecycle(task.id, "host-1", LifecyclePhase.AWAITING)
+    assert svc.lifecycle(task.id) is not None
+    svc.release(task.id)
+    assert svc.lifecycle(task.id) is None  # a respawn starts clean
+
+    svc.claim(task.id, "host-2")
+    svc.report_lifecycle(task.id, "host-2", LifecyclePhase.BUILDING)
+    svc.reclaim("host-2")  # a dead runner's phase is stale
+    assert svc.lifecycle(task.id) is None
+
+
+def test_ephemeral_changes_bump_the_change_feed_version(tmp_path: Path) -> None:
+    # The dashboard's long-poll only wakes on a version change, so ephemeral liveness events
+    # (a phase advancing, a container going live, a runner connecting) must bump it too.
+    svc = make_service(tmp_path)
+    task = svc.create_task("r1", "spike")
+
+    v = svc.tasks_version()
+    svc.report_lifecycle(task.id, "host-1", LifecyclePhase.BUILDING)
+    assert svc.tasks_version() > v  # a reported phase wakes the feed
+
+    v = svc.tasks_version()
+    reg = svc.register(task.id, "c1", "host-1")
+    assert svc.tasks_version() > v  # a container going live wakes it
+    v = svc.tasks_version()
+    svc.deregister(reg.id)
+    assert svc.tasks_version() > v  # a container dropping wakes it
+
+    v = svc.tasks_version()
+    runner = svc.register_runner("host-1")
+    assert svc.tasks_version() > v  # a runner connecting wakes it
+    svc.deregister_runner(runner.id)
+
+    # clearing a present phase wakes the feed; clearing an absent one is a no-op (no spurious wake)
+    svc.report_lifecycle(task.id, "host-1", LifecyclePhase.STARTING)
+    v = svc.tasks_version()
+    svc.clear_lifecycle(task.id)
+    assert svc.tasks_version() > v
+    steady = svc.tasks_version()
+    svc.clear_lifecycle(task.id)
+    assert svc.tasks_version() == steady
 
 
 # -- provisioning: the session service does the host git; the service only records it (ADR 0010) --

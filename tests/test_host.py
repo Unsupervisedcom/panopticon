@@ -30,9 +30,12 @@ class _FakeRunner:
     def __init__(self) -> None:
         self.spawned: list[str] = []
 
-    def spawn(self, task_id: str, *, env_file: str | None = None, creds_volume: str | None = None, workspace: str | None = None, image: str | None = None, docker_in_docker: bool = False, memo: str | None = None) -> str:
+    def spawn(self, task_id: str, *, env_file: str | None = None, creds_volume: str | None = None, workspace: str | None = None, image: str | None = None, docker_in_docker: bool = False, memo: str | None = None, progress: object = None) -> str:
         self.spawned.append(task_id)
         return f"panopticon-{task_id}"
+
+    def is_running(self, task_id: str) -> bool:
+        return True  # the spawned container is up (reconcile leaves it coming up)
 
 
 class _FakeClient:

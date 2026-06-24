@@ -85,6 +85,33 @@ def test_record_provisioning_over_rest(client: TaskServiceClient) -> None:
     assert client.get_task(task_id)["branch"] == "panopticon/fix-widget"  # persisted
 
 
+def test_container_lifecycle_endpoints_drive_container_status_over_rest(
+    client: TaskServiceClient,
+) -> None:
+    task = client.create_task("r1", "spike")
+    task_id = task["id"]
+    assert task["container_status"] == "queued"  # unclaimed, non-terminal
+    assert task["lifecycle_detail"] is None
+
+    client.claim(task_id, "host-1")
+    # No runner-liveness connection is held in this sync test, so the claim reads as a runner that
+    # isn't connected — disconnected (the new requirement), not a bare guess.
+    assert client.get_task(task_id)["container_status"] == "disconnected"
+
+    # The session service reports a spawn phase + detail; it surfaces in TaskOut.
+    out = client.report_lifecycle(task_id, "host-1", "building", "gh + uv layers")
+    assert out["lifecycle_detail"] == "gh + uv layers"
+
+    # An open container registration trumps everything → live.
+    reg = client.register(task_id, "c1", "host-1")
+    assert client.get_task(task_id)["container_status"] == "live"
+    client.deregister(reg["id"])
+
+    # Clearing the reported phase (the daemon's down-detection) drops the detail again.
+    cleared = client.clear_lifecycle(task_id)
+    assert cleared["lifecycle_detail"] is None
+
+
 def test_set_url_over_rest(client: TaskServiceClient) -> None:
     task_id = client.create_task("r1", "spike")["id"]
     assert client.get_task(task_id)["url"] is None  # unset on create

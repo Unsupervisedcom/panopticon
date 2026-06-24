@@ -17,7 +17,16 @@ from datetime import datetime, timezone
 from typing import Any
 
 from panopticon.core.artifacts import ArtifactStore
-from panopticon.core.models import Actor, Repo, Skill, Status, Task
+from panopticon.core.models import (
+    Actor,
+    ContainerStatus,
+    LifecyclePhase,
+    Repo,
+    Skill,
+    Status,
+    Task,
+    compose_container_status,
+)
 from panopticon.core.provisioning import PROVISION_SKILL
 from panopticon.core.state import TERMINAL_LABELS
 from panopticon.core.store import NotFound, Store
@@ -62,6 +71,23 @@ class Registration:
 
 
 @dataclass
+class ContainerLifecycle:
+    """The session service's latest reported spawn phase for a task (ADR 0008 feedback).
+
+    Ephemeral, like :class:`Registration`: the runner pushes it over ``PUT /tasks/{id}/lifecycle``
+    as it claims → prepares → builds → starts the container, and it's cleared on claim release /
+    reclaim (a respawn starts clean). Not persisted — it's transient runtime state, re-reported on
+    the next spawn pass. Folded with registration presence + runner liveness into the displayed
+    :class:`~panopticon.core.models.ContainerStatus` (see :meth:`TaskService.container_status`)."""
+
+    task_id: str
+    runner_id: str
+    phase: LifecyclePhase
+    detail: str | None
+    at: str
+
+
+@dataclass
 class RunnerRegistration:
     """A session-service (runner) host's standing signal that it is alive and managing its tasks.
 
@@ -94,6 +120,14 @@ class TaskService:
         self._id = id_factory
         self._registrations: dict[str, Registration] = {}
         self._runner_registrations: dict[str, RunnerRegistration] = {}
+        self._lifecycles: dict[str, ContainerLifecycle] = {}
+        # Ephemeral liveness (registrations, runner liveness, lifecycle phases) lives outside the
+        # store, so it doesn't bump the store's version. But the dashboard's change-feed long-poll
+        # only wakes on a version change — so a container going live or a phase advancing wouldn't
+        # show until an unrelated task mutation. This epoch + listener fan-out folds those ephemeral
+        # events into the same feed (``tasks_version`` adds it; ``_notify_change`` fires listeners).
+        self._ephemeral_epoch = 0
+        self._change_listeners: list[Callable[[], None]] = []
 
     # -- repos --------------------------------------------------------------------
 
@@ -199,15 +233,24 @@ class TaskService:
         return self._store.list_tasks()
 
     def tasks_version(self) -> int:
-        """The store's change-feed version — bumped on every task mutation (ADR 0006 single
-        writer). Pair it with :meth:`subscribe_to_changes` to block until the task set changes
-        instead of re-polling :meth:`list_tasks`."""
-        return self._store.version()
+        """The change-feed version — bumped on every task mutation (ADR 0006 single writer) **and**
+        on every ephemeral liveness change (registration, runner liveness, lifecycle phase), so a
+        container coming up or a spawn phase advancing wakes a parked :meth:`subscribe_to_changes`
+        long-poll just like a stored mutation does. The sum of both counters is monotonic."""
+        return self._store.version() + self._ephemeral_epoch
 
     def subscribe_to_changes(self, listener: Callable[[], None]) -> None:
-        """Register a callback fired (synchronously) after every task mutation. The HTTP layer
-        wires an async wake-up here so ``GET /tasks`` can long-poll for changes."""
+        """Register a callback fired (synchronously) after every change — stored *or* ephemeral.
+        The HTTP layer wires an async wake-up here so ``GET /tasks`` can long-poll for changes."""
         self._store.subscribe(listener)
+        self._change_listeners.append(listener)
+
+    def _notify_change(self) -> None:
+        """Record an ephemeral change (bump the epoch) and wake every subscribed listener — the
+        ephemeral counterpart of the store bumping its version on a task mutation."""
+        self._ephemeral_epoch += 1
+        for listener in self._change_listeners:
+            listener()
 
     def legal_transitions(self, task_id: str) -> list[str]:
         """The states the task may move to next (its workflow's edges out of the current state)."""
@@ -355,13 +398,16 @@ class TaskService:
         if task.claimed_by not in (None, runner_id):
             raise AlreadyClaimed(f"task {task_id!r} is already claimed by {task.claimed_by!r}")
         task.claimed_by = runner_id
+        self.clear_lifecycle(task_id)  # drop any stale phase from a prior owner; this spawn re-reports
         self._store.save_task(task)
         return task
 
     def release(self, task_id: str) -> Task:
-        """Release a task's claim (back to unclaimed) so it can be re-claimed / respawned."""
+        """Release a task's claim (back to unclaimed) so it can be re-claimed / respawned. Clears any
+        reported lifecycle phase so the task reads ``queued`` until the runner re-claims + re-reports."""
         task = self.get_task(task_id)
         task.claimed_by = None
+        self.clear_lifecycle(task_id)
         self._store.save_task(task)
         return task
 
@@ -423,15 +469,58 @@ class TaskService:
             registered_at=self._clock(),
         )
         self._registrations[reg.id] = reg
+        self._notify_change()  # a container going live wakes the dashboard's long-poll
         return reg
 
     def deregister(self, registration_id: str) -> None:
-        self._registrations.pop(registration_id, None)
+        if self._registrations.pop(registration_id, None) is not None:
+            self._notify_change()  # a container dropping wakes the long-poll (live → down/awaiting)
 
     def registrations(self, task_id: str | None = None) -> list[Registration]:
         return [
             r for r in self._registrations.values() if task_id is None or r.task_id == task_id
         ]
+
+    # -- container lifecycle (the session service reports its spawn progress) -------------
+    #
+    # The runner pushes a :class:`ContainerLifecycle` phase as it claims → prepares → builds →
+    # starts a container, so the feedback that used to be invisible (a slow ``docker build``, a
+    # container that never came up) surfaces on the dashboard. Ephemeral like a registration —
+    # cleared on claim release/reclaim — and folded with registration presence + runner liveness
+    # into the displayed :class:`ContainerStatus` by :meth:`container_status`.
+
+    def report_lifecycle(
+        self, task_id: str, runner_id: str, phase: LifecyclePhase, detail: str | None = None
+    ) -> ContainerLifecycle:
+        """Record the runner's latest spawn phase for a task (an upsert; the newest wins)."""
+        self.get_task(task_id)  # ensure the task exists
+        lifecycle = ContainerLifecycle(
+            task_id=task_id, runner_id=runner_id, phase=phase, detail=detail, at=self._clock()
+        )
+        self._lifecycles[task_id] = lifecycle
+        self._notify_change()
+        return lifecycle
+
+    def clear_lifecycle(self, task_id: str) -> None:
+        """Drop a task's reported phase (idempotent — only wakes the feed if one was present)."""
+        if self._lifecycles.pop(task_id, None) is not None:
+            self._notify_change()
+
+    def lifecycle(self, task_id: str) -> ContainerLifecycle | None:
+        """The task's latest reported spawn phase, or ``None`` if none is current."""
+        return self._lifecycles.get(task_id)
+
+    def container_status(self, task: Task) -> ContainerStatus:
+        """The task's composed container-lifecycle status (the single string the dashboard shows):
+        fold the reported phase together with registration presence + runner liveness."""
+        lifecycle = self._lifecycles.get(task.id)
+        return compose_container_status(
+            terminal=task.state in TERMINAL_LABELS,
+            claimed=task.claimed_by is not None,
+            registered=bool(self.registrations(task.id)),
+            runner_live=task.claimed_by in self.live_runners(),
+            phase=lifecycle.phase if lifecycle is not None else None,
+        )
 
     # -- host (runner) liveness + reclaim ------------------------------------------
     #
@@ -445,10 +534,12 @@ class TaskService:
     def register_runner(self, runner_id: str) -> RunnerRegistration:
         reg = RunnerRegistration(id=self._id(), runner_id=runner_id, registered_at=self._clock())
         self._runner_registrations[reg.id] = reg
+        self._notify_change()  # a runner (re)connecting can flip its tasks disconnected → …
         return reg
 
     def deregister_runner(self, registration_id: str) -> None:
-        self._runner_registrations.pop(registration_id, None)
+        if self._runner_registrations.pop(registration_id, None) is not None:
+            self._notify_change()  # a runner dropping flips its claimed tasks → disconnected
 
     def live_runners(self) -> set[str]:
         """The set of runner ids currently holding a host-liveness connection (no clock read)."""
@@ -469,6 +560,7 @@ class TaskService:
         for task in self._store.list_tasks():
             if task.claimed_by == runner_id and task.state not in TERMINAL_LABELS:
                 task.claimed_by = None
+                self.clear_lifecycle(task.id)  # the dead runner's phase is stale; start clean
                 self._store.save_task(task)
                 reclaimed.append(task)
         return reclaimed

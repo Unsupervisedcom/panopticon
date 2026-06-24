@@ -35,6 +35,76 @@ class Status(str, Enum):
     FAILED = "failed"  # could not be satisfied; requires a comment
 
 
+class LifecyclePhase(str, Enum):
+    """A step the **session service** reports as it brings a task's container up (ADR 0008).
+
+    These are the *pre-live* phases the runner pushes over ``PUT /tasks/{id}/lifecycle`` as it
+    claims, prepares, builds, and launches — the feedback that used to be invisible. ``LIVE`` /
+    ``DOWN`` / ``QUEUED`` / ``DISCONNECTED`` are **not** here: they're derived by the task service
+    from registration presence + runner liveness (see :func:`compose_container_status`), so the
+    runner never invents them. Each value equals its :class:`ContainerStatus` counterpart so a
+    reported phase maps straight through.
+    """
+
+    CLAIMING = "claiming"  # claimed the task; spawn about to start
+    PREPARING = "preparing"  # readying the per-task clone / workspace
+    BUILDING = "building"  # composing + docker-building the image (the slow first-run step)
+    STARTING = "starting"  # docker run + the tmux session coming up
+    AWAITING = "awaiting"  # container + tmux up; waiting for it to open its /live registration
+    FAILED = "failed"  # a spawn step raised (carries a detail string)
+
+
+class ContainerStatus(str, Enum):
+    """A task's *composed* container-lifecycle status — the single string the dashboard displays.
+
+    The task service computes it (see :func:`compose_container_status`) by folding the session
+    service's reported :class:`LifecyclePhase` together with container-registration presence and
+    runner liveness, so the dashboard renders it verbatim instead of guessing.
+    """
+
+    NONE = "–"  # terminal task — no container concept
+    QUEUED = "queued"  # unclaimed, non-terminal — waiting for a runner to claim it
+    CLAIMING = "claiming"
+    PREPARING = "preparing"
+    BUILDING = "building"
+    STARTING = "starting"
+    AWAITING = "awaiting"
+    LIVE = "live"  # a container registration is open
+    DOWN = "down"  # claimed, runner live, container gone and unregistered → respawn with `R`
+    FAILED = "failed"  # a spawn step raised
+    DISCONNECTED = "disconnected"  # claimed by a runner no longer connected to the task service
+
+
+def compose_container_status(
+    *,
+    terminal: bool,
+    claimed: bool,
+    registered: bool,
+    runner_live: bool,
+    phase: LifecyclePhase | None,
+) -> ContainerStatus:
+    """Fold the lifecycle signals into one displayed status — pure, so it's unit-testable alone.
+
+    Order matters (first match wins): a terminal task has no container; an unclaimed one is
+    ``QUEUED``; an open container registration is ``LIVE`` regardless of anything else (the
+    container holds its own ``/live`` connection independent of its runner); a claim held by a
+    runner that's no longer connected is ``DISCONNECTED`` (even if it left a stale phase behind);
+    otherwise a reported spawn ``phase`` shows through; and a claimed task with a live runner but
+    no phase and no registration is ``DOWN`` (came up and vanished, or never reported).
+    """
+    if terminal:
+        return ContainerStatus.NONE
+    if not claimed:
+        return ContainerStatus.QUEUED
+    if registered:
+        return ContainerStatus.LIVE
+    if not runner_live:
+        return ContainerStatus.DISCONNECTED
+    if phase is not None:
+        return ContainerStatus(phase.value)
+    return ContainerStatus.DOWN
+
+
 @dataclass(frozen=True)
 class Responsibility:
     """An agent obligation for a state.
