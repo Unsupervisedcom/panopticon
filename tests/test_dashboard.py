@@ -945,6 +945,46 @@ async def test_repo_form_autofill_only_fills_blank_fields() -> None:
         ]
 
 
+@pytest.mark.parametrize("bad_path", ["~/secrets/r/.env", "secrets/r/.env"])
+async def test_repo_form_rejects_a_non_absolute_env_file(bad_path: str) -> None:
+    # A `~`/relative env_file would silently miss at `docker run --env-file` (no shell expansion),
+    # so the form must reject it: stay open, create nothing.
+    fake = _FakeClient([], repos=[])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        app.screen.query_one("#field-git_url", Input).value = "https://x/widgets.git"
+        app.screen.query_one("#field-env_file", Input).value = bad_path
+        await pilot.press("enter")
+        await pilot.pause()
+        assert fake.created_repos == []  # rejected, nothing created
+        assert isinstance(app.screen, dashboard.RepoFormScreen)  # form stays open to fix it
+
+
+async def test_repo_form_accepts_an_absolute_env_file() -> None:
+    fake = _FakeClient([], repos=[])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        app.screen.query_one("#field-git_url", Input).value = "https://x/widgets.git"
+        app.screen.query_one("#field-env_file", Input).value = "/Users/me/secrets/widgets/.env"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert fake.created_repos == [
+            {"id": "widgets", "name": "widgets", "git_url": "https://x/widgets.git",
+             "default_base": "main", "env_file": "/Users/me/secrets/widgets/.env",
+             "creds_volume": "widgets-creds", "capabilities": {"docker_in_docker": False}}
+        ]
+
+
 async def test_repo_form_git_url_leads_and_default_base_prefills_main() -> None:
     fake = _FakeClient([], repos=[])
     app = Dashboard(fake)  # type: ignore[arg-type]

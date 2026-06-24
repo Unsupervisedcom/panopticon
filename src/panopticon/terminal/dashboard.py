@@ -380,6 +380,22 @@ def _repo_name_from_git_url(url: str) -> str:
     return tail[:-len(".git")] if tail.endswith(".git") else tail
 
 
+def _env_file_error(value: str) -> str | None:
+    """Reject an ``env_file`` the runner couldn't use, returning an error message (else ``None``).
+
+    The path is handed to the session service as ``docker run --env-file <path>``, which does **no**
+    shell expansion: a leading ``~`` stays a literal directory and a relative path resolves against
+    the runner's cwd, so either silently misses and the container fails to start (a real footgun —
+    ``~/x/.env`` looks right but isn't). Require an absolute path, or blank (the field is optional)."""
+    if not value:
+        return None
+    if value.startswith("~"):
+        return "env_file: docker won't expand '~' — use an absolute path (e.g. /Users/you/secrets/repo/.env)."
+    if not value.startswith("/"):
+        return "env_file must be an absolute path (e.g. /Users/you/secrets/repo/.env)."
+    return None
+
+
 class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     """A modal form for a repo's fields. Submits a ``{field: value}`` dict on save (Enter
     or Ctrl+S), or ``None`` on cancel (Escape). The text fields are strings; the privileged
@@ -478,6 +494,9 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
         for name in self.FIELDS:
             values[name] = self.query_one(f"#field-{name}", Input).value.strip()
         values["docker_in_docker"] = self.query_one("#field-docker_in_docker", Checkbox).value
+        if error := _env_file_error(values["env_file"]):
+            self.notify(error, severity="error")  # stay on the form so the user can fix the path
+            return
         self.dismiss(values)
 
     def action_cancel(self) -> None:
