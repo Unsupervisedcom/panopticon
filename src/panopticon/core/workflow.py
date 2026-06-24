@@ -432,7 +432,7 @@ class Workflow(ABC):
         """Create a task in this workflow's initial state, with turn and seed history set.
 
         The seed history entry carries the initial state's responsibilities (all ``PENDING``).
-        ``memo`` is the optional free-text intent collected at creation.
+        ``memo`` is the optional brief one-line reminder of what the task is, collected at creation.
         """
         state = self.initial_label
         return Task(

@@ -152,8 +152,8 @@ class LocalRunner(Runner):
         (base → workflow → repo, ADR 0005); ``None`` uses the configured base. ``docker_in_docker``
         (the repo's ``capabilities``) runs the container ``--privileged`` and tells the entrypoint to
         start a nested Docker daemon — a trust escalation, opt-in per repo. ``memo`` (the
-        task's free-text intent) is pre-filled into claude's input box on a **first** spawn, left
-        unsent — see :func:`_maybe_prefill`."""
+        task's brief one-line reminder of what it is) is pre-filled into claude's input box on a
+        **first** spawn, left unsent — see :func:`_maybe_prefill`."""
         # The container name doubles as the tmux session name, so stop() needs only the id.
         container = f"panopticon-{task_id}"
         # Decide *before* `docker run` (which creates the config volume) whether this is the task's

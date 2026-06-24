@@ -67,7 +67,7 @@ class TaskOut(BaseModel):
     state: str
     turn: Actor
     blocked: bool
-    memo: str | None  # free-text intent collected at creation (shown in the summary)
+    memo: str | None  # a brief one-line reminder of what the task is, collected at creation (shown in the summary)
     slug: str | None
     url: str | None  # an optional external URL (PR, issue, …); the dashboard's `p` hotkey opens it
     branch: str | None
