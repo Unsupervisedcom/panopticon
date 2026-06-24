@@ -33,8 +33,8 @@ class _FakeRunner:
     def __init__(self) -> None:
         self.spawned: list[dict[str, object]] = []
 
-    def spawn(self, task_id: str, *, env_file: str | None = None, creds_volume: str | None = None, workspace: str | None = None, image: str | None = None, docker_in_docker: bool = False, description: str | None = None) -> str:
-        self.spawned.append({"task_id": task_id, "env_file": env_file, "creds_volume": creds_volume, "workspace": workspace, "image": image, "docker_in_docker": docker_in_docker, "description": description})
+    def spawn(self, task_id: str, *, env_file: str | None = None, creds_volume: str | None = None, workspace: str | None = None, image: str | None = None, docker_in_docker: bool = False, memo: str | None = None) -> str:
+        self.spawned.append({"task_id": task_id, "env_file": env_file, "creds_volume": creds_volume, "workspace": workspace, "image": image, "docker_in_docker": docker_in_docker, "memo": memo})
         return f"panopticon-{task_id}"
 
 
@@ -85,14 +85,14 @@ def test_spawn_one_claims_then_spawns_a_fresh_task() -> None:
     assert runner.spawned[0]["docker_in_docker"] is False  # no capability → unprivileged
 
 
-def test_spawn_one_passes_the_task_description_for_input_prefill() -> None:
+def test_spawn_one_passes_the_task_memo_for_input_prefill() -> None:
     client, runner = _FakeClient(repo=_REPO), _FakeRunner()
     _spawner(client, runner).spawn_one(
         {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING",
-         "claimed_by": None, "description": "build the thing"}
+         "claimed_by": None, "memo": "build the thing"}
     )
     # the runner prefills claude's input box with this on a first spawn (left unsent)
-    assert runner.spawned[0]["description"] == "build the thing"
+    assert runner.spawned[0]["memo"] == "build the thing"
 
 
 def test_spawn_one_passes_the_docker_in_docker_capability() -> None:

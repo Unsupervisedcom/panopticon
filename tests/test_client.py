@@ -36,6 +36,21 @@ def test_reads_workflows_repos_and_tasks(client: TaskServiceClient) -> None:
     assert client.get_task(task["id"])["state"] == "ITERATING"
 
 
+def test_list_tasks_versioned_returns_snapshot_and_cursor(client: TaskServiceClient) -> None:
+    tasks, version = client.list_tasks_versioned()
+    assert tasks == [] and version == 0  # nothing written yet
+
+    task = client.create_task("r1", "spike")
+    tasks, bumped = client.list_tasks_versioned()
+    assert [t["id"] for t in tasks] == [task["id"]]
+    assert bumped > version
+
+    # A ?wait with the now-stale cursor returns immediately (the version already moved past it),
+    # so this doesn't block the sync client; the real long-poll/block path is in test_change_feed.
+    tasks, again = client.list_tasks_versioned(since=version, wait=5)
+    assert [t["id"] for t in tasks] == [task["id"]] and again == bumped
+
+
 def test_drives_slug_and_transition(client: TaskServiceClient) -> None:
     task_id = client.create_task("r1", "spike")["id"]
     client.set_slug(task_id, "fix-widget")

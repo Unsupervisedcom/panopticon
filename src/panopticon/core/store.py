@@ -23,7 +23,7 @@ before save; the store guarantees the persisted record stays internally consiste
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from panopticon.core.models import HistoryEntry, Repo, Task
 
@@ -52,7 +52,38 @@ class Store(ABC):
     live in one place. ``create_task`` / ``save_task`` additionally run the integrity checks
     (``validate_task_consistency`` / ``validate_history_append_only``) before delegating, so an
     adapter can't skip them.
+
+    **Change feed (single-writer seam).** The store carries a monotonically increasing
+    :meth:`version`, bumped after every task mutation (create/save). Callers can therefore tell
+    "nothing changed" from "something did" without diffing snapshots, and a registered
+    :meth:`subscribe` listener is invoked (synchronously) on each bump — the seam the HTTP layer
+    drives a block-until-change long-poll from. The counter is a plain integer, not a clock, and
+    the listeners are plain sync callbacks, so ``core`` stays clock-free and LLM-free; any async
+    push / timeout lives in the HTTP layer, not here.
     """
+
+    def __init__(self) -> None:
+        self._version = 0
+        self._change_listeners: list[Callable[[], None]] = []
+
+    # -- change feed (the block-until-change seam) --------------------------------
+
+    def version(self) -> int:
+        """A counter bumped on every task mutation; ``0`` before any write. Monotonic, so a
+        caller can long-poll for "the version moved past what I last saw" (see :meth:`subscribe`)."""
+        return self._version
+
+    def subscribe(self, listener: Callable[[], None]) -> None:
+        """Register a callback invoked (synchronously) after every task mutation. The HTTP layer
+        subscribes an async-broadcast wake-up so a ``GET /tasks`` long-poll returns the instant a
+        task changes. Listeners must not raise and must not block."""
+        self._change_listeners.append(listener)
+
+    def _bump_version(self) -> None:
+        """Advance the version and wake subscribers — called by the task-write façade methods."""
+        self._version += 1
+        for listener in self._change_listeners:
+            listener()
 
     # -- repos (public façade) ----------------------------------------------------
 
@@ -80,6 +111,7 @@ class Store(ABC):
         """Persist a new task and its initial history, after checking consistency."""
         validate_task_consistency(task)
         self._create_task(task)
+        self._bump_version()
 
     def get_task(self, task_id: str) -> Task | None:
         """Return the task (with full history), or ``None`` if it does not exist."""
@@ -95,6 +127,7 @@ class Store(ABC):
         stored = self._stored_history(task.id)
         validate_history_append_only(stored, task.history)
         self._update_task(task, stored)
+        self._bump_version()
 
     # -- persistence primitives (adapters implement these) -----------------------
 

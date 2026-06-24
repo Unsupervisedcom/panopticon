@@ -96,7 +96,7 @@ class _TaskRow(_Base):
     state: Mapped[str]
     turn: Mapped[str]
     blocked: Mapped[bool] = mapped_column(default=False)
-    description: Mapped[str | None] = mapped_column(default=None)
+    memo: Mapped[str | None] = mapped_column(default=None)
     slug: Mapped[str | None]
     url: Mapped[str | None] = mapped_column(default=None)
     branch: Mapped[str | None] = mapped_column(default=None)
@@ -118,7 +118,7 @@ class _TaskRow(_Base):
             state=self.state,
             turn=Actor(self.turn),
             blocked=self.blocked,
-            description=self.description,
+            memo=self.memo,
             slug=self.slug,
             url=self.url,
             branch=self.branch,
@@ -137,7 +137,7 @@ class _TaskRow(_Base):
             state=task.state,
             turn=task.turn.value,
             blocked=task.blocked,
-            description=task.description,
+            memo=task.memo,
             slug=task.slug,
             url=task.url,
             branch=task.branch,
@@ -240,6 +240,7 @@ class SqlAlchemyStore(Store):
     """A :class:`~panopticon.core.store.Store` backed by SQLAlchemy."""
 
     def __init__(self, url: str = "sqlite://") -> None:
+        super().__init__()  # the base Store's change-feed counter + listeners
         if url in _IN_MEMORY:
             # An in-memory SQLite DB lives only as long as its single connection — pin one.
             self._engine = create_engine(

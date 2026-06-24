@@ -143,7 +143,7 @@ class LocalRunner(Runner):
         workspace: str | None = None,
         image: str | None = None,
         docker_in_docker: bool = False,
-        description: str | None = None,
+        memo: str | None = None,
     ) -> str:
         """Spawn the task container. ``env_file``/``creds_volume`` are the task's repo's secret
         references (ADR 0007), injected at launch — never baked into the image. ``workspace`` is the
@@ -151,14 +151,14 @@ class LocalRunner(Runner):
         the agent's working dir. ``image`` overrides the default base with the task's composed image
         (base → workflow → repo, ADR 0005); ``None`` uses the configured base. ``docker_in_docker``
         (the repo's ``capabilities``) runs the container ``--privileged`` and tells the entrypoint to
-        start a nested Docker daemon — a trust escalation, opt-in per repo. ``description`` (the
+        start a nested Docker daemon — a trust escalation, opt-in per repo. ``memo`` (the
         task's free-text intent) is pre-filled into claude's input box on a **first** spawn, left
         unsent — see :func:`_maybe_prefill`."""
         # The container name doubles as the tmux session name, so stop() needs only the id.
         container = f"panopticon-{task_id}"
         # Decide *before* `docker run` (which creates the config volume) whether this is the task's
         # first spawn — only then do we prefill, so a respawn doesn't paste into a --continue'd box.
-        first_spawn = self._wants_prefill(description) and not self._config_volume_exists(task_id)
+        first_spawn = self._wants_prefill(memo) and not self._config_volume_exists(task_id)
         puid, _, pgid = self._user.partition(":")
         env = {
             "PANOPTICON_SERVICE_URL": self._service_url,
@@ -207,15 +207,15 @@ class LocalRunner(Runner):
                 container, *self._agent_command,
             )
         )
-        if first_spawn and description is not None:
-            self._maybe_prefill(container, description)
+        if first_spawn and memo is not None:
+            self._maybe_prefill(container, memo)
         return container
 
     @staticmethod
-    def _wants_prefill(description: str | None) -> bool:
-        """Whether a description is worth pre-filling: non-empty and not opted out via
+    def _wants_prefill(memo: str | None) -> bool:
+        """Whether a memo is worth pre-filling: non-empty and not opted out via
         ``PANOPTICON_NO_PREFILL`` (the env knob the detached poller also honours)."""
-        return bool(description and description.strip()) and not os.environ.get("PANOPTICON_NO_PREFILL")
+        return bool(memo and memo.strip()) and not os.environ.get("PANOPTICON_NO_PREFILL")
 
     def _config_volume_exists(self, task_id: str) -> bool:
         """True if the per-task config volume is already present — i.e. the task has been spawned
@@ -225,13 +225,13 @@ class LocalRunner(Runner):
             ["docker", "volume", "inspect", f"panopticon-config-{task_id}"], check=False
         ).strip())
 
-    def _maybe_prefill(self, session: str, description: str) -> None:
-        """Write the description to a throwaway file and launch the detached prefill poller against
+    def _maybe_prefill(self, session: str, memo: str) -> None:
+        """Write the memo to a throwaway file and launch the detached prefill poller against
         the task's tmux ``session``. The poller pastes it into claude's input box, unsent, then
         removes the file. Best-effort: a launch failure must not fail the spawn."""
         fd, prompt_file = tempfile.mkstemp(prefix=f"panopticon-prefill-{session}-", suffix=".txt")
         with os.fdopen(fd, "w") as handle:
-            handle.write(description)
+            handle.write(memo)
         try:
             self._prefill(session, prompt_file, socket=self._tmux_socket)
         except OSError:  # couldn't even launch the poller — drop the temp file, leave the box empty

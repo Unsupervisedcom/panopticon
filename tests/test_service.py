@@ -44,10 +44,10 @@ def make_service(tmp_path: Path) -> TaskService:
 def test_create_task_as_orchestrator_is_allowed(tmp_path: Path) -> None:
     svc = make_service(tmp_path)
     boss = svc.create_task("r1", "orchestrator")
-    child = svc.create_task_as(boss.id, "github-peer-reviewed", description="do a thing")
+    child = svc.create_task_as(boss.id, "github-peer-reviewed", memo="do a thing")
     assert child.workflow == "github-peer-reviewed"
     assert child.state == "PLANNING"  # the child's own workflow initial state
-    assert child.description == "do a thing"
+    assert child.memo == "do a thing"
 
 
 def test_create_task_as_uses_the_orchestrators_own_repo(tmp_path: Path) -> None:

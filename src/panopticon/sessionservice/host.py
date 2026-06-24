@@ -6,7 +6,11 @@ task created in the dashboard actually comes up and gets its branch with no manu
 sub-steps gate themselves (spawn skips claimed/terminal; provision skips unslugged/already-branched),
 so calling both on every task each pass is safe. A transient error on one task is logged and skipped.
 
-**Two URLs.** The daemon *polls* the task service at ``--service-url`` (the host's own view, e.g.
+It doesn't re-poll on a fixed interval: it *blocks* on the task service's change feed
+(``list_tasks_versioned(wait=…, since=…)``), waking only when a task actually changes (or the wait
+elapses), so an idle host does no work.
+
+**Two URLs.** The daemon talks to the task service at ``--service-url`` (the host's own view, e.g.
 ``localhost:8000``), but spawns containers pointed at ``--container-service-url`` (the in-container
 view, e.g. ``host.docker.internal:8000``). LLM-free.
 """
@@ -21,7 +25,7 @@ from collections.abc import Callable
 
 import httpx
 
-from panopticon.client import TaskServiceClient
+from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.git import GitClones
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.images import ImageBuilder
@@ -53,9 +57,10 @@ class HostDaemon:
         self._sleep = sleep
         self._interval = interval
 
-    def tick(self) -> None:
-        """One pass: spawn each spawnable task and provision each slugged one (both self-gating)."""
-        for task in self._client.list_tasks():
+    def tick(self, tasks: list[JsonObj]) -> None:
+        """One pass over a task snapshot: spawn each spawnable task and provision each slugged one
+        (both self-gating, so re-running over an unchanged snapshot is a no-op)."""
+        for task in tasks:
             try:
                 self._spawner.spawn_one(task)
                 self._provisioner.provision(task)
@@ -64,19 +69,28 @@ class HostDaemon:
                 continue
 
     def run(self, *, until: Callable[[], bool] | None = None) -> None:
-        """Poll until ``until()`` is true (``None`` = forever).
+        """Wake on task changes (not a fixed interval) until ``until()`` is true (``None`` = forever).
 
-        A whole-pass failure — ``list_tasks()`` raising on a service blip or before the service is
-        listening (the ``make panopticon`` startup race) — is logged and retried next interval, so a
-        transient error never kills the long-lived daemon (and its tmux session) with it. Per-task
-        errors are already isolated inside :meth:`tick`; this is the outer net for everything else.
+        The loop *blocks* on the task service's change feed — ``list_tasks_versioned(wait=…,
+        since=…)`` parks until a task changes past the last version we saw or ``wait`` elapses, then
+        returns the current snapshot + its version, which we feed back as ``since`` to wait for the
+        *next* change. A quiet period just returns the unchanged snapshot and we re-block, so there's
+        no busy loop — the blocking request, not a ``sleep``, paces us.
+
+        A whole-pass failure — the request raising on a service blip or before the service is
+        listening (the ``make panopticon`` startup race) — is logged and retried after a short
+        ``sleep`` (the only place we sleep: the blocking call returns immediately on a connection
+        error, so without it a startup race would spin). A transient error never kills the long-lived
+        daemon (and its tmux session). Per-task errors are already isolated inside :meth:`tick`.
         """
+        since = 0
         while not (until and until()):
             try:
-                self.tick()
+                tasks, since = self._client.list_tasks_versioned(wait=self._interval, since=since)
+                self.tick(tasks)
             except Exception:
-                _log.warning("host pass failed; retrying next interval", exc_info=True)
-            self._sleep(self._interval)
+                _log.warning("host pass failed; retrying", exc_info=True)
+                self._sleep(self._interval)
 
 
 def run_host(
@@ -119,7 +133,10 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
     parser.add_argument("--image", default=DEFAULT_IMAGE)
     parser.add_argument("--cache-root", default=os.environ.get("PANOPTICON_CACHE_ROOT", DEFAULT_CACHE_ROOT))
     parser.add_argument("--tasks-root", default=os.environ.get("PANOPTICON_TASKS_ROOT", DEFAULT_TASKS_ROOT))
-    parser.add_argument("--interval", type=float, default=2.0, help="poll interval, seconds")
+    parser.add_argument(
+        "--interval", type=float, default=2.0,
+        help="change-feed long-poll wait, seconds (the keepalive ceiling between blocking calls)",
+    )
     args = parser.parse_args(argv)
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
     runner = LocalRunner(args.container_service_url, image=args.image, runner_id=args.runner_id)

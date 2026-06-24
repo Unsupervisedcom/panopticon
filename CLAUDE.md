@@ -38,7 +38,7 @@ src/panopticon/
                    # per-repo clone cache; spawn.py = spawn-prep (clone --local the per-task
                    # checkout, mounted rw at /workspace); spawner.py = the spawn loop (claim an
                    # unclaimed task → spawn its container; prefills claude's input box with the
-                   # task description on a first spawn); prefill.py = the detached input-box prefill
+                   # task memo on a first spawn); prefill.py = the detached input-box prefill
                    # poller (mirrors cloude-cade: pipe-pane watch for ESC[?2004h → paste-buffer the
                    # description, unsent); daemon.py = the provision-only pull loop;
                    # host.py = the unified per-host daemon (spawn + provision each pass;

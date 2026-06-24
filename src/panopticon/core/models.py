@@ -152,10 +152,10 @@ class Task:
     #: A deliberate "waiting on something" marker the agent sets; it is **orthogonal to the
     #: turn** and survives turn flips (cloude-cade's `:blocked:`), cleared only explicitly.
     blocked: bool = False
-    #: A free-text description of the work, collected when the task is created (shown in the
+    #: A free-text memo of the work, collected when the task is created (shown in the
     #: dashboard's task summary). A human label of *intent*, distinct from the ``slug`` (a short
     #: identifier the agent sets later); ``None`` when the creator gave none.
-    description: str | None = None
+    memo: str | None = None
     slug: str | None = None
     #: An optional external URL for the task — its pull request, an issue, a dashboard link
     #: (cloude-cade's ``pr_url``). Set via :meth:`TaskService.set_url`; the dashboard's ``p``

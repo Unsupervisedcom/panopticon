@@ -90,10 +90,10 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
         )
     )
     def create_task(
-        orchestrator_task_id: str, workflow: str, description: str | None = None
+        orchestrator_task_id: str, workflow: str, memo: str | None = None
     ) -> dict[str, Any]:
         return _task(
-            service.create_task_as(orchestrator_task_id, workflow, description=description)
+            service.create_task_as(orchestrator_task_id, workflow, memo=memo)
         )
 
     @mcp.tool(description="List workflow names (gated to orchestration workflows); pass your own task id as orchestrator_task_id.")
