@@ -611,19 +611,27 @@ async def test_pressing_p_with_no_url_does_nothing(monkeypatch: Any) -> None:
 
 
 def test_clipboard_command_is_platform_appropriate(monkeypatch: Any) -> None:
+    # The result is cached (the installed tool can't change at runtime); clear it before each
+    # probe so the monkeypatched platform/PATH takes effect, and once more at the end so the
+    # cache doesn't leak the fakes into other tests.
+    dashboard._clipboard_command.cache_clear()
     # macOS → pbcopy unconditionally (always present, no `which` probe).
     monkeypatch.setattr(dashboard.sys, "platform", "darwin")
     assert dashboard._clipboard_command() == ["pbcopy"]
     # Linux → the first installed of wl-copy / xclip / xsel.
+    dashboard._clipboard_command.cache_clear()
     monkeypatch.setattr(dashboard.sys, "platform", "linux")
     monkeypatch.setattr(dashboard.shutil, "which", lambda name: name == "xclip")
     assert dashboard._clipboard_command() == ["xclip", "-selection", "clipboard"]
     # Wayland wins when both are present (preference order).
+    dashboard._clipboard_command.cache_clear()
     monkeypatch.setattr(dashboard.shutil, "which", lambda name: name in {"wl-copy", "xclip"})
     assert dashboard._clipboard_command() == ["wl-copy"]
     # nothing installed → None (no host tool; the OSC 52 emit still applies separately).
+    dashboard._clipboard_command.cache_clear()
     monkeypatch.setattr(dashboard.shutil, "which", lambda name: None)
     assert dashboard._clipboard_command() is None
+    dashboard._clipboard_command.cache_clear()
 
 
 async def test_pressing_y_copies_the_slug(monkeypatch: Any) -> None:

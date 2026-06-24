@@ -47,6 +47,7 @@ to Textual workers is a refinement (docs/BACKLOG.md).
 
 from __future__ import annotations
 
+import functools
 import re
 import shutil
 import subprocess
@@ -217,11 +218,15 @@ _LINUX_CLIPBOARD_COMMANDS: tuple[list[str], ...] = (
 )
 
 
+@functools.cache
 def _clipboard_command() -> list[str] | None:
     """The host's "write stdin to the system clipboard" command, or ``None`` when no clipboard
     tool is installed. ``pbcopy`` on macOS (always present); on Linux/other the first available
     of ``wl-copy`` (Wayland), ``xclip``, then ``xsel`` — mirrors :func:`_open_command`'s
-    per-platform choice, but the Linux tools aren't guaranteed installed, hence the ``which``."""
+    per-platform choice, but the Linux tools aren't guaranteed installed, hence the ``which``.
+
+    Cached: the installed tool can't change over a dashboard's lifetime, so the ``PATH`` probe
+    runs once (call ``_clipboard_command.cache_clear()`` to re-probe — only tests need to)."""
     if sys.platform == "darwin":
         return ["pbcopy"]
     for command in _LINUX_CLIPBOARD_COMMANDS:
