@@ -20,7 +20,9 @@ repos — and it **opens automatically on start when no repos are configured**, 
 nudge to add one), `s` switches to the task-service session, and `a` opens a modal listing the task's
 artifacts — Enter opens the selected
 one with the host's default handler (`xdg-open`/`open`) by fetching it over REST to a temp file, `e`
-opens the on-disk file in place when the dashboard shares the artifact store. Drop is the only state
+opens the on-disk file in place when the dashboard shares the artifact store, `y` **copies the
+task's slug** and `Y` its **id** to the clipboard (OSC 52 + the host's `pbcopy`/`xclip`/`wl-copy`,
+so it works on Linux and macOS). Drop is the only state
 *transition* the dashboard drives: every other transition starts a new agentic turn, so it's
 triggered by an in-container agent skill (`advance` over REST/MCP; going back to coding is a free
 `set_state` move), not the operator (ADR 0004).
@@ -46,6 +48,7 @@ to Textual workers is a refinement (docs/BACKLOG.md).
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -202,6 +205,44 @@ def _open_path(path: str) -> None:
     ``FileNotFoundError`` when the opener isn't installed (e.g. headless host, no ``xdg-open``);
     callers catch it and notify rather than letting it crash the TUI."""
     subprocess.Popen([_open_command(), path])
+
+
+# Linux clipboard writers, in preference order: Wayland first, then the X11 tools. Each is the
+# full argv that reads the text to copy from stdin. macOS uses `pbcopy` unconditionally (it's
+# always present), so it isn't in this list — see `_clipboard_command`.
+_LINUX_CLIPBOARD_COMMANDS: tuple[list[str], ...] = (
+    ["wl-copy"],
+    ["xclip", "-selection", "clipboard"],
+    ["xsel", "--clipboard", "--input"],
+)
+
+
+def _clipboard_command() -> list[str] | None:
+    """The host's "write stdin to the system clipboard" command, or ``None`` when no clipboard
+    tool is installed. ``pbcopy`` on macOS (always present); on Linux/other the first available
+    of ``wl-copy`` (Wayland), ``xclip``, then ``xsel`` — mirrors :func:`_open_command`'s
+    per-platform choice, but the Linux tools aren't guaranteed installed, hence the ``which``."""
+    if sys.platform == "darwin":
+        return ["pbcopy"]
+    for command in _LINUX_CLIPBOARD_COMMANDS:
+        if shutil.which(command[0]):
+            return command
+    return None
+
+
+def _clipboard_copy(text: str) -> bool:
+    """Best-effort write of ``text`` to the host's system clipboard via :func:`_clipboard_command`,
+    feeding the text on stdin. Returns whether a clipboard tool actually ran (``False`` when none
+    is installed or the command failed) — the caller pairs this with an OSC 52 emit, so a ``False``
+    here just means that path was unavailable, not that the copy as a whole failed."""
+    command = _clipboard_command()
+    if command is None:
+        return False
+    try:
+        subprocess.run(command, input=text.encode(), check=True)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return True
 
 
 def _open_via_rest(client: TaskServiceClient, task_id: str, name: str, tmpdir: str) -> None:
@@ -609,6 +650,8 @@ HOTKEYS: tuple[Hotkey, ...] = (
     Hotkey("a", "artifacts", "Artifacts", "List the task's artifacts", show=False),
     Hotkey("s", "service", "Service", "Switch to the task-service session", show=False),
     Hotkey("u", "runner", "Runner", "Switch to the session-service (runner) session", show=False),
+    Hotkey("y", "copy_slug", "Copy slug", "Copy the task's slug to the clipboard", show=False),
+    Hotkey("Y", "copy_id", "Copy id", "Copy the task's id to the clipboard", show=False),
     Hotkey(
         "escape", "clear_search", "Clear search", "Clear the search filter",
         show=False, display="Esc",
@@ -931,6 +974,37 @@ class Dashboard(App[None]):
             return
         webbrowser.open(url)
         self.notify(f"opened {url}")
+
+    def _copy_to_clipboard(self, text: str) -> None:
+        """Copy ``text`` to the clipboard two ways, best-effort: an OSC 52 emit (Textual's
+        ``copy_to_clipboard`` — terminal-forwarded, so it survives tmux/ssh and needs no external
+        tool) **and** the host's clipboard binary (`pbcopy`/`wl-copy`/`xclip`/`xsel`). Either path
+        alone covers a gap the other has, and neither failure is allowed to crash the TUI."""
+        try:
+            self.copy_to_clipboard(text)  # OSC 52 — no-op on terminals that don't support it
+        except Exception:  # never let a clipboard write take down the dashboard
+            pass
+        _clipboard_copy(text)  # host tool; best-effort (False when none installed)
+
+    def action_copy_slug(self) -> None:
+        """`y`: copy the highlighted task's slug to the clipboard (the human label, e.g. for the
+        `panopticon/<slug>` branch). Warns when the task has no slug yet (unprovisioned)."""
+        if self._current is None:
+            return
+        task = self._tasks.get(self._current)
+        slug = task.get("slug") if task else None
+        if not slug:
+            self.notify("No slug set for this task.", severity="warning")
+            return
+        self._copy_to_clipboard(slug)
+        self.notify(f"copied slug: {slug}")
+
+    def action_copy_id(self) -> None:
+        """`Y`: copy the highlighted task's id to the clipboard (the internal identifier)."""
+        if self._current is None:
+            return
+        self._copy_to_clipboard(self._current)
+        self.notify(f"copied id: {self._current}")
 
     def action_toggle_detail(self) -> None:
         """`d`: show/hide the right-hand detail pane. It starts hidden (``display: none``) so the
