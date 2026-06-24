@@ -35,15 +35,15 @@ from panopticon.terminal.attach import attach_command
 
 #: tmux session name the dashboard runs in (on the panopticon socket, beside the task sessions).
 DASHBOARD_SESSION = "dashboard"
-#: tmux session name the task service runs in under `make panopticon` (beside the dashboard).
+#: tmux session name the task service runs in under `make start` (beside the dashboard).
 SERVICE_SESSION = "service"
-#: tmux session name the session-service runner runs in under `make panopticon`.
+#: tmux session name the session-service runner runs in under `make start`.
 RUNNER_SESSION = "runner"
 
 def switch_file_path(socket: str) -> Path:
     """The supervisor↔dashboard switch-file, **deterministic per socket**.
 
-    The `dashboard` tmux session outlives any one supervisor (it's reused across `make panopticon`
+    The `dashboard` tmux session outlives any one supervisor (it's reused across `make start`
     invocations via ``has-session``), so the path the dashboard writes its `t` pick to must not be
     per-invocation. A fresh temp path each run desyncs them: a re-invoked supervisor reads a *new*
     empty file while the still-running dashboard writes picks to the *old* one — so every `t` reads
@@ -152,7 +152,7 @@ def wait_for_service(
 ) -> bool:
     """Poll the task service until it answers, returning whether it came up within ``attempts``.
 
-    `make panopticon` starts the service, runner, and console near-simultaneously; without this the
+    `make start` starts the service, runner, and console near-simultaneously; without this the
     console would start the dashboard before the service is listening, the dashboard would crash on
     its first REST read, and its tmux session would vanish ("can't find session: dashboard")."""
     for _ in range(attempts):
@@ -175,7 +175,7 @@ def run_console_local(service_url: str, *, socket: str = TMUX_SOCKET) -> None:
     """Wire :func:`run_console` to local tmux: a persistent `dashboard` session, and the task
     attach on the panopticon socket. The dashboard reports its pick via a switch-file."""
     # Don't show the dashboard until the service is up, else it crashes on its first read (and its
-    # session vanishes) — the `make panopticon` startup race.
+    # session vanishes) — the `make start` startup race.
     if not wait_for_service(service_url):
         print(f"task service not reachable at {service_url}; is it running?", file=sys.stderr)
         return

@@ -93,7 +93,7 @@ make typecheck   # uv run mypy --package panopticon (strict)
 make check       # typecheck + test (what CI runs)
 make serve       # run the task service over HTTP (python -m panopticon.taskservice)
 make dashboard   # run the dashboard once (no attach loop)
-make panopticon  # bring up everything: task service + session-service runner + dashboard supervisor
+make start       # bring up everything: task service + session-service runner + dashboard supervisor
 make build       # docker build the base task-container image (panopticon-base)
 make clean       # remove the base + composed panopticon-* images
 make migrate     # alembic upgrade head (uses $PANOPTICON_DB; override DB=<url>)
@@ -109,7 +109,7 @@ already bootstrapped.
 
 `make serve` runs the control plane (`python -m panopticon.taskservice` — default on-disk
 SQLite + filesystem artifacts + the built-in workflows; `PANOPTICON_HOST/PORT/DB/ARTIFACTS`
-override). **`make panopticon` brings up the whole system** on the dedicated `panopticon` tmux
+override). **`make start` brings up the whole system** on the dedicated `panopticon` tmux
 server (`-L panopticon`): three background sessions — `service` (task service), `runner`
 (`python -m panopticon.sessionservice.host` — the per-host session service: spawns a container per
 new task and provisions each on slug, ADR 0008/0011), and `dashboard` — then runs the **terminal
@@ -122,7 +122,7 @@ the terminal to that task's session, then re-attaches the same live dashboard on
 Crucially the runner spawns task sessions on the **same** `-L panopticon` socket, so `t` reaches
 them. Switching is always detach→attach (never `switch-client`), so the same loop reaches a remote
 task over ssh at M5; `s` jumps to the `service` session. The background sessions persist after `q`
-(stop them with `make panopticon-down`, which kills the `-L panopticon` server). Spawning needs the base image — `make build`
+(stop them with `make stop`, which kills the `-L panopticon` server). Spawning needs the base image — `make build`
 first. `make dashboard` runs the dashboard once without the attach loop (talks to
 `PANOPTICON_SERVICE_URL`).
 

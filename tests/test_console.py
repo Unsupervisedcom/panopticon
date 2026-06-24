@@ -18,14 +18,14 @@ from panopticon.terminal.console import (
 
 def test_switch_file_is_deterministic_per_socket() -> None:
     # The dashboard session outlives the supervisor, so the switch-file must be stable across
-    # `make panopticon` re-invocations — otherwise a re-attached dashboard writes its `t` pick to a
+    # `make start` re-invocations — otherwise a re-attached dashboard writes its `t` pick to a
     # file the new supervisor isn't reading, and every `t` reads as a quit (operator dropped to shell).
     assert switch_file_path("panopticon") == switch_file_path("panopticon")  # same socket → same path
     assert switch_file_path("panopticon") != switch_file_path("other")  # keyed by socket
 
 
 def test_wait_for_service_polls_until_ready() -> None:
-    # Gates the dashboard on the service being up (the `make panopticon` startup race): poll until
+    # Gates the dashboard on the service being up (the `make start` startup race): poll until
     # the health check passes, then proceed.
     calls = {"n": 0}
 

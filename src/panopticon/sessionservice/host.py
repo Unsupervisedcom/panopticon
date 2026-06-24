@@ -84,7 +84,7 @@ class HostDaemon:
         no busy loop — the blocking request, not a ``sleep``, paces us.
 
         A whole-pass failure — the request raising on a service blip or before the service is
-        listening (the ``make panopticon`` startup race) — is logged and retried after a short
+        listening (the ``make start`` startup race) — is logged and retried after a short
         ``sleep`` (the only place we sleep: the blocking call returns immediately on a connection
         error, so without it a startup race would spin). A transient error never kills the long-lived
         daemon (and its tmux session). Per-task errors are already isolated inside :meth:`tick`.

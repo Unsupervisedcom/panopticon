@@ -1,6 +1,6 @@
 # panopticon — dev tasks. Thin wrappers over `uv`/`docker`; see CLAUDE.md for details.
 .DEFAULT_GOAL := help
-.PHONY: help sync test typecheck check serve dashboard panopticon panopticon-down build clean migrate migrate-revision
+.PHONY: help sync test typecheck check serve dashboard start stop build clean migrate migrate-revision
 
 #: The base task-container image (ADR 0005 base layer); must match DEFAULT_IMAGE.
 IMAGE ?= panopticon-base
@@ -31,14 +31,14 @@ serve:  ## Run the task service over HTTP (the control plane)
 dashboard:  ## Launch the dashboard (foreground; no tmux)
 	uv run panopticon dashboard
 
-panopticon:  ## Run panopticon: task service + session-service runner (background) + dashboard supervisor
+start:  ## Run panopticon: task service + session-service runner (background) + dashboard supervisor
 	tmux -L panopticon has-session -t service 2>/dev/null || \
 		tmux -L panopticon new-session -d -s service 'uv run python -m panopticon.taskservice'
 	tmux -L panopticon has-session -t runner 2>/dev/null || \
 		tmux -L panopticon new-session -d -s runner 'uv run python -m panopticon.sessionservice.host'
 	uv run panopticon console
 
-panopticon-down:  ## Stop everything `make panopticon` started (kills the -L panopticon tmux server)
+stop:  ## Stop everything `make start` started (kills the -L panopticon tmux server)
 	-tmux -L panopticon kill-server 2>/dev/null
 
 build:  ## Build the base task-container image (override with IMAGE=)
