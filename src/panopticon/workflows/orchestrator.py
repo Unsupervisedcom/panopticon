@@ -3,8 +3,9 @@
 A single agent-driven state (`ORCHESTRATING → {COMPLETE, DROPPED}`, like :class:`~panopticon.
 workflows.spike.Spike`) whose agent decomposes a high-level request into a batch of child
 tasks and **seeds each one ready for the user to approve**: it creates the task, writes its
-`plan.md` artifact, sets its slug, marks the child's `plan-written` responsibility met, and
-hands the child's turn to the user. The user then only has to review the plan and advance
+`plan.md` artifact, sets its slug, records a token estimate, marks the child's `plan-written`
+and `token-estimated` responsibilities met, and hands the child's turn to the user. The user
+then only has to review the plan and advance
 (`PLANNING → ITERATING`). The motivating use is fanning out `github-self-reviewed` /
 `github-peer-reviewed` tasks that arrive pre-planned.
 
@@ -41,9 +42,11 @@ you want to spawn. Throughout, your *own* task id is shown below; the new task h
 3. **Name it.** `set_slug` on the new id with a short kebab-case slug.
 4. **Write its plan.** `put_artifact` on the new id with `name="{GithubForgeWorkflow.PLAN_ARTIFACT_NAME}"` and the full
    markdown plan for *that* task.
-5. **Clear the plan gate.** `resolve_responsibility` on the new id with `key="plan-written"`,
-   `status="met"`.
-6. **Hand it to the user.** `set_turn` on the new id with `turn="user"`.
+5. **Estimate its cost.** `set_token_estimate` on the new id with your forecast of the total
+   tokens *that* task will consume.
+6. **Clear the planning gates.** `resolve_responsibility` on the new id with `key="plan-written"`,
+   `status="met"`, then again with `key="token-estimated"`, `status="met"`.
+7. **Hand it to the user.** `set_turn` on the new id with `turn="user"`.
 
 The new task now sits in **PLANNING** with its plan written and the gate cleared — the user
 approves it by advancing it to ITERATING. (A container will later spawn for it; because

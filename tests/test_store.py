@@ -202,6 +202,15 @@ def test_tokens_used_round_trips(store: Store) -> None:
     assert store.get_task("t1").tokens_used == 12750  # type: ignore[union-attr]
 
 
+def test_token_estimate_round_trips(store: Store) -> None:
+    _seed_repo(store)
+    task = _new_task(store)
+    assert store.get_task("t1").token_estimate is None  # default on create  # type: ignore[union-attr]
+    task.token_estimate = 500_000
+    store.save_task(task)
+    assert store.get_task("t1").token_estimate == 500_000  # type: ignore[union-attr]
+
+
 def test_blocked_marker_round_trips(store: Store) -> None:
     _seed_repo(store)
     task = _new_task(store)
@@ -403,6 +412,7 @@ def _fully_populated_task() -> Task:
         clone="/clones/t-full",
         claimed_by="local",
         tokens_used=87500,
+        token_estimate=500_000,
         history=[
             HistoryEntry(
                 at="t0", from_state=None, to_state="PLAN", trigger="start", note="kickoff"

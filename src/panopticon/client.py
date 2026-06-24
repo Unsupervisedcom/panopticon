@@ -140,6 +140,11 @@ class TaskServiceClient:
         return cast(JsonObj, self._json(self._http.put(
             f"/tasks/{task_id}/tokens-used", json={"tokens_used": tokens_used})))
 
+    def set_token_estimate(self, task_id: str, token_estimate: int) -> JsonObj:
+        """Record the agent's forecast of the total tokens this task will consume (set in planning)."""
+        return cast(JsonObj, self._json(self._http.put(
+            f"/tasks/{task_id}/token-estimate", json={"token_estimate": token_estimate})))
+
     def set_state(self, task_id: str, state: str) -> JsonObj:
         """The user's free override — move the task to any state (bypasses the graph and gate)."""
         return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/state", json={"state": state})))

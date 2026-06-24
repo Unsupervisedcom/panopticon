@@ -178,6 +178,11 @@ class Task:
     #: it via :meth:`TaskService.set_tokens_used`, recomputing the session total each turn; the
     #: dashboard shows it in short human form. ``None`` until the first report.
     tokens_used: int | None = None
+    #: The agent's *forecast* of the total tokens this task will consume, set once during planning
+    #: via :meth:`TaskService.set_token_estimate` (distinct from ``tokens_used``, the running
+    #: actual). The GithubForge workflows and the orchestrator record it when producing the plan.
+    #: ``None`` until estimated.
+    token_estimate: int | None = None
     history: list[HistoryEntry] = field(default_factory=list)
 
     @property

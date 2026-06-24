@@ -49,6 +49,17 @@ class GithubForgeWorkflow(Workflow):
         ),
     )
 
+    #: The shared PLANNING responsibility to forecast the task's cost. Both forge lifecycles record
+    #: it alongside the plan; one frozen instance referenced by each workflow's PLANNING state keeps
+    #: the guidance single-sourced.
+    TOKEN_ESTIMATED: ClassVar[Responsibility] = Responsibility(
+        key="token-estimated",
+        description=(
+            "Estimate the total tokens this task will consume and record it with the "
+            "`set_token_estimate` tool."
+        ),
+    )
+
     @classmethod
     def plan_uri(cls, task_id: str) -> str:
         """The canonical MCP resource URI for a task's plan artifact (:attr:`PLAN_ARTIFACT_NAME`).

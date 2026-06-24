@@ -74,6 +74,7 @@ class TaskOut(BaseModel):
     clone: str | None
     claimed_by: str | None  # the runner that owns this task (the spawn gate), or None
     tokens_used: int | None  # cumulative tokens the container's claude has used (None until reported)
+    token_estimate: int | None  # the agent's forecast of total tokens (set in planning; None until then)
     provisioned: bool  # computed (Task.provisioned): branch + clone recorded
     history: list[HistoryOut]
 
@@ -145,6 +146,10 @@ class UrlIn(BaseModel):
 
 class TokensUsedIn(BaseModel):
     tokens_used: int
+
+
+class TokenEstimateIn(BaseModel):
+    token_estimate: int
 
 
 class StateIn(BaseModel):
@@ -441,6 +446,10 @@ def create_app(service: TaskService) -> FastAPI:
     @app.put("/tasks/{task_id}/tokens-used")
     async def set_tokens_used(task_id: str, body: TokensUsedIn) -> TaskOut:
         return TaskOut.model_validate(service.set_tokens_used(task_id, body.tokens_used))
+
+    @app.put("/tasks/{task_id}/token-estimate")
+    async def set_token_estimate(task_id: str, body: TokenEstimateIn) -> TaskOut:
+        return TaskOut.model_validate(service.set_token_estimate(task_id, body.token_estimate))
 
     @app.put("/tasks/{task_id}/turn")
     async def set_turn(task_id: str, body: TurnIn) -> TaskOut:

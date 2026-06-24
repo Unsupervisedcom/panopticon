@@ -298,6 +298,14 @@ class TaskService:
         self._store.save_task(task)
         return task
 
+    def set_token_estimate(self, task_id: str, token_estimate: int) -> Task:
+        """Record the agent's forecast of the total tokens this task will consume (set once during
+        planning). A plain recorded fact, like the slug — no transition, no git."""
+        task = self.get_task(task_id)
+        task.token_estimate = token_estimate
+        self._store.save_task(task)
+        return task
+
     def set_turn(self, task_id: str, turn: Actor) -> Task:
         """Flip who holds the turn within a state (the in-container hooks' callback).
 

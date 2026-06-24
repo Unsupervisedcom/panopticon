@@ -31,7 +31,10 @@ class GithubSelfReviewed(GithubForgeWorkflow):
     class Planning(InitialState):
         label = "PLANNING"
         description = "Collect requirements. Produce a plan for the implementation."
-        responsibilities = (GithubForgeWorkflow.PLAN_WRITTEN,)  # shared: the plan is a markdown `plan.md` artifact
+        responsibilities = (  # shared: the plan is a markdown `plan.md` artifact, plus a token estimate
+            GithubForgeWorkflow.PLAN_WRITTEN,
+            GithubForgeWorkflow.TOKEN_ESTIMATED,
+        )
         transitions = ("ITERATING",)  # advance; + DROPPED inherited
 
     class Iterating(State):

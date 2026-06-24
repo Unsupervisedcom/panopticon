@@ -52,6 +52,10 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
     def set_tokens_used(task_id: str, tokens_used: int) -> dict[str, Any]:
         return _task(service.set_tokens_used(task_id, tokens_used))
 
+    @mcp.tool(description="Record an estimate of the total tokens this task will consume (set when planning).")
+    def set_token_estimate(task_id: str, token_estimate: int) -> dict[str, Any]:
+        return _task(service.set_token_estimate(task_id, token_estimate))
+
     @mcp.tool(description="Apply a named core operation (e.g. 'advance', 'drop').")
     def apply_operation(task_id: str, operation: str) -> dict[str, Any]:
         return _task(service.apply_operation(task_id, operation))

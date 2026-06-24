@@ -63,10 +63,12 @@ def test_foreground_states_are_user_advanced_merging_is_agent_driven() -> None:
 def test_responsibilities_drop_the_peer_review_obligation() -> None:
     # Same per-stage DoD as github-peer-reviewed, minus the REVIEW state's `pr-reviewed`
     # (there is no peer — the user self-reviews, which is the advance, not a responsibility).
-    assert {r.key for r in WF.responsibilities("PLANNING")} == {"plan-written"}
+    assert {r.key for r in WF.responsibilities("PLANNING")} == {"plan-written", "token-estimated"}
     # the plan is a markdown artifact (`plan.md`), shared with github-peer-reviewed via PLAN_WRITTEN
-    (plan_written,) = WF.responsibilities("PLANNING")
-    assert "plan.md" in plan_written.description and "markdown" in plan_written.description
+    by_key = {r.key: r for r in WF.responsibilities("PLANNING")}
+    assert "plan.md" in by_key["plan-written"].description and "markdown" in by_key["plan-written"].description
+    # the token estimate is recorded with the set_token_estimate tool, shared via TOKEN_ESTIMATED
+    assert "set_token_estimate" in by_key["token-estimated"].description
     assert {r.key for r in WF.responsibilities("ITERATING")} == {
         "plan-implemented", "requests-implemented", "tests-pass",
         "committed-pushed", "ci-passing", "pr-updated",
@@ -137,7 +139,7 @@ def test_full_lifecycle_planning_to_complete() -> None:
 def test_cannot_advance_with_unresolved_responsibilities() -> None:
     task = WF.start_task("t1", "r1", at="t0")
     with pytest.raises(ResponsibilitiesNotMet):
-        WF.apply_transition(task, "ITERATING", at="t1")  # plan-written still PENDING
+        WF.apply_transition(task, "ITERATING", at="t1")  # plan-written/token-estimated still PENDING
 
 
 def test_partial_resolution_still_gates() -> None:

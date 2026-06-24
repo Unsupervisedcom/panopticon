@@ -174,8 +174,10 @@ def render_detail(task: JsonObj) -> str:
         lines += ["", task["memo"]]
     if task.get("url"):
         lines += ["", f"url: {task['url']}"]
-    if task.get("tokens_used"):
-        lines += ["", f"tokens: {_short_tokens(task['tokens_used'])}"]
+    if task.get("tokens_used") or task.get("token_estimate"):
+        used = _short_tokens(task.get("tokens_used"))
+        est = _short_tokens(task.get("token_estimate"))
+        lines += ["", f"tokens: {used} used / {est} est"]
     lines += ["", "history:"]
     for entry in task["history"]:
         line = f"  {entry['from_state'] or '∅'} → {entry['to_state']}"
