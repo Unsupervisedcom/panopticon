@@ -50,6 +50,11 @@ def _at(stamp: str) -> list[dict[str, Any]]:
     return [{"at": stamp, "from_state": None, "to_state": "WORKING", "responsibilities": []}]
 
 
+def _raise(*args: Any, **kwargs: Any) -> Any:
+    """Stand in for a failing REST call (e.g. a down service)."""
+    raise RuntimeError("service unavailable")
+
+
 class _FakeClient:
     def __init__(
         self,
@@ -65,9 +70,14 @@ class _FakeClient:
         self._tasks = tasks
         self._registrations = registrations or {}
         # repos may be bare ids (existing task-creation tests) or full dicts (repo-screen tests).
+        # Unspecified (None) defaults to one repo present, so the start-up auto-open of the repo
+        # screen (fired when there are *no* repos) doesn't pop over tests that don't care; pass an
+        # explicit `repos=[]` to exercise the no-repos case.
+        if repos is None:
+            repos = [{"id": "default", "name": "default", "git_url": "", "default_base": "main"}]
         self._repos: list[dict[str, Any]] = [
             {"id": r, "name": r, "git_url": "", "default_base": "main"} if isinstance(r, str) else r
-            for r in (repos or [])
+            for r in repos
         ]
         self._workflows = workflows or []
         self._operations = operations or {}
@@ -795,6 +805,34 @@ async def test_pressing_g_opens_the_repos_screen_listing_repos() -> None:
         assert isinstance(app.screen, dashboard.ReposScreen)
         table = app.screen.query_one("#repos", DataTable)
         assert table.row_count == 1
+
+
+async def test_no_repos_auto_opens_the_repos_screen_on_start() -> None:
+    # First-run nudge: with no repos configured, the dashboard drops straight into the repo
+    # screen so the operator can add one (a task can't be created without a repo).
+    app = Dashboard(_FakeClient([_TASK], repos=[]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, dashboard.ReposScreen)
+
+
+async def test_repos_present_does_not_auto_open_the_repos_screen() -> None:
+    # The common case: at least one repo → no auto-open, the operator lands on the task view.
+    app = Dashboard(_FakeClient([_TASK], repos=["r1"]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert not isinstance(app.screen, dashboard.ReposScreen)
+
+
+async def test_repo_fetch_error_does_not_auto_open_the_repos_screen() -> None:
+    # A down service can't list repos (and the repo screen couldn't either) — treat repos as
+    # present and leave the operator on the task view rather than popping a screen that'd fail.
+    fake = _FakeClient([_TASK], repos=[])
+    fake.list_repos = _raise  # type: ignore[method-assign]
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert not isinstance(app.screen, dashboard.ReposScreen)
 
 
 async def test_repos_screen_creates_a_repo_autofilling_from_the_git_url() -> None:

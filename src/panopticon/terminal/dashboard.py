@@ -16,7 +16,8 @@ rest still work but are hidden from the legend (both the footer bindings and `He
 from the single ``HOTKEYS`` keymap): `r` refreshes from the task service over REST, `R` **respawns**
 a down task (releases its claim so the host runner re-spawns it), `p` opens the task's `url` in the
 browser (cloude-cade's `p` "open PR"), `g` opens the **repo config screen** (list / create / edit
-repos), `s` switches to the task-service session, and `a` opens a modal listing the task's
+repos — and it **opens automatically on start when no repos are configured**, the first-run
+nudge to add one), `s` switches to the task-service session, and `a` opens a modal listing the task's
 artifacts — Enter opens the selected
 one with the host's default handler (`xdg-open`/`open`) by fetching it over REST to a temp file, `e`
 opens the on-disk file in place when the dashboard shares the artifact store. Drop is the only state
@@ -689,8 +690,19 @@ class Dashboard(App[None]):
         table.add_columns("state", "turn", "container", "tokens", Text("slug[memo]"))
         table.focus()  # the (hidden) search Input would otherwise grab initial focus
         self.action_refresh()  # first paint; the feed worker drives every refresh after
+        if not self._has_repos():  # first-run nudge: no repos → drop straight into the repo screen
+            self.action_repos()
         if self._refresh_interval:
             self._watch_feed()
+
+    def _has_repos(self) -> bool:
+        """Whether the service reports any repos. On a fetch error, answer ``True`` (don't pop the
+        repo screen on a down service — it couldn't list repos either; leave the operator on the
+        task view, as the feed worker tolerates a not-yet-up service)."""
+        try:
+            return bool(self._client.list_repos())
+        except Exception:
+            return True
 
     @work(thread=True, exclusive=True, group="task-feed")
     def _watch_feed(self) -> None:
