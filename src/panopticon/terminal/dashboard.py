@@ -686,7 +686,7 @@ class Dashboard(App[None]):
         table = self.query_one("#tasks", DataTable)
         table.cursor_type = "row"
         # the slug header carries a literal "[" — pass it as Text so Textual doesn't eat it as markup
-        table.add_columns("state", "turn", "container", "tokens", Text("slug[memo]"))
+        table.add_columns("state", "turn", "container", Text("slug[memo]"))
         table.focus()  # the (hidden) search Input would otherwise grab initial focus
         self.action_refresh()  # first paint; the feed worker drives every refresh after
         if self._refresh_interval:
@@ -772,8 +772,7 @@ class Dashboard(App[None]):
                 separated = True
             seen_active = seen_active or not terminal
             table.add_row(
-                task["state"], _turn_cell(task), self._run_status(task),
-                _short_tokens(task.get("tokens_used")), _slug_cell(task),
+                task["state"], _turn_cell(task), self._run_status(task), _slug_cell(task),
                 key=task["id"],
             )
         target = selected if selected in self._tasks else next(iter(self._tasks), None)
