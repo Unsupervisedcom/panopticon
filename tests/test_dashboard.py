@@ -199,22 +199,32 @@ async def test_dashboard_mounts_lists_tasks_and_shows_detail() -> None:
         table = app.query_one("#tasks", DataTable)
         assert table.row_count == 1
         detail = app.query_one("#detail", Static)
+        # the pane is hidden by default, but its content still tracks the highlighted row
         assert "WORKING" in str(detail.render())
 
 
-async def test_pressing_d_toggles_the_detail_pane() -> None:
-    # `d` hides the detail pane (so the table takes the full width) and shows it again.
+async def test_detail_pane_is_hidden_by_default() -> None:
+    # the detail pane starts hidden so the task table gets the full width; `d` reveals it.
     app = Dashboard(_FakeClient([_TASK]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
         detail = app.query_one("#detail", Static)
+        assert not app._detail_visible and detail.styles.display == "none"
+
+
+async def test_pressing_d_toggles_the_detail_pane() -> None:
+    # `d` reveals the (hidden-by-default) detail pane and hides it again.
+    app = Dashboard(_FakeClient([_TASK]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        detail = app.query_one("#detail", Static)
+        assert not app._detail_visible and detail.styles.display == "none"
+        await pilot.press("d")  # show
+        await pilot.pause()
         assert app._detail_visible and detail.styles.display == "block"
-        await pilot.press("d")  # hide
+        await pilot.press("d")  # hide again
         await pilot.pause()
         assert not app._detail_visible and detail.styles.display == "none"
-        await pilot.press("d")  # show again
-        await pilot.pause()
-        assert app._detail_visible and detail.styles.display == "block"
 
 
 async def test_tasks_are_sorted_live_then_user_then_recent() -> None:

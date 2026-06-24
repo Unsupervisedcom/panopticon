@@ -8,8 +8,8 @@ over it (it's not a selectable task).
 
 The footer legend shows only the essential, most-used keys — `t` hands off to the task's
 container tmux, `n` creates a task (pick repo → workflow → describe the work), `x` **drops** it,
-`/` searches, `d` **toggles the detail pane** (hide it to give the table the full width, press
-again to restore), `q` quits, and `?` opens the **help screen** (a modal listing every key). The
+`/` searches, `d` **toggles the detail pane** (hidden by default so the table gets the full
+width, press to reveal it), `q` quits, and `?` opens the **help screen** (a modal listing every key). The
 rest still work but are hidden from the legend (both the footer bindings and `HelpScreen` derive
 from the single ``HOTKEYS`` keymap): `r` refreshes from the task service over REST, `R` **respawns**
 a down task (releases its claim so the host runner re-spawns it), `p` opens the task's `url` in the
@@ -624,7 +624,10 @@ class Dashboard(App[None]):
     ``on_service``/``on_runner`` for the task-service / session-service runner sessions) and stays
     running; the supervisor handles the attach/detach (ADR 0009)."""
 
-    CSS = "#tasks { width: 3fr; } #detail { width: 2fr; padding: 0 1; } #search { display: none; }"
+    CSS = (
+        "#tasks { width: 3fr; } #detail { width: 2fr; padding: 0 1; display: none; } "
+        "#search { display: none; }"
+    )
     REFRESH_INTERVAL = 2.0  # seconds between automatic refreshes (0/None disables the timer)
     # Only the essential, most-used keys show in the footer legend; the rest still dispatch but
     # are hidden (``show=False``) to keep the legend uncluttered — `?` opens HelpScreen, which
@@ -655,7 +658,7 @@ class Dashboard(App[None]):
         self._tasks: dict[str, JsonObj] = {}
         self._current: str | None = None
         self._query: str = ""  # active search filter ("" → no filter); see action_search
-        self._detail_visible = True  # detail pane shown; `d` toggles it (action_toggle_detail)
+        self._detail_visible = False  # detail pane hidden by default; `d` toggles it (action_toggle_detail)
         self._respawning: set[str] = set()  # tasks awaiting re-claim after `R` (shown "respawning")
         self._last_cursor_row = 0  # previous cursor row index → infer travel direction to skip the divider
         # one reused scratch dir for `a`'s REST-open (lazily made, cleaned on exit) — so opening
@@ -855,9 +858,9 @@ class Dashboard(App[None]):
         self.notify(f"opened {url}")
 
     def action_toggle_detail(self) -> None:
-        """`d`: show/hide the right-hand detail pane. Hiding it (``display: none``) lets the task
-        table — the only remaining row child — take the full width; pressing `d` again restores
-        the pane (with the current task's detail already rendered)."""
+        """`d`: show/hide the right-hand detail pane. It starts hidden (``display: none``) so the
+        task table — the only remaining row child — takes the full width; pressing `d` reveals the
+        pane (with the current task's detail already rendered), and `d` again hides it."""
         self._detail_visible = not self._detail_visible
         self.query_one("#detail", Static).styles.display = (
             "block" if self._detail_visible else "none"
