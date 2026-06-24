@@ -10,13 +10,29 @@ set -euo pipefail
 
 puid="${PANOPTICON_PUID:-1000}"
 pgid="${PANOPTICON_PGID:-1000}"
+cur_uid="$(id --user panopticon)"
+cur_gid="$(id --group panopticon)"
 
-# Remap `panopticon` to the invoking ids (a no-op when they already match the baked default).
-if [ "$(id --group panopticon)" != "$pgid" ]; then
-    groupmod --gid "$pgid" panopticon
+# Remap the baked `panopticon` account to the invoking ids (a no-op when they already match the
+# baked 1000:1000 default — e.g. a typical Linux host).
+#
+# `--non-unique` on the group is load-bearing: the host gid may already belong to another group in
+# the base image, so a plain `groupmod --gid` onto it fails ("GID already exists", exit 4). That is
+# exactly what crashed the container on macOS, whose primary gid 20 (`staff`) collides with
+# Debian's `dialout`. Letting `panopticon` *share* the gid is harmless — file ownership is by gid
+# number, so /workspace files still land on the host gid — and it covers every host: macOS gid 20,
+# a Linux user in gid 100 (`users`), or any other already-taken gid.
+#
+# The gid is remapped independently of the uid: a host whose uid matches the baked default but
+# whose gid does not (uid 1000 + gid 100 is common on Linux) must still be remapped, and re-owning
+# $HOME is gated on *either* id moving (it was created under 1000:1000 at build time).
+if [ "$cur_gid" != "$pgid" ]; then
+    groupmod --non-unique --gid "$pgid" panopticon
 fi
-if [ "$(id --user panopticon)" != "$puid" ]; then
-    usermod --uid "$puid" --gid "$pgid" panopticon
+if [ "$cur_uid" != "$puid" ]; then
+    usermod --uid "$puid" panopticon
+fi
+if [ "$cur_uid" != "$puid" ] || [ "$cur_gid" != "$pgid" ]; then
     chown --recursive "$puid:$pgid" /home/panopticon
 fi
 # Hand the whole creds volume to the adopted user so claude can read/refresh its OAuth token.

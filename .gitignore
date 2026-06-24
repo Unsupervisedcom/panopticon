@@ -1,6 +1,9 @@
 # Editor / Obsidian vault metadata
 .obsidian/
 
+# Per-repo secrets (ADR 0007 env_file / creds) — never commit real keys
+secrets/
+
 # Python
 __pycache__/
 *.py[cod]
