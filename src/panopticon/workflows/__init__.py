@@ -7,7 +7,8 @@ reproduces cloude-cade's lifecycle (PARITY §1) as one configurable workflow amo
 
 from panopticon.workflows.github_peer_reviewed import GithubPeerReviewed
 from panopticon.workflows.github_self_reviewed import GithubSelfReviewed
+from panopticon.workflows.local_git_self_reviewed import LocalGitSelfReviewed
 from panopticon.workflows.orchestrator import Orchestrator
 from panopticon.workflows.spike import Spike
 
-__all__ = ["GithubPeerReviewed", "GithubSelfReviewed", "Orchestrator", "Spike"]
+__all__ = ["GithubPeerReviewed", "GithubSelfReviewed", "LocalGitSelfReviewed", "Orchestrator", "Spike"]

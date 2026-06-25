@@ -23,5 +23,6 @@ def test_build_app_serves_default_wiring(tmp_path: Path) -> None:
         "spike",
         "github-peer-reviewed",
         "github-self-reviewed",
+        "local-git-self-reviewed",
         "orchestrator",
     }

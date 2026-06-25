@@ -8,6 +8,10 @@ peer gates the merge (`GithubPeerReviewed`) or the user self-reviews and approve
 (`GithubSelfReviewed`) — so each subclass supplies its own `name` + states and inherits the
 forge plumbing from here.
 
+The plan convention (artifact name, shared responsibilities, URI resolver, briefing hook)
+lives on :class:`~panopticon.workflows.planned_workflow.PlannedWorkflow`; this class extends
+it and adds the GitHub-specific layer (``gh`` tool, image layer, forge skills).
+
 This base is **abstract**: it declares no `name` value and no states, so workflow discovery
 (`workflows.discovery`) never registers or instantiates it — it keeps only classes with a
 string `name` defined in the scanned module.
@@ -16,58 +20,19 @@ string `name` defined in the scanned module.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import ClassVar
 
-from panopticon.core.artifacts import ArtifactStore, mcp_uri
-from panopticon.core.models import Responsibility, Skill, Task, Tool
-from panopticon.core.workflow import Workflow
+from panopticon.core.models import Skill, Tool
+from panopticon.workflows.planned_workflow import PlannedWorkflow
 
 
-class GithubForgeWorkflow(Workflow):
+class GithubForgeWorkflow(PlannedWorkflow):
     """Abstract base for GitHub-forge workflows: shared `gh` tool, image layer, and forge
     skills. Concrete subclasses add a ``name`` and their states; they inherit the plumbing
     below. Not a registrable workflow on its own (no ``name``, no states).
 
-    Owns the **plan convention** for the forge lifecycles: the plan is a markdown
-    :attr:`PLAN_ARTIFACT_NAME` artifact (not a working-tree file), read back at
-    :meth:`plan_uri`. Single-sourced here — the only workflows with a plan gate — and referenced
-    by the subclasses' PLANNING state and the orchestrator's spawn recipe."""
-
-    #: The canonical artifact name for a forge task's plan. By convention the plan is a markdown
-    #: ``plan.md`` **artifact** — uploaded with ``put_artifact``, not just written to ``/workspace``
-    #: — so the operator can open it from the dashboard (the `a` hotkey keys off the extension).
-    PLAN_ARTIFACT_NAME: ClassVar[str] = "plan.md"
-
-    #: The shared PLANNING responsibility for the forge workflows. Both lifecycles produce a plan;
-    #: one frozen instance, referenced by each workflow's PLANNING state, keeps the guidance
-    #: single-sourced (wording keyed off :attr:`PLAN_ARTIFACT_NAME`).
-    PLAN_WRITTEN: ClassVar[Responsibility] = Responsibility(
-        key="plan-written",
-        description=(
-            f"The plan is uploaded to the plan artifact `{PLAN_ARTIFACT_NAME}` (a markdown file) with "
-            "the `put_artifact` tool — not just written to the working tree."
-        ),
-    )
-
-    #: The shared PLANNING responsibility to forecast the task's cost. Both forge lifecycles record
-    #: it alongside the plan; one frozen instance referenced by each workflow's PLANNING state keeps
-    #: the guidance single-sourced.
-    TOKEN_ESTIMATED: ClassVar[Responsibility] = Responsibility(
-        key="token-estimated",
-        description=(
-            "Estimate the total tokens this task will consume and record it with the "
-            "`set_token_estimate` tool."
-        ),
-    )
-
-    @classmethod
-    def plan_uri(cls, task_id: str) -> str:
-        """The canonical MCP resource URI for a task's plan artifact (:attr:`PLAN_ARTIFACT_NAME`).
-
-        The one URI an agent should read the plan back at — surfaced in the state briefing so
-        orchestrator-spawned agents don't guess (e.g. ``artifact://<id>/plan.md`` → "Unknown resource").
-        """
-        return mcp_uri(task_id, cls.PLAN_ARTIFACT_NAME)
+    The plan convention (``PLAN_ARTIFACT_NAME``, ``PLAN_WRITTEN``, ``TOKEN_ESTIMATED``,
+    :meth:`plan_uri`, :meth:`_briefing_extras`) is inherited from
+    :class:`~panopticon.workflows.planned_workflow.PlannedWorkflow`."""
 
     def tools(self) -> Sequence[Tool]:
         """`gh` is in the image (see `image_layer`); name it so the agent reaches for it."""
@@ -83,18 +48,6 @@ class GithubForgeWorkflow(Workflow):
     def image_layer(self) -> str:
         """The forge skills shell out to `gh`, so layer it onto the base image (ADR 0005)."""
         return "RUN apt-get update && apt-get install --yes --no-install-recommends gh"
-
-    def _briefing_extras(self, task: Task, *, artifacts: ArtifactStore) -> Sequence[str]:
-        """Once the plan artifact exists, surface its canonical MCP URI in the per-turn briefing so
-        the agent reads the plan back at the right URI instead of guessing (e.g. an orchestrator-
-        spawned agent handed a pre-written plan — ``artifact://<id>/plan.md`` → "Unknown resource").
-        Gated on existence so a still-to-be-planned PLANNING turn doesn't point at a missing file."""
-        if self.PLAN_ARTIFACT_NAME not in artifacts.list(task.id):
-            return ()
-        return [
-            f"This task's plan is the `{self.PLAN_ARTIFACT_NAME}` artifact — read it at this exact MCP "
-            f"resource URI: `{self.plan_uri(task.id)}` (don't guess the URI)."
-        ]
 
     def skills(self) -> Sequence[Skill]:
         """The forge skills (ADR 0004 — remote VCS is workflow-specific). The agent runs these
