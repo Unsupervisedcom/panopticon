@@ -161,10 +161,9 @@ class Tool:
 class Repo:
     """A repository tasks operate on.
 
-    Holds *references* to its per-repo secrets (ADR 0007), never the values: ``env_file`` is a
-    host path to an env-file of API-key-style secrets, and ``creds_volume`` names a persisted
-    volume of OAuth credential files. Both are injected into the task container at launch (the
-    runner), so secrets stay out of the DB, artifacts, and image layers.
+    Holds a *reference* to its per-repo secrets (ADR 0007), never the values: ``env_file`` is a
+    host path to an env-file of API-key-style secrets, injected into the task container at launch
+    (the runner), so secrets stay out of the DB, artifacts, and image layers.
 
     ``image_layer_file`` *references* the repo's Dockerfile fragment (ADR 0005's repo tier): a file
     name resolved relative to the task service's layers directory, not inline content. The task
@@ -182,7 +181,6 @@ class Repo:
     git_url: str
     default_base: str = "main"
     env_file: str | None = None
-    creds_volume: str | None = None
     image_layer_file: str | None = None
     capabilities: dict[str, Any] = field(default_factory=dict)
 

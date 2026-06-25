@@ -153,14 +153,13 @@ def test_extra_env_is_forwarded() -> None:
     assert "PANOPTICON_RECONNECT_BACKOFF=0.5" in rec.calls[1][0]
 
 
-def test_spawn_injects_repo_env_file_and_creds_mount() -> None:
+def test_spawn_injects_repo_env_file() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", run=rec).spawn(
-        "t1", env_file="/secrets/r1.env", creds_volume="panopticon-creds-r1"
+        "t1", env_file="/secrets/r1.env"
     )
     docker_run = rec.calls[1][0]
     assert docker_run[docker_run.index("--env-file") + 1] == "/secrets/r1.env"
-    assert "panopticon-creds-r1:/creds" in docker_run  # mounted at the generic creds path
 
 
 def test_spawn_omits_secret_flags_when_repo_has_none() -> None:
@@ -168,7 +167,6 @@ def test_spawn_omits_secret_flags_when_repo_has_none() -> None:
     LocalRunner("http://svc", run=rec).spawn("t1")
     docker_run = rec.calls[1][0]
     assert "--env-file" not in docker_run  # no API-key env-file
-    assert not any(v.endswith(":/creds") for v in docker_run)  # no creds volume
     # (the per-task config volume is always mounted — that's not a per-repo secret)
 
 
@@ -343,7 +341,7 @@ def test_cli_preps_the_workspace_then_spawns_with_secrets_and_mount(tmp_path: Pa
 
     rec = _Recorder()
     fake = _FakeClient(
-        {"id": "r1", "git_url": "https://forge/r1.git", "env_file": "/secrets/r1.env", "creds_volume": "creds-r1"}
+        {"id": "r1", "git_url": "https://forge/r1.git", "env_file": "/secrets/r1.env"}
     )
     cache_root, tasks_root = tmp_path / "cache", tmp_path / "tasks"
     cid = cli_main(
@@ -359,5 +357,4 @@ def test_cli_preps_the_workspace_then_spawns_with_secrets_and_mount(tmp_path: Pa
     assert "PANOPTICON_SERVICE_URL=http://svc:9" in docker_run
     assert docker_run[-1] == "img:2"
     assert docker_run[docker_run.index("--env-file") + 1] == "/secrets/r1.env"  # repo's secrets
-    assert "creds-r1:/creds" in docker_run
     assert f"{tasks_root}/t1:/workspace" in docker_run  # the per-task clone mounted as /workspace

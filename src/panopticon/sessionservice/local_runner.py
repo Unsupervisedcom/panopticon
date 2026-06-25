@@ -32,10 +32,6 @@ HOST_GATEWAY = "host.docker.internal:host-gateway"
 #: operator's own tmux and gives the terminal controller a known place to `tmux attach`.
 TMUX_SOCKET = "panopticon"
 
-#: Where a repo's OAuth credential volume is mounted in the task container (ADR 0007). The
-#: agent layer points its CLI's config dir here (Slice 6); kept generic so it isn't CLI-specific.
-CREDS_MOUNT = "/creds"
-
 #: Where a task's per-task clone is mounted — the one stable, writable path the agent works in
 #: for the whole task (ADR 0011): planning, then coding on its branch once provisioned.
 WORKSPACE_MOUNT = "/workspace"
@@ -140,15 +136,14 @@ class LocalRunner(Runner):
         task_id: str,
         *,
         env_file: str | None = None,
-        creds_volume: str | None = None,
         workspace: str | None = None,
         image: str | None = None,
         docker_in_docker: bool = False,
         memo: str | None = None,
         progress: Callable[[LifecyclePhase], None] | None = None,
     ) -> str:
-        """Spawn the task container. ``env_file``/``creds_volume`` are the task's repo's secret
-        references (ADR 0007), injected at launch — never baked into the image. ``workspace`` is the
+        """Spawn the task container. ``env_file`` is the task's repo's secret reference (ADR
+        0007), injected at launch — never baked into the image. ``workspace`` is the
         task's per-task clone on the host (ADR 0011), bind-mounted read-write at ``/workspace`` as
         the agent's working dir. ``image`` overrides the default base with the task's composed image
         (base → workflow → repo, ADR 0005); ``None`` uses the configured base. ``docker_in_docker``
@@ -191,8 +186,6 @@ class LocalRunner(Runner):
             env["PANOPTICON_DOCKER_IN_DOCKER"] = "1"
         if env_file:  # per-repo API-key secrets, injected at run (not in the image)
             docker_run += ["--env-file", env_file]
-        if creds_volume:  # per-repo OAuth creds volume, mounted at a generic path
-            docker_run += ["--volume", f"{creds_volume}:{CREDS_MOUNT}"]
         if workspace:  # the per-task clone — the agent's writable working dir (ADR 0011)
             docker_run += ["--volume", f"{workspace}:{WORKSPACE_MOUNT}", "--workdir", WORKSPACE_MOUNT]
         # Per-task config volume: persists claude's session history across respawn/recreate (the
