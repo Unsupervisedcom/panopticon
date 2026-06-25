@@ -55,6 +55,7 @@ def test_dead_runner_is_disconnected_even_with_a_stale_phase() -> None:
 @pytest.mark.parametrize(
     "phase, expected",
     [
+        (LifecyclePhase.HEALING, "healing"),
         (LifecyclePhase.CLAIMING, "claiming"),
         (LifecyclePhase.PREPARING, "preparing"),
         (LifecyclePhase.BUILDING, "building"),

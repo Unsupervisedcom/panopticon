@@ -66,8 +66,19 @@ class HostDaemon:
     def tick(self, tasks: list[JsonObj]) -> None:
         """One pass over a task snapshot: spawn each spawnable task, provision each slugged one,
         reconcile each claimed one's container-lifecycle status (down-detection), and heal each
-        orphan (a claimed task whose tmux session is gone → respawn). All four self-gate, so
-        re-running over an unchanged snapshot is a no-op."""
+        orphan (a claimed task whose tmux session is gone → respawn). All self-gate, so re-running
+        over an unchanged snapshot is a no-op.
+
+        A cheap REST-only **pre-pass flags every orphan ``healing`` first**, before any respawn. The
+        respawn loop below is serial (each :meth:`Spawner.heal` blocks on ``docker run`` + the tmux
+        session), so marking inside it would surface only the orphan currently coming back and leave
+        the queued ones reading ``down``; flagging them all up front lets the dashboard show the
+        whole batch healing at once, each clearing to ``live`` as its respawn finishes."""
+        for task in tasks:
+            try:
+                self._spawner.mark_healing(task)
+            except Exception:  # best-effort visibility — never let it stall the respawn pass below
+                _log.warning("flagging heal failed for task %s", task.get("id"), exc_info=True)
         for task in tasks:
             try:
                 self._spawner.spawn_one(task)

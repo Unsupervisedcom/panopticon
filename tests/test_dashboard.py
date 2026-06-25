@@ -683,6 +683,8 @@ def test_status_cell_displays_the_composed_status_color_coded() -> None:
     assert _status_cell({"container_status": "live"}).plain == "live"
     assert _status_cell({"container_status": "live"}).style == "green"
     assert _status_cell({"container_status": "building"}).style == "yellow"  # spawn in flight
+    assert _status_cell({"container_status": "healing"}).plain == "healing"
+    assert _status_cell({"container_status": "healing"}).style == "cyan"  # self-heal in progress
     assert _status_cell({"container_status": "down"}).style == "red"  # needs attention
     assert _status_cell({"container_status": "failed"}).style == "red"
     assert _status_cell({"container_status": "disconnected"}).style == "red"

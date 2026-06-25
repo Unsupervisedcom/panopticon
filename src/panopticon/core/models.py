@@ -46,6 +46,7 @@ class LifecyclePhase(str, Enum):
     reported phase maps straight through.
     """
 
+    HEALING = "healing"  # an orphan flagged for self-heal; queued behind the serial respawn
     CLAIMING = "claiming"  # claimed the task; spawn about to start
     PREPARING = "preparing"  # readying the per-task clone / workspace
     BUILDING = "building"  # composing + docker-building the image (the slow first-run step)
@@ -64,6 +65,7 @@ class ContainerStatus(str, Enum):
 
     NONE = "–"  # terminal task — no container concept
     QUEUED = "queued"  # unclaimed, non-terminal — waiting for a runner to claim it
+    HEALING = "healing"  # claimed, container gone, the runner is self-healing it (orphan respawn)
     CLAIMING = "claiming"
     PREPARING = "preparing"
     BUILDING = "building"

@@ -156,6 +156,44 @@ class Spawner:
             return  # container present, just not registered yet — still coming up
         self._client.clear_lifecycle(task["id"])  # container gone → composes `down`
 
+    def _is_orphan(self, task: JsonObj) -> bool:
+        """Whether ``task`` is an orphan **this** runner should self-heal: claimed by us,
+        non-terminal, and with no tmux session (the make-stop case — see :meth:`heal`). The
+        session probe is last so the cheap claim/terminal checks short-circuit it."""
+        return (
+            task.get("claimed_by") == self._runner_id
+            and task["state"] not in TERMINAL_LABELS
+            and not self._runner.has_session(task["id"])
+        )
+
+    def _respawn_count(self, task_id: str, now: float) -> int:
+        """The task's respawn count for the crash-loop guard, with the survivor-window reset applied
+        (a respawn that survived :data:`RESPAWN_RESET_SECONDS` starts a fresh budget). Read-only —
+        :meth:`heal` is what records a respawn."""
+        count, last = self._respawns.get(task_id, (0, 0.0))
+        if count and now - last >= self._respawn_reset:
+            return 0  # survived long enough since the last respawn → a fresh episode, not a loop
+        return count
+
+    def mark_healing(self, task: JsonObj) -> None:
+        """Flag an orphan as ``HEALING`` up front, before the serial respawn (:meth:`heal`) reaches
+        it — a cheap REST-only report with no spawn.
+
+        Respawning is serial (each :meth:`heal` blocks on ``docker run`` + the tmux session), so
+        marking in the respawn itself would light up only the orphan currently coming back, leaving
+        the queued ones reading ``down`` — indistinguishable from a dead task. The host daemon runs
+        this over every task *before* the respawn loop, so all orphans show ``healing`` at once and
+        each clears to ``live`` as its respawn completes. Idempotent: skips a task already flagged
+        (so it doesn't churn the change feed) and one that's exhausted its respawn budget (we've
+        stopped respawning it — let it read ``down``/``failed``, not a perpetual ``healing``)."""
+        if not self._is_orphan(task):
+            return
+        if self._respawn_count(task["id"], self._now()) >= self._max_respawns:
+            return  # crash-looped out — not actually healing it any more
+        if task.get("container_status") == ContainerStatus.HEALING.value:
+            return  # already flagged — re-reporting would only churn the change feed
+        self._report(task["id"], LifecyclePhase.HEALING)
+
     def heal(self, task: JsonObj) -> str | None:
         """Self-heal an orphaned task: respawn one this runner claims whose tmux session is gone.
 
@@ -166,6 +204,7 @@ class Spawner:
         runner, non-terminal, with **no tmux session** is respawned via the idempotent spawn path
         (:meth:`_spawn` → the runner ``docker rm --force``s the stale container and starts a fresh
         session; the agent resumes from the per-task config volume via ``claude --continue``).
+        :meth:`mark_healing` flags such an orphan ``HEALING`` before this serial respawn reaches it.
 
         Gating on session-existence distinguishes the two restart cases with no extra state: a full
         ``make stop`` leaves all sessions gone → every orphan is respawned; a runner-process-only
@@ -176,17 +215,12 @@ class Spawner:
         :data:`RESPAWN_RESET_SECONDS` resets the budget. Returns the new container id, or ``None`` when
         nothing was done. Per-tick call from the host daemon, so it runs on start and continuously."""
         task_id = task["id"]
-        if task.get("claimed_by") != self._runner_id:
-            return None  # not ours (or unclaimed) — spawn_one handles the unclaimed case
-        if task["state"] in TERMINAL_LABELS:
-            self._respawns.pop(task_id, None)  # done — forget any crash-loop tracking
-            return None
-        if self._runner.has_session(task_id):
-            return None  # a session is up — reachable, nothing to heal
-        count, last = self._respawns.get(task_id, (0, 0.0))
+        if task["state"] in TERMINAL_LABELS and task.get("claimed_by") == self._runner_id:
+            self._respawns.pop(task_id, None)  # our task is done — forget any crash-loop tracking
+        if not self._is_orphan(task):
+            return None  # not ours / terminal / a session is up — nothing to heal
         now = self._now()
-        if count and now - last >= self._respawn_reset:
-            count = 0  # survived long enough since the last respawn → a fresh episode, not a loop
+        count = self._respawn_count(task_id, now)
         if count >= self._max_respawns:
             _log.error(
                 "task %s keeps losing its tmux session (%d respawns) — leaving it for attention",

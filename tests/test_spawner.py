@@ -297,6 +297,53 @@ def test_heal_resets_the_respawn_budget_after_a_survivor_window() -> None:
     assert len(runner.spawned) == 3
 
 
+def test_mark_healing_flags_an_orphan_without_respawning_it() -> None:
+    # The pre-pass: an orphan (claimed by us, no session) is reported `healing` up front — a
+    # REST-only flag, no spawn — so it reads `healing` while it waits behind the serial respawn.
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner(session=False)
+    _spawner(client, runner).mark_healing(_orphan())
+    assert client.phases == [("t1", "healing", None)]
+    assert runner.spawned == []  # flagging only — the respawn is heal()'s job
+
+
+def test_mark_healing_skips_healthy_unclaimed_and_terminal_tasks() -> None:
+    client = _FakeClient(repo=_REPO)
+    _spawner(client, _FakeRunner(session=True)).mark_healing(_orphan())  # session alive → reachable
+    _spawner(client, _FakeRunner(session=False)).mark_healing(
+        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": "host-9"}
+    )  # another runner's
+    _spawner(client, _FakeRunner(session=False)).mark_healing(
+        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "COMPLETE", "claimed_by": "host-1"}
+    )  # terminal
+    assert client.phases == []  # nothing to heal → nothing flagged
+
+
+def test_mark_healing_does_not_re_flag_an_already_healing_orphan() -> None:
+    # Idempotent across passes: once an orphan reads `healing`, re-flagging it would only churn the
+    # change feed (waking the dashboard for no change), so it's skipped.
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner(session=False)
+    orphan = _orphan()
+    orphan["container_status"] = "healing"  # the prior pass already flagged it
+    _spawner(client, runner).mark_healing(orphan)
+    assert client.phases == []
+
+
+def test_mark_healing_skips_a_crash_looped_out_orphan() -> None:
+    # Once we've stopped respawning a task (budget exhausted), it should read `down`/`failed`, not a
+    # perpetual `healing` — so the pre-pass stops flagging it too.
+    clock = {"t": 0.0}
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner(session=False)
+    spawner = Spawner(
+        client, runner, runner_id="host-1",  # type: ignore[arg-type]
+        cache=CloneCache("/cache", run=_no_op_run, exists=lambda _p: True), tasks_root="/tasks",
+        git=GitClones(run=_no_op_run), now=lambda: clock["t"], max_respawns=2, respawn_reset=60.0,
+    )
+    spawner.heal(_orphan()); spawner.heal(_orphan())  # exhaust the respawn budget
+    client.phases.clear()
+    spawner.mark_healing(_orphan())  # capped out → not flagged
+    assert client.phases == []
+
+
 def test_spawn_one_skips_terminal_and_already_claimed_tasks() -> None:
     client, runner = _FakeClient(repo=_REPO), _FakeRunner()
     spawner = _spawner(client, runner)

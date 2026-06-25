@@ -168,11 +168,13 @@ def _turn_cell(task: JsonObj) -> Text:
 
 # Container-status colors. The status is composed by the **task service** (folding the session
 # service's reported spawn phase with registration presence + runner liveness) and the dashboard
-# just displays it: green = live; yellow = a spawn in flight (queued → … → awaiting); red = needs
-# attention (down/failed/disconnected); the em-dash (terminal task) is dimmed.
+# just displays it: green = live; yellow = a spawn in flight (queued → … → awaiting); cyan = the
+# runner is self-healing an orphan (respawning a recovered task); red = needs attention
+# (down/failed/disconnected); the em-dash (terminal task) is dimmed.
 _STATUS_COLORS = {
     "live": "green",
     "queued": "yellow",
+    "healing": "cyan",
     "claiming": "yellow",
     "preparing": "yellow",
     "building": "yellow",

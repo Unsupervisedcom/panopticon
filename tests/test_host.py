@@ -56,6 +56,9 @@ def test_tick_isolates_a_failing_task_from_the_others() -> None:
     seen: list[str] = []
 
     class _Spawner:
+        def mark_healing(self, task: JsonObj) -> None:
+            return None
+
         def spawn_one(self, task: JsonObj) -> None:
             seen.append(task["id"])
             if task["id"] == "t1":
@@ -81,6 +84,9 @@ def test_tick_heals_each_task_in_the_snapshot() -> None:
     healed: list[str] = []
 
     class _Spawner:
+        def mark_healing(self, task: JsonObj) -> None:
+            return None
+
         def spawn_one(self, task: JsonObj) -> None:
             return None
 
@@ -98,6 +104,33 @@ def test_tick_heals_each_task_in_the_snapshot() -> None:
     assert healed == ["t1", "t2"]
 
 
+def test_tick_flags_every_orphan_healing_before_any_respawn() -> None:
+    # The visibility fix: because respawns are serial (each heal blocks), the pass flags *all*
+    # orphans `healing` up front — so t2 reads `healing` while t1's slow respawn is still running,
+    # rather than `down`. Recorded as a single interleaving: both marks land before either respawn.
+    events: list[str] = []
+
+    class _Spawner:
+        def mark_healing(self, task: JsonObj) -> None:
+            events.append(f"mark:{task['id']}")
+
+        def spawn_one(self, task: JsonObj) -> None:
+            return None
+
+        def reconcile(self, task: JsonObj) -> None:
+            return None
+
+        def heal(self, task: JsonObj) -> None:
+            events.append(f"heal:{task['id']}")
+
+    class _Provisioner:
+        def provision(self, task: JsonObj) -> None:
+            return None
+
+    HostDaemon(_FakeClient([]), _Spawner(), _Provisioner()).tick([{"id": "t1"}, {"id": "t2"}])  # type: ignore[arg-type]
+    assert events == ["mark:t1", "mark:t2", "heal:t1", "heal:t2"]  # all marks precede any respawn
+
+
 def test_run_blocks_on_the_change_feed_and_feeds_the_version_back() -> None:
     # The loop waits on `list_tasks_versioned(wait=, since=)`, not a fixed-interval re-poll: each
     # call's returned version is fed back as the next `since`, so we wake on the *next* change.
@@ -106,6 +139,9 @@ def test_run_blocks_on_the_change_feed_and_feeds_the_version_back() -> None:
     class _Spawner:
         def __init__(self) -> None:
             self.seen: list[str] = []
+
+        def mark_healing(self, task: JsonObj) -> None:
+            return None
 
         def spawn_one(self, task: JsonObj) -> None:
             self.seen.append(task["id"])
@@ -138,6 +174,9 @@ def test_run_survives_a_whole_pass_failure() -> None:
     passes = {"n": 0}
 
     class _Spawner:
+        def mark_healing(self, task: JsonObj) -> None:
+            return None
+
         def spawn_one(self, task: JsonObj) -> None:
             return None
 
