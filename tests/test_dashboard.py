@@ -47,11 +47,6 @@ _TASK: dict[str, Any] = {
 }
 
 
-def _at(stamp: str) -> list[dict[str, Any]]:
-    """A one-entry history whose latest timestamp is ``stamp`` (the sort's recency key)."""
-    return [{"at": stamp, "from_state": None, "to_state": "WORKING", "responsibilities": []}]
-
-
 def _raise(*args: Any, **kwargs: Any) -> Any:
     """Stand in for a failing REST call (e.g. a down service)."""
     raise RuntimeError("service unavailable")
@@ -100,6 +95,12 @@ class _FakeClient:
     def list_tasks(self) -> list[dict[str, Any]]:
         self.list_tasks_calls += 1
         return self._tasks
+
+    def get_task(self, task_id: str) -> dict[str, Any]:
+        task = next((t for t in self._tasks if t["id"] == task_id), None)
+        if task is None:
+            raise RuntimeError(f"task {task_id!r} not found")
+        return task
 
     def list_tasks_versioned(
         self, *, since: int = 0, wait: float | None = None
@@ -298,19 +299,19 @@ async def test_pressing_d_toggles_the_detail_pane() -> None:
         assert not app._detail_visible and detail.styles.display == "none"
 
 
-async def test_tasks_are_sorted_live_then_user_then_recent() -> None:
+async def test_tasks_are_sorted_live_then_user_then_slug() -> None:
     # The order: (1) non-terminal above terminal, (2) the user's turn above the agent's,
-    # (3) most-recently-updated (latest history `at`) first.
+    # (3) slug (then id) as the stable tiebreaker within each group.
     tasks = [
-        # terminal tasks — sink below all live work even though their `at` is the most recent.
-        {**_TASK, "id": "t-done", "state": "COMPLETE", "turn": "user", "history": _at("2026-06-22T23:00:00+00:00")},
-        {**_TASK, "id": "t-drop", "state": "DROPPED", "turn": "agent", "history": _at("2026-06-22T22:00:00+00:00")},
-        # live agent-turn tasks — below the user-turn ones, newest of the two first.
-        {**_TASK, "id": "t-agent-new", "turn": "agent", "history": _at("2026-06-22T13:00:00+00:00")},
-        {**_TASK, "id": "t-agent-old", "turn": "agent", "history": _at("2026-06-22T08:00:00+00:00")},
-        # live user-turn tasks — at the very top, newest first.
-        {**_TASK, "id": "t-user-new", "turn": "user", "history": _at("2026-06-22T10:00:00+00:00")},
-        {**_TASK, "id": "t-user-old", "turn": "user", "history": _at("2026-06-22T09:00:00+00:00")},
+        # terminal tasks — sink below all live work.
+        {**_TASK, "id": "t-done", "slug": "done", "state": "COMPLETE", "turn": "user"},
+        {**_TASK, "id": "t-drop", "slug": "drop", "state": "DROPPED", "turn": "agent"},
+        # live agent-turn tasks — below the user-turn ones, sorted by slug.
+        {**_TASK, "id": "t-agent-b", "slug": "bravo", "turn": "agent"},
+        {**_TASK, "id": "t-agent-a", "slug": "alpha", "turn": "agent"},
+        # live user-turn tasks — at the very top, sorted by slug.
+        {**_TASK, "id": "t-user-b", "slug": "zebra", "turn": "user"},
+        {**_TASK, "id": "t-user-a", "slug": "mango", "turn": "user"},
     ]
     app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
@@ -319,21 +320,20 @@ async def test_tasks_are_sorted_live_then_user_then_recent() -> None:
         keys = [str(k.value) for k in table.rows]
         order = [k for k in keys if k != _SEPARATOR_KEY]  # task order, ignoring the divider row
         assert order == [
-            "t-user-new", "t-user-old",    # live, user's turn, newest first
-            "t-agent-new", "t-agent-old",  # live, agent's turn, newest first
-            "t-done", "t-drop",            # terminal last (their recent `at` doesn't lift them)
+            "t-user-a", "t-user-b",    # live, user's turn, slug order
+            "t-agent-a", "t-agent-b",  # live, agent's turn, slug order
+            "t-done", "t-drop",        # terminal last
         ]
         # the divider sits exactly between the last active row and the first terminal one
-        assert keys.index(_SEPARATOR_KEY) == keys.index("t-agent-old") + 1
+        assert keys.index(_SEPARATOR_KEY) == keys.index("t-agent-b") + 1
         assert keys.index(_SEPARATOR_KEY) == keys.index("t-done") - 1
 
 
 async def test_sort_breaks_ties_on_slug() -> None:
-    # Same terminal-ness, turn, and `at` → fall back to slug (then id) for a stable order.
-    at = _at("2026-06-22T10:00:00+00:00")
+    # Same terminal-ness and turn → fall back to slug (then id) for a stable order.
     tasks = [
-        {**_TASK, "id": "t2", "slug": "zebra", "turn": "user", "history": at},
-        {**_TASK, "id": "t1", "slug": "alpha", "turn": "user", "history": at},
+        {**_TASK, "id": "t2", "slug": "zebra", "turn": "user"},
+        {**_TASK, "id": "t1", "slug": "alpha", "turn": "user"},
     ]
     app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
     async with app.run_test() as pilot:

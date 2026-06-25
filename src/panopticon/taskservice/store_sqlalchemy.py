@@ -31,6 +31,7 @@ from sqlalchemy.orm import (
     Mapped,
     Session,
     mapped_column,
+    noload,
     relationship,
     sessionmaker,
 )
@@ -295,6 +296,13 @@ class SqlAlchemyStore(Store):
     def _list_tasks(self) -> list[Task]:
         with self._session() as s:
             return [r.to_domain() for r in s.scalars(select(_TaskRow).order_by(_TaskRow.id))]
+
+    def _list_tasks_summary(self) -> list[Task]:
+        with self._session() as s:
+            rows = s.scalars(
+                select(_TaskRow).options(noload(_TaskRow.history)).order_by(_TaskRow.id)
+            )
+            return [r.to_domain() for r in rows]
 
     def _create_task(self, task: Task) -> None:
         with self._session.begin() as s:

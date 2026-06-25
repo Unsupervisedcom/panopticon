@@ -254,6 +254,13 @@ class TaskService:
     def list_tasks(self) -> list[Task]:
         return self._store.list_tasks()
 
+    def list_tasks_summary(self, *, terminal: bool | None = None) -> list[Task]:
+        """Return tasks without history. Optionally filter to terminal-only or active-only."""
+        tasks = self._store.list_tasks_summary()
+        if terminal is None:
+            return tasks
+        return [t for t in tasks if (t.state in TERMINAL_LABELS) == terminal]
+
     def tasks_version(self) -> int:
         """The change-feed version — bumped on every task mutation (ADR 0006 single writer) **and**
         on every ephemeral liveness change (registration, runner liveness, lifecycle phase), so a

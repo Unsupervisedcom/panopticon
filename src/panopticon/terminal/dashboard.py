@@ -57,7 +57,6 @@ import time
 import webbrowser
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -77,24 +76,16 @@ from panopticon.core.state import TERMINAL_LABELS
 from panopticon.taskservice.artifacts_fs import DEFAULT_ARTIFACTS, FilesystemArtifactStore
 
 
-def _sort_key(task: JsonObj) -> tuple[bool, bool, float, str]:
-    """Order rows for the operator: live work first, then by whose turn it is, then recency.
+def _sort_key(task: JsonObj) -> tuple[bool, bool, str]:
+    """Order rows for the operator: live work first, then by whose turn it is, then slug.
 
     1. non-terminal before terminal — COMPLETE/DROPPED sink to the bottom;
     2. the user's turn before the agent's — tasks waiting on the operator surface first;
-    3. most-recently-updated first — the latest history entry's timestamp.
-
-    Recency is the latest history ``at``; turn flips / ``blocked`` / ``url`` changes don't append
-    history, so only a state transition moves a task on this axis. Ties break on slug (then id)
-    for a stable, readable order.
+    3. slug (then id) for a stable, readable order within each group.
     """
-    state = task["state"]
-    last = task["history"][-1].get("at") if task["history"] else None
-    recency = -datetime.fromisoformat(last).timestamp() if last else 0.0  # negate → newest first
     return (
-        state in TERMINAL_LABELS,  # False (live) before True (terminal)
+        task["state"] in TERMINAL_LABELS,  # False (live) before True (terminal)
         task["turn"] != "user",  # False (user) before True (agent)
-        recency,
         task["slug"] or task["id"],
     )
 
@@ -227,7 +218,7 @@ def render_detail(task: JsonObj) -> str:
         est = _short_tokens(task.get("token_estimate"))
         lines += ["", f"tokens: {used} used / {est} est"]
     lines += ["", "history:"]
-    for entry in task["history"]:
+    for entry in task.get("history") or []:
         line = f"  {entry['from_state'] or '∅'} → {entry['to_state']}"
         if entry.get("trigger"):
             line += f" ({entry['trigger']})"
@@ -771,6 +762,7 @@ class Dashboard(App[None]):
         self._refresh_interval = refresh_interval  # change-feed long-poll wait (0/None → manual only)
         self._version = 0  # the change-feed cursor (X-Tasks-Version) the worker long-polls against
         self._tasks: dict[str, JsonObj] = {}
+        self._task_detail_cache: dict[str, JsonObj] = {}  # full task (with history) fetched on demand
         self._repo_names: dict[str, str] = {}  # repo id → name; populated by _load_repo_names
         self._current: str | None = None
         self._query: str = ""  # active search filter ("" → no filter); see action_search
@@ -867,7 +859,8 @@ class Dashboard(App[None]):
         table = self.query_one("#tasks", DataTable)
         selected = self._current  # keep the operator's highlight across the rebuild (feed refresh)
         table.clear()
-        ordered = sorted(self._client.list_tasks(), key=_sort_key)  # live/user/recent first
+        self._task_detail_cache.clear()  # tasks may have changed; stale detail should not linger
+        ordered = sorted(self._client.list_tasks(), key=_sort_key)  # terminal last, then slug
         # Inject repo_name so _matches can search on it without a separate lookup per task.
         for task in ordered:
             task["repo_name"] = self._repo_names.get(str(task.get("repo_id") or ""), "")
@@ -907,13 +900,32 @@ class Dashboard(App[None]):
         key = event.row_key.value
         self._update_detail(str(key) if key is not None else None)
 
+    def _full_task(self, task_id: str) -> JsonObj | None:
+        """Return the full task (with history) for the detail pane, using a per-refresh cache.
+
+        ``GET /tasks`` only returns cheap summary data (no history); the detail pane needs history,
+        so we call ``GET /tasks/{id}`` on demand and cache the result until the next refresh clears
+        it (``action_refresh`` calls ``_task_detail_cache.clear()``).
+        """
+        if task_id not in self._task_detail_cache:
+            try:
+                self._task_detail_cache[task_id] = self._client.get_task(task_id)
+            except Exception:
+                return self._tasks.get(task_id)  # fall back to summary on fetch error
+        return self._task_detail_cache.get(task_id)
+
     def _update_detail(self, task_id: str | None) -> None:
         if task_id == _SEPARATOR_KEY:  # the divider isn't a task — select nothing, blank the pane
             self._current = None
             self.query_one("#detail", Static).update("")
             return
         self._current = task_id
-        task = self._tasks.get(task_id) if task_id else None
+        # When the detail pane is visible, fetch the full task (with history) on demand; when hidden,
+        # use the summary already in self._tasks — no REST call, no history, but the basic fields render.
+        if self._detail_visible and task_id:
+            task: JsonObj | None = self._full_task(task_id)
+        else:
+            task = self._tasks.get(task_id) if task_id else None
         # wrap in Text so the pane renders literally — never parse task content as console markup
         # (a "[" in e.g. a docker-command lifecycle_detail would otherwise crash the whole dashboard)
         self.query_one("#detail", Static).update(Text(render_detail(task)) if task else Text("no tasks"))
@@ -1050,6 +1062,8 @@ class Dashboard(App[None]):
         self.query_one("#detail", Static).styles.display = (
             "block" if self._detail_visible else "none"
         )
+        if self._detail_visible:
+            self._update_detail(self._current)  # fetch and render the current task's full detail
 
     def action_help(self) -> None:
         """`?`: open the help screen — the full keymap (the footer shows only the essentials)."""

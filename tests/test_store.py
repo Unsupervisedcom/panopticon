@@ -464,3 +464,17 @@ def test_full_task_round_trips_and_exercises_every_field(store: Store) -> None:
 
     store.create_task(task)
     assert store.get_task(task.id) == task  # every field survives the round trip (dataclass __eq__)
+
+
+def test_list_tasks_summary_returns_tasks_without_history(store: Store) -> None:
+    _seed_repo(store)
+    _new_task(store)
+    tasks = store.list_tasks_summary()
+    assert len(tasks) == 1
+    assert tasks[0].history == []  # no history loaded
+    assert tasks[0].state == "ITERATING"  # scalar fields are present
+    assert tasks[0].id == "t1"
+
+    # list_tasks still returns full history
+    full = store.list_tasks()
+    assert len(full[0].history) == 1
