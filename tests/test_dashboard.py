@@ -1023,7 +1023,7 @@ async def test_repos_screen_edits_a_repo_via_patch() -> None:
         app.screen.query_one("#field-name", Input).value = "new"
         await pilot.press("enter")
         await pilot.pause()
-        # Core fields plus the privileged capability are sent; image_layer is untouched (PATCH).
+        # Core fields plus the privileged capability are sent; image_layer_file is untouched (PATCH).
         # Edit mode never auto-fills, so the blank creds_volume stays blank. The checkbox is
         # unchecked here, so docker_in_docker is False.
         assert fake.updated_repos == [

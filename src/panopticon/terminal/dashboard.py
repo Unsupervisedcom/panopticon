@@ -408,7 +408,7 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     Create mode (no ``repo``): every field is an editable :class:`Input`, including ``id``.
     Edit mode: ``id`` is shown read-only (the primary key can't change) and the rest are
     pre-populated. The **privileged docker** checkbox maps to the repo's
-    ``capabilities["docker_in_docker"]`` (runs the task container ``--privileged``); ``image_layer``
+    ``capabilities["docker_in_docker"]`` (runs the task container ``--privileged``); ``image_layer_file``
     and any other capability keys aren't edited in the TUI and a PATCH update leaves them untouched."""
 
     CSS = """
@@ -591,7 +591,7 @@ class ReposScreen(ModalScreen[None]):
         def save(values: dict[str, Any] | None) -> None:
             if values is None:
                 return
-            # PATCH the core fields; image_layer is left intact. The privileged toggle is merged
+            # PATCH the core fields; image_layer_file is left intact. The privileged toggle is merged
             # onto the repo's existing capabilities so other keys (if any) survive.
             capabilities = {
                 **self._repos[repo_id].get("capabilities", {}),

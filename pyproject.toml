@@ -3,6 +3,8 @@ name = "panopticon"
 version = "0.0.1"
 description = "Orchestrate multiple coding agents across isolated tasks and configurable workflows."
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     "fastapi>=0.110",
     "sqlalchemy>=2.0.50",

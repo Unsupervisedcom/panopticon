@@ -67,6 +67,41 @@ def test_workflow_image_layer_surfaces_github_peer_revieweds_gh_layer(tmp_path: 
         assert "gh" in c.get("/workflows/github-peer-reviewed/image-layer").json()["layer"]  # forge skills need gh
 
 
+def _repo_layer_client(tmp_path: Path, *, image_layer_file: str | None) -> TestClient:
+    from panopticon.taskservice.layers_fs import FilesystemLayerStore
+
+    layers = tmp_path / "layers"
+    layers.mkdir()
+    (layers / "r1.layer").write_text("RUN pip install uv")
+    svc = TaskService(
+        SqlAlchemyStore(), {"spike": Spike()}, FilesystemArtifactStore(tmp_path / "artifacts"),
+        layers=FilesystemLayerStore(layers),
+    )
+    svc.create_repo(Repo(id="r1", name="acme", git_url="https://x/r1.git", image_layer_file=image_layer_file))
+    return TestClient(create_app(svc))
+
+
+def test_repo_image_layer_endpoint_reads_the_referenced_file(tmp_path: Path) -> None:
+    # image_layer_file references a file under the layers dir; the endpoint serves its content.
+    with _repo_layer_client(tmp_path, image_layer_file="r1.layer") as c:
+        assert c.get("/repos/r1/image-layer").json() == {"layer": "RUN pip install uv"}
+
+
+def test_repo_image_layer_empty_when_unset(tmp_path: Path) -> None:
+    with _repo_layer_client(tmp_path, image_layer_file=None) as c:
+        assert c.get("/repos/r1/image-layer").json() == {"layer": ""}  # no repo layer declared
+
+
+def test_repo_image_layer_missing_file_404(tmp_path: Path) -> None:
+    with _repo_layer_client(tmp_path, image_layer_file="absent.layer") as c:
+        assert c.get("/repos/r1/image-layer").status_code == 404  # configured but no such file
+
+
+def test_repo_image_layer_unknown_repo_404(tmp_path: Path) -> None:
+    with _repo_layer_client(tmp_path, image_layer_file=None) as c:
+        assert c.get("/repos/ghost/image-layer").status_code == 404
+
+
 def test_mcp_is_mounted(client: TestClient) -> None:
     # The MCP streamable-HTTP app is mounted at /mcp (in-container agents connect there); it must
     # be a mount, not a REST route, and reachable (i.e. not a REST 404).

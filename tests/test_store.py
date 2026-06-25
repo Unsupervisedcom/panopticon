@@ -62,7 +62,7 @@ def test_create_and_get_repo(store: Store) -> None:
     assert got.name == "acme/widgets"
     assert got.default_base == "main"
     assert got.env_file is None and got.creds_volume is None  # references default to unset
-    assert got.image_layer is None  # no repo image layer by default
+    assert got.image_layer_file is None  # no repo image layer by default
     assert got.capabilities == {}  # no elevated capabilities by default
 
 
@@ -70,15 +70,15 @@ def test_repo_secret_references_round_trip(store: Store) -> None:
     store.create_repo(
         Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git",
              env_file="/secrets/r1.env", creds_volume="panopticon-creds-r1",
-             image_layer="RUN pip install uv", capabilities={"docker_in_docker": True})
+             image_layer_file="r1.layer", capabilities={"docker_in_docker": True})
     )
     got = store.get_repo("r1")
     assert got is not None
     assert got.env_file == "/secrets/r1.env"
     assert got.creds_volume == "panopticon-creds-r1"
-    assert got.image_layer == "RUN pip install uv"
+    assert got.image_layer_file == "r1.layer"
     assert got.capabilities == {"docker_in_docker": True}  # JSON capabilities round-trip
-    assert got.image_layer == "RUN pip install uv"  # ADR 0005 repo tier round-trips
+    assert got.image_layer_file == "r1.layer"  # ADR 0005 repo tier round-trips
 
 
 def test_get_missing_repo_returns_none(store: Store) -> None:
@@ -100,12 +100,12 @@ def test_list_repos(store: Store) -> None:
 def test_update_repo_round_trips(store: Store) -> None:
     store.create_repo(
         Repo(id="r1", name="old", git_url="https://x/old.git",
-             image_layer="RUN pip install uv", capabilities={"docker_in_docker": True})
+             image_layer_file="r1.layer", capabilities={"docker_in_docker": True})
     )
     store.update_repo(
         Repo(id="r1", name="new", git_url="https://x/new.git", default_base="trunk",
              env_file="/secrets/r1.env", creds_volume="creds-r1",
-             image_layer="RUN pip install uv", capabilities={"docker_in_docker": True})
+             image_layer_file="r1.layer", capabilities={"docker_in_docker": True})
     )
     got = store.get_repo("r1")
     assert got is not None
@@ -114,7 +114,7 @@ def test_update_repo_round_trips(store: Store) -> None:
     assert got.default_base == "trunk"
     assert got.env_file == "/secrets/r1.env"
     assert got.creds_volume == "creds-r1"
-    assert got.image_layer == "RUN pip install uv"  # untouched fields persist
+    assert got.image_layer_file == "r1.layer"  # untouched fields persist
     assert got.capabilities == {"docker_in_docker": True}
 
 

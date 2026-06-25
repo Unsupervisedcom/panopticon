@@ -130,7 +130,10 @@ class Spawner:
         ``None`` when neither tier contributes a layer (the runner falls back to the base image).
         E.g. github-peer-reviewed layers `gh` for its forge skills, then the repo layers its toolchain (`uv`,
         `make`). Docker layer-caches, so this is a no-op once built."""
-        layers = [self._client.workflow_image_layer(workflow), repo.get("image_layer") or ""]
+        layers = [
+            self._client.workflow_image_layer(workflow),
+            self._client.repo_image_layer(repo["id"]),
+        ]
         layers = [layer for layer in layers if layer.strip()]
         if not layers:
             return None

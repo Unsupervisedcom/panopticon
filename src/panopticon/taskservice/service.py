@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from panopticon.core.artifacts import ArtifactStore
+from panopticon.core.layers import LayerStore
 from panopticon.core.models import (
     Actor,
     ContainerStatus,
@@ -110,12 +111,14 @@ class TaskService:
         workflows: Mapping[str, Workflow],
         artifacts: ArtifactStore,
         *,
+        layers: LayerStore | None = None,
         clock: Callable[[], str] = _utc_now_iso,
         id_factory: Callable[[], str] = _uuid_hex,
     ) -> None:
         self._store = store
         self._workflows = dict(workflows)
         self._artifacts = artifacts
+        self._layers = layers
         self._clock = clock
         self._id = id_factory
         self._registrations: dict[str, Registration] = {}
@@ -147,7 +150,7 @@ class TaskService:
     def update_repo(self, repo_id: str, changes: Mapping[str, Any]) -> Repo:
         """Apply a partial update to a repo: merge ``changes`` onto the stored repo and persist.
 
-        Read-modify-write, so any field not in ``changes`` (e.g. ``image_layer`` /
+        Read-modify-write, so any field not in ``changes`` (e.g. ``image_layer_file`` /
         ``capabilities``, which the dashboard never sends) is preserved. ``id`` is the key and
         can't be reassigned. Raises :class:`NotFound` if the repo is unknown.
         """
@@ -157,6 +160,25 @@ class TaskService:
         updated = replace(existing, **{k: v for k, v in changes.items() if k != "id"})
         self._store.update_repo(updated)
         return updated
+
+    def repo_image_layer(self, repo_id: str) -> str:
+        """The repo's Dockerfile layer (ADR 0005's repo tier), read from its referenced file.
+
+        ``Repo.image_layer_file`` is a file name resolved relative to the configured layers
+        directory; this reads its content so the runner can compose it over REST (mirroring
+        :meth:`workflow_image_layer`). Empty string when the repo declares no layer. Raises
+        :class:`NotFound` when a referenced file is configured but absent (or no layer store is
+        wired), and the layer store rejects a name that escapes its root.
+        """
+        name = self.get_repo(repo_id).image_layer_file  # raises NotFound for an unknown repo
+        if not name:
+            return ""
+        if self._layers is None:
+            raise NotFound(f"no layer store configured to read image layer {name!r}")
+        content = self._layers.get(name)
+        if content is None:
+            raise NotFound(f"image layer file {name!r} not found")
+        return content.decode()
 
     # -- workflows ----------------------------------------------------------------
 
