@@ -297,10 +297,13 @@ async def test_pressing_d_toggles_the_detail_pane() -> None:
 
 
 async def test_tasks_are_sorted_live_then_user_then_recent() -> None:
-    # The order: (1) non-terminal above terminal, (2) the user's turn above the agent's,
+    # The order: (1) non-terminal above terminal, (2) turn priority differs by group — for active
+    # tasks the user's turn surfaces first; for terminal tasks the agent's turn surfaces first
+    # (tasks the agent just finished appear at the top of the completed section),
     # (3) most-recently-updated (latest history `at`) first.
     tasks = [
         # terminal tasks — sink below all live work even though their `at` is the most recent.
+        # Within the terminal section, agent-turn (t-drop) comes before user-turn (t-done).
         {**_TASK, "id": "t-done", "state": "COMPLETE", "turn": "user", "history": _at("2026-06-22T23:00:00+00:00")},
         {**_TASK, "id": "t-drop", "state": "DROPPED", "turn": "agent", "history": _at("2026-06-22T22:00:00+00:00")},
         # live agent-turn tasks — below the user-turn ones, newest of the two first.
@@ -319,11 +322,11 @@ async def test_tasks_are_sorted_live_then_user_then_recent() -> None:
         assert order == [
             "t-user-new", "t-user-old",    # live, user's turn, newest first
             "t-agent-new", "t-agent-old",  # live, agent's turn, newest first
-            "t-done", "t-drop",            # terminal last (their recent `at` doesn't lift them)
+            "t-drop", "t-done",            # terminal last; agent-turn (t-drop) before user-turn (t-done)
         ]
         # the divider sits exactly between the last active row and the first terminal one
         assert keys.index(_SEPARATOR_KEY) == keys.index("t-agent-old") + 1
-        assert keys.index(_SEPARATOR_KEY) == keys.index("t-done") - 1
+        assert keys.index(_SEPARATOR_KEY) == keys.index("t-drop") - 1
 
 
 async def test_sort_breaks_ties_on_slug() -> None:

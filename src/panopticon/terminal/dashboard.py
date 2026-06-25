@@ -81,7 +81,9 @@ def _sort_key(task: JsonObj) -> tuple[bool, bool, float, str]:
     """Order rows for the operator: live work first, then by whose turn it is, then recency.
 
     1. non-terminal before terminal — COMPLETE/DROPPED sink to the bottom;
-    2. the user's turn before the agent's — tasks waiting on the operator surface first;
+    2. turn priority differs by group: for active tasks the user's turn comes first (tasks waiting
+       on the operator surface early); for terminal tasks the agent's turn comes first (tasks the
+       agent just finished surface at the top of the completed section);
     3. most-recently-updated first — the latest history entry's timestamp.
 
     Recency is the latest history ``at``; turn flips / ``blocked`` / ``url`` changes don't append
@@ -89,11 +91,13 @@ def _sort_key(task: JsonObj) -> tuple[bool, bool, float, str]:
     for a stable, readable order.
     """
     state = task["state"]
+    is_terminal = state in TERMINAL_LABELS
     last = task["history"][-1].get("at") if task["history"] else None
     recency = -datetime.fromisoformat(last).timestamp() if last else 0.0  # negate → newest first
+    turn_first = "agent" if is_terminal else "user"
     return (
-        state in TERMINAL_LABELS,  # False (live) before True (terminal)
-        task["turn"] != "user",  # False (user) before True (agent)
+        is_terminal,  # False (live) before True (terminal)
+        task["turn"] != turn_first,  # False (priority turn) before True (other turn)
         recency,
         task["slug"] or task["id"],
     )
@@ -121,7 +125,7 @@ _SEPARATOR_KEY = "__separator__"
 def _separator_cells(columns: int) -> list[Text]:
     """A dim box-drawing rule, one cell per task-table column — the visual divider between the
     active tasks and the terminal (COMPLETE/DROPPED) ones that sink below them."""
-    return [Text("─" * 8, style="dim") for _ in range(columns)]
+    return [Text("─" * 100, style="dim") for _ in range(columns)]
 
 
 def _slug_cell(task: JsonObj) -> Text:
@@ -186,8 +190,10 @@ _STATUS_COLORS = {
 }
 
 
-def _status_cell(task: JsonObj) -> Text:
+def _status_cell(task: JsonObj, *, is_terminal: bool = False) -> Text:
     """The container column: the task service's composed ``container_status``, color-coded."""
+    if is_terminal:
+        return Text("–", style="dim")
     status = task.get("container_status") or "–"
     return Text(status, style=_STATUS_COLORS.get(status, "dim"))
 
@@ -864,7 +870,7 @@ class Dashboard(App[None]):
                 separated = True
             seen_active = seen_active or not terminal
             table.add_row(
-                task["state"], _turn_cell(task), _status_cell(task), _slug_cell(task),
+                task["state"], _turn_cell(task), _status_cell(task, is_terminal=terminal), _slug_cell(task),
                 key=task["id"],
             )
         target = selected if selected in self._tasks else next(iter(self._tasks), None)
