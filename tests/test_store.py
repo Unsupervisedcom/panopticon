@@ -464,3 +464,31 @@ def test_full_task_round_trips_and_exercises_every_field(store: Store) -> None:
 
     store.create_task(task)
     assert store.get_task(task.id) == task  # every field survives the round trip (dataclass __eq__)
+
+
+# -- on-disk engine config (WAL + QueuePool) ----------------------------------------
+
+
+def test_on_disk_store_uses_queue_pool(tmp_path: Path) -> None:
+    from sqlalchemy.pool import QueuePool
+
+    store = SqlAlchemyStore(f"sqlite:///{tmp_path / 'tasks.db'}")
+    assert isinstance(store._engine.pool, QueuePool)
+    store.close()
+
+
+def test_on_disk_store_enables_wal_mode(tmp_path: Path) -> None:
+    store = SqlAlchemyStore(f"sqlite:///{tmp_path / 'tasks.db'}")
+    with store._engine.connect() as conn:
+        result = conn.exec_driver_sql("PRAGMA journal_mode").fetchone()
+    assert result is not None
+    assert result[0] == "wal"
+    store.close()
+
+
+def test_in_memory_store_uses_static_pool(tmp_path: Path) -> None:
+    from sqlalchemy.pool import StaticPool
+
+    store = SqlAlchemyStore("sqlite://")
+    assert isinstance(store._engine.pool, StaticPool)
+    store.close()
