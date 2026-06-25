@@ -78,8 +78,8 @@ docker/Dockerfile  # base task-container image (ADR 0005 base layer): python + g
   tests. Use a short flag **only** where the tool has no long form — `tmux` (single-letter
   options only), `ssh -t`, `git -C` / `git worktree add -b`, and `python -m`.
 - **No LLMs in tests.** Automated tests never call a real LLM/agent. The agent launcher
-  (`container/agent.py`) splits a deterministic, tested **bootstrap** (render skills, point at
-  creds) from the **launch** (real `claude`), which is injected as a fake in tests and only runs
+  (`container/agent.py`) splits a deterministic, tested **bootstrap** (render skills, wire MCP)
+  from the **launch** (real `claude`), which is injected as a fake in tests and only runs
   for real in `skipif`-gated/live containers.
 
 ## Dev commands
@@ -205,11 +205,13 @@ commands the Makefile wraps).
 ## Glossary
 
 - **Task** — a unit of work; identity is `id`, label is `slug`.
-- **Repo** — a repository tasks operate on. Holds *references* to its per-repo secrets
-  (ADR 0007) — `env_file` (API-key env-file path) and `creds_volume` (OAuth creds volume) —
-  never the values; the runner injects them at launch (`--env-file` + `-v <vol>:/creds`,
-  Slice 5), so a task gets only its own repo's secrets. `panopticon login <repo> [cmd]`
-  populates the creds volume interactively (the claude OAuth command arrives in Slice 6). Also holds
+- **Repo** — a repository tasks operate on. Holds `env_file` (a *reference* — a host path to an
+  env-file of secrets, ADR 0007), never the values; the runner injects it at launch (`--env-file`),
+  so a task gets only its own repo's secrets. The env-file carries the container's
+  `CLAUDE_CODE_OAUTH_TOKEN` — a **non-rotating `claude setup-token` the operator adds** (ADR 0012
+  retired the old per-repo OAuth creds volume + `panopticon login`; auth is now just this env var,
+  read straight from the environment — see `docs/container-auth.md`) — alongside any
+  `ANTHROPIC_API_KEY`/`GH_TOKEN`. Also holds
   `image_layer_file` — a *reference* (a name under the task service's layers dir) to the repo's
   Dockerfile fragment (ADR 0005's repo tier), served over REST (`GET /repos/{id}/image-layer`) and
   composed by the runner onto base → workflow → **repo** for the task image (e.g. the repo's
