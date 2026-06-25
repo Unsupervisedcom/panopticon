@@ -164,7 +164,9 @@ class Repo:
     volume of OAuth credential files. Both are injected into the task container at launch (the
     runner), so secrets stay out of the DB, artifacts, and image layers.
 
-    ``image_layer`` is the repo's Dockerfile fragment (ADR 0005's repo tier): the runner composes
+    ``image_layer_file`` *references* the repo's Dockerfile fragment (ADR 0005's repo tier): a file
+    name resolved relative to the task service's layers directory, not inline content. The task
+    service reads it to serve over REST (``GET /repos/{id}/image-layer``) and the runner composes
     base → workflow → **repo** into the task image, so a repo can layer on its toolchain (e.g. `uv`,
     `make`). Empty/None = no repo layer.
 
@@ -179,7 +181,7 @@ class Repo:
     default_base: str = "main"
     env_file: str | None = None
     creds_volume: str | None = None
-    image_layer: str | None = None
+    image_layer_file: str | None = None
     capabilities: dict[str, Any] = field(default_factory=dict)
 
 

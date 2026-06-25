@@ -210,8 +210,10 @@ commands the Makefile wraps).
   never the values; the runner injects them at launch (`--env-file` + `-v <vol>:/creds`,
   Slice 5), so a task gets only its own repo's secrets. `panopticon login <repo> [cmd]`
   populates the creds volume interactively (the claude OAuth command arrives in Slice 6). Also holds
-  `image_layer` — the repo's Dockerfile fragment (ADR 0005's repo tier) the runner composes onto
-  base → workflow → **repo** for the task image (e.g. the repo's `uv`/`make` toolchain) — and
+  `image_layer_file` — a *reference* (a name under the task service's layers dir) to the repo's
+  Dockerfile fragment (ADR 0005's repo tier), served over REST (`GET /repos/{id}/image-layer`) and
+  composed by the runner onto base → workflow → **repo** for the task image (e.g. the repo's
+  `uv`/`make` toolchain) — and
   `capabilities`, a JSON opt-in map for elevated container privileges (`docker_in_docker` → the
   runner spawns `--privileged` and the entrypoint starts a nested Docker daemon; a trust escalation,
   off by default).
