@@ -58,6 +58,31 @@ class HistoryOut(BaseModel):
     responsibilities: list[ResponsibilityOut] = []
 
 
+class TaskSummaryOut(BaseModel):
+    """Task fields from the tasks table only — no history. Returned by ``GET /tasks``."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    repo_id: str
+    workflow: str
+    state: str
+    turn: Actor
+    blocked: bool
+    memo: str | None
+    slug: str | None
+    url: str | None
+    branch: str | None
+    clone: str | None
+    claimed_by: str | None
+    tokens_used: int | None
+    token_estimate: int | None
+    updated_at: str | None = None
+    provisioned: bool
+    container_status: str = "–"
+    lifecycle_detail: str | None = None
+
+
 class TaskOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -75,6 +100,7 @@ class TaskOut(BaseModel):
     claimed_by: str | None  # the runner that owns this task (the spawn gate), or None
     tokens_used: int | None  # cumulative tokens the container's claude has used (None until reported)
     token_estimate: int | None  # the agent's forecast of total tokens (set in planning; None until then)
+    updated_at: str | None = None  # ISO-8601 timestamp of the last mutation, stamped by the task service
     provisioned: bool  # computed (Task.provisioned): branch + clone recorded
     #: The composed container-lifecycle status the dashboard displays (the task service folds the
     #: session service's reported phase with registration presence + runner liveness). Not a domain
@@ -287,6 +313,14 @@ def create_app(service: TaskService) -> FastAPI:
         out.lifecycle_detail = lifecycle.detail if lifecycle is not None else None
         return out
 
+    def _task_summary_out(task: Task) -> TaskSummaryOut:
+        """Serialize a task to the cheap summary shape (no history), with computed status fields."""
+        out = TaskSummaryOut.model_validate(task)
+        out.container_status = service.container_status(task).value
+        lifecycle = service.lifecycle(task.id)
+        out.lifecycle_detail = lifecycle.detail if lifecycle is not None else None
+        return out
+
     # -- error mapping: domain exceptions -> HTTP status --------------------------
 
     @app.exception_handler(NotFound)
@@ -390,7 +424,12 @@ def create_app(service: TaskService) -> FastAPI:
             description="The X-Tasks-Version a client last saw; with ?wait, return once the "
             "version differs from it (block-until-change).",
         ),
-    ) -> list[TaskOut]:
+        terminal: bool | None = Query(
+            default=None,
+            description="Filter to terminal tasks only (true) or active tasks only (false). "
+            "Omit to return all tasks.",
+        ),
+    ) -> list[TaskSummaryOut]:
         # Every response carries the current version in X-Tasks-Version so a client can echo it
         # back as ?since=. With ?wait the request parks until the version moves past ?since (or
         # the cap elapses); without it, it's an immediate snapshot — today's behaviour.
@@ -400,7 +439,7 @@ def create_app(service: TaskService) -> FastAPI:
             version = service.tasks_version()
         # No await between reading the version and the snapshot, so they're consistent: a mutation
         # (which runs on this same loop) can't interleave to leave the body ahead of the header.
-        tasks = [_task_out(t) for t in service.list_tasks()]
+        tasks = [_task_summary_out(t) for t in service.list_tasks_summary(terminal=terminal)]
         response.headers[TASKS_VERSION_HEADER] = str(version)
         return tasks
 

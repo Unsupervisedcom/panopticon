@@ -31,6 +31,7 @@ from sqlalchemy.orm import (
     Mapped,
     Session,
     mapped_column,
+    noload,
     relationship,
     sessionmaker,
 )
@@ -103,6 +104,7 @@ class _TaskRow(_Base):
     claimed_by: Mapped[str | None] = mapped_column(default=None)
     tokens_used: Mapped[int | None] = mapped_column(default=None)
     token_estimate: Mapped[int | None] = mapped_column(default=None)
+    updated_at: Mapped[str | None] = mapped_column(default=None)
     history: Mapped[list[_HistoryRow]] = relationship(
         order_by="_HistoryRow.seq",
         cascade="all, delete-orphan",
@@ -126,6 +128,7 @@ class _TaskRow(_Base):
             claimed_by=self.claimed_by,
             tokens_used=self.tokens_used,
             token_estimate=self.token_estimate,
+            updated_at=self.updated_at,
             history=[h.to_domain() for h in self.history],
         )
 
@@ -146,6 +149,7 @@ class _TaskRow(_Base):
             claimed_by=task.claimed_by,
             tokens_used=task.tokens_used,
             token_estimate=task.token_estimate,
+            updated_at=task.updated_at,
             history=[_HistoryRow.from_domain(e, seq) for seq, e in enumerate(task.history)],
         )
 
@@ -296,6 +300,13 @@ class SqlAlchemyStore(Store):
         with self._session() as s:
             return [r.to_domain() for r in s.scalars(select(_TaskRow).order_by(_TaskRow.id))]
 
+    def _list_tasks_summary(self) -> list[Task]:
+        with self._session() as s:
+            rows = s.scalars(
+                select(_TaskRow).options(noload(_TaskRow.history)).order_by(_TaskRow.id)
+            )
+            return [r.to_domain() for r in rows]
+
     def _create_task(self, task: Task) -> None:
         with self._session.begin() as s:
             if s.get(_TaskRow, task.id) is not None:
@@ -326,6 +337,7 @@ class SqlAlchemyStore(Store):
             row.claimed_by = task.claimed_by
             row.tokens_used = task.tokens_used
             row.token_estimate = task.token_estimate
+            row.updated_at = task.updated_at
             # The current (last stored) entry's promises may have been fulfilled in place.
             if stored:
                 _fulfil_current_promises(row.history[len(stored) - 1], task.history[len(stored) - 1])
