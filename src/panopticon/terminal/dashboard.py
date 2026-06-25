@@ -163,7 +163,8 @@ def _slug_cell(task: JsonObj) -> Text:
 
 # Fields a search query matches against (cloude-cade filters on the task title; our nearest
 # analogs are the task's identifying text). Joined and lowercased into one haystack per task.
-_SEARCH_FIELDS = ("slug", "state", "workflow", "memo")
+# ``repo_name`` is injected into each task dict by ``action_refresh`` before this runs.
+_SEARCH_FIELDS = ("slug", "state", "workflow", "memo", "repo_name")
 
 
 def _matches(task: JsonObj, query: str) -> bool:
@@ -211,6 +212,12 @@ def _status_cell(task: JsonObj) -> Text:
     """The container column: the task service's composed ``container_status``, color-coded."""
     status = task.get("container_status") or "–"
     return Text(status, style=_STATUS_COLORS.get(status, "dim"))
+
+
+def _repo_cell(task: JsonObj, repo_names: dict[str, str]) -> str:
+    """The repo column: the repo's human-readable name, looked up from the id→name cache."""
+    repo_id = str(task.get("repo_id") or "")
+    return repo_names.get(repo_id, repo_id) if repo_id else "?"
 
 
 def render_detail(task: JsonObj) -> str:
@@ -787,6 +794,7 @@ class Dashboard(App[None]):
         self._refresh_interval = refresh_interval  # change-feed long-poll wait (0/None → manual only)
         self._version = 0  # the change-feed cursor (X-Tasks-Version) the worker long-polls against
         self._tasks: dict[str, JsonObj] = {}
+        self._repo_names: dict[str, str] = {}  # repo id → name; populated by _load_repo_names
         self._current: str | None = None
         self._query: str = ""  # active search filter ("" → no filter); see action_search
         self._detail_visible = False  # detail pane hidden by default; `d` toggles it (action_toggle_detail)
@@ -805,9 +813,17 @@ class Dashboard(App[None]):
         yield Input(id="search", placeholder="search tasks…")  # hidden until `/` (CSS display:none)
         yield Footer()
 
+    def _load_repo_names(self) -> None:
+        """Refresh the repo id→name cache from the task service."""
+        try:
+            repos = self._client.list_repos()
+            self._repo_names = {str(r["id"]): str(r["name"]) for r in repos}
+        except Exception:
+            pass
+
     def on_mount(self) -> None:
         # the slug header carries a literal "[" — pass it as Text so Textual doesn't eat it as markup
-        cols = ("state", "turn", "container", Text("slug[memo]"))
+        cols = ("state", "turn", "container", "repo", Text("slug[memo]"))
         active = self.query_one("#tasks-active", BoundaryDataTable)
         active.cursor_type = "row"
         active.add_columns(*cols)
@@ -815,6 +831,7 @@ class Dashboard(App[None]):
         terminal.cursor_type = "row"
         terminal.add_columns(*cols)
         active.focus()  # the (hidden) search Input would otherwise grab initial focus
+        self._load_repo_names()
         self.action_refresh()  # first paint; the feed worker drives every refresh after
         if not self._has_repos():  # first-run nudge: no repos → drop straight into the repo screen
             self.action_repos()
@@ -878,6 +895,9 @@ class Dashboard(App[None]):
     def action_refresh(self) -> None:
         selected = self._current  # keep the operator's highlight across the rebuild (feed refresh)
         ordered = sorted(self._client.list_tasks(), key=_sort_key)  # live/user/recent first
+        # Inject repo_name so _matches can search on it without a separate lookup per task.
+        for task in ordered:
+            task["repo_name"] = self._repo_names.get(str(task.get("repo_id") or ""), "")
         visible = [t for t in ordered if _matches(t, self._query)]  # apply the search filter
         self._tasks = {t["id"]: t for t in visible}
 
@@ -892,14 +912,16 @@ class Dashboard(App[None]):
         active_table.clear()
         for task in active_tasks:
             active_table.add_row(
-                task["state"], _turn_cell(task), _status_cell(task), _slug_cell(task),
+                task["state"], _turn_cell(task), _status_cell(task),
+                _repo_cell(task, self._repo_names), _slug_cell(task),
                 key=task["id"],
             )
 
         terminal_table.clear()
         for task in terminal_tasks:
             terminal_table.add_row(
-                task["state"], _turn_cell(task), Text("–", style="dim"), _slug_cell(task),
+                task["state"], _turn_cell(task), Text("–", style="dim"),
+                _repo_cell(task, self._repo_names), _slug_cell(task),
                 key=task["id"],
             )
 
@@ -1001,10 +1023,11 @@ class Dashboard(App[None]):
         self.action_refresh()
 
     def action_respawn(self) -> None:
-        """`R`: respawn a **down** task — release its claim so the host runner re-spawns it.
+        """`R`: kill any running container/session for this task and respawn it.
 
-        Only for a task claimed by a runner with no live container; releasing a live task would
-        double-spawn it, so that's refused. Unclaimed tasks have nothing to respawn."""
+        Releases the claim so the host runner re-claims and re-spawns; the runner's ``spawn()``
+        kills any existing tmux session and force-removes the container before starting fresh.
+        Unclaimed tasks have nothing to respawn."""
         task_id = self._current
         if task_id is None:
             return
@@ -1012,11 +1035,8 @@ class Dashboard(App[None]):
         if not task or not task.get("claimed_by"):
             self.notify("Task isn't claimed by a runner — nothing to respawn.", severity="warning")
             return
-        if task.get("container_status") == "live":
-            self.notify("Container is live; drop it or let it finish.", severity="warning")
-            return
-        self._client.release(task_id)  # back to unclaimed → the host runner re-claims + re-spawns
-        self.notify("Released the claim; the runner will respawn it.")
+        self._client.release(task_id)  # back to unclaimed → the host runner kills + re-spawns
+        self.notify("Respawning: the runner will stop and restart the container.")
         self.action_refresh()
 
     def action_attach(self) -> None:
@@ -1098,7 +1118,11 @@ class Dashboard(App[None]):
 
     def action_repos(self) -> None:
         """`g`: open the repo config screen — list repos, create/edit them (ADR 0002)."""
-        self.push_screen(ReposScreen(self._client))
+        def _on_repos_dismissed(_: None) -> None:
+            self._load_repo_names()  # pick up any renames/additions before the table rebuilds
+            self.action_refresh()
+
+        self.push_screen(ReposScreen(self._client), _on_repos_dismissed)
 
     def action_artifacts(self) -> None:
         """`a`: open a modal listing the highlighted task's artifacts. Enter opens the selection
