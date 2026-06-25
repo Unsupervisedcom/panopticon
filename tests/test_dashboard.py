@@ -301,7 +301,8 @@ async def test_pressing_d_toggles_the_detail_pane() -> None:
 
 async def test_tasks_are_sorted_live_then_user_then_slug() -> None:
     # The order: (1) non-terminal above terminal, (2) the user's turn above the agent's,
-    # (3) slug (then id) as the stable tiebreaker within each group.
+    # (3) most recently updated first, (4) slug (then id) as the stable tiebreaker.
+    # Here all tasks share the same updated_at (None → 0.0), so slug is the effective tiebreaker.
     tasks = [
         # terminal tasks — sink below all live work.
         {**_TASK, "id": "t-done", "slug": "done", "state": "COMPLETE", "turn": "user"},
@@ -329,8 +330,21 @@ async def test_tasks_are_sorted_live_then_user_then_slug() -> None:
         assert keys.index(_SEPARATOR_KEY) == keys.index("t-done") - 1
 
 
+async def test_sort_uses_recency_within_tier() -> None:
+    # Within the same (terminal, turn) tier, more recently updated tasks sort first.
+    tasks = [
+        {**_TASK, "id": "t-old", "slug": "alpha", "turn": "user", "updated_at": "2026-06-01T00:00:00"},
+        {**_TASK, "id": "t-new", "slug": "zebra", "turn": "user", "updated_at": "2026-06-25T00:00:00"},
+    ]
+    app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        order = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
+        assert order == ["t-new", "t-old"]  # newer first, despite "zebra" > "alpha"
+
+
 async def test_sort_breaks_ties_on_slug() -> None:
-    # Same terminal-ness and turn → fall back to slug (then id) for a stable order.
+    # Same terminal-ness, turn, and updated_at → fall back to slug (then id) for a stable order.
     tasks = [
         {**_TASK, "id": "t2", "slug": "zebra", "turn": "user"},
         {**_TASK, "id": "t1", "slug": "alpha", "turn": "user"},

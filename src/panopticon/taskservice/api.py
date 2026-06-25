@@ -77,6 +77,7 @@ class TaskSummaryOut(BaseModel):
     claimed_by: str | None
     tokens_used: int | None
     token_estimate: int | None
+    updated_at: str | None = None
     provisioned: bool
     container_status: str = "–"
     lifecycle_detail: str | None = None
@@ -99,6 +100,7 @@ class TaskOut(BaseModel):
     claimed_by: str | None  # the runner that owns this task (the spawn gate), or None
     tokens_used: int | None  # cumulative tokens the container's claude has used (None until reported)
     token_estimate: int | None  # the agent's forecast of total tokens (set in planning; None until then)
+    updated_at: str | None = None  # ISO-8601 timestamp of the last mutation, stamped by the task service
     provisioned: bool  # computed (Task.provisioned): branch + clone recorded
     #: The composed container-lifecycle status the dashboard displays (the task service folds the
     #: session service's reported phase with registration presence + runner liveness). Not a domain

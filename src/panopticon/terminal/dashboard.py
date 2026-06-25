@@ -55,6 +55,7 @@ import sys
 import tempfile
 import time
 import webbrowser
+from datetime import datetime
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -76,16 +77,23 @@ from panopticon.core.state import TERMINAL_LABELS
 from panopticon.taskservice.artifacts_fs import DEFAULT_ARTIFACTS, FilesystemArtifactStore
 
 
-def _sort_key(task: JsonObj) -> tuple[bool, bool, str]:
-    """Order rows for the operator: live work first, then by whose turn it is, then slug.
+def _sort_key(task: JsonObj) -> tuple[bool, bool, float, str]:
+    """Order rows for the operator: live work first, then by whose turn it is, then recency.
 
     1. non-terminal before terminal — COMPLETE/DROPPED sink to the bottom;
     2. the user's turn before the agent's — tasks waiting on the operator surface first;
-    3. slug (then id) for a stable, readable order within each group.
+    3. most recently updated first (negative timestamp);
+    4. slug (then id) for a stable, readable order within each tier.
     """
+    raw = task.get("updated_at") or ""
+    try:
+        ts = -datetime.fromisoformat(raw).timestamp()
+    except ValueError:
+        ts = 0.0
     return (
         task["state"] in TERMINAL_LABELS,  # False (live) before True (terminal)
         task["turn"] != "user",  # False (user) before True (agent)
+        ts,  # negative so newest sorts first
         task["slug"] or task["id"],
     )
 

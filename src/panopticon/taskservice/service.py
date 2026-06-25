@@ -198,12 +198,19 @@ class TaskService:
 
     # -- tasks --------------------------------------------------------------------
 
+    def _save_task(self, task: Task) -> None:
+        """Stamp ``updated_at`` and persist. All task mutations route through here."""
+        task.updated_at = self._clock()
+        self._store.save_task(task)
+
     def create_task(
         self, repo_id: str, workflow_name: str, *, memo: str | None = None
     ) -> Task:
         self.get_repo(repo_id)  # ensure exists (raises NotFound)
         wf = self._workflow(workflow_name)
-        task = wf.start_task(self._id(), repo_id, at=self._clock(), memo=memo)
+        now = self._clock()
+        task = wf.start_task(self._id(), repo_id, at=now, memo=memo)
+        task.updated_at = now  # creation time = first mutation
         self._store.create_task(task)
         return task
 
@@ -348,7 +355,7 @@ class TaskService:
         # Deterministic lifecycle hook (e.g. seed the plan on plan acceptance) — may touch the
         # task/artifacts; run before the single save so any task mutation persists with it.
         wf.on_transition(task, from_state=from_state, to_state=task.state, artifacts=self._artifacts)
-        self._store.save_task(task)
+        self._save_task(task)
         return task
 
     def resolve_responsibility(
@@ -357,14 +364,14 @@ class TaskService:
         """Record the agent's progress on one promised responsibility (fulfilled in place)."""
         task = self.get_task(task_id)
         task.resolve_responsibility(key=key, status=status, comment=comment)
-        self._store.save_task(task)
+        self._save_task(task)
         return task
 
     def set_slug(self, task_id: str, slug: str) -> Task:
         task = self.get_task(task_id)
         previous = task.slug
         task.slug = slug
-        self._store.save_task(task)
+        self._save_task(task)
         # Expose the task's artifacts under the slug alias; drop a stale one on a re-slug so the
         # tasks/ dir keeps a single live alias per task (the symlinks live on the artifact store).
         if previous is not None and previous != slug:
@@ -377,7 +384,7 @@ class TaskService:
         hotkey opens it. A plain recorded fact, like the slug — no transition, no git."""
         task = self.get_task(task_id)
         task.url = url
-        self._store.save_task(task)
+        self._save_task(task)
         return task
 
     def set_tokens_used(self, task_id: str, tokens_used: int) -> Task:
@@ -385,7 +392,7 @@ class TaskService:
         recomputed session total). A plain recorded fact, like the slug — no transition, no git."""
         task = self.get_task(task_id)
         task.tokens_used = tokens_used
-        self._store.save_task(task)
+        self._save_task(task)
         return task
 
     def set_token_estimate(self, task_id: str, token_estimate: int) -> Task:
@@ -393,7 +400,7 @@ class TaskService:
         planning). A plain recorded fact, like the slug — no transition, no git."""
         task = self.get_task(task_id)
         task.token_estimate = token_estimate
-        self._store.save_task(task)
+        self._save_task(task)
         return task
 
     def set_turn(self, task_id: str, turn: Actor) -> Task:
@@ -404,14 +411,14 @@ class TaskService:
         """
         task = self.get_task(task_id)
         task.turn = turn
-        self._store.save_task(task)
+        self._save_task(task)
         return task
 
     def set_blocked(self, task_id: str, blocked: bool) -> Task:
         """Set/clear the task's deliberate ``blocked`` marker (orthogonal to the turn)."""
         task = self.get_task(task_id)
         task.blocked = blocked
-        self._store.save_task(task)
+        self._save_task(task)
         return task
 
     # -- claim (a runner owns the task; the spawn gate, ADR 0008) --------------------------
@@ -428,7 +435,7 @@ class TaskService:
             raise AlreadyClaimed(f"task {task_id!r} is already claimed by {task.claimed_by!r}")
         task.claimed_by = runner_id
         self.clear_lifecycle(task_id)  # drop any stale phase from a prior owner; this spawn re-reports
-        self._store.save_task(task)
+        self._save_task(task)
         return task
 
     def release(self, task_id: str) -> Task:
@@ -437,7 +444,7 @@ class TaskService:
         task = self.get_task(task_id)
         task.claimed_by = None
         self.clear_lifecycle(task_id)
-        self._store.save_task(task)
+        self._save_task(task)
         return task
 
     # -- provisioning (the session service does the host git; the service only records) ---
@@ -461,7 +468,7 @@ class TaskService:
             raise ValueError("cannot record provisioning before the task's slug is set")
         task.branch = branch
         task.clone = clone
-        self._store.save_task(task)
+        self._save_task(task)
         return task
 
     # -- artifacts ----------------------------------------------------------------
@@ -590,6 +597,6 @@ class TaskService:
             if task.claimed_by == runner_id and task.state not in TERMINAL_LABELS:
                 task.claimed_by = None
                 self.clear_lifecycle(task.id)  # the dead runner's phase is stale; start clean
-                self._store.save_task(task)
+                self._save_task(task)
                 reclaimed.append(task)
         return reclaimed

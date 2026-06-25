@@ -410,6 +410,7 @@ def _fully_populated_task() -> Task:
         claimed_by="local",
         tokens_used=87500,
         token_estimate=500_000,
+        updated_at="t2",
         history=[
             HistoryEntry(
                 at="t0", from_state=None, to_state="PLAN", trigger="start", note="kickoff"
