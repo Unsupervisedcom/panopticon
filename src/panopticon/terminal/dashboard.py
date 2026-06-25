@@ -941,10 +941,11 @@ class Dashboard(App[None]):
         self.action_refresh()
 
     def action_respawn(self) -> None:
-        """`R`: respawn a **down** task — release its claim so the host runner re-spawns it.
+        """`R`: kill any running container/session for this task and respawn it.
 
-        Only for a task claimed by a runner with no live container; releasing a live task would
-        double-spawn it, so that's refused. Unclaimed tasks have nothing to respawn."""
+        Releases the claim so the host runner re-claims and re-spawns; the runner's ``spawn()``
+        kills any existing tmux session and force-removes the container before starting fresh.
+        Unclaimed tasks have nothing to respawn."""
         task_id = self._current
         if task_id is None:
             return
@@ -952,11 +953,8 @@ class Dashboard(App[None]):
         if not task or not task.get("claimed_by"):
             self.notify("Task isn't claimed by a runner — nothing to respawn.", severity="warning")
             return
-        if task.get("container_status") == "live":
-            self.notify("Container is live; drop it or let it finish.", severity="warning")
-            return
-        self._client.release(task_id)  # back to unclaimed → the host runner re-claims + re-spawns
-        self.notify("Released the claim; the runner will respawn it.")
+        self._client.release(task_id)  # back to unclaimed → the host runner kills + re-spawns
+        self.notify("Respawning: the runner will stop and restart the container.")
         self.action_refresh()
 
     def action_attach(self) -> None:

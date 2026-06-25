@@ -41,8 +41,10 @@ def test_spawn_runs_detached_container_then_tmux_pane_execing_in() -> None:
     container_id = runner.spawn("t1")
 
     assert container_id == "panopticon-t1"
-    (rm, _), (docker_run, _), (tmux_new, _) = rec.calls
-    assert rm == ["docker", "rm", "--force", "panopticon-t1"]  # clear a stale container first
+    (kill_session, _), (rm, _), (docker_run, _), (tmux_new, _) = rec.calls
+    # clear any stale tmux session first (idempotent — no-op when nothing exists)
+    assert kill_session == ["tmux", "-L", "panopticon", "kill-session", "-t", "panopticon-t1"]
+    assert rm == ["docker", "rm", "--force", "panopticon-t1"]  # then clear a stale container
     assert docker_run[:3] == ["docker", "run", "--detach"]
     assert docker_run[-1] == "img:1"  # the image is the final positional arg (its entrypoint runs)
     assert ["--name", "panopticon-t1"] == docker_run[3:5]
@@ -117,7 +119,7 @@ def test_has_session_is_false_when_the_session_is_absent() -> None:
 def test_spawn_runs_container_unprivileged_as_the_invoking_user() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", run=rec).spawn("t1")
-    docker_run = rec.calls[1][0]
+    docker_run = rec.calls[2][0]
     # the entrypoint adopts these and drops to the `panopticon` user (no root, no bare numeric uid)
     assert f"PANOPTICON_PUID={os.getuid()}" in docker_run
     assert f"PANOPTICON_PGID={os.getgid()}" in docker_run
@@ -127,14 +129,14 @@ def test_spawn_runs_container_unprivileged_as_the_invoking_user() -> None:
 def test_spawn_user_can_be_overridden() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", user="1234:5678", run=rec).spawn("t1")
-    docker_run = rec.calls[1][0]
+    docker_run = rec.calls[2][0]
     assert "PANOPTICON_PUID=1234" in docker_run and "PANOPTICON_PGID=5678" in docker_run
 
 
 def test_spawn_without_docker_in_docker_is_not_privileged() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", run=rec).spawn("t1")
-    docker_run = rec.calls[1][0]
+    docker_run = rec.calls[2][0]
     assert "--privileged" not in docker_run
     assert "PANOPTICON_DOCKER_IN_DOCKER=1" not in docker_run
 
@@ -142,7 +144,7 @@ def test_spawn_without_docker_in_docker_is_not_privileged() -> None:
 def test_spawn_with_docker_in_docker_runs_privileged_and_flags_the_entrypoint() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", run=rec).spawn("t1", docker_in_docker=True)
-    docker_run = rec.calls[1][0]
+    docker_run = rec.calls[2][0]
     assert "--privileged" in docker_run  # nested daemon needs it (repo capability, ADR 0005)
     assert "panopticon-dind-t1:/var/lib/docker" in docker_run  # per-task docker layer cache
     assert "PANOPTICON_DOCKER_IN_DOCKER=1" in docker_run  # entrypoint starts dockerd
@@ -151,7 +153,7 @@ def test_spawn_with_docker_in_docker_runs_privileged_and_flags_the_entrypoint() 
 def test_extra_env_is_forwarded() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", extra_env={"PANOPTICON_RECONNECT_BACKOFF": "0.5"}, run=rec).spawn("t1")
-    assert "PANOPTICON_RECONNECT_BACKOFF=0.5" in rec.calls[1][0]
+    assert "PANOPTICON_RECONNECT_BACKOFF=0.5" in rec.calls[2][0]
 
 
 def test_spawn_injects_repo_env_file() -> None:
@@ -159,14 +161,14 @@ def test_spawn_injects_repo_env_file() -> None:
     LocalRunner("http://svc", run=rec).spawn(
         "t1", env_file="/secrets/r1.env"
     )
-    docker_run = rec.calls[1][0]
+    docker_run = rec.calls[2][0]
     assert docker_run[docker_run.index("--env-file") + 1] == "/secrets/r1.env"
 
 
 def test_spawn_omits_secret_flags_when_repo_has_none() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", run=rec).spawn("t1")
-    docker_run = rec.calls[1][0]
+    docker_run = rec.calls[2][0]
     assert "--env-file" not in docker_run  # no API-key env-file
     # (the per-task config volume is always mounted — that's not a per-repo secret)
 
@@ -174,7 +176,7 @@ def test_spawn_omits_secret_flags_when_repo_has_none() -> None:
 def test_spawn_mounts_the_per_task_clone_as_the_workspace() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", run=rec).spawn("t1", workspace="/tasks/t1")
-    docker_run = rec.calls[1][0]
+    docker_run = rec.calls[2][0]
     assert "/tasks/t1:/workspace" in docker_run  # the per-task clone, read-write (ADR 0011)
     assert docker_run[docker_run.index("--workdir") + 1] == "/workspace"  # the agent's working dir
 
@@ -182,7 +184,7 @@ def test_spawn_mounts_the_per_task_clone_as_the_workspace() -> None:
 def test_spawn_mounts_a_per_task_config_volume_for_claude_history() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", run=rec).spawn("t1")
-    docker_run = rec.calls[1][0]
+    docker_run = rec.calls[2][0]
     # a task-scoped named volume at the config dir → claude's transcripts survive respawn/recreate
     assert "panopticon-config-t1:/home/panopticon/.claude" in docker_run
 
@@ -253,10 +255,10 @@ def test_spawn_uses_the_composed_image_when_given_else_the_base() -> None:
     rec = _Recorder()
     runner = LocalRunner("http://svc", image="panopticon-base", run=rec)
     runner.spawn("t1")  # no override → base
-    assert rec.calls[1][0][-1] == "panopticon-base"
+    assert rec.calls[2][0][-1] == "panopticon-base"
     runner.spawn("t2", image="panopticon-github-peer-reviewed-r1")  # composed image (ADR 0005)
-    # each spawn emits 3 calls (rm, run, tmux); t2's docker run is calls[4]
-    assert rec.calls[4][0][-1] == "panopticon-github-peer-reviewed-r1"
+    # each spawn emits 4 calls (kill-session, rm, run, tmux); t2's docker run is calls[6]
+    assert rec.calls[6][0][-1] == "panopticon-github-peer-reviewed-r1"
 
 
 def test_stop_kills_session_and_force_removes_container_idempotently() -> None:
@@ -269,7 +271,7 @@ def test_stop_kills_session_and_force_removes_container_idempotently() -> None:
 def test_tmux_socket_can_be_overridden() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", tmux_socket="panopt", run=rec).spawn("t1")
-    assert rec.calls[2][0][:4] == ["tmux", "-L", "panopt", "new-session"]  # rm, run, tmux
+    assert rec.calls[3][0][:4] == ["tmux", "-L", "panopt", "new-session"]  # kill-session, rm, run, tmux
 
 
 # -- integration: real docker + tmux ------------------------------------------------

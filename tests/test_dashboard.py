@@ -854,15 +854,15 @@ async def test_search_filter_survives_auto_refresh() -> None:
         assert [str(k.value) for k in table.rows] == ["t-fix"]
 
 
-async def test_respawn_refuses_a_live_task() -> None:
+async def test_respawn_releases_a_live_tasks_claim() -> None:
     task = {**_TASK, "claimed_by": "host-1", "container_status": "live"}
-    fake = _FakeClient([task], {task["id"]: [{"container_id": "c"}]})  # live
+    fake = _FakeClient([task], {task["id"]: [{"container_id": "c"}]})
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("R")
         await pilot.pause()
-        assert fake.released == []  # live container → respawn refused (would double-spawn)
+        assert fake.released == [task["id"]]  # live container → released so runner kills + respawns
 
 
 # -- repo config screen (`g`) -------------------------------------------------------

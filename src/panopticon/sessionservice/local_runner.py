@@ -195,9 +195,10 @@ class LocalRunner(Runner):
         for key, value in env.items():
             docker_run += ["--env", f"{key}={value}"]
         docker_run.append(image or self._image)  # composed image if given, else base; its entrypoint runs
-        # Clear any stale container of this name first — a prior run that exited, or a respawn
-        # (dashboard `R` releases the claim but doesn't stop the dead container) — so `--name`
-        # doesn't fail "name already in use". Makes spawn idempotent. (`stop()` also removes it.)
+        # Clear any stale tmux session + container first — handles both a prior exited run and a
+        # live force-respawn (dashboard `R` kills and restarts). Both are no-ops when nothing
+        # exists, so spawn is fully idempotent. (`stop()` does the same pair.)
+        self._run(self._tmux("kill-session", "-t", container), check=False)
         self._run(["docker", "rm", "--force", container], check=False)
         _report(LifecyclePhase.STARTING)  # docker run + the tmux session coming up
         self._run(docker_run)
