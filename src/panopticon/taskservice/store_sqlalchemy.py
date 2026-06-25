@@ -70,12 +70,14 @@ class _RepoRow(_Base):
     env_file: Mapped[str | None] = mapped_column(default=None)
     image_layer_file: Mapped[str | None] = mapped_column(default=None)
     capabilities: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    hook_file: Mapped[str | None] = mapped_column(default=None)
 
     def to_domain(self) -> Repo:
         return Repo(
             id=self.id, name=self.name, git_url=self.git_url, default_base=self.default_base,
             env_file=self.env_file, image_layer_file=self.image_layer_file,
             capabilities=dict(self.capabilities or {}),
+            hook_file=self.hook_file,
         )
 
     @classmethod
@@ -84,6 +86,7 @@ class _RepoRow(_Base):
             id=repo.id, name=repo.name, git_url=repo.git_url, default_base=repo.default_base,
             env_file=repo.env_file, image_layer_file=repo.image_layer_file,
             capabilities=dict(repo.capabilities),
+            hook_file=repo.hook_file,
         )
 
 
@@ -288,6 +291,7 @@ class SqlAlchemyStore(Store):
             row.env_file = repo.env_file
             row.image_layer_file = repo.image_layer_file
             row.capabilities = dict(repo.capabilities)
+            row.hook_file = repo.hook_file
 
     # -- tasks: reads + persistence primitives (the base's template methods drive these) --
 
