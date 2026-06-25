@@ -401,11 +401,10 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     privileged-docker checkbox holds focus (it's a :class:`SpaceCheckbox`, so Enter bubbles up
     to the screen's submit binding rather than toggling). A footer hint spells this out.
 
-    The **git URL leads** the form. In **create mode** the still-blank ``id``, ``name`` and
-    ``creds_volume`` (a ``<repo>-creds`` convention) auto-fill from it when the URL field loses
-    focus and again at submit — never clobbering a value the user already typed — and
-    ``default_base`` defaults to ``main``. Edit mode applies neither: a repo's existing values
-    are left exactly as they are.
+    The **git URL leads** the form. In **create mode** the still-blank ``id`` and ``name``
+    auto-fill from it when the URL field loses focus and again at submit — never clobbering a
+    value the user already typed — and ``default_base`` defaults to ``main``. Edit mode applies
+    neither: a repo's existing values are left exactly as they are.
 
     Create mode (no ``repo``): every field is an editable :class:`Input`, including ``id``.
     Edit mode: ``id`` is shown read-only (the primary key can't change) and the rest are
@@ -430,13 +429,12 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
 
     # git_url leads (the auto-fill source); the rest follow. ``id`` is rendered between git_url
     # and these, separately, since it's editable only in create mode.
-    FIELDS = ("git_url", "name", "default_base", "creds_volume", "env_file")
+    FIELDS = ("git_url", "name", "default_base", "env_file")
     # Fields auto-derived from git_url → how to derive each (create mode only; see
-    # _autofill_from_git_url). id and name are the bare repo name; creds_volume a convention.
+    # _autofill_from_git_url). id and name are the bare repo name.
     _DERIVED: dict[str, Callable[[str], str]] = {
         "id": lambda repo: repo,
         "name": lambda repo: repo,
-        "creds_volume": lambda repo: f"{repo}-creds",
     }
 
     def __init__(self, title: str, repo: JsonObj | None = None) -> None:
@@ -568,7 +566,7 @@ class ReposScreen(ModalScreen[None]):
             try:
                 self._client.create_repo(
                     values["id"], values["name"], values["git_url"], values["default_base"] or "main",
-                    env_file=values["env_file"] or None, creds_volume=values["creds_volume"] or None,
+                    env_file=values["env_file"] or None,
                     capabilities={"docker_in_docker": values["docker_in_docker"]},
                 )
             except httpx.HTTPStatusError as exc:
@@ -596,7 +594,7 @@ class ReposScreen(ModalScreen[None]):
                 self._client.update_repo(
                     repo_id, name=values["name"], git_url=values["git_url"],
                     default_base=values["default_base"] or "main",
-                    env_file=values["env_file"] or None, creds_volume=values["creds_volume"] or None,
+                    env_file=values["env_file"] or None,
                     capabilities=capabilities,
                 )
             except httpx.HTTPStatusError as exc:

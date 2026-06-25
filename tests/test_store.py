@@ -61,7 +61,7 @@ def test_create_and_get_repo(store: Store) -> None:
     assert got is not None
     assert got.name == "acme/widgets"
     assert got.default_base == "main"
-    assert got.env_file is None and got.creds_volume is None  # references default to unset
+    assert got.env_file is None  # the env-file reference defaults to unset
     assert got.image_layer_file is None  # no repo image layer by default
     assert got.capabilities == {}  # no elevated capabilities by default
 
@@ -69,14 +69,12 @@ def test_create_and_get_repo(store: Store) -> None:
 def test_repo_secret_references_round_trip(store: Store) -> None:
     store.create_repo(
         Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git",
-             env_file="/secrets/r1.env", creds_volume="panopticon-creds-r1",
+             env_file="/secrets/r1.env",
              image_layer_file="r1.layer", capabilities={"docker_in_docker": True})
     )
     got = store.get_repo("r1")
     assert got is not None
     assert got.env_file == "/secrets/r1.env"
-    assert got.creds_volume == "panopticon-creds-r1"
-    assert got.image_layer_file == "r1.layer"
     assert got.capabilities == {"docker_in_docker": True}  # JSON capabilities round-trip
     assert got.image_layer_file == "r1.layer"  # ADR 0005 repo tier round-trips
 
@@ -104,7 +102,7 @@ def test_update_repo_round_trips(store: Store) -> None:
     )
     store.update_repo(
         Repo(id="r1", name="new", git_url="https://x/new.git", default_base="trunk",
-             env_file="/secrets/r1.env", creds_volume="creds-r1",
+             env_file="/secrets/r1.env",
              image_layer_file="r1.layer", capabilities={"docker_in_docker": True})
     )
     got = store.get_repo("r1")
@@ -113,7 +111,6 @@ def test_update_repo_round_trips(store: Store) -> None:
     assert got.git_url == "https://x/new.git"
     assert got.default_base == "trunk"
     assert got.env_file == "/secrets/r1.env"
-    assert got.creds_volume == "creds-r1"
     assert got.image_layer_file == "r1.layer"  # untouched fields persist
     assert got.capabilities == {"docker_in_docker": True}
 
