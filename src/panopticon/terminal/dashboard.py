@@ -416,7 +416,6 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     #repo-form { width: 72; height: auto; padding: 1 2; border: round $accent; background: $surface; }
     #repo-form Input { margin-bottom: 1; }
     #repo-form Checkbox { margin-bottom: 1; }
-    #repo-form-hint { color: $text-muted; }
     """
     # Enter saves from any field. Text Inputs consume Enter via their own submit binding (posting
     # Input.Submitted → on_input_submitted), so this screen binding only fires for fields that
@@ -467,7 +466,6 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
                 value=bool(self._repo.get("capabilities", {}).get("docker_in_docker")),
                 id="field-docker_in_docker",
             )
-            yield Label("Space toggles · Enter saves · Esc cancels", id="repo-form-hint")
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
