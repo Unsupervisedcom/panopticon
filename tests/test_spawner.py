@@ -224,8 +224,9 @@ def test_reconcile_ignores_tasks_not_in_flight_or_not_ours() -> None:
 
 
 def test_heal_respawns_an_orphan_claimed_by_us_with_no_session() -> None:
-    # The make-stop case: claimed by us, non-terminal, but its tmux session is gone → respawn it
-    # via the idempotent spawn path (the runner docker-rm's the stale container + starts fresh).
+    # The orphan case (e.g. the tmux server crashed, or `make stop` tore everything down but the
+    # task stays claimed): claimed by us, non-terminal, but its tmux session is gone → respawn it
+    # via the idempotent spawn path (the runner docker-rm's any stale container + starts fresh).
     client, runner = _FakeClient(repo=_REPO), _FakeRunner(session=False)
     cid = _spawner(client, runner).heal(
         {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": "host-1"}

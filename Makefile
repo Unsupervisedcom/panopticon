@@ -38,7 +38,8 @@ start:  ## Run panopticon: task service + session-service runner (background) + 
 		tmux -L panopticon new-session -d -s runner 'uv run python -m panopticon.sessionservice.host'
 	uv run panopticon console
 
-stop:  ## Stop everything `make start` started (kills the -L panopticon tmux server)
+stop:  ## Stop everything `make start` started: the task containers + the -L panopticon tmux server
+	-docker ps --all --quiet --filter name=^panopticon- | xargs --no-run-if-empty docker rm --force
 	-tmux -L panopticon kill-server 2>/dev/null
 
 build:  ## Build the base task-container image (override with IMAGE=)

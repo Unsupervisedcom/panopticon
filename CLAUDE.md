@@ -122,7 +122,8 @@ the terminal to that task's session, then re-attaches the same live dashboard on
 Crucially the runner spawns task sessions on the **same** `-L panopticon` socket, so `t` reaches
 them. Switching is always detach→attach (never `switch-client`), so the same loop reaches a remote
 task over ssh at M5; `s` jumps to the `service` session. The background sessions persist after `q`
-(stop them with `make stop`, which kills the `-L panopticon` server). Spawning needs the base image — `make build`
+(stop them with `make stop`, which stops the task containers and kills the `-L panopticon` server).
+Spawning needs the base image — `make build`
 first. `make dashboard` runs the dashboard once without the attach loop (talks to
 `PANOPTICON_SERVICE_URL`).
 

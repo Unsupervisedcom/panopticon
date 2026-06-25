@@ -196,18 +196,22 @@ class Spawner:
     def heal(self, task: JsonObj) -> str | None:
         """Self-heal an orphaned task: respawn one this runner claims whose tmux session is gone.
 
-        A ``make stop`` (or any kill of the ``-L panopticon`` tmux server) destroys every task
-        session, but the **detached containers keep running and heartbeating** — so those tasks read
-        ``live`` yet have no session to attach to, and the unclaimed-gated spawn loop won't recover
-        them (they're still claimed by this runner). Here we close that gap: a task claimed by **this**
-        runner, non-terminal, with **no tmux session** is respawned via the idempotent spawn path
-        (:meth:`_spawn` → the runner ``docker rm --force``s the stale container and starts a fresh
-        session; the agent resumes from the per-task config volume via ``claude --continue``).
+        A kill of the ``-L panopticon`` tmux server that *isn't* ``make stop`` — a crash, a manual
+        ``tmux kill-server``, a single killed session — destroys the task session but leaves its
+        **detached container running and heartbeating**, so the task reads ``live`` yet has no session
+        to attach to, and the unclaimed-gated spawn loop won't recover it (it's still claimed by this
+        runner). ``make stop`` itself now stops the task containers too, but the task stays claimed, so
+        the same gap remains: a recovery path that doesn't depend on the container being unclaimed.
+        Here we close it: a task claimed by **this** runner, non-terminal, with **no tmux session** is
+        respawned via the idempotent spawn path (:meth:`_spawn` → the runner ``docker rm --force``s any
+        stale container and starts a fresh session; the agent resumes from the per-task config volume
+        via ``claude --continue``).
         :meth:`mark_healing` flags such an orphan ``HEALING`` before this serial respawn reaches it.
 
-        Gating on session-existence distinguishes the two restart cases with no extra state: a full
-        ``make stop`` leaves all sessions gone → every orphan is respawned; a runner-process-only
-        restart leaves the sessions (and their agents) alive → they're skipped, untouched.
+        Gating on session-existence distinguishes the two restart cases with no extra state: a server
+        teardown (``make stop`` or a crash) leaves all sessions gone → every orphan is respawned; a
+        runner-process-only restart leaves the sessions (and their agents) alive → they're skipped,
+        untouched.
 
         A crash-loop guard caps consecutive respawns (:data:`MAX_RESPAWNS`) so a container that won't
         stay up is logged and left for attention rather than thrashed; a respawn that survives
