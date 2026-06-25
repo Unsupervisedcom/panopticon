@@ -183,6 +183,7 @@ class LocalRunner(Runner):
         ]
         if docker_in_docker:  # privileged nested Docker daemon (repo capability); entrypoint starts it
             docker_run.append("--privileged")
+            docker_run += ["--volume", f"panopticon-dind-{task_id}:/var/lib/docker"]
             env["PANOPTICON_DOCKER_IN_DOCKER"] = "1"
         if env_file:  # per-repo API-key secrets, injected at run (not in the image)
             docker_run += ["--env-file", env_file]

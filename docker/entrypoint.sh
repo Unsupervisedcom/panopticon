@@ -33,8 +33,15 @@ if [ "${PANOPTICON_DOCKER_IN_DOCKER:-0}" = "1" ]; then
     if command -v dockerd >/dev/null 2>&1; then
         groupadd --force docker
         usermod --append --groups docker panopticon
+        mkdir --parents /var/log
         dockerd >/var/log/dockerd.log 2>&1 &
-        for _ in $(seq 1 50); do [ -S /var/run/docker.sock ] && break; sleep 0.2; done
+        for _ in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 1; done
+        if ! docker info >/dev/null 2>&1; then
+            echo "ERROR: dockerd failed to start within 30 s. Last 50 lines of /var/log/dockerd.log:" >&2
+            tail --lines=50 /var/log/dockerd.log >&2 || true
+            exit 1
+        fi
+        export DOCKER_HOST=unix:///var/run/docker.sock
     else
         echo "PANOPTICON_DOCKER_IN_DOCKER=1 but dockerd is not installed (add it in the repo's image_layer)" >&2
     fi
