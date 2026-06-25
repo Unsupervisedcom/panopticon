@@ -508,9 +508,8 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
 
 
 class ReposScreen(ModalScreen[None]):
-    """Repo management: list repos, create (`n`) / edit (`e`) them, and `l` to log in to the
-    highlighted repo (populate its creds volume interactively); Escape returns to the task view.
-    Mutations go through the task service over REST, then the table refreshes."""
+    """Repo management: list repos, create (`n`) / edit (`e`) them; Escape returns to the task
+    view. Mutations go through the task service over REST, then the table refreshes."""
 
     CSS = """
     ReposScreen { align: center middle; }
@@ -519,22 +518,18 @@ class ReposScreen(ModalScreen[None]):
     BINDINGS = [
         ("n", "new_repo", "New repo"),
         ("e", "edit_repo", "Edit repo"),
-        ("l", "login", "Login"),
         ("escape", "close", "Close"),
     ]
 
-    def __init__(
-        self, client: TaskServiceClient, *, login: Callable[[str], None] | None = None
-    ) -> None:
+    def __init__(self, client: TaskServiceClient) -> None:
         super().__init__()
         self._client = client
-        self._login = login  # `l` hook: log in a repo (by id) + restart its tasks (None → unavailable)
         self._repos: dict[str, JsonObj] = {}
         self._current: str | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="repos-box"):
-            yield Label("repos — n: new   e: edit   l: login   esc: close")
+            yield Label("repos — n: new   e: edit   esc: close")
             yield DataTable(id="repos")
 
     def on_mount(self) -> None:
@@ -610,25 +605,6 @@ class ReposScreen(ModalScreen[None]):
             self._refresh()
 
         self.app.push_screen(RepoFormScreen(f"edit {repo_id}", repo=self._repos[repo_id]), save)
-
-    def action_login(self) -> None:
-        """`l`: log in to the highlighted repo — run its interactive creds-volume login (the same
-        flow as `panopticon login <repo>`, default command `claude`), then restart the repo's
-        running task containers so they pick up the new creds. The dashboard owns the TTY, so we
-        suspend the app while the docker login holds the terminal, then resume on the live view."""
-        if self._current is None:
-            return
-        if not self._repos[self._current].get("creds_volume"):
-            self.notify("Repo has no creds_volume configured.", severity="warning")
-            return
-        if self._login is None:  # standalone with no runner wired (e.g. tests) — nothing to attach
-            self.notify("Login is unavailable here.", severity="warning")
-            return
-        try:
-            with self.app.suspend():  # restore the terminal so the container's TTY is the operator's
-                self._login(self._current)  # the repo id — the hook resolves the volume + restarts
-        except Exception as exc:  # docker missing / login failed — don't crash the TUI
-            self.notify(f"Login failed: {exc}", severity="error")
 
 
 def _detail(exc: httpx.HTTPStatusError) -> str:
@@ -772,7 +748,6 @@ class Dashboard(App[None]):
         on_switch: Callable[[str], None] | None = None,
         on_service: Callable[[], bool] | None = None,
         on_runner: Callable[[], bool] | None = None,
-        login: Callable[[str], None] | None = None,
         artifacts_root: str | Path = DEFAULT_ARTIFACTS,
         refresh_interval: float | None = REFRESH_INTERVAL,
     ) -> None:
@@ -781,7 +756,6 @@ class Dashboard(App[None]):
         self._on_switch = on_switch  # supervisor hook: record the pick + detach (None standalone)
         self._on_service = on_service  # `s` hook: switch to the service session; True if one exists
         self._on_runner = on_runner  # `u` hook: switch to the runner session; True if one exists
-        self._login = login  # repos screen `l` hook: per-repo (by id) login + task restart (None → off)
         self._artifacts_root = artifacts_root  # for `a`'s `e` local-open (co-located store)
         self._refresh_interval = refresh_interval  # change-feed long-poll wait (0/None → manual only)
         self._version = 0  # the change-feed cursor (X-Tasks-Version) the worker long-polls against
@@ -1057,8 +1031,8 @@ class Dashboard(App[None]):
         self.push_screen(HelpScreen())
 
     def action_repos(self) -> None:
-        """`g`: open the repo config screen — list repos, create/edit them, and `l` to log in (ADR 0002)."""
-        self.push_screen(ReposScreen(self._client, login=self._login))
+        """`g`: open the repo config screen — list repos, create/edit them (ADR 0002)."""
+        self.push_screen(ReposScreen(self._client))
 
     def action_artifacts(self) -> None:
         """`a`: open a modal listing the highlighted task's artifacts. Enter opens the selection
@@ -1171,14 +1145,12 @@ def run(
     on_switch: Callable[[str], None] | None = None,
     on_service: Callable[[], bool] | None = None,
     on_runner: Callable[[], bool] | None = None,
-    login: Callable[[str], None] | None = None,
     artifacts_root: str | Path = DEFAULT_ARTIFACTS,
 ) -> None:
     """Run the dashboard. ``on_switch``/``on_service``/``on_runner`` are the supervisor's `t`/`s`/`u`
-    hooks (ADR 0009); all ``None`` standalone. ``login`` is the repos screen's `l` hook — the
-    interactive per-repo creds login. ``artifacts_root`` is the local artifact-store root
+    hooks (ADR 0009); all ``None`` standalone. ``artifacts_root`` is the local artifact-store root
     `a`'s `e` opens files from when the dashboard shares the task service's filesystem."""
     Dashboard(
-        client, on_switch=on_switch, on_service=on_service, on_runner=on_runner, login=login,
+        client, on_switch=on_switch, on_service=on_service, on_runner=on_runner,
         artifacts_root=artifacts_root,
     ).run()

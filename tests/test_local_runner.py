@@ -267,26 +267,6 @@ def test_stop_kills_session_and_force_removes_container_idempotently() -> None:
     assert (["docker", "rm", "--force", "panopticon-t1"], False) in rec.calls
 
 
-def test_login_runs_interactive_container_with_creds_volume() -> None:
-    rec = _Recorder()
-    LocalRunner("http://svc", image="img:1", user="1234:5678", run=rec).login(
-        "creds-r1", ["claude", "login"]
-    )
-    cmd, check = rec.calls[0]
-    assert cmd == [
-        "docker", "run", "--interactive", "--tty", "--rm",
-        # the entrypoint adopts this user, chowns /creds to it, then drops to it before running the
-        # command — so the OAuth creds claude writes are owned by the uid the task reads them as
-        "--env", "PANOPTICON_PUID=1234", "--env", "PANOPTICON_PGID=5678",
-        "--volume", "creds-r1:/creds",
-        "--env", "CLAUDE_CONFIG_DIR=/creds",
-        "img:1", "claude", "login",  # passed through the entrypoint (no --entrypoint override)
-    ]
-    assert check is False  # interactive; tolerate non-zero exit
-    assert rec.interactive[0] is True  # attaches the operator's terminal (no output capture)
-    assert len(rec.calls) == 1  # login only writes the volume; propagation is the caller's restart
-
-
 def test_tmux_socket_can_be_overridden() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", tmux_socket="panopt", run=rec).spawn("t1")

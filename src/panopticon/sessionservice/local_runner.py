@@ -56,8 +56,8 @@ class CommandRunner(Protocol):
     """Runs an external command and returns its stdout; ``check`` raises on non-zero exit.
 
     ``interactive`` attaches the caller's terminal (stdin/stdout/stderr) instead of capturing — for
-    ``docker run -it`` (the ``login`` shell), where capturing would leave its TTY with no real input
-    and hang."""
+    an interactive ``docker run -it``, where capturing would leave its TTY with no real input and
+    hang."""
 
     def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False) -> str: ...
 
@@ -284,27 +284,3 @@ class LocalRunner(Runner):
         # Idempotent: tolerate an already-gone session/container.
         self._run(self._tmux("kill-session", "-t", container_id), check=False)
         self._run(["docker", "rm", "--force", container_id], check=False)
-
-    def login(self, creds_volume: str, command: Sequence[str]) -> None:
-        """Run an interactive container with a repo's creds volume mounted, to populate it
-        (ADR 0007's generalized `login`). ``command`` is the CLI's login invocation (e.g.
-        ``claude``); `CLAUDE_CONFIG_DIR` points claude at the mounted volume so its OAuth creds
-        land there. The named volume is created on first use and persists across task restarts.
-
-        ``command`` is passed through the image's entrypoint, which adopts the same invoking user as
-        the task container (``PANOPTICON_PUID``/``PGID``), chowns ``/creds`` to it, then drops to it
-        before running ``command``. So the creds it writes are owned by that user — the task
-        container, running as the same user, can then read and refresh them.
-
-        Propagating the fresh creds to the repo's already-running task containers is handled by the
-        caller restarting them (``sessionservice.restart``), not here — this only writes the volume."""
-        puid, _, pgid = self._user.partition(":")
-        self._run(
-            ["docker", "run", "--interactive", "--tty", "--rm",
-             "--env", f"PANOPTICON_PUID={puid}", "--env", f"PANOPTICON_PGID={pgid}",
-             "--volume", f"{creds_volume}:{CREDS_MOUNT}",
-             "--env", f"CLAUDE_CONFIG_DIR={CREDS_MOUNT}",
-             self._image, *command],
-            check=False,
-            interactive=True,  # attach the operator's terminal to the container's TTY (else it hangs)
-        )

@@ -1,16 +1,12 @@
 """The in-container **agent launcher** — what the runner's tmux pane runs.
 
-It prepares the agent CLI's surface from the active workflow (skills + turn-flip hooks), links in
-the repo's credentials, then `exec`s the agent. This is the only LLM-bearing path (the
-determinism invariant): the **bootstrap** is deterministic and unit-tested with fakes; the
-**launch** (real `claude`) is injectable and only runs for real in a `skipif`-gated integration /
-a live container — never in CI.
+It prepares the agent CLI's surface from the active workflow (skills + turn-flip hooks), then
+`exec`s the agent. This is the only LLM-bearing path (the determinism invariant): the
+**bootstrap** is deterministic and unit-tested with fakes; the **launch** (real `claude`) is
+injectable and only runs for real in a `skipif`-gated integration / a live container — never in CI.
 
-**Config-dir layout.** ``CLAUDE_CONFIG_DIR`` is the agent CLI's *whole* state dir (settings,
-rendered skills, session transcripts, …), so it must be **container-local** — pointing it at the
-per-repo creds volume would share/clobber that state across every task on the repo. Only the
-*credentials* are per-repo: we symlink just `.credentials.json` in from the creds volume (so the
-repo's OAuth token is used and token refreshes write back to the shared, persistent volume).
+Auth is the ``CLAUDE_CODE_OAUTH_TOKEN`` env var the runner injects from the repo's ``env_file``;
+the launcher does no credential wiring of its own.
 
 The container's entrypoint (`python -m panopticon.container`) holds the liveness connection;
 this runs alongside it in the tmux pane, so `tmux attach` reaches the live agent.
@@ -33,18 +29,8 @@ from panopticon.container.hooks import write_settings
 from panopticon.container.skills import write_commands, write_operation_commands
 from panopticon.core.models import Skill
 
-#: The repo's OAuth creds volume mount inside the container (matches the runner's CREDS_MOUNT).
-#: Per-repo and persistent — it holds *only* the credentials, not claude's other state.
-CREDS_DIR = "/creds"
-#: claude's credential file, relative to a config dir; linked in from the creds volume.
-CREDS_FILE = ".credentials.json"
-#: claude's main config file. Holds (besides per-container state) the logged-in *account* (which
-#: claude keys "logged in" on, separately from the token in ``.credentials.json``) and per-project
-#: trust acceptance.
+#: claude's main config file. Holds (besides per-container state) per-project trust acceptance.
 CONFIG_FILE = ".claude.json"
-#: The account/identity fields seeded from the creds volume's config into the container-local one,
-#: so a task is authenticated (the token alone isn't enough — claude also wants the account).
-ACCOUNT_KEYS = ("oauthAccount", "userID", "hasCompletedOnboarding", "lastOnboardingVersion")
 
 
 #: Filename of the rendered MCP client config in the config dir; claude is pointed at it via
@@ -94,32 +80,6 @@ def write_workflow_overview(config_dir: Path, overview: str) -> Path | None:
     return path
 
 
-def link_credentials(config_dir: Path, *, creds_dir: Path = Path(CREDS_DIR)) -> None:
-    """Point the container-local config dir at the repo's shared OAuth credentials.
-
-    Symlink *only* ``.credentials.json`` from the per-repo creds volume into ``config_dir``, so
-    the repo's token is used and refreshes write through to the persistent volume — while
-    sessions/settings/skills stay container-local (not shared across the repo's tasks). Best
-    effort: if the volume has no credentials yet (no `panopticon login`), leave it to claude to
-    complain at launch.
-
-    **Authoritative**: we re-point the symlink whenever it isn't already exactly ``src``. The
-    config dir is a per-task volume that persists across respawn, and claude rewrites
-    ``.credentials.json`` in place on token refresh — an atomic write that clobbers our symlink
-    into a *regular file* holding a now-stale token. On the next (re)spawn that file would shadow
-    the volume's fresh token (e.g. after `panopticon login`), so we replace any non-symlink or
-    wrong-target link rather than skip when something's already there."""
-    config_dir.mkdir(parents=True, exist_ok=True)
-    src, link = creds_dir / CREDS_FILE, config_dir / CREDS_FILE
-    if not src.exists():
-        return  # nothing logged in yet — leave the config dir as claude left it
-    if link.is_symlink() and link.readlink() == src:
-        return  # already correctly linked — don't churn it
-    if link.is_symlink() or link.exists():
-        link.unlink()  # a stale regular file (clobbered by a refresh) or a wrong/broken target
-    link.symlink_to(src)
-
-
 def trust_workspace(config_dir: Path, cwd: Path) -> Path:
     """Pre-accept claude's "Do you trust the files in this folder?" dialog for ``cwd``.
 
@@ -127,8 +87,8 @@ def trust_workspace(config_dir: Path, cwd: Path) -> Path:
     skips (cf. claude issue #45298): it blocks on startup until accepted, and there's no operator in
     the container to accept it. claude records acceptance per-project in ``<config>/.claude.json``
     under ``projects[<cwd>].hasTrustDialogAccepted``; we seed exactly that (and mark onboarding done,
-    the other first-run blocker). Merge-in-place so we don't clobber config claude writes itself (nor
-    the account :func:`seed_account` seeds into the same file), and idempotent. The path encoding is
+    the other first-run blocker). Merge-in-place so we don't clobber config claude writes itself, and
+    idempotent. The path encoding is
     undocumented internals — a safe degradation if it ever drifts is that the dialog reappears, which
     only matters in an (already attended) interactive re-attach.
     """
@@ -138,27 +98,6 @@ def trust_workspace(config_dir: Path, cwd: Path) -> Path:
         projects = data.setdefault("projects", {})
         projects.setdefault(str(cwd), {})["hasTrustDialogAccepted"] = True
     return config
-
-
-def seed_account(config_dir: Path, *, creds_dir: Path = Path(CREDS_DIR)) -> None:
-    """Seed the logged-in account into the container-local config so the task is authenticated.
-
-    The token is shared via :func:`link_credentials`, but claude also keys "logged in" on the
-    account record (``oauthAccount``/``userID``) in ``.claude.json`` — which is container-local and
-    fresh, so a task would have the token yet still be prompted to log in. Copy just the identity
-    fields from the creds volume's ``.claude.json`` (written by ``panopticon login``); claude fills
-    in the rest. Best effort: skipped if the volume has no config (never logged in) or it's
-    unreadable. ``.claude.json`` itself stays container-local — only these fields are shared."""
-    src = creds_dir / CONFIG_FILE
-    try:
-        shared = json.loads(src.read_text())
-    except (OSError, ValueError):
-        return
-    account = {key: shared[key] for key in ACCOUNT_KEYS if key in shared}
-    if not account:
-        return
-    with update_json_config(config_dir / CONFIG_FILE) as existing:
-        existing.update(account)  # merge the identity fields in, leave the rest container-local
 
 
 def _claude_argv(config_dir: Path, cwd: Path) -> list[str]:
@@ -215,9 +154,9 @@ def main(
     launch: Callable[[Path], None] = _run_claude,
     on_exit: Callable[[], None] = _stop_container,
 ) -> None:
-    """Bootstrap the agent CLI from the active workflow (skills + turn-flip hooks + credentials),
-    run the agent, then stop the container when it exits. The CLI config dir is a per-task volume
-    (`<home>/.claude`); credentials are linked in from the per-repo creds volume.
+    """Bootstrap the agent CLI from the active workflow (skills + turn-flip hooks), run the agent,
+    then stop the container when it exits. The CLI config dir is a per-task volume
+    (`<home>/.claude`); auth comes from the ``CLAUDE_CODE_OAUTH_TOKEN`` env var the runner injects.
 
     When the agent (claude) exits, ``on_exit`` stops the container so the task goes **down** rather
     than lingering live-but-unconnectable — the operator respawns it with `R` (history resumes)."""
@@ -232,8 +171,6 @@ def main(
     write_mcp_config(config_dir, service_url)  # point claude at the task service's MCP server
     write_workflow_overview(config_dir, client.workflow_overview(task_id))  # → system prompt (the map)
     trust_workspace(config_dir, Path.cwd())  # pre-accept the trust dialog (no operator to)
-    link_credentials(config_dir)
-    seed_account(config_dir)  # + the logged-in account, so the token alone isn't a login prompt
     launch(config_dir)  # the agent runs until it exits...
     on_exit()  # ...then stop the container (task → down → respawn)
 

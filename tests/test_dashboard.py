@@ -6,7 +6,6 @@ real HTTP client is covered in test_terminal.py."""
 from __future__ import annotations
 
 import threading
-from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -1128,37 +1127,6 @@ async def test_repo_form_space_toggles_the_checkbox_without_saving() -> None:
         assert checkbox.value is True  # toggled
         assert fake.created_repos == []  # but not saved
         assert isinstance(app.screen, dashboard.RepoFormScreen)  # form still open
-
-
-async def test_repos_screen_login_runs_for_the_highlighted_repo() -> None:
-    fake = _FakeClient([], repos=[{"id": "r1", "name": "acme/widgets", "git_url": "https://x/r1.git",
-                                   "default_base": "main", "creds_volume": "creds-r1"}])
-    logged_in: list[str] = []
-    app = Dashboard(fake, login=logged_in.append)  # type: ignore[arg-type]
-    # The headless test driver can't suspend (real terminals can); stub it to a no-op so the
-    # login still runs — we're exercising the hook wiring, not the terminal hand-off.
-    app.suspend = lambda: nullcontext()  # type: ignore[method-assign]
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("g")
-        await pilot.pause()
-        await pilot.press("l")  # log in to the highlighted repo
-        await pilot.pause()
-        assert logged_in == ["r1"]  # the repo id, run through the login+restart hook
-
-
-async def test_repos_screen_login_warns_without_a_creds_volume() -> None:
-    fake = _FakeClient([], repos=[{"id": "r1", "name": "acme/widgets", "git_url": "https://x/r1.git",
-                                   "default_base": "main"}])  # no creds_volume configured
-    logged_in: list[str] = []
-    app = Dashboard(fake, login=logged_in.append)  # type: ignore[arg-type]
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("g")
-        await pilot.pause()
-        await pilot.press("l")
-        await pilot.pause()
-        assert logged_in == []  # nothing to log in to → no-op (warned instead)
 
 
 def _record_popen(monkeypatch: Any) -> list[list[str]]:
