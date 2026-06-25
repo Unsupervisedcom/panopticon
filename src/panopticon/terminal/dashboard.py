@@ -4,9 +4,9 @@ A task table on the left, the highlighted task's state/turn/history on the right
 from the task service **on change** — a background worker long-polls the change feed
 (``list_tasks_versioned``), so the table redraws within a round-trip of a state change and stays
 still when nothing changes (no fixed-interval redraw); `r` forces a refresh now. The redraw
-preserves the highlighted row across the rebuild. A dim divider row splits the active tasks from
-the terminal (COMPLETE/DROPPED) ones that sink below them; the arrow keys jump over it (it's not a
-selectable task).
+preserves the highlighted row across the rebuild. The task list is split into two
+:class:`BoundaryDataTable` widgets — one for active tasks, one for terminal (COMPLETE/DROPPED) ones
+— with a :class:`textual.widgets.Rule` between them; arrow keys cross the boundary seamlessly.
 
 The footer legend shows only the essential, most-used keys — `t` hands off to the task's
 container tmux, `n` creates a task (pick repo → workflow → describe the work), `x` **drops** it,
@@ -66,10 +66,11 @@ from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.message import Message
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widget import Widget
-from textual.widgets import Checkbox, DataTable, Footer, Header, Input, Label, OptionList, Static
+from textual.widgets import Checkbox, DataTable, Footer, Header, Input, Label, OptionList, Rule, Static
 from textual.worker import get_current_worker
 
 from panopticon.client import JsonObj, TaskServiceClient
@@ -116,16 +117,32 @@ def _short_tokens(n: int | None) -> str:
     return str(n)
 
 
-# A sentinel row key for the divider drawn between the active and terminal task groups (see
-# action_refresh). It's not a real task id, so it's never in ``self._tasks`` — the highlight
-# handler treats it as "no task selected" and the arrow keys jump over it.
-_SEPARATOR_KEY = "__separator__"
+class BoundaryDataTable(DataTable[Any]):
+    """DataTable that posts ``BoundaryReached`` when Up/Down is pressed at the cursor boundary.
 
+    Lets the Dashboard wire Up-at-first-row → focus the active table and Down-at-last-row →
+    focus the terminal table (or vice-versa), giving seamless arrow-key navigation across the
+    two-DataTable split that replaced the old sentinel-row separator."""
 
-def _separator_cells(columns: int) -> list[Text]:
-    """A dim box-drawing rule, one cell per task-table column — the visual divider between the
-    active tasks and the terminal (COMPLETE/DROPPED) ones that sink below them."""
-    return [Text("─" * 100, style="dim") for _ in range(columns)]
+    class BoundaryReached(Message):
+        """Posted when the user presses Up at row 0 or Down at the last row."""
+
+        def __init__(self, table_id: str, direction: int) -> None:
+            super().__init__()
+            self.table_id = table_id  # id of the DataTable that hit the boundary
+            self.direction = direction  # -1 = up (above first row), +1 = down (past last row)
+
+    def action_cursor_up(self) -> None:
+        if self.cursor_row == 0:
+            self.post_message(self.BoundaryReached(self.id or "", direction=-1))
+        else:
+            super().action_cursor_up()
+
+    def action_cursor_down(self) -> None:
+        if self.row_count == 0 or self.cursor_row >= self.row_count - 1:
+            self.post_message(self.BoundaryReached(self.id or "", direction=1))
+        else:
+            super().action_cursor_down()
 
 
 def _slug_cell(task: JsonObj) -> Text:
@@ -190,10 +207,8 @@ _STATUS_COLORS = {
 }
 
 
-def _status_cell(task: JsonObj, *, is_terminal: bool = False) -> Text:
+def _status_cell(task: JsonObj) -> Text:
     """The container column: the task service's composed ``container_status``, color-coded."""
-    if is_terminal:
-        return Text("–", style="dim")
     status = task.get("container_status") or "–"
     return Text(status, style=_STATUS_COLORS.get(status, "dim"))
 
@@ -736,8 +751,10 @@ class Dashboard(App[None]):
     running; the supervisor handles the attach/detach (ADR 0009)."""
 
     CSS = (
-        "#tasks { width: 3fr; } #detail { width: 2fr; padding: 0 1; display: none; } "
-        "#search { display: none; }"
+        "#task-list { width: 3fr; } "
+        "#detail { width: 2fr; padding: 0 1; display: none; } "
+        "#search { display: none; } "
+        "#task-separator { display: none; }"
     )
     # The change-feed long-poll's ``wait`` ceiling: the feed worker parks each request up to this
     # many seconds before re-polling, so a quiet feed reconnects this often (no redraw) while a
@@ -773,7 +790,6 @@ class Dashboard(App[None]):
         self._current: str | None = None
         self._query: str = ""  # active search filter ("" → no filter); see action_search
         self._detail_visible = False  # detail pane hidden by default; `d` toggles it (action_toggle_detail)
-        self._last_cursor_row = 0  # previous cursor row index → infer travel direction to skip the divider
         # one reused scratch dir for `a`'s REST-open (lazily made, cleaned on exit) — so opening
         # many artifacts doesn't leak a temp dir each.
         self._artifact_tmp: tempfile.TemporaryDirectory[str] | None = None
@@ -781,17 +797,24 @@ class Dashboard(App[None]):
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal():
-            yield DataTable(id="tasks")
+            with VerticalScroll(id="task-list"):
+                yield BoundaryDataTable(id="tasks-active")
+                yield Rule(id="task-separator")
+                yield BoundaryDataTable(id="tasks-terminal", show_header=False)
             yield Static(id="detail")
         yield Input(id="search", placeholder="search tasks…")  # hidden until `/` (CSS display:none)
         yield Footer()
 
     def on_mount(self) -> None:
-        table = self.query_one("#tasks", DataTable)
-        table.cursor_type = "row"
         # the slug header carries a literal "[" — pass it as Text so Textual doesn't eat it as markup
-        table.add_columns("state", "turn", "container", Text("slug[memo]"))
-        table.focus()  # the (hidden) search Input would otherwise grab initial focus
+        cols = ("state", "turn", "container", Text("slug[memo]"))
+        active = self.query_one("#tasks-active", BoundaryDataTable)
+        active.cursor_type = "row"
+        active.add_columns(*cols)
+        terminal = self.query_one("#tasks-terminal", BoundaryDataTable)
+        terminal.cursor_type = "row"
+        terminal.add_columns(*cols)
+        active.focus()  # the (hidden) search Input would otherwise grab initial focus
         self.action_refresh()  # first paint; the feed worker drives every refresh after
         if not self._has_repos():  # first-run nudge: no repos → drop straight into the repo screen
             self.action_repos()
@@ -853,50 +876,81 @@ class Dashboard(App[None]):
         return self._artifact_tmp.name
 
     def action_refresh(self) -> None:
-        table = self.query_one("#tasks", DataTable)
         selected = self._current  # keep the operator's highlight across the rebuild (feed refresh)
-        table.clear()
         ordered = sorted(self._client.list_tasks(), key=_sort_key)  # live/user/recent first
         visible = [t for t in ordered if _matches(t, self._query)]  # apply the search filter
         self._tasks = {t["id"]: t for t in visible}
-        # Draw the active↔terminal divider once, before the first terminal row — but only when an
-        # active row precedes it (an all-terminal list gets no divider).
-        seen_active = False
-        separated = False
-        for task in visible:
-            terminal = task["state"] in TERMINAL_LABELS
-            if terminal and seen_active and not separated:
-                table.add_row(*_separator_cells(len(table.ordered_columns)), key=_SEPARATOR_KEY)
-                separated = True
-            seen_active = seen_active or not terminal
-            table.add_row(
-                task["state"], _turn_cell(task), _status_cell(task, is_terminal=terminal), _slug_cell(task),
+
+        active_tasks = [t for t in visible if t["state"] not in TERMINAL_LABELS]
+        terminal_tasks = [t for t in visible if t["state"] in TERMINAL_LABELS]
+        active_ids = {t["id"] for t in active_tasks}
+
+        active_table = self.query_one("#tasks-active", BoundaryDataTable)
+        terminal_table = self.query_one("#tasks-terminal", BoundaryDataTable)
+        separator = self.query_one("#task-separator", Rule)
+
+        active_table.clear()
+        for task in active_tasks:
+            active_table.add_row(
+                task["state"], _turn_cell(task), _status_cell(task), _slug_cell(task),
                 key=task["id"],
             )
+
+        terminal_table.clear()
+        for task in terminal_tasks:
+            terminal_table.add_row(
+                task["state"], _turn_cell(task), Text("–", style="dim"), _slug_cell(task),
+                key=task["id"],
+            )
+
+        # Size each table to its content so the outer VerticalScroll handles all scrolling.
+        # Active table always renders (shows header even with 0 rows); terminal is hidden when empty.
+        active_table.styles.height = 1 + len(active_tasks)
+        if terminal_tasks:
+            terminal_table.styles.display = "block"
+            terminal_table.styles.height = len(terminal_tasks)
+        else:
+            terminal_table.styles.display = "none"
+        separator.styles.display = "block" if (active_tasks and terminal_tasks) else "none"
+
+        # Restore the previously selected task; fall back to the first visible task.
         target = selected if selected in self._tasks else next(iter(self._tasks), None)
         if target is not None:
-            table.move_cursor(row=table.get_row_index(target))
+            if target in active_ids:
+                active_table.move_cursor(row=active_table.get_row_index(target))
+            else:
+                terminal_table.move_cursor(row=terminal_table.get_row_index(target))
         self._update_detail(target)
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        table = self.query_one("#tasks", DataTable)
-        if event.row_key.value == _SEPARATOR_KEY:
-            # The arrow keys jump the divider: step one more row in the direction of travel
-            # (down → first terminal task, up → last active task). The divider always sits
-            # between groups, so there's a real row on both sides; move_cursor re-fires this
-            # handler on that real row, so we don't recurse on the sentinel.
-            step = 1 if table.cursor_row >= self._last_cursor_row else -1
-            table.move_cursor(row=table.cursor_row + step)
+        # Only the focused table's highlights drive _current — the unfocused table's cursor
+        # (e.g. RowHighlighted fired by add_row on the terminal table while the active table
+        # has focus) must not overwrite the selection.
+        if not event.data_table.has_focus:
             return
-        self._last_cursor_row = table.cursor_row
         key = event.row_key.value
-        self._update_detail(str(key) if key is not None else None)
+        if key is not None:
+            self._update_detail(str(key))
+
+    def on_boundary_data_table_boundary_reached(self, event: BoundaryDataTable.BoundaryReached) -> None:
+        """Cross the Rule boundary when the cursor reaches the first/last row of either table."""
+        if event.direction == 1 and event.table_id == "tasks-active":
+            terminal = self.query_one("#tasks-terminal", BoundaryDataTable)
+            if terminal.row_count > 0:
+                terminal.focus()
+                terminal.move_cursor(row=0)
+                # move_cursor only fires RowHighlighted when the cursor moves; if it was already
+                # at row 0, update the detail directly so _current is always correct.
+                self._update_detail(str(list(terminal.rows)[0].value))
+        elif event.direction == -1 and event.table_id == "tasks-terminal":
+            active = self.query_one("#tasks-active", BoundaryDataTable)
+            if active.row_count > 0:
+                last_row = active.row_count - 1
+                active.focus()
+                active.move_cursor(row=last_row)
+                self._update_detail(str(list(active.rows)[last_row].value))
 
     def _update_detail(self, task_id: str | None) -> None:
-        if task_id == _SEPARATOR_KEY:  # the divider isn't a task — select nothing, blank the pane
-            self._current = None
-            self.query_one("#detail", Static).update("")
-            return
         self._current = task_id
         task = self._tasks.get(task_id) if task_id else None
         # wrap in Text so the pane renders literally — never parse task content as console markup
@@ -1133,7 +1187,11 @@ class Dashboard(App[None]):
     def _hide_search(self) -> None:
         """Hide the query box and return focus to the task table (Enter-lock and Esc-clear)."""
         self.query_one("#search", Input).styles.display = "none"
-        self.query_one("#tasks", DataTable).focus()
+        active = self.query_one("#tasks-active", BoundaryDataTable)
+        if active.row_count > 0:
+            active.focus()
+        else:
+            self.query_one("#tasks-terminal", BoundaryDataTable).focus()
 
     def on_input_changed(self, event: Input.Changed) -> None:
         """Live-filter as the operator types in the search box (other Inputs are untouched)."""
