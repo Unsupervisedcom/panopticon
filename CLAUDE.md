@@ -164,11 +164,14 @@ commands the Makefile wraps).
   skip terminal/claimed, skip on a 409 lost claim), the **reported phase sequence** (claiming →
   preparing → building → starting → awaiting, and `failed` with the error when a step raises), the
   `reconcile` down-detection (a claimed-by-us in-flight task whose container is gone → clear the
-  phase → composes `down`), and the `spawnable_tasks` filter; an integration test claims + spawns
-  against the real task service over REST (fake git/runner).
+  phase → composes `down`), `heal` **self-heal** (a claimed-by-us non-terminal task whose tmux
+  session is gone → respawn via the idempotent spawn path; skips healthy/unclaimed/terminal tasks;
+  the crash-loop cap + survivor-window budget reset), and the `spawnable_tasks` filter; an
+  integration test claims + spawns against the real task service over REST (fake git/runner).
 - `tests/test_host.py` — the unified per-host daemon (ADR 0008/0011): a unit test isolates a
-  failing task; an integration test drives spawn → set slug → provision against the real task
-  service over REST (claimed + spawned, then branched, no re-spawn).
+  failing task and another pins that each pass also `heal`s every task; an integration test drives
+  spawn → set slug → provision against the real task service over REST (claimed + spawned, then
+  branched, no re-spawn).
 - `tests/test_daemon.py` — the observe-and-provision loop + its launch: unit tests drive
   `tick`/`run` with fakes (branch watched tasks, skip a provisioned one, isolate a failing one,
   poll until a stop condition); integration tests over REST cover the loop (slug-set → branched →
@@ -179,8 +182,9 @@ commands the Makefile wraps).
 - `tests/test_skeleton.py` — the end-to-end walking skeleton (create → register → slug →
   transition → history) over the REST API, no Docker.
 - `tests/test_local_runner.py` / `tests/test_entrypoint.py` — the runner's emitted docker/tmux
-  commands (incl. the ADR 0011 `/workspace` mount + the CLI's spawn-prep→spawn flow) and the
-  container entrypoint loop (fakes; no Docker/LLM), plus a `skipif` docker integration test.
+  commands (incl. the ADR 0011 `/workspace` mount + the CLI's spawn-prep→spawn flow, `is_running`'s
+  `docker ps` probe + `has_session`'s `tmux list-sessions` probe for self-heal) and the container
+  entrypoint loop (fakes; no Docker/LLM), plus a `skipif` docker integration test.
 - `tests/test_spawn.py` — spawn-prep (ADR 0011): unit tests pin the `clone --local` of the
   per-task checkout and the idempotency gate (skips when the checkout already exists).
 - `tests/test_prefill.py` — the input-box prefill poller: unit tests drive `prefill_pane` with a

@@ -97,6 +97,23 @@ def test_is_running_is_false_when_no_container_is_listed() -> None:
     assert runner.is_running("t1") is False
 
 
+def test_has_session_lists_the_tmux_server_and_matches_the_session_name() -> None:
+    rec = _ReturningRecorder("panopticon-t1\npanopticon-t2\n")  # two sessions on the server
+    runner = LocalRunner("http://svc:8000", run=rec)
+    assert runner.has_session("t1") is True
+    (ls, check), = rec.calls
+    assert ls == ["tmux", "-L", "panopticon", "list-sessions", "-F", "#{session_name}"]
+    assert check is False  # an empty list (or no server at all) just means "no session", not an error
+
+
+def test_has_session_is_false_when_the_session_is_absent() -> None:
+    # No server running (e.g. after `make stop`) → list-sessions prints nothing → not a session.
+    assert LocalRunner("http://svc:8000", run=_Recorder()).has_session("t1") is False
+    # A server with *other* sessions but not this task's is still a miss (no substring false-match).
+    runner = LocalRunner("http://svc:8000", run=_ReturningRecorder("panopticon-t10\n"))
+    assert runner.has_session("t1") is False
+
+
 def test_spawn_runs_container_unprivileged_as_the_invoking_user() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", run=rec).spawn("t1")

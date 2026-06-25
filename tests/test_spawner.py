@@ -29,11 +29,13 @@ def _no_op_run(args: object, *, check: bool = True) -> str:
 
 class _FakeRunner:
     """Records spawn calls; stands in for LocalRunner. Mimics its ``progress`` callbacks (STARTING
-    then AWAITING) and ``is_running`` (configurable, for reconcile/down-detection tests)."""
+    then AWAITING), ``is_running`` (for reconcile/down-detection) and ``has_session`` (for heal/
+    self-heal) — both configurable."""
 
-    def __init__(self, *, running: bool = True) -> None:
+    def __init__(self, *, running: bool = True, session: bool = True) -> None:
         self.spawned: list[dict[str, object]] = []
         self._running = running
+        self._session = session
 
     def spawn(self, task_id: str, *, env_file: str | None = None, creds_volume: str | None = None, workspace: str | None = None, image: str | None = None, docker_in_docker: bool = False, memo: str | None = None, progress: Callable[[LifecyclePhase], None] | None = None) -> str:
         self.spawned.append({"task_id": task_id, "env_file": env_file, "creds_volume": creds_volume, "workspace": workspace, "image": image, "docker_in_docker": docker_in_docker, "memo": memo})
@@ -44,6 +46,9 @@ class _FakeRunner:
 
     def is_running(self, task_id: str) -> bool:
         return self._running
+
+    def has_session(self, task_id: str) -> bool:
+        return self._session
 
 
 class _FakeClient:
@@ -211,6 +216,80 @@ def test_reconcile_ignores_tasks_not_in_flight_or_not_ours() -> None:
     spawner.reconcile({"id": "t2", "claimed_by": "host-1", "container_status": "failed", "state": "ITERATING"})
     spawner.reconcile({"id": "t3", "claimed_by": "host-9", "container_status": "awaiting", "state": "ITERATING"})
     assert client.cleared == []  # live/failed are left as-is; t3 belongs to another runner
+
+
+def test_heal_respawns_an_orphan_claimed_by_us_with_no_session() -> None:
+    # The make-stop case: claimed by us, non-terminal, but its tmux session is gone → respawn it
+    # via the idempotent spawn path (the runner docker-rm's the stale container + starts fresh).
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner(session=False)
+    cid = _spawner(client, runner).heal(
+        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": "host-1"}
+    )
+    assert cid == "panopticon-t1"
+    assert [s["task_id"] for s in runner.spawned] == ["t1"]  # respawned
+    assert client.claims == []  # already ours — heal doesn't re-claim
+
+
+def test_heal_skips_a_task_whose_session_is_alive() -> None:
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner(session=True)
+    assert _spawner(client, runner).heal(
+        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": "host-1"}
+    ) is None
+    assert runner.spawned == []  # reachable session (e.g. a runner-only restart) — left untouched
+
+
+def test_heal_skips_tasks_not_claimed_by_this_runner() -> None:
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner(session=False)
+    spawner = _spawner(client, runner)
+    assert spawner.heal({"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": None}) is None
+    assert spawner.heal({"id": "t2", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": "host-9"}) is None
+    assert runner.spawned == []  # unclaimed → spawn_one's job; another host's → not ours
+
+
+def test_heal_skips_terminal_tasks() -> None:
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner(session=False)
+    assert _spawner(client, runner).heal(
+        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "COMPLETE", "claimed_by": "host-1"}
+    ) is None
+    assert runner.spawned == []  # done — nothing to keep alive
+
+
+def _orphan(task_id: str = "t1") -> JsonObj:
+    return {"id": task_id, "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": "host-1"}
+
+
+def test_heal_caps_respawns_then_surfaces_a_crash_looping_task() -> None:
+    # A container that won't stay up (session keeps vanishing right away) is respawned only up to the
+    # cap, then left for attention — not thrashed forever.
+    clock = {"t": 0.0}
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner(session=False)
+    spawner = Spawner(
+        client, runner, runner_id="host-1",  # type: ignore[arg-type]
+        cache=CloneCache("/cache", run=_no_op_run, exists=lambda _p: True), tasks_root="/tasks",
+        git=GitClones(run=_no_op_run), now=lambda: clock["t"], max_respawns=3, respawn_reset=60.0,
+    )
+    for _ in range(6):
+        spawner.heal(_orphan())
+        clock["t"] += 1.0  # rapid failures, well within the reset window
+    assert len(runner.spawned) == 3  # capped at max_respawns; further attempts are surfaced, not spawned
+
+
+def test_heal_resets_the_respawn_budget_after_a_survivor_window() -> None:
+    # An isolated orphan that recovers (survives past the reset window) heals again on a later,
+    # unrelated failure rather than being counted toward the earlier burst.
+    clock = {"t": 0.0}
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner(session=False)
+    spawner = Spawner(
+        client, runner, runner_id="host-1",  # type: ignore[arg-type]
+        cache=CloneCache("/cache", run=_no_op_run, exists=lambda _p: True), tasks_root="/tasks",
+        git=GitClones(run=_no_op_run), now=lambda: clock["t"], max_respawns=2, respawn_reset=60.0,
+    )
+    spawner.heal(_orphan())  # respawn 1
+    spawner.heal(_orphan())  # respawn 2 → budget now exhausted
+    assert len(runner.spawned) == 2
+    clock["t"] += 120.0  # the last respawn survived past the reset window
+    spawner.heal(_orphan())  # a fresh episode → budget reset → respawns again
+    assert len(runner.spawned) == 3
 
 
 def test_spawn_one_skips_terminal_and_already_claimed_tasks() -> None:

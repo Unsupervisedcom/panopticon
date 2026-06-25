@@ -37,6 +37,9 @@ class _FakeRunner:
     def is_running(self, task_id: str) -> bool:
         return True  # the spawned container is up (reconcile leaves it coming up)
 
+    def has_session(self, task_id: str) -> bool:
+        return True  # session present (heal leaves a healthy task untouched)
+
 
 class _FakeClient:
     """A do-nothing change-feed client — `tick` takes the snapshot as an argument, so the client is
@@ -58,6 +61,12 @@ def test_tick_isolates_a_failing_task_from_the_others() -> None:
             if task["id"] == "t1":
                 raise RuntimeError("boom")
 
+        def reconcile(self, task: JsonObj) -> None:
+            return None
+
+        def heal(self, task: JsonObj) -> None:
+            return None
+
     class _Provisioner:
         def provision(self, task: JsonObj) -> None:
             return None
@@ -65,6 +74,28 @@ def test_tick_isolates_a_failing_task_from_the_others() -> None:
     daemon = HostDaemon(_FakeClient([]), _Spawner(), _Provisioner())  # type: ignore[arg-type]
     daemon.tick([{"id": "t1"}, {"id": "t2"}])
     assert seen == ["t1", "t2"]  # t1's error is logged + skipped; t2 still processed
+
+
+def test_tick_heals_each_task_in_the_snapshot() -> None:
+    # The pass also runs self-heal (orphan respawn) over every task, alongside spawn/provision/reconcile.
+    healed: list[str] = []
+
+    class _Spawner:
+        def spawn_one(self, task: JsonObj) -> None:
+            return None
+
+        def reconcile(self, task: JsonObj) -> None:
+            return None
+
+        def heal(self, task: JsonObj) -> None:
+            healed.append(task["id"])
+
+    class _Provisioner:
+        def provision(self, task: JsonObj) -> None:
+            return None
+
+    HostDaemon(_FakeClient([]), _Spawner(), _Provisioner()).tick([{"id": "t1"}, {"id": "t2"}])  # type: ignore[arg-type]
+    assert healed == ["t1", "t2"]
 
 
 def test_run_blocks_on_the_change_feed_and_feeds_the_version_back() -> None:
@@ -78,6 +109,12 @@ def test_run_blocks_on_the_change_feed_and_feeds_the_version_back() -> None:
 
         def spawn_one(self, task: JsonObj) -> None:
             self.seen.append(task["id"])
+
+        def reconcile(self, task: JsonObj) -> None:
+            return None
+
+        def heal(self, task: JsonObj) -> None:
+            return None
 
     class _Provisioner:
         def provision(self, task: JsonObj) -> None:
@@ -102,6 +139,12 @@ def test_run_survives_a_whole_pass_failure() -> None:
 
     class _Spawner:
         def spawn_one(self, task: JsonObj) -> None:
+            return None
+
+        def reconcile(self, task: JsonObj) -> None:
+            return None
+
+        def heal(self, task: JsonObj) -> None:
             return None
 
     class _Provisioner:

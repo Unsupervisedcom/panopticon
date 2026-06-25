@@ -64,14 +64,16 @@ class HostDaemon:
         self._interval = interval
 
     def tick(self, tasks: list[JsonObj]) -> None:
-        """One pass over a task snapshot: spawn each spawnable task, provision each slugged one, and
-        reconcile each claimed one's container-lifecycle status (down-detection). All three self-gate,
-        so re-running over an unchanged snapshot is a no-op."""
+        """One pass over a task snapshot: spawn each spawnable task, provision each slugged one,
+        reconcile each claimed one's container-lifecycle status (down-detection), and heal each
+        orphan (a claimed task whose tmux session is gone → respawn). All four self-gate, so
+        re-running over an unchanged snapshot is a no-op."""
         for task in tasks:
             try:
                 self._spawner.spawn_one(task)
                 self._provisioner.provision(task)
                 self._spawner.reconcile(task)
+                self._spawner.heal(task)
             except Exception:  # a transient git/REST/FS error on one task must not stall the others
                 _log.warning("host pass failed for task %s", task.get("id"), exc_info=True)
                 continue

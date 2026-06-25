@@ -10,6 +10,8 @@ unified host daemon runs both. LLM-free.
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Callable
 
 import httpx
@@ -21,6 +23,16 @@ from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.images import ImageBuilder
 from panopticon.sessionservice.local_runner import LocalRunner
 from panopticon.sessionservice.spawn import prepare_workspace
+
+_log = logging.getLogger(__name__)
+
+#: Crash-loop guard for :meth:`Spawner.heal`: at most this many respawns of a task within a burst
+#: before we stop and surface it (log) rather than thrash a container that won't stay up.
+MAX_RESPAWNS = 5
+#: A respawn that survives this long counts as recovered — the next time the task loses its session
+#: starts a fresh respawn budget instead of counting toward the previous burst. So an isolated
+#: orphan heals every time, while a tight crash loop exhausts the budget and is left for attention.
+RESPAWN_RESET_SECONDS = 60.0
 
 #: Statuses that mean "a spawn this runner reported is still in flight" — the ones :meth:`reconcile`
 #: acts on. A claimed-by-us task stuck in one of these whose container isn't running is **down**.
@@ -49,6 +61,9 @@ class Spawner:
         tasks_root: str,
         git: object | None = None,
         images: ImageBuilder | None = None,
+        now: Callable[[], float] = time.monotonic,
+        max_respawns: int = MAX_RESPAWNS,
+        respawn_reset: float = RESPAWN_RESET_SECONDS,
     ) -> None:
         self._client = client
         self._runner = runner
@@ -57,6 +72,12 @@ class Spawner:
         self._tasks_root = tasks_root
         self._git = git
         self._images = images or ImageBuilder()
+        self._now = now
+        self._max_respawns = max_respawns
+        self._respawn_reset = respawn_reset
+        #: task_id → (respawns in the current burst, monotonic time of the last respawn), the
+        #: crash-loop guard state for :meth:`heal`.
+        self._respawns: dict[str, tuple[int, float]] = {}
 
     def spawn_one(self, task: JsonObj) -> str | None:
         """Claim + spawn ``task`` if it's a fresh unclaimed, non-terminal task; else ``None``.
@@ -77,6 +98,16 @@ class Spawner:
             if exc.response.status_code == 409:
                 return None  # another runner claimed it first
             raise
+        return self._spawn(task)
+
+    def _spawn(self, task: JsonObj) -> str:
+        """Prepare the workspace, compose the image, and spawn the container for an **already
+        claimed** task — the body shared by :meth:`spawn_one` (after it wins the claim) and
+        :meth:`heal` (respawning an orphan this runner already holds).
+
+        Reports each phase (``CLAIMING`` → … → ``AWAITING``); a step raising is reported as
+        ``FAILED`` (with the error) before re-raising, so the host daemon's per-task isolation still
+        applies but the failure is visible, not silent."""
         task_id = task["id"]
         try:
             self._report(task_id, LifecyclePhase.CLAIMING)
@@ -124,6 +155,47 @@ class Spawner:
         if self._runner.is_running(task["id"]):
             return  # container present, just not registered yet — still coming up
         self._client.clear_lifecycle(task["id"])  # container gone → composes `down`
+
+    def heal(self, task: JsonObj) -> str | None:
+        """Self-heal an orphaned task: respawn one this runner claims whose tmux session is gone.
+
+        A ``make stop`` (or any kill of the ``-L panopticon`` tmux server) destroys every task
+        session, but the **detached containers keep running and heartbeating** — so those tasks read
+        ``live`` yet have no session to attach to, and the unclaimed-gated spawn loop won't recover
+        them (they're still claimed by this runner). Here we close that gap: a task claimed by **this**
+        runner, non-terminal, with **no tmux session** is respawned via the idempotent spawn path
+        (:meth:`_spawn` → the runner ``docker rm --force``s the stale container and starts a fresh
+        session; the agent resumes from the per-task config volume via ``claude --continue``).
+
+        Gating on session-existence distinguishes the two restart cases with no extra state: a full
+        ``make stop`` leaves all sessions gone → every orphan is respawned; a runner-process-only
+        restart leaves the sessions (and their agents) alive → they're skipped, untouched.
+
+        A crash-loop guard caps consecutive respawns (:data:`MAX_RESPAWNS`) so a container that won't
+        stay up is logged and left for attention rather than thrashed; a respawn that survives
+        :data:`RESPAWN_RESET_SECONDS` resets the budget. Returns the new container id, or ``None`` when
+        nothing was done. Per-tick call from the host daemon, so it runs on start and continuously."""
+        task_id = task["id"]
+        if task.get("claimed_by") != self._runner_id:
+            return None  # not ours (or unclaimed) — spawn_one handles the unclaimed case
+        if task["state"] in TERMINAL_LABELS:
+            self._respawns.pop(task_id, None)  # done — forget any crash-loop tracking
+            return None
+        if self._runner.has_session(task_id):
+            return None  # a session is up — reachable, nothing to heal
+        count, last = self._respawns.get(task_id, (0, 0.0))
+        now = self._now()
+        if count and now - last >= self._respawn_reset:
+            count = 0  # survived long enough since the last respawn → a fresh episode, not a loop
+        if count >= self._max_respawns:
+            _log.error(
+                "task %s keeps losing its tmux session (%d respawns) — leaving it for attention",
+                task_id, count,
+            )
+            return None
+        self._respawns[task_id] = (count + 1, now)
+        _log.warning("self-healing orphaned task %s (no tmux session) — respawn %d", task_id, count + 1)
+        return self._spawn(task)
 
     def _compose_image(self, workflow: str, repo: JsonObj) -> str | None:
         """Compose the task's image (base → workflow → repo layers, ADR 0005) and return its tag;

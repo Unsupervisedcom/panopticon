@@ -236,6 +236,21 @@ class LocalRunner(Runner):
         )
         return bool(names.strip())
 
+    def has_session(self, task_id: str) -> bool:
+        """Whether the task's host tmux session exists on this runner's tmux server.
+
+        Lists the panopticon tmux server's sessions and looks for ``panopticon-<id>``; an empty list
+        (or no server at all — ``make stop`` kills the whole ``-L panopticon`` server) means the
+        session is gone. We list-and-match rather than ``has-session`` because the command runner
+        reports stdout, not exit status, and ``has-session`` signals only through its exit code.
+
+        Distinct from :meth:`is_running` (the *container*): a ``make stop`` kills the tmux server but
+        leaves the detached containers running, so a task can be ``is_running`` yet have **no
+        session** — the orphan the host daemon self-heals by respawning."""
+        session = f"panopticon-{task_id}"
+        sessions = self._run(self._tmux("list-sessions", "-F", "#{session_name}"), check=False)
+        return session in sessions.splitlines()
+
     @staticmethod
     def _wants_prefill(memo: str | None) -> bool:
         """Whether a memo is worth pre-filling: non-empty and not opted out via
