@@ -17,6 +17,7 @@ from panopticon.terminal.dashboard import (
     Dashboard,
     _SEPARATOR_KEY,
     _matches,
+    _repo_cell,
     _short_tokens,
     _slug_cell,
     _status_cell,
@@ -26,6 +27,7 @@ from panopticon.terminal.dashboard import (
 
 _TASK: dict[str, Any] = {
     "id": "task-abcdef0123",
+    "repo_id": "default",
     "slug": "fix-widget",
     "state": "WORKING",
     "turn": "agent",
@@ -752,6 +754,14 @@ def test_matches_is_a_case_insensitive_substring_over_identifying_fields() -> No
     assert _matches({**_TASK, "memo": None}, "")  # None memo doesn't blow up
 
 
+def test_repo_cell_returns_name_from_cache() -> None:
+    names = {"r1": "acme/widgets", "r2": "acme/api"}
+    assert _repo_cell({"repo_id": "r1"}, names) == "acme/widgets"
+    assert _repo_cell({"repo_id": "r2"}, names) == "acme/api"
+    assert _repo_cell({"repo_id": "unknown"}, names) == "unknown"  # fallback: bare id
+    assert _repo_cell({}, names) == "?"  # no repo_id at all
+
+
 def test_slug_cell_combines_slug_and_memo() -> None:
     # Returns a Rich Text (not a markup str) so the "[" survives — compare on .plain.
     # both present → slug[memo]
@@ -852,6 +862,56 @@ async def test_search_filter_survives_auto_refresh() -> None:
         app.action_refresh()  # a rebuild (as the timer would do) keeps the filter
         await pilot.pause()
         assert [str(k.value) for k in table.rows] == ["t-fix"]
+
+
+async def test_repo_column_shows_repo_name() -> None:
+    # The "repo" column displays the repo's human-readable name, not its id.
+    repos = [{"id": "r1", "name": "acme/widgets", "git_url": "", "default_base": "main"}]
+    task = {**_TASK, "repo_id": "r1"}
+    app = Dashboard(_FakeClient([task], repos=repos))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        row = table.get_row(task["id"])
+        # row is (state, turn, container, repo, slug[memo]) — repo is index 3
+        assert row[3] == "acme/widgets"
+
+
+async def test_search_matches_repo_name() -> None:
+    # Filtering by repo name surfaces only tasks belonging to that repo.
+    repos = [
+        {"id": "r1", "name": "acme/widgets", "git_url": "", "default_base": "main"},
+        {"id": "r2", "name": "acme/api", "git_url": "", "default_base": "main"},
+    ]
+    task_w = {**_TASK, "id": "t-w", "repo_id": "r1", "slug": "fix-widget"}
+    task_a = {**_TASK, "id": "t-a", "repo_id": "r2", "slug": "add-endpoint"}
+    app = Dashboard(_FakeClient([task_w, task_a], repos=repos))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        assert table.row_count == 2
+        await pilot.press("slash")
+        await pilot.press("w", "i", "d", "g", "e", "t", "s")  # matches "acme/widgets" repo name
+        await pilot.pause()
+        assert [str(k.value) for k in table.rows] == ["t-w"]
+
+
+async def test_repo_names_refresh_after_repo_edit() -> None:
+    # After the repo-config screen closes, the column reflects the updated name.
+    repos = [{"id": "r1", "name": "old-name", "git_url": "", "default_base": "main"}]
+    task = {**_TASK, "repo_id": "r1"}
+    fake = _FakeClient([task], repos=repos)
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        assert table.get_row(task["id"])[3] == "old-name"
+        # Simulate a rename via the service (as RepoFormScreen would do) then the dismiss reload.
+        fake.update_repo("r1", name="new-name")
+        app._load_repo_names()
+        app.action_refresh()
+        await pilot.pause()
+        assert table.get_row(task["id"])[3] == "new-name"
 
 
 async def test_respawn_releases_a_live_tasks_claim() -> None:
