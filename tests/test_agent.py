@@ -96,74 +96,6 @@ def test_claude_argv_appends_the_workflow_overview_to_the_system_prompt(tmp_path
     assert argv[i + 1] == "# the workflow map"  # the map's contents go inline into the system prompt
 
 
-def test_link_credentials_symlinks_only_the_credential_file(tmp_path: Path) -> None:
-    # The per-repo creds volume holds only `.credentials.json`; it's symlinked into the
-    # container-local config dir so the token is shared but other claude state is not.
-    creds_dir = tmp_path / "creds"
-    creds_dir.mkdir()
-    (creds_dir / ".credentials.json").write_text("{token}")
-    config_dir = tmp_path / "home" / ".claude"
-
-    agent.link_credentials(config_dir, creds_dir=creds_dir)
-
-    link = config_dir / ".credentials.json"
-    assert link.is_symlink() and link.resolve() == (creds_dir / ".credentials.json").resolve()
-    assert link.read_text() == "{token}"  # refreshes write through to the shared volume
-
-
-def test_link_credentials_is_a_noop_without_a_logged_in_volume(tmp_path: Path) -> None:
-    config_dir = tmp_path / ".claude"
-    agent.link_credentials(config_dir, creds_dir=tmp_path / "empty")  # no creds yet
-    assert config_dir.is_dir() and not (config_dir / ".credentials.json").exists()
-
-
-def test_link_credentials_replaces_a_stale_regular_file(tmp_path: Path) -> None:
-    # On respawn the persisted config volume can hold a *regular file* `.credentials.json` with a
-    # stale token — claude rewrites it in place on refresh, clobbering our symlink. It would shadow
-    # the volume's fresh token (e.g. after `panopticon login`), so link_credentials must replace it.
-    creds_dir = tmp_path / "creds"
-    creds_dir.mkdir()
-    (creds_dir / ".credentials.json").write_text("{fresh}")
-    config_dir = tmp_path / "home" / ".claude"
-    config_dir.mkdir(parents=True)
-    (config_dir / ".credentials.json").write_text("{stale}")  # clobbered-symlink leftover
-
-    agent.link_credentials(config_dir, creds_dir=creds_dir)
-
-    link = config_dir / ".credentials.json"
-    assert link.is_symlink() and link.read_text() == "{fresh}"  # repointed at the volume
-
-
-def test_link_credentials_repoints_a_symlink_to_a_wrong_target(tmp_path: Path) -> None:
-    creds_dir = tmp_path / "creds"
-    creds_dir.mkdir()
-    (creds_dir / ".credentials.json").write_text("{fresh}")
-    config_dir = tmp_path / "home" / ".claude"
-    config_dir.mkdir(parents=True)
-    old = tmp_path / "old-creds.json"
-    old.write_text("{old}")
-    (config_dir / ".credentials.json").symlink_to(old)  # points at a stale/other location
-
-    agent.link_credentials(config_dir, creds_dir=creds_dir)
-
-    link = config_dir / ".credentials.json"
-    assert link.readlink() == creds_dir / ".credentials.json" and link.read_text() == "{fresh}"
-
-
-def test_link_credentials_is_idempotent_when_already_linked(tmp_path: Path) -> None:
-    creds_dir = tmp_path / "creds"
-    creds_dir.mkdir()
-    (creds_dir / ".credentials.json").write_text("{token}")
-    config_dir = tmp_path / "home" / ".claude"
-    config_dir.mkdir(parents=True)
-    (config_dir / ".credentials.json").symlink_to(creds_dir / ".credentials.json")
-
-    agent.link_credentials(config_dir, creds_dir=creds_dir)  # no-op — leaves the good link alone
-
-    link = config_dir / ".credentials.json"
-    assert link.is_symlink() and link.readlink() == creds_dir / ".credentials.json"
-
-
 def test_trust_workspace_seeds_acceptance_for_a_fresh_config(tmp_path: Path) -> None:
     import json
 
@@ -189,31 +121,6 @@ def test_trust_workspace_merges_and_is_idempotent(tmp_path: Path) -> None:
     assert data["userID"] == "u"  # preserved
     assert data["projects"]["/other"] == {"history": []}  # preserved
     assert data["projects"]["/workspace"]["hasTrustDialogAccepted"] is True
-
-
-def test_seed_account_copies_only_identity_fields(tmp_path: Path) -> None:
-    import json
-
-    creds_dir = tmp_path / "creds"
-    creds_dir.mkdir()
-    (creds_dir / ".claude.json").write_text(json.dumps({
-        "oauthAccount": {"uuid": "acc-1"}, "userID": "u-1", "hasCompletedOnboarding": True,
-        "projects": {"/creds": {}}, "mcpServers": {"x": {}},  # container-local cruft, must NOT leak
-    }))
-    config_dir = tmp_path / ".claude"
-
-    agent.seed_account(config_dir, creds_dir=creds_dir)
-
-    seeded = json.loads((config_dir / ".claude.json").read_text())
-    assert seeded["oauthAccount"] == {"uuid": "acc-1"} and seeded["userID"] == "u-1"
-    assert seeded["hasCompletedOnboarding"] is True
-    assert "projects" not in seeded and "mcpServers" not in seeded  # only identity is shared
-
-
-def test_seed_account_is_a_noop_without_a_logged_in_volume(tmp_path: Path) -> None:
-    config_dir = tmp_path / ".claude"
-    agent.seed_account(config_dir, creds_dir=tmp_path / "empty")  # no creds config
-    assert not (config_dir / ".claude.json").exists()  # nothing seeded → claude handles login
 
 
 def test_main_bootstraps_into_a_container_local_config_dir_then_launches(

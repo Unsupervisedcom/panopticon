@@ -6,7 +6,6 @@ real HTTP client is covered in test_terminal.py."""
 from __future__ import annotations
 
 import threading
-from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -137,12 +136,12 @@ class _FakeClient:
 
     def create_repo(
         self, repo_id: str, name: str, git_url: str, default_base: str = "main",
-        *, env_file: str | None = None, creds_volume: str | None = None,
+        *, env_file: str | None = None,
         capabilities: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         repo: dict[str, Any] = {
             "id": repo_id, "name": name, "git_url": git_url, "default_base": default_base,
-            "env_file": env_file, "creds_volume": creds_volume,
+            "env_file": env_file,
         }
         if capabilities is not None:
             repo["capabilities"] = capabilities
@@ -911,14 +910,13 @@ async def test_repos_screen_creates_a_repo_autofilling_from_the_git_url() -> Non
         await pilot.pause()
         await pilot.press("n")  # open the create form
         await pilot.pause()
-        # Only the git URL is typed; id, name and creds_volume auto-fill from it, default_base
-        # defaults to main.
+        # Only the git URL is typed; id and name auto-fill from it, default_base defaults to main.
         app.screen.query_one("#field-git_url", Input).value = "git@github.com:acme/widgets.git"
         await pilot.press("enter")  # submit the form
         await pilot.pause()
         assert fake.created_repos == [
             {"id": "widgets", "name": "widgets", "git_url": "git@github.com:acme/widgets.git",
-             "default_base": "main", "env_file": None, "creds_volume": "widgets-creds",
+             "default_base": "main", "env_file": None,
              "capabilities": {"docker_in_docker": False}}
         ]
 
@@ -937,10 +935,10 @@ async def test_repo_form_autofill_only_fills_blank_fields() -> None:
         app.screen.query_one("#field-name", Input).value = "acme/new"  # pre-typed → kept
         await pilot.press("enter")
         await pilot.pause()
-        # id/name keep the user's values; only the blank creds_volume is derived.
+        # id/name keep the user's values — pre-typed fields are never clobbered by autofill.
         assert fake.created_repos == [
             {"id": "r9", "name": "acme/new", "git_url": "https://x/widgets.git",
-             "default_base": "main", "env_file": None, "creds_volume": "widgets-creds",
+             "default_base": "main", "env_file": None,
              "capabilities": {"docker_in_docker": False}}
         ]
 
@@ -974,7 +972,7 @@ async def test_repo_form_autofills_on_git_url_blur() -> None:
         app.screen.query_one("#field-name", Input).focus()  # blur git_url
         await pilot.pause()
         assert app.screen.query_one("#field-name", Input).value == "widgets"
-        assert app.screen.query_one("#field-creds_volume", Input).value == "widgets-creds"
+        assert app.screen.query_one("#field-id", Input).value == "widgets"
 
 
 async def test_repo_form_edit_mode_does_not_autofill_blank_fields() -> None:
@@ -988,10 +986,10 @@ async def test_repo_form_edit_mode_does_not_autofill_blank_fields() -> None:
         await pilot.press("e")  # edit
         await pilot.pause()
         # Editing an existing repo never derives values: blanks stay blank even on blur.
-        app.screen.query_one("#field-creds_volume", Input).focus()  # blur git_url
+        app.screen.query_one("#field-env_file", Input).focus()  # blur git_url
         await pilot.pause()
         assert app.screen.query_one("#field-name", Input).value == ""
-        assert app.screen.query_one("#field-creds_volume", Input).value == ""
+        assert app.screen.query_one("#field-env_file", Input).value == ""
 
 
 async def test_repos_screen_create_requires_id_name_and_git_url() -> None:
@@ -1024,11 +1022,10 @@ async def test_repos_screen_edits_a_repo_via_patch() -> None:
         await pilot.press("enter")
         await pilot.pause()
         # Core fields plus the privileged capability are sent; image_layer_file is untouched (PATCH).
-        # Edit mode never auto-fills, so the blank creds_volume stays blank. The checkbox is
-        # unchecked here, so docker_in_docker is False.
+        # The checkbox is unchecked here, so docker_in_docker is False.
         assert fake.updated_repos == [
             ("r1", {"name": "new", "git_url": "https://x/r1.git", "default_base": "main",
-                    "env_file": None, "creds_volume": None,
+                    "env_file": None,
                     "capabilities": {"docker_in_docker": False}})
         ]
 
@@ -1083,37 +1080,6 @@ async def test_repo_form_prechecks_the_toggle_for_a_privileged_repo() -> None:
         await pilot.pause()
         # A repo already opted into privileged docker opens the form with the box checked.
         assert app.screen.query_one("#field-docker_in_docker", Checkbox).value is True
-
-
-async def test_repos_screen_login_runs_for_the_highlighted_repo() -> None:
-    fake = _FakeClient([], repos=[{"id": "r1", "name": "acme/widgets", "git_url": "https://x/r1.git",
-                                   "default_base": "main", "creds_volume": "creds-r1"}])
-    logged_in: list[str] = []
-    app = Dashboard(fake, login=logged_in.append)  # type: ignore[arg-type]
-    # The headless test driver can't suspend (real terminals can); stub it to a no-op so the
-    # login still runs — we're exercising the hook wiring, not the terminal hand-off.
-    app.suspend = lambda: nullcontext()  # type: ignore[method-assign]
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("g")
-        await pilot.pause()
-        await pilot.press("l")  # log in to the highlighted repo
-        await pilot.pause()
-        assert logged_in == ["r1"]  # the repo id, run through the login+restart hook
-
-
-async def test_repos_screen_login_warns_without_a_creds_volume() -> None:
-    fake = _FakeClient([], repos=[{"id": "r1", "name": "acme/widgets", "git_url": "https://x/r1.git",
-                                   "default_base": "main"}])  # no creds_volume configured
-    logged_in: list[str] = []
-    app = Dashboard(fake, login=logged_in.append)  # type: ignore[arg-type]
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("g")
-        await pilot.pause()
-        await pilot.press("l")
-        await pilot.pause()
-        assert logged_in == []  # nothing to log in to → no-op (warned instead)
 
 
 def _record_popen(monkeypatch: Any) -> list[list[str]]:

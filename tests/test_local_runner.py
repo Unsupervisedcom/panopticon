@@ -153,14 +153,13 @@ def test_extra_env_is_forwarded() -> None:
     assert "PANOPTICON_RECONNECT_BACKOFF=0.5" in rec.calls[1][0]
 
 
-def test_spawn_injects_repo_env_file_and_creds_mount() -> None:
+def test_spawn_injects_repo_env_file() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", run=rec).spawn(
-        "t1", env_file="/secrets/r1.env", creds_volume="panopticon-creds-r1"
+        "t1", env_file="/secrets/r1.env"
     )
     docker_run = rec.calls[1][0]
     assert docker_run[docker_run.index("--env-file") + 1] == "/secrets/r1.env"
-    assert "panopticon-creds-r1:/creds" in docker_run  # mounted at the generic creds path
 
 
 def test_spawn_omits_secret_flags_when_repo_has_none() -> None:
@@ -168,7 +167,6 @@ def test_spawn_omits_secret_flags_when_repo_has_none() -> None:
     LocalRunner("http://svc", run=rec).spawn("t1")
     docker_run = rec.calls[1][0]
     assert "--env-file" not in docker_run  # no API-key env-file
-    assert not any(v.endswith(":/creds") for v in docker_run)  # no creds volume
     # (the per-task config volume is always mounted — that's not a per-repo secret)
 
 
@@ -267,26 +265,6 @@ def test_stop_kills_session_and_force_removes_container_idempotently() -> None:
     assert (["docker", "rm", "--force", "panopticon-t1"], False) in rec.calls
 
 
-def test_login_runs_interactive_container_with_creds_volume() -> None:
-    rec = _Recorder()
-    LocalRunner("http://svc", image="img:1", user="1234:5678", run=rec).login(
-        "creds-r1", ["claude", "login"]
-    )
-    cmd, check = rec.calls[0]
-    assert cmd == [
-        "docker", "run", "--interactive", "--tty", "--rm",
-        # the entrypoint adopts this user, chowns /creds to it, then drops to it before running the
-        # command — so the OAuth creds claude writes are owned by the uid the task reads them as
-        "--env", "PANOPTICON_PUID=1234", "--env", "PANOPTICON_PGID=5678",
-        "--volume", "creds-r1:/creds",
-        "--env", "CLAUDE_CONFIG_DIR=/creds",
-        "img:1", "claude", "login",  # passed through the entrypoint (no --entrypoint override)
-    ]
-    assert check is False  # interactive; tolerate non-zero exit
-    assert rec.interactive[0] is True  # attaches the operator's terminal (no output capture)
-    assert len(rec.calls) == 1  # login only writes the volume; propagation is the caller's restart
-
-
 def test_tmux_socket_can_be_overridden() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", tmux_socket="panopt", run=rec).spawn("t1")
@@ -363,7 +341,7 @@ def test_cli_preps_the_workspace_then_spawns_with_secrets_and_mount(tmp_path: Pa
 
     rec = _Recorder()
     fake = _FakeClient(
-        {"id": "r1", "git_url": "https://forge/r1.git", "env_file": "/secrets/r1.env", "creds_volume": "creds-r1"}
+        {"id": "r1", "git_url": "https://forge/r1.git", "env_file": "/secrets/r1.env"}
     )
     cache_root, tasks_root = tmp_path / "cache", tmp_path / "tasks"
     cid = cli_main(
@@ -379,5 +357,4 @@ def test_cli_preps_the_workspace_then_spawns_with_secrets_and_mount(tmp_path: Pa
     assert "PANOPTICON_SERVICE_URL=http://svc:9" in docker_run
     assert docker_run[-1] == "img:2"
     assert docker_run[docker_run.index("--env-file") + 1] == "/secrets/r1.env"  # repo's secrets
-    assert "creds-r1:/creds" in docker_run
     assert f"{tasks_root}/t1:/workspace" in docker_run  # the per-task clone mounted as /workspace

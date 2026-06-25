@@ -1,8 +1,14 @@
 # 0007 — Per-repo secrets: runtime env vars + credential mounts
 
-- Status: Accepted
+- Status: Accepted (amended by [0012](0012-retire-oauth-creds-volume.md))
 - Date: 2026-06-11
 - Deciders: Charlie Scherer
+
+> **Amended by ADR 0012.** The per-repo OAuth **credential volume / mount** described here is
+> **retired**. Container `claude` auth is now a non-rotating `claude setup-token` the operator places
+> in the repo's **`env_file`** as `CLAUDE_CODE_OAUTH_TOKEN` (the runner already injects `env_file`);
+> there is no `panopticon login`. The per-repo **env-file** mechanism below is unchanged — it simply
+> also carries that token. See [`docs/container-auth.md`](../container-auth.md).
 
 ## Context
 

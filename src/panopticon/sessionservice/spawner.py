@@ -121,7 +121,6 @@ class Spawner:
             return self._runner.spawn(
                 task_id,
                 env_file=repo.get("env_file"),
-                creds_volume=repo.get("creds_volume"),
                 workspace=workspace,
                 image=image,
                 docker_in_docker=bool((repo.get("capabilities") or {}).get("docker_in_docker")),

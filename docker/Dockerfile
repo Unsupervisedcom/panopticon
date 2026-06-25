@@ -32,9 +32,6 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 RUN pip install --no-cache-dir .
 
-# Mountpoint for a repo's OAuth creds volume (ADR 0007); the entrypoint chowns it to the adopted uid.
-RUN mkdir --parents /creds
-
 COPY docker/entrypoint.sh /usr/local/bin/panopticon-entrypoint
 RUN chmod 0755 /usr/local/bin/panopticon-entrypoint
 

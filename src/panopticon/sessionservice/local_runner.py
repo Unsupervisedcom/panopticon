@@ -32,10 +32,6 @@ HOST_GATEWAY = "host.docker.internal:host-gateway"
 #: operator's own tmux and gives the terminal controller a known place to `tmux attach`.
 TMUX_SOCKET = "panopticon"
 
-#: Where a repo's OAuth credential volume is mounted in the task container (ADR 0007). The
-#: agent layer points its CLI's config dir here (Slice 6); kept generic so it isn't CLI-specific.
-CREDS_MOUNT = "/creds"
-
 #: Where a task's per-task clone is mounted — the one stable, writable path the agent works in
 #: for the whole task (ADR 0011): planning, then coding on its branch once provisioned.
 WORKSPACE_MOUNT = "/workspace"
@@ -56,8 +52,8 @@ class CommandRunner(Protocol):
     """Runs an external command and returns its stdout; ``check`` raises on non-zero exit.
 
     ``interactive`` attaches the caller's terminal (stdin/stdout/stderr) instead of capturing — for
-    ``docker run -it`` (the ``login`` shell), where capturing would leave its TTY with no real input
-    and hang."""
+    an interactive ``docker run -it``, where capturing would leave its TTY with no real input and
+    hang."""
 
     def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False) -> str: ...
 
@@ -140,15 +136,14 @@ class LocalRunner(Runner):
         task_id: str,
         *,
         env_file: str | None = None,
-        creds_volume: str | None = None,
         workspace: str | None = None,
         image: str | None = None,
         docker_in_docker: bool = False,
         memo: str | None = None,
         progress: Callable[[LifecyclePhase], None] | None = None,
     ) -> str:
-        """Spawn the task container. ``env_file``/``creds_volume`` are the task's repo's secret
-        references (ADR 0007), injected at launch — never baked into the image. ``workspace`` is the
+        """Spawn the task container. ``env_file`` is the task's repo's secret reference (ADR
+        0007), injected at launch — never baked into the image. ``workspace`` is the
         task's per-task clone on the host (ADR 0011), bind-mounted read-write at ``/workspace`` as
         the agent's working dir. ``image`` overrides the default base with the task's composed image
         (base → workflow → repo, ADR 0005); ``None`` uses the configured base. ``docker_in_docker``
@@ -191,8 +186,6 @@ class LocalRunner(Runner):
             env["PANOPTICON_DOCKER_IN_DOCKER"] = "1"
         if env_file:  # per-repo API-key secrets, injected at run (not in the image)
             docker_run += ["--env-file", env_file]
-        if creds_volume:  # per-repo OAuth creds volume, mounted at a generic path
-            docker_run += ["--volume", f"{creds_volume}:{CREDS_MOUNT}"]
         if workspace:  # the per-task clone — the agent's writable working dir (ADR 0011)
             docker_run += ["--volume", f"{workspace}:{WORKSPACE_MOUNT}", "--workdir", WORKSPACE_MOUNT]
         # Per-task config volume: persists claude's session history across respawn/recreate (the
@@ -284,27 +277,3 @@ class LocalRunner(Runner):
         # Idempotent: tolerate an already-gone session/container.
         self._run(self._tmux("kill-session", "-t", container_id), check=False)
         self._run(["docker", "rm", "--force", container_id], check=False)
-
-    def login(self, creds_volume: str, command: Sequence[str]) -> None:
-        """Run an interactive container with a repo's creds volume mounted, to populate it
-        (ADR 0007's generalized `login`). ``command`` is the CLI's login invocation (e.g.
-        ``claude``); `CLAUDE_CONFIG_DIR` points claude at the mounted volume so its OAuth creds
-        land there. The named volume is created on first use and persists across task restarts.
-
-        ``command`` is passed through the image's entrypoint, which adopts the same invoking user as
-        the task container (``PANOPTICON_PUID``/``PGID``), chowns ``/creds`` to it, then drops to it
-        before running ``command``. So the creds it writes are owned by that user — the task
-        container, running as the same user, can then read and refresh them.
-
-        Propagating the fresh creds to the repo's already-running task containers is handled by the
-        caller restarting them (``sessionservice.restart``), not here — this only writes the volume."""
-        puid, _, pgid = self._user.partition(":")
-        self._run(
-            ["docker", "run", "--interactive", "--tty", "--rm",
-             "--env", f"PANOPTICON_PUID={puid}", "--env", f"PANOPTICON_PGID={pgid}",
-             "--volume", f"{creds_volume}:{CREDS_MOUNT}",
-             "--env", f"CLAUDE_CONFIG_DIR={CREDS_MOUNT}",
-             self._image, *command],
-            check=False,
-            interactive=True,  # attach the operator's terminal to the container's TTY (else it hangs)
-        )

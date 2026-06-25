@@ -117,12 +117,11 @@ class TaskServiceClient:
         default_base: str = "main",
         *,
         env_file: str | None = None,
-        creds_volume: str | None = None,
         capabilities: dict[str, Any] | None = None,
     ) -> JsonObj:
         body: dict[str, Any] = {
             "id": repo_id, "name": name, "git_url": git_url, "default_base": default_base,
-            "env_file": env_file, "creds_volume": creds_volume,
+            "env_file": env_file,
         }
         if capabilities is not None:
             body["capabilities"] = capabilities
