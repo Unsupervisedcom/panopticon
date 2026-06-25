@@ -207,6 +207,29 @@ def test_render_detail_shows_the_url() -> None:
     assert "url: https://github.com/acme/widgets/pull/7" in text
 
 
+def test_render_detail_is_plain_text_with_brackets_literal() -> None:
+    # The detail must be plain (the caller wraps it in Text and renders literally) — never markup.
+    task = {**_TASK, "memo": "do [the thing]",
+            "lifecycle_detail": "docker run ['--add-host', '--privileged']"}
+    out = render_detail({**task, "container_status": "failed"})
+    assert "['--add-host', '--privileged']" in out and "[the thing]" in out  # brackets kept verbatim
+
+
+async def test_dashboard_detail_survives_a_bracketed_lifecycle_detail() -> None:
+    # Regression: a docker-command lifecycle_detail (a Python list repr with "[") rendered through
+    # Textual's markup parser raised MarkupError and crashed the *whole dashboard* on startup, so
+    # `make start` looked broken. The detail pane must render it literally (wrapped in Text).
+    task = {
+        **_TASK,
+        "container_status": "failed",
+        "lifecycle_detail": "Command ['docker','run','--add-host','--privileged'] returned 1",
+    }
+    app = Dashboard(_FakeClient([task]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:  # would raise here if the detail crashed the app
+        await pilot.pause()
+        assert "--add-host" in str(app.query_one("#detail", Static).render())  # rendered, didn't crash
+
+
 def test_render_detail_shows_the_tokens_used() -> None:
     assert "tokens:" not in render_detail(_TASK)  # both absent → no line
     assert "tokens: 1.2K used / - est" in render_detail({**_TASK, "tokens_used": 1234})

@@ -193,11 +193,17 @@ def _status_cell(task: JsonObj) -> Text:
 
 
 def render_detail(task: JsonObj) -> str:
-    """The right-pane text for one task: identity, state/turn, and history."""
+    """The right-pane text for one task: identity, state/turn, and history.
+
+    **Plain text** — the caller wraps it in a Rich ``Text`` so it renders literally. We deliberately
+    do *not* use console markup here: a field can contain a stray ``[`` (e.g. a docker command
+    captured in ``lifecycle_detail`` — ``['--add-host', …]``, or a memo), and markup-parsing that
+    string crashes the whole pane. (Rich's escaper + Textual's markup parser also disagree on which
+    ``[`` is a tag, so escaping isn't reliable — rendering literally is.)"""
     turn = f"{task['turn']}{' (blocked)' if task.get('blocked') else ''}"
     claim = f"    claimed: {task['claimed_by']}" if task.get("claimed_by") else ""
     lines = [
-        f"[b]{task.get('slug') or task['id']}[/b]",
+        task.get("slug") or task["id"],
         f"id: {task['id']}",
         f"state: {task['state']}    turn: {turn}    workflow: {task['workflow']}{claim}",
     ]
@@ -887,7 +893,9 @@ class Dashboard(App[None]):
             return
         self._current = task_id
         task = self._tasks.get(task_id) if task_id else None
-        self.query_one("#detail", Static).update(render_detail(task) if task else "no tasks")
+        # wrap in Text so the pane renders literally — never parse task content as console markup
+        # (a "[" in e.g. a docker-command lifecycle_detail would otherwise crash the whole dashboard)
+        self.query_one("#detail", Static).update(Text(render_detail(task)) if task else Text("no tasks"))
 
     def action_new_task(self) -> None:
         """`n`: create a task — pick a repo, a workflow, describe the work, then POST it."""
