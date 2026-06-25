@@ -80,6 +80,14 @@ in the ADRs; this file is for the smaller stuff that doesn't have a home there y
   Buildpacks (`pack`/Paketo), Chainguard `apko` (declarative package-list images), or
   `docker buildx bake` (target inheritance, which maps cleanly onto base→workflow→repo). Not
   needed now; the fragment approach is the minimal thing that works. _(Slice 6, P3)_
+- [ ] **Async DB layer (asyncio SQLAlchemy)** — migrate the task service's data layer to
+  `sqlalchemy.ext.asyncio` (`AsyncSession` + `async_sessionmaker`) with an async driver
+  (`aiosqlite` for SQLite; `asyncpg`/`psycopg` async if/when it moves to Postgres), so DB I/O is
+  natively non-blocking on the event loop instead of serializing on it. Larger than the near-term
+  sync fix (off-loop threadpool + `QueuePool` + WAL): it ripples through the store adapter,
+  `TaskService`, the FastAPI/MCP handlers, and the store contract tests. Pays off mainly when the
+  task service moves to a networked DB; until then the sync fix gets DB work off the loop with a far
+  smaller blast radius. _(perf, P3)_
 
 ## Tracked elsewhere (pointers, do not duplicate)
 
