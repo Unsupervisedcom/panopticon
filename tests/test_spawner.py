@@ -37,8 +37,8 @@ class _FakeRunner:
         self._running = running
         self._session = session
 
-    def spawn(self, task_id: str, *, env_file: str | None = None, creds_volume: str | None = None, workspace: str | None = None, image: str | None = None, docker_in_docker: bool = False, memo: str | None = None, progress: Callable[[LifecyclePhase], None] | None = None) -> str:
-        self.spawned.append({"task_id": task_id, "env_file": env_file, "creds_volume": creds_volume, "workspace": workspace, "image": image, "docker_in_docker": docker_in_docker, "memo": memo})
+    def spawn(self, task_id: str, *, env_file: str | None = None, workspace: str | None = None, image: str | None = None, docker_in_docker: bool = False, memo: str | None = None, progress: Callable[[LifecyclePhase], None] | None = None) -> str:
+        self.spawned.append({"task_id": task_id, "env_file": env_file, "workspace": workspace, "image": image, "docker_in_docker": docker_in_docker, "memo": memo})
         if progress is not None:  # the real runner reports these two sub-steps
             progress(LifecyclePhase.STARTING)
             progress(LifecyclePhase.AWAITING)
@@ -99,7 +99,7 @@ def _spawner(client: object, runner: object) -> Spawner:
     return Spawner(client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks", git=GitClones(run=_no_op_run))  # type: ignore[arg-type]
 
 
-_REPO: JsonObj = {"id": "r1", "git_url": "https://forge/r1.git", "env_file": "/sec/r1.env", "creds_volume": "creds-r1"}
+_REPO: JsonObj = {"id": "r1", "git_url": "https://forge/r1.git", "env_file": "/sec/r1.env"}
 
 
 def test_spawn_one_claims_then_spawns_a_fresh_task() -> None:
@@ -108,7 +108,7 @@ def test_spawn_one_claims_then_spawns_a_fresh_task() -> None:
     assert cid == "panopticon-t1"
     assert client.claims == [("t1", "host-1")]  # claimed for this host first
     assert runner.spawned[0]["workspace"] == "/tasks/t1"  # per-task clone mounted
-    assert runner.spawned[0]["env_file"] == "/sec/r1.env" and runner.spawned[0]["creds_volume"] == "creds-r1"
+    assert runner.spawned[0]["env_file"] == "/sec/r1.env"
     assert runner.spawned[0]["image"] is None  # spike has no image layer → runner uses the base
     assert runner.spawned[0]["docker_in_docker"] is False  # no capability → unprivileged
 

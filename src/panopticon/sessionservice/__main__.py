@@ -60,7 +60,7 @@ def main(
     )
     container_id = LocalRunner(args.service_url, image=args.image, run=run).spawn(
         args.task_id,
-        env_file=repo.get("env_file"), creds_volume=repo.get("creds_volume"), workspace=workspace,
+        env_file=repo.get("env_file"), workspace=workspace,
     )
     print(container_id)
     return container_id
