@@ -144,6 +144,7 @@ def test_spawn_with_docker_in_docker_runs_privileged_and_flags_the_entrypoint() 
     LocalRunner("http://svc", run=rec).spawn("t1", docker_in_docker=True)
     docker_run = rec.calls[1][0]
     assert "--privileged" in docker_run  # nested daemon needs it (repo capability, ADR 0005)
+    assert "panopticon-dind-t1:/var/lib/docker" in docker_run  # per-task docker layer cache
     assert "PANOPTICON_DOCKER_IN_DOCKER=1" in docker_run  # entrypoint starts dockerd
 
 
