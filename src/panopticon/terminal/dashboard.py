@@ -380,10 +380,24 @@ def _repo_name_from_git_url(url: str) -> str:
     return tail[:-len(".git")] if tail.endswith(".git") else tail
 
 
+class SpaceCheckbox(Checkbox, inherit_bindings=False):
+    """A :class:`Checkbox` that toggles on **Space only** (Textual's default binds ``enter,space``).
+    Dropping Enter lets the key bubble up to the screen, so Enter saves the form even while the
+    checkbox holds focus — the form's Space-toggles / Enter-saves contract. ``inherit_bindings=False``
+    keeps the base ``enter,space`` toggle binding from being merged back in; ``ToggleButton`` is
+    its only source, so re-declaring ``space`` is the whole keymap."""
+
+    BINDINGS = [Binding("space", "toggle_button", "Toggle", show=False)]
+
+
 class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     """A modal form for a repo's fields. Submits a ``{field: value}`` dict on save (Enter
     or Ctrl+S), or ``None`` on cancel (Escape). The text fields are strings; the privileged
     toggle is the bool ``docker_in_docker``.
+
+    **Space toggles the checkbox; Enter saves the form** — from any field, including while the
+    privileged-docker checkbox holds focus (it's a :class:`SpaceCheckbox`, so Enter bubbles up
+    to the screen's submit binding rather than toggling). A footer hint spells this out.
 
     The **git URL leads** the form. In **create mode** the still-blank ``id``, ``name`` and
     ``creds_volume`` (a ``<repo>-creds`` convention) auto-fill from it when the URL field loses
@@ -402,8 +416,16 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     #repo-form { width: 72; height: auto; padding: 1 2; border: round $accent; background: $surface; }
     #repo-form Input { margin-bottom: 1; }
     #repo-form Checkbox { margin-bottom: 1; }
+    #repo-form-hint { color: $text-muted; }
     """
-    BINDINGS = [("escape", "cancel", "Cancel"), ("ctrl+s", "submit", "Save")]
+    # Enter saves from any field. Text Inputs consume Enter via their own submit binding (posting
+    # Input.Submitted → on_input_submitted), so this screen binding only fires for fields that
+    # don't — the SpaceCheckbox and the read-only id Label — and never double-saves.
+    BINDINGS = [
+        ("escape", "cancel", "Cancel"),
+        ("enter", "submit", "Save"),
+        ("ctrl+s", "submit", "Save"),
+    ]
 
     # git_url leads (the auto-fill source); the rest follow. ``id`` is rendered between git_url
     # and these, separately, since it's editable only in create mode.
@@ -440,11 +462,12 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
                 yield Input(placeholder="id", id="field-id")
             for name in self.FIELDS[1:]:  # git_url already rendered above
                 yield Input(value=self._initial(name), placeholder=name, id=f"field-{name}")
-            yield Checkbox(
+            yield SpaceCheckbox(
                 "privileged docker (docker-in-docker)",
                 value=bool(self._repo.get("capabilities", {}).get("docker_in_docker")),
                 id="field-docker_in_docker",
             )
+            yield Label("Space toggles · Enter saves · Esc cancels", id="repo-form-hint")
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()

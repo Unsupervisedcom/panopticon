@@ -1085,6 +1085,49 @@ async def test_repo_form_prechecks_the_toggle_for_a_privileged_repo() -> None:
         assert app.screen.query_one("#field-docker_in_docker", Checkbox).value is True
 
 
+async def test_repo_form_enter_saves_even_while_the_checkbox_is_focused() -> None:
+    # Enter saves from any field, including the privileged-docker checkbox (which toggles on
+    # Space only, so Enter bubbles up to the screen's submit binding).
+    fake = _FakeClient([], repos=[])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        app.screen.query_one("#field-git_url", Input).value = "https://x/widgets.git"
+        app.screen.query_one("#field-docker_in_docker", Checkbox).focus()
+        await pilot.pause()
+        await pilot.press("enter")  # saves rather than toggling the checkbox
+        await pilot.pause()
+        assert len(fake.created_repos) == 1
+        assert fake.created_repos[0]["id"] == "widgets"
+        # Enter didn't toggle the box on its way out.
+        assert fake.created_repos[0]["capabilities"] == {"docker_in_docker": False}
+
+
+async def test_repo_form_space_toggles_the_checkbox_without_saving() -> None:
+    # Space toggles the focused checkbox and does not submit the form.
+    fake = _FakeClient([], repos=[])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        checkbox = app.screen.query_one("#field-docker_in_docker", Checkbox)
+        assert checkbox.value is False
+        checkbox.focus()
+        await pilot.pause()
+        await pilot.press("space")
+        await pilot.pause()
+        assert checkbox.value is True  # toggled
+        assert fake.created_repos == []  # but not saved
+        assert isinstance(app.screen, dashboard.RepoFormScreen)  # form still open
+
+
 async def test_repos_screen_login_runs_for_the_highlighted_repo() -> None:
     fake = _FakeClient([], repos=[{"id": "r1", "name": "acme/widgets", "git_url": "https://x/r1.git",
                                    "default_base": "main", "creds_volume": "creds-r1"}])
