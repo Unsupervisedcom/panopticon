@@ -121,6 +121,10 @@ class Store(ABC):
         """Return all tasks (with full history)."""
         return self._list_tasks()
 
+    def list_tasks_summary(self) -> list[Task]:
+        """Return all tasks without history (cheap: tasks-table data only)."""
+        return self._list_tasks_summary()
+
     def save_task(self, task: Task) -> None:
         """Persist an updated task, enforcing consistency and append-only history."""
         validate_task_consistency(task)
@@ -159,6 +163,10 @@ class Store(ABC):
     @abstractmethod
     def _list_tasks(self) -> list[Task]:
         """Return all tasks (with full history)."""
+
+    @abstractmethod
+    def _list_tasks_summary(self) -> list[Task]:
+        """Return all tasks with ``history=[]`` (no history loaded)."""
 
     @abstractmethod
     def _stored_history(self, task_id: str) -> list[HistoryEntry]:

@@ -146,3 +146,34 @@ def test_registration_active_during_work(client: TaskServiceClient) -> None:
     StubRunner(client).spawn(task_id, work=work)
     assert seen == [1]
     assert client.list_registrations(task_id) == []  # deregistered after
+
+
+def test_list_tasks_returns_no_history(client: TaskServiceClient) -> None:
+    # GET /tasks is cheap: it returns only tasks-table fields, no history.
+    task_id = client.create_task("r1", "spike")["id"]
+    listed = client.list_tasks()
+    assert len(listed) == 1
+    assert "history" not in listed[0]
+
+    # GET /tasks/{id} still returns full detail including history.
+    detail = client.get_task(task_id)
+    assert "history" in detail
+    assert len(detail["history"]) > 0
+
+
+def test_list_tasks_terminal_filter(client: TaskServiceClient) -> None:
+    # Create one active task and one complete task.
+    active_id = client.create_task("r1", "spike")["id"]
+    done_id = client.create_task("r1", "spike")["id"]
+    client.request_transition(done_id, "COMPLETE", trigger="finish")
+
+    http = client._http  # raw httpx client for query-param testing
+    all_tasks = http.get("/tasks").json()
+    assert len(all_tasks) == 2
+    assert all("history" not in t for t in all_tasks)  # still no history
+
+    active_only = http.get("/tasks", params={"terminal": "false"}).json()
+    assert [t["id"] for t in active_only] == [active_id]
+
+    terminal_only = http.get("/tasks", params={"terminal": "true"}).json()
+    assert [t["id"] for t in terminal_only] == [done_id]

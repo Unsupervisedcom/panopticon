@@ -256,6 +256,9 @@ class Task:
     #: actual). The GithubForge workflows and the orchestrator record it when producing the plan.
     #: ``None`` until estimated.
     token_estimate: int | None = None
+    #: ISO-8601 timestamp of the last mutation (any field change or history update), stamped by
+    #: the task service. ``None`` only for tasks created before this field was introduced.
+    updated_at: str | None = None
     history: list[HistoryEntry] = field(default_factory=list)
 
     @property
