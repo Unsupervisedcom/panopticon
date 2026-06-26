@@ -374,10 +374,10 @@ def test_spawnable_tasks_filters_unclaimed_non_terminal() -> None:
 
 
 def test_spawn_runs_repo_hook_with_correct_args() -> None:
-    calls: list[tuple[str, str, str]] = []
+    calls: list[tuple[str, str, str, str]] = []
 
-    def _fake_hook(hook_file: str, task_id: str, repo_name: str) -> None:
-        calls.append((hook_file, task_id, repo_name))
+    def _fake_hook(hook_file: str, task_id: str, repo_name: str, workspace: str) -> None:
+        calls.append((hook_file, task_id, repo_name, workspace))
 
     repo = {**_REPO, "name": "acme/widgets", "hook_file": "/hooks/acme.sh"}
     client, runner = _FakeClient(repo=repo), _FakeRunner()
@@ -387,12 +387,12 @@ def test_spawn_runs_repo_hook_with_correct_args() -> None:
         git=GitClones(run=_no_op_run), run_hook=_fake_hook,
     )
     spawner.spawn_one({"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None})
-    assert calls == [("/hooks/acme.sh", "t1", "acme/widgets")]
+    assert calls == [("/hooks/acme.sh", "t1", "acme/widgets", "/tasks/t1")]
     assert runner.spawned  # container still spawned after the hook
 
 
 def test_spawn_hook_failure_aborts_spawn() -> None:
-    def _boom(hook_file: str, task_id: str, repo_name: str) -> None:
+    def _boom(hook_file: str, task_id: str, repo_name: str, workspace: str) -> None:
         raise RuntimeError("hook exited 1")
 
     repo = {**_REPO, "name": "acme/widgets", "hook_file": "/hooks/acme.sh"}

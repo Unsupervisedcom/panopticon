@@ -29,9 +29,10 @@ from panopticon.sessionservice.spawn import prepare_workspace
 _log = logging.getLogger(__name__)
 
 
-def _run_repo_hook(hook_file: str, task_id: str, repo_name: str) -> None:
+def _run_repo_hook(hook_file: str, task_id: str, repo_name: str, workspace: str) -> None:
     """Run a repo's pre-launch hook on the host (blocking). Raises on nonzero exit.
 
+    Runs with ``cwd=workspace`` so relative paths in the hook resolve against the checkout.
     Silently skipped when ``hook_file`` is not present or not executable — lets operators
     register a hook path that doesn't exist yet without breaking spawns.
     """
@@ -39,7 +40,13 @@ def _run_repo_hook(hook_file: str, task_id: str, repo_name: str) -> None:
         return
     result = subprocess.run(
         [hook_file],
-        env={**os.environ, "PANOPTICON_TASK_ID": task_id, "PANOPTICON_REPO_NAME": repo_name},
+        cwd=workspace,
+        env={
+            **os.environ,
+            "PANOPTICON_TASK_ID": task_id,
+            "PANOPTICON_REPO_NAME": repo_name,
+            "PANOPTICON_WORKSPACE": workspace,
+        },
         check=False,
     )
     if result.returncode != 0:
@@ -81,7 +88,7 @@ class Spawner:
         tasks_root: str,
         git: object | None = None,
         images: ImageBuilder | None = None,
-        run_hook: Callable[[str, str, str], None] | None = None,
+        run_hook: Callable[[str, str, str, str], None] | None = None,
         now: Callable[[], float] = time.monotonic,
         max_respawns: int = MAX_RESPAWNS,
         respawn_reset: float = RESPAWN_RESET_SECONDS,
@@ -139,7 +146,7 @@ class Spawner:
                 task_id, repo, cache=self._cache, tasks_root=self._tasks_root, git=self._git  # type: ignore[arg-type]
             )
             if hook_file := repo.get("hook_file"):
-                self._run_hook(hook_file, task_id, repo["name"])
+                self._run_hook(hook_file, task_id, repo["name"], workspace)
             self._report(task_id, LifecyclePhase.BUILDING)
             image = self._compose_image(task["workflow"], repo)
             return self._runner.spawn(
