@@ -163,10 +163,12 @@ class LocalRunner(Runner):
 
         # The container name doubles as the tmux session name, so stop() needs only the id.
         container = f"panopticon-{task_id}"
-        # Decide *before* `docker run` (which creates the config volume) whether this is the task's
-        # first spawn — only then do we prefill, so a respawn doesn't paste into a --continue'd box.
+        # Prefill only when (a) there's memo content worth pasting and (b) the per-task config
+        # volume doesn't yet exist — i.e. this is the first spawn and claude will start fresh
+        # (no --continue). Probe *before* `docker run`, which creates the volume.
+        # initial_prompt suppresses memo prefill: it's delivered as a CLI arg to claude instead.
         prefill_content = memo if not initial_prompt else None
-        first_spawn = self._wants_prefill(prefill_content) and not self._config_volume_exists(task_id)
+        should_prefill = self._wants_prefill(prefill_content) and not self._config_volume_exists(task_id)
         puid, _, pgid = self._user.partition(":")
         env = {
             "PANOPTICON_SERVICE_URL": self._service_url,
@@ -220,7 +222,8 @@ class LocalRunner(Runner):
                 container, *self._agent_command,
             )
         )
-        if first_spawn and prefill_content is not None:
+        if should_prefill:
+            assert prefill_content is not None  # _wants_prefill returned True → non-empty str
             self._maybe_prefill(container, prefill_content)
         _report(LifecyclePhase.AWAITING)  # container + tmux up; waiting for its /live registration
         return container
