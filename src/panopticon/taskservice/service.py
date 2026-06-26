@@ -274,13 +274,15 @@ class TaskService:
         return [t for t in tasks if (t.state in TERMINAL_LABELS) == terminal]
 
     async def _tasks_snapshot(self, *, terminal: bool | None = None) -> tuple[int, list[Task]]:
-        """Await the task list then read the version synchronously (no yield between the two).
+        """Read the version before the query so the reported version is a lower bound.
 
-        The caller reads the version immediately after the awaited list, so the version is
-        guaranteed to be >= the snapshot's generation — sufficient for the long-poll contract.
+        If a mutation commits during the ``await``, the version we already captured is from before
+        it, so the client's next long-poll (``since=version``) unblocks immediately rather than
+        waiting for ``MAX_WAIT_SECONDS``.
         """
+        version = self.tasks_version()
         tasks = await self.list_tasks_summary(terminal=terminal)
-        return self.tasks_version(), tasks
+        return version, tasks
 
     def tasks_version(self) -> int:
         """The change-feed version — bumped on every task mutation (ADR 0006 single writer) **and**
