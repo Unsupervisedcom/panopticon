@@ -247,7 +247,7 @@ def render_detail(task: JsonObj) -> str:
         est = _short_tokens(task.get("token_estimate"))
         lines += ["", f"tokens: {used} used / {est} est"]
     lines += ["", "history:"]
-    for entry in task["history"]:
+    for entry in task.get("history") or []:
         line = f"  {entry['from_state'] or '∅'} → {entry['to_state']}"
         if entry.get("trigger"):
             line += f" ({entry['trigger']})"
@@ -973,7 +973,14 @@ class Dashboard(App[None]):
 
     def _update_detail(self, task_id: str | None) -> None:
         self._current = task_id
-        task = self._tasks.get(task_id) if task_id else None
+        if not self._detail_visible:
+            return
+        task: JsonObj | None = None
+        if task_id:
+            try:
+                task = self._client.get_task(task_id)
+            except Exception:
+                task = self._tasks.get(task_id)  # fall back to summary when the service is unreachable
         # wrap in Text so the pane renders literally — never parse task content as console markup
         # (a "[" in e.g. a docker-command lifecycle_detail would otherwise crash the whole dashboard)
         self.query_one("#detail", Static).update(Text(render_detail(task)) if task else Text("no tasks"))
@@ -1110,6 +1117,8 @@ class Dashboard(App[None]):
         self.query_one("#detail", Static).styles.display = (
             "block" if self._detail_visible else "none"
         )
+        if self._detail_visible:
+            self._update_detail(self._current)
 
     def action_help(self) -> None:
         """`?`: open the help screen — the full keymap (the footer shows only the essentials)."""

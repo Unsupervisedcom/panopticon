@@ -175,6 +175,12 @@ class _FakeClient:
         self.applied.append((task_id, operation))
         return {"id": task_id}
 
+    def get_task(self, task_id: str) -> dict[str, Any]:
+        for t in self._tasks:
+            if t["id"] == task_id:
+                return t
+        raise KeyError(task_id)
+
     def release(self, task_id: str) -> dict[str, Any]:
         self.released.append(task_id)
         self._registrations.pop(task_id, None)
@@ -229,6 +235,8 @@ async def test_dashboard_detail_survives_a_bracketed_lifecycle_detail() -> None:
     app = Dashboard(_FakeClient([task]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:  # would raise here if the detail crashed the app
         await pilot.pause()
+        await pilot.press("d")  # open the detail pane to trigger the fetch
+        await pilot.pause()
         assert "--add-host" in str(app.query_one("#detail", Static).render())  # rendered, didn't crash
 
 
@@ -269,8 +277,10 @@ async def test_dashboard_mounts_lists_tasks_and_shows_detail() -> None:
         await pilot.pause()
         table = app.query_one("#tasks-active", BoundaryDataTable)
         assert table.row_count == 1
+        # detail pane is hidden by default — open it, then check content
+        await pilot.press("d")
+        await pilot.pause()
         detail = app.query_one("#detail", Static)
-        # the pane is hidden by default, but its content still tracks the highlighted row
         assert "WORKING" in str(detail.render())
 
 
@@ -481,6 +491,8 @@ async def test_dashboard_with_no_tasks() -> None:
         await pilot.pause()
         assert app.query_one("#tasks-active", BoundaryDataTable).row_count == 0
         assert app.query_one("#tasks-terminal", BoundaryDataTable).row_count == 0
+        await pilot.press("d")  # open the detail pane
+        await pilot.pause()
         assert str(app.query_one("#detail", Static).render()) == "no tasks"
 
 
