@@ -174,6 +174,12 @@ class Repo:
     ``capabilities`` is a per-repo opt-in map for elevated container privileges the runner grants at
     spawn. ``docker_in_docker`` (a privileged nested Docker daemon) is the first — off by default,
     since it's a trust escalation (a privileged container ≈ host root).
+
+    ``hook_file`` *references* a host path to an executable script the runner runs on the host
+    after the per-task workspace is prepared but before ``docker run``. The hook receives
+    ``PANOPTICON_TASK_ID`` and ``PANOPTICON_REPO_NAME`` as env vars; a nonzero exit aborts the
+    spawn. Use it to modify the worktree before the agent sees it (e.g. strip host-only config
+    files). ``None`` = no hook.
     """
 
     id: str
@@ -183,6 +189,7 @@ class Repo:
     env_file: str | None = None
     image_layer_file: str | None = None
     capabilities: dict[str, Any] = field(default_factory=dict)
+    hook_file: str | None = None
 
 
 @dataclass(frozen=True)

@@ -120,6 +120,7 @@ class RepoIn(BaseModel):
     env_file: str | None = None
     image_layer_file: str | None = None
     capabilities: dict[str, Any] = Field(default_factory=dict)
+    hook_file: str | None = None
 
 
 class RepoOut(BaseModel):
@@ -132,6 +133,7 @@ class RepoOut(BaseModel):
     env_file: str | None = None
     image_layer_file: str | None = None
     capabilities: dict[str, Any] = Field(default_factory=dict)
+    hook_file: str | None = None
 
 
 class RepoPatchIn(BaseModel):
@@ -146,6 +148,7 @@ class RepoPatchIn(BaseModel):
     env_file: str | None = None
     image_layer_file: str | None = None
     capabilities: dict[str, Any] | None = None
+    hook_file: str | None = None
 
 
 class CreateTaskIn(BaseModel):

@@ -11,6 +11,8 @@ unified host daemon runs both. LLM-free.
 from __future__ import annotations
 
 import logging
+import os
+import subprocess
 import time
 from collections.abc import Callable
 
@@ -25,6 +27,31 @@ from panopticon.sessionservice.local_runner import LocalRunner
 from panopticon.sessionservice.spawn import prepare_workspace
 
 _log = logging.getLogger(__name__)
+
+
+def _run_repo_hook(hook_file: str, task_id: str, repo_name: str, workspace: str) -> None:
+    """Run a repo's pre-launch hook on the host (blocking). Raises on nonzero exit.
+
+    Runs with ``cwd=workspace`` so relative paths in the hook resolve against the checkout.
+    Silently skipped when ``hook_file`` is not present or not executable — lets operators
+    register a hook path that doesn't exist yet without breaking spawns.
+    """
+    if not (os.path.isfile(hook_file) and os.access(hook_file, os.X_OK)):
+        return
+    result = subprocess.run(
+        [hook_file],
+        cwd=workspace,
+        env={
+            **os.environ,
+            "PANOPTICON_TASK_ID": task_id,
+            "PANOPTICON_REPO_NAME": repo_name,
+            "PANOPTICON_WORKSPACE": workspace,
+        },
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"repo hook {hook_file!r} exited {result.returncode}")
+
 
 #: Crash-loop guard for :meth:`Spawner.heal`: at most this many respawns of a task within a burst
 #: before we stop and surface it (log) rather than thrash a container that won't stay up.
@@ -61,6 +88,7 @@ class Spawner:
         tasks_root: str,
         git: object | None = None,
         images: ImageBuilder | None = None,
+        run_hook: Callable[[str, str, str, str], None] | None = None,
         now: Callable[[], float] = time.monotonic,
         max_respawns: int = MAX_RESPAWNS,
         respawn_reset: float = RESPAWN_RESET_SECONDS,
@@ -72,6 +100,7 @@ class Spawner:
         self._tasks_root = tasks_root
         self._git = git
         self._images = images or ImageBuilder()
+        self._run_hook = run_hook or _run_repo_hook
         self._now = now
         self._max_respawns = max_respawns
         self._respawn_reset = respawn_reset
@@ -116,6 +145,8 @@ class Spawner:
             workspace = prepare_workspace(
                 task_id, repo, cache=self._cache, tasks_root=self._tasks_root, git=self._git  # type: ignore[arg-type]
             )
+            if hook_file := repo.get("hook_file"):
+                self._run_hook(hook_file, task_id, repo["name"], workspace)
             self._report(task_id, LifecyclePhase.BUILDING)
             image = self._compose_image(task["workflow"], repo)
             return self._runner.spawn(
