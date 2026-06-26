@@ -363,37 +363,33 @@ def create_app(service: TaskService) -> FastAPI:
 
     @app.get("/workflows")
     async def list_workflows() -> list[str]:
-        return await asyncio.to_thread(service.workflow_names)
+        return await service.workflow_names()
 
     @app.get("/workflows/{name}/image-layer")
     async def workflow_image_layer(name: str) -> dict[str, str]:
         """The workflow's Dockerfile layer (ADR 0005); the runner composes it onto the base."""
-        layer = await asyncio.to_thread(service.workflow_image_layer, name)
-        return {"layer": layer}
+        return {"layer": await service.workflow_image_layer(name)}
 
     # -- repos --------------------------------------------------------------------
 
     @app.post("/repos", status_code=201)
     async def create_repo(body: RepoIn) -> RepoOut:
-        repo = await asyncio.to_thread(service.create_repo, Repo(**body.model_dump()))
+        repo = await service.create_repo(Repo(**body.model_dump()))
         return RepoOut.model_validate(repo)
 
     @app.get("/repos")
     async def list_repos() -> list[RepoOut]:
-        repos = await asyncio.to_thread(service.list_repos)
-        return [RepoOut.model_validate(r) for r in repos]
+        return [RepoOut.model_validate(r) for r in await service.list_repos()]
 
     @app.get("/repos/{repo_id}")
     async def get_repo(repo_id: str) -> RepoOut:
-        repo = await asyncio.to_thread(service.get_repo, repo_id)
-        return RepoOut.model_validate(repo)
+        return RepoOut.model_validate(await service.get_repo(repo_id))
 
     @app.get("/repos/{repo_id}/image-layer")
     async def repo_image_layer(repo_id: str) -> dict[str, str]:
         """The repo's Dockerfile layer (ADR 0005), read from its ``image_layer_file`` reference;
         the runner composes it onto base → workflow. Empty when the repo declares none."""
-        layer = await asyncio.to_thread(service.repo_image_layer, repo_id)
-        return {"layer": layer}
+        return {"layer": await service.repo_image_layer(repo_id)}
 
     @app.patch("/repos/{repo_id}")
     async def update_repo(repo_id: str, body: RepoPatchIn) -> RepoOut:
@@ -401,7 +397,7 @@ def create_app(service: TaskService) -> FastAPI:
         # onto the stored repo (untouched fields, e.g. image_layer_file/capabilities, are preserved).
         changes = body.model_dump(exclude_unset=True)
         try:
-            repo = await asyncio.to_thread(service.update_repo, repo_id, changes)
+            repo = await service.update_repo(repo_id, changes)
         except ValueError as exc:  # e.g. attempting to change the id
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return RepoOut.model_validate(repo)
@@ -410,8 +406,9 @@ def create_app(service: TaskService) -> FastAPI:
 
     @app.post("/tasks", status_code=201)
     async def create_task(body: CreateTaskIn) -> TaskOut:
-        task = await asyncio.to_thread(service.create_task, body.repo_id, body.workflow, memo=body.memo)
-        return _task_out(task)
+        return _task_out(
+            await service.create_task(body.repo_id, body.workflow, memo=body.memo)
+        )
 
     @app.get("/tasks")
     async def list_tasks(
@@ -438,75 +435,66 @@ def create_app(service: TaskService) -> FastAPI:
         # the cap elapses); without it, it's an immediate snapshot — today's behaviour.
         if wait is not None:
             version = await feed.wait(since=since, timeout=min(wait, MAX_WAIT_SECONDS))
-            tasks_raw = await asyncio.to_thread(service.list_tasks_summary, terminal=terminal)
+            tasks_raw = await service.list_tasks_summary(terminal=terminal)
         else:
             # Read version and snapshot in a single thread call so no event-loop yield can
             # interleave a mutation between them — preserving the original atomicity invariant.
-            def _snapshot() -> tuple[int, list[Task]]:
-                return service.tasks_version(), service.list_tasks_summary(terminal=terminal)
-            version, tasks_raw = await asyncio.to_thread(_snapshot)
+            version, tasks_raw = await asyncio.to_thread(service._tasks_snapshot, terminal=terminal)
         tasks = [_task_summary_out(t) for t in tasks_raw]
         response.headers[TASKS_VERSION_HEADER] = str(version)
         return tasks
 
     @app.get("/tasks/{task_id}")
     async def get_task(task_id: str) -> TaskOut:
-        task = await asyncio.to_thread(service.get_task, task_id)
-        return _task_out(task)
+        return _task_out(await service.get_task(task_id))
 
     @app.get("/tasks/{task_id}/transitions")
     async def list_transitions(task_id: str) -> list[str]:
-        return await asyncio.to_thread(service.legal_transitions, task_id)
+        return await service.legal_transitions(task_id)
 
     @app.get("/tasks/{task_id}/operations")
     async def list_operations(task_id: str) -> dict[str, str]:
-        return await asyncio.to_thread(service.operations, task_id)
+        return await service.operations(task_id)
 
     @app.post("/tasks/{task_id}/operations/{operation}")
     async def apply_operation(task_id: str, operation: str) -> TaskOut:
-        task = await asyncio.to_thread(service.apply_operation, task_id, operation)
-        return _task_out(task)
+        return _task_out(await service.apply_operation(task_id, operation))
 
     @app.get("/tasks/{task_id}/states")
     async def list_states(task_id: str) -> list[str]:
-        return await asyncio.to_thread(service.workflow_states, task_id)
+        return await service.workflow_states(task_id)
 
     @app.get("/tasks/{task_id}/skills")
     async def list_skills(task_id: str) -> list[SkillOut]:
-        skills = await asyncio.to_thread(service.skills, task_id)
-        return [SkillOut.model_validate(s) for s in skills]
+        return [SkillOut.model_validate(s) for s in await service.skills(task_id)]
 
     @app.get("/tasks/{task_id}/briefing")
     async def get_briefing(task_id: str) -> dict[str, str]:
         """The agent's current-phase briefing (the container's user-prompt hook emits it)."""
-        briefing = await asyncio.to_thread(service.briefing, task_id)
-        return {"briefing": briefing}
+        return {"briefing": await service.briefing(task_id)}
 
     @app.get("/tasks/{task_id}/workflow-overview")
     async def get_workflow_overview(task_id: str) -> dict[str, str]:
         """The whole-workflow map (the agent launcher puts it in claude's system prompt)."""
-        overview = await asyncio.to_thread(service.workflow_overview, task_id)
-        return {"overview": overview}
+        return {"overview": await service.workflow_overview(task_id)}
 
     @app.put("/tasks/{task_id}/state")
     async def set_state(task_id: str, body: StateIn) -> TaskOut:
-        task = await asyncio.to_thread(service.set_state, task_id, body.state)
-        return _task_out(task)
+        return _task_out(await service.set_state(task_id, body.state))
 
     @app.post("/tasks/{task_id}/transition")
     async def transition(task_id: str, body: TransitionIn) -> TaskOut:
-        task = await asyncio.to_thread(
-            service.request_transition,
-            task_id, body.to_state, trigger=body.trigger, note=body.note,
+        return _task_out(
+            await service.request_transition(
+                task_id, body.to_state, trigger=body.trigger, note=body.note
+            )
         )
-        return _task_out(task)
 
     @app.post("/tasks/{task_id}/responsibilities")
     async def resolve_responsibility(task_id: str, body: ResponsibilityIn) -> TaskOut:
         try:
-            task = await asyncio.to_thread(
-                service.resolve_responsibility,
-                task_id, body.key, status=body.status, comment=body.comment,
+            task = await service.resolve_responsibility(
+                task_id, body.key, status=body.status, comment=body.comment
             )
         except ValueError as exc:  # unknown key / PENDING / FAILED without a comment
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -514,52 +502,45 @@ def create_app(service: TaskService) -> FastAPI:
 
     @app.put("/tasks/{task_id}/slug")
     async def set_slug(task_id: str, body: SlugIn) -> TaskOut:
-        task = await asyncio.to_thread(service.set_slug, task_id, body.slug)
-        return _task_out(task)
+        return _task_out(await service.set_slug(task_id, body.slug))
 
     @app.put("/tasks/{task_id}/url")
     async def set_url(task_id: str, body: UrlIn) -> TaskOut:
-        task = await asyncio.to_thread(service.set_url, task_id, body.url)
-        return _task_out(task)
+        return _task_out(await service.set_url(task_id, body.url))
 
     @app.put("/tasks/{task_id}/tokens-used")
     async def set_tokens_used(task_id: str, body: TokensUsedIn) -> TaskOut:
-        task = await asyncio.to_thread(service.set_tokens_used, task_id, body.tokens_used)
-        return _task_out(task)
+        return _task_out(await service.set_tokens_used(task_id, body.tokens_used))
 
     @app.put("/tasks/{task_id}/token-estimate")
     async def set_token_estimate(task_id: str, body: TokenEstimateIn) -> TaskOut:
-        task = await asyncio.to_thread(service.set_token_estimate, task_id, body.token_estimate)
-        return TaskOut.model_validate(task)
+        return TaskOut.model_validate(await service.set_token_estimate(task_id, body.token_estimate))
 
     @app.put("/tasks/{task_id}/turn")
     async def set_turn(task_id: str, body: TurnIn) -> TaskOut:
-        task = await asyncio.to_thread(service.set_turn, task_id, body.turn)
-        return _task_out(task)
+        return _task_out(await service.set_turn(task_id, body.turn))
 
     @app.put("/tasks/{task_id}/blocked")
     async def set_blocked(task_id: str, body: BlockedIn) -> TaskOut:
-        task = await asyncio.to_thread(service.set_blocked, task_id, body.blocked)
-        return _task_out(task)
+        return _task_out(await service.set_blocked(task_id, body.blocked))
 
     @app.put("/tasks/{task_id}/claim")
     async def claim(task_id: str, body: ClaimIn) -> TaskOut:
         try:  # a runner claims an unclaimed task before spawning its container (ADR 0008)
-            task = await asyncio.to_thread(service.claim, task_id, body.runner_id)
+            task = await service.claim(task_id, body.runner_id)
         except AlreadyClaimed as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return _task_out(task)
 
     @app.delete("/tasks/{task_id}/claim")
     async def release(task_id: str) -> TaskOut:
-        task = await asyncio.to_thread(service.release, task_id)
-        return _task_out(task)
+        return _task_out(await service.release(task_id))
 
     @app.put("/tasks/{task_id}/provisioning")
     async def record_provisioning(task_id: str, body: ProvisioningIn) -> TaskOut:
         try:  # the session service reports the host branch + per-task clone it created (ADR 0011)
-            task = await asyncio.to_thread(
-                service.record_provisioning, task_id, branch=body.branch, clone=body.clone
+            task = await service.record_provisioning(
+                task_id, branch=body.branch, clone=body.clone
             )
         except ValueError as exc:  # slug not set yet
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -569,17 +550,16 @@ def create_app(service: TaskService) -> FastAPI:
 
     @app.put("/tasks/{task_id}/artifacts/{name}", status_code=204)
     async def put_artifact(task_id: str, name: str, request: Request) -> Response:
-        body_bytes = await request.body()
-        await asyncio.to_thread(service.put_artifact, task_id, name, body_bytes)
+        await service.put_artifact(task_id, name, await request.body())
         return Response(status_code=204)
 
     @app.get("/tasks/{task_id}/artifacts")
     async def list_artifacts(task_id: str) -> list[str]:
-        return await asyncio.to_thread(service.list_artifacts, task_id)
+        return await service.list_artifacts(task_id)
 
     @app.get("/tasks/{task_id}/artifacts/{name}")
     async def get_artifact(task_id: str, name: str) -> Response:
-        content = await asyncio.to_thread(service.get_artifact, task_id, name)
+        content = await service.get_artifact(task_id, name)
         if content is None:
             raise HTTPException(status_code=404, detail=f"artifact {name!r} not found")
         return Response(content=content, media_type="application/octet-stream")
@@ -599,8 +579,8 @@ def create_app(service: TaskService) -> FastAPI:
         network drop reaps the registration too, but the container re-opens this connection (its
         reconnect loop), so a transient blip self-heals into a brief ``down`` flicker.
         """
-        await asyncio.to_thread(service.get_task, task_id)  # 404 if the task is unknown
-        reg = await asyncio.to_thread(service.register, task_id, container_id, runner_id)
+        await service.get_task(task_id)  # 404 if the task is unknown
+        reg = await service.register(task_id, container_id, runner_id)
 
         async def hold() -> AsyncIterator[bytes]:
             try:
@@ -609,24 +589,24 @@ def create_app(service: TaskService) -> FastAPI:
                     await asyncio.sleep(LIVENESS_KEEPALIVE_SECONDS)
                     yield b":keepalive\n"
             finally:  # client disconnected (Starlette cancels us) or the loop ended — reap now
-                service.deregister(reg.id)
+                await service.deregister(reg.id)
 
         return StreamingResponse(hold(), media_type="text/event-stream")
 
     @app.post("/tasks/{task_id}/registrations", status_code=201)
     async def register(task_id: str, body: RegisterIn) -> RegistrationOut:
-        reg = await asyncio.to_thread(service.register, task_id, body.container_id, body.runner_id)
-        return RegistrationOut.model_validate(reg)
+        return RegistrationOut.model_validate(
+            await service.register(task_id, body.container_id, body.runner_id)
+        )
 
     @app.get("/tasks/{task_id}/registrations")
     async def list_registrations(task_id: str) -> list[RegistrationOut]:
-        await asyncio.to_thread(service.get_task, task_id)  # 404 if the task is unknown
-        regs = await asyncio.to_thread(service.registrations, task_id)
-        return [RegistrationOut.model_validate(r) for r in regs]
+        await service.get_task(task_id)  # 404 if the task is unknown
+        return [RegistrationOut.model_validate(r) for r in service.registrations(task_id)]
 
     @app.delete("/registrations/{registration_id}", status_code=204)
     async def deregister(registration_id: str) -> Response:
-        await asyncio.to_thread(service.deregister, registration_id)
+        await service.deregister(registration_id)
         return Response(status_code=204)
 
     # -- container lifecycle (the session service reports its spawn progress) ----------
@@ -637,16 +617,14 @@ def create_app(service: TaskService) -> FastAPI:
 
     @app.put("/tasks/{task_id}/lifecycle")
     async def report_lifecycle(task_id: str, body: LifecycleIn) -> TaskOut:
-        await asyncio.to_thread(service.report_lifecycle, task_id, body.runner_id, body.phase, body.detail)
-        task = await asyncio.to_thread(service.get_task, task_id)
-        return _task_out(task)
+        await service.report_lifecycle(task_id, body.runner_id, body.phase, body.detail)
+        return _task_out(await service.get_task(task_id))
 
     @app.delete("/tasks/{task_id}/lifecycle")
     async def clear_lifecycle(task_id: str) -> TaskOut:
-        await asyncio.to_thread(service.get_task, task_id)  # 404 if the task is unknown
-        await asyncio.to_thread(service.clear_lifecycle, task_id)
-        task = await asyncio.to_thread(service.get_task, task_id)
-        return _task_out(task)
+        await service.get_task(task_id)  # 404 if the task is unknown
+        service.clear_lifecycle(task_id)
+        return _task_out(await service.get_task(task_id))
 
     # -- host (runner) liveness + reclaim ----------------------------------------------
     #
@@ -666,7 +644,7 @@ def create_app(service: TaskService) -> FastAPI:
         drop removes it too, but the daemon re-opens this connection (its reconnect loop), so a
         transient blip self-heals.
         """
-        reg = await asyncio.to_thread(service.register_runner, runner_id)
+        reg = await service.register_runner(runner_id)
 
         async def hold() -> AsyncIterator[bytes]:
             try:
@@ -675,21 +653,19 @@ def create_app(service: TaskService) -> FastAPI:
                     await asyncio.sleep(LIVENESS_KEEPALIVE_SECONDS)
                     yield b":keepalive\n"
             finally:  # daemon disconnected (Starlette cancels us) or the loop ended — drop it now
-                service.deregister_runner(reg.id)
+                await service.deregister_runner(reg.id)
 
         return StreamingResponse(hold(), media_type="text/event-stream")
 
     @app.get("/runners")
     async def list_runners() -> list[str]:
         """The runner ids currently holding a host-liveness connection (sorted, for stable reads)."""
-        runners = await asyncio.to_thread(service.live_runners)
-        return sorted(runners)
+        return sorted(service.live_runners())
 
     @app.post("/runners/{runner_id}/reclaim")
     async def reclaim(runner_id: str) -> list[TaskOut]:
         """Release a (dead) runner's non-terminal claims so a healthy host respawns them."""
-        tasks = await asyncio.to_thread(service.reclaim, runner_id)
-        return [_task_out(t) for t in tasks]
+        return [_task_out(t) for t in await service.reclaim(runner_id)]
 
     app.mount("/mcp", mcp_app)  # in-container agents connect here for task operations + artifacts
     return app

@@ -10,6 +10,7 @@ deterministic. No LLM (the determinism invariant).
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
@@ -134,34 +135,34 @@ class TaskService:
 
     # -- repos --------------------------------------------------------------------
 
-    def create_repo(self, repo: Repo) -> Repo:
-        self._store.create_repo(repo)
+    async def create_repo(self, repo: Repo) -> Repo:
+        await asyncio.to_thread(self._store.create_repo, repo)
         return repo
 
-    def get_repo(self, repo_id: str) -> Repo:
-        repo = self._store.get_repo(repo_id)
+    async def get_repo(self, repo_id: str) -> Repo:
+        repo = await asyncio.to_thread(self._store.get_repo, repo_id)
         if repo is None:
             raise NotFound(f"repo {repo_id!r} does not exist")
         return repo
 
-    def list_repos(self) -> list[Repo]:
-        return self._store.list_repos()
+    async def list_repos(self) -> list[Repo]:
+        return await asyncio.to_thread(self._store.list_repos)
 
-    def update_repo(self, repo_id: str, changes: Mapping[str, Any]) -> Repo:
+    async def update_repo(self, repo_id: str, changes: Mapping[str, Any]) -> Repo:
         """Apply a partial update to a repo: merge ``changes`` onto the stored repo and persist.
 
         Read-modify-write, so any field not in ``changes`` (e.g. ``image_layer_file`` /
         ``capabilities``, which the dashboard never sends) is preserved. ``id`` is the key and
         can't be reassigned. Raises :class:`NotFound` if the repo is unknown.
         """
-        existing = self.get_repo(repo_id)  # raises NotFound
+        existing = await self.get_repo(repo_id)  # raises NotFound
         if "id" in changes and changes["id"] != repo_id:
             raise ValueError("a repo's id cannot be changed")
         updated = replace(existing, **{k: v for k, v in changes.items() if k != "id"})
-        self._store.update_repo(updated)
+        await asyncio.to_thread(self._store.update_repo, updated)
         return updated
 
-    def repo_image_layer(self, repo_id: str) -> str:
+    async def repo_image_layer(self, repo_id: str) -> str:
         """The repo's Dockerfile layer (ADR 0005's repo tier), read from its referenced file.
 
         ``Repo.image_layer_file`` is a file name resolved relative to the configured layers
@@ -170,22 +171,22 @@ class TaskService:
         :class:`NotFound` when a referenced file is configured but absent (or no layer store is
         wired), and the layer store rejects a name that escapes its root.
         """
-        name = self.get_repo(repo_id).image_layer_file  # raises NotFound for an unknown repo
+        name = (await self.get_repo(repo_id)).image_layer_file  # raises NotFound for an unknown repo
         if not name:
             return ""
         if self._layers is None:
             raise NotFound(f"no layer store configured to read image layer {name!r}")
-        content = self._layers.get(name)
+        content = await asyncio.to_thread(self._layers.get, name)
         if content is None:
             raise NotFound(f"image layer file {name!r} not found")
         return content.decode()
 
     # -- workflows ----------------------------------------------------------------
 
-    def workflow_names(self) -> list[str]:
+    async def workflow_names(self) -> list[str]:
         return sorted(self._workflows)
 
-    def workflow_image_layer(self, name: str) -> str:
+    async def workflow_image_layer(self, name: str) -> str:
         """The workflow's Docker image layer (ADR 0005) — the Dockerfile fragment the runner
         composes onto the base image (e.g. github-peer-reviewed's `gh`). Empty when the workflow needs none."""
         return self._workflow(name).image_layer()
@@ -198,23 +199,23 @@ class TaskService:
 
     # -- tasks --------------------------------------------------------------------
 
-    def _save_task(self, task: Task) -> None:
+    async def _save_task(self, task: Task) -> None:
         """Stamp ``updated_at`` and persist. All task mutations route through here."""
         task.updated_at = self._clock()
-        self._store.save_task(task)
+        await asyncio.to_thread(self._store.save_task, task)
 
-    def create_task(
+    async def create_task(
         self, repo_id: str, workflow_name: str, *, memo: str | None = None
     ) -> Task:
-        self.get_repo(repo_id)  # ensure exists (raises NotFound)
+        await self.get_repo(repo_id)  # ensure exists (raises NotFound)
         wf = self._workflow(workflow_name)
         now = self._clock()
         task = wf.start_task(self._id(), repo_id, at=now, memo=memo)
         task.updated_at = now  # creation time = first mutation
-        self._store.create_task(task)
+        await asyncio.to_thread(self._store.create_task, task)
         return task
 
-    def _require_orchestrator(self, actor_task_id: str) -> Task:
+    async def _require_orchestrator(self, actor_task_id: str) -> Task:
         """Authorize an orchestration action by ``actor_task_id``: the acting task must exist and
         its workflow must opt in (``Workflow.orchestrates``). Returns the acting task on success.
 
@@ -222,14 +223,14 @@ class TaskService:
         service stays workflow-name-agnostic — any workflow that sets ``orchestrates = True`` can
         create/seed other tasks.
         """
-        actor = self.get_task(actor_task_id)  # raises NotFound
+        actor = await self.get_task(actor_task_id)  # raises NotFound
         if not self._workflow(actor.workflow).orchestrates:
             raise NotAuthorized(
                 f"task {actor_task_id!r} (workflow {actor.workflow!r}) may not orchestrate other tasks"
             )
         return actor
 
-    def create_task_as(
+    async def create_task_as(
         self,
         actor_task_id: str,
         workflow_name: str,
@@ -244,29 +245,40 @@ class TaskService:
         parameter to misuse. This is the create path the orchestration MCP tools use; the plain
         :meth:`create_task` (and REST ``POST /tasks``) remain the ungated user/dashboard path.
         """
-        actor = self._require_orchestrator(actor_task_id)
-        return self.create_task(actor.repo_id, workflow_name, memo=memo)
+        actor = await self._require_orchestrator(actor_task_id)
+        return await self.create_task(actor.repo_id, workflow_name, memo=memo)
 
-    def workflow_names_as(self, actor_task_id: str) -> list[str]:
+    async def workflow_names_as(self, actor_task_id: str) -> list[str]:
         """List workflow names for an orchestrator task (gated): discovery for a child's ``workflow``."""
-        self._require_orchestrator(actor_task_id)
-        return self.workflow_names()
+        await self._require_orchestrator(actor_task_id)
+        return await self.workflow_names()
 
-    def get_task(self, task_id: str) -> Task:
-        task = self._store.get_task(task_id)
+    async def get_task(self, task_id: str) -> Task:
+        task = await asyncio.to_thread(self._store.get_task, task_id)
         if task is None:
             raise NotFound(f"task {task_id!r} does not exist")
         return task
 
-    def list_tasks(self) -> list[Task]:
-        return self._store.list_tasks()
+    async def list_tasks(self) -> list[Task]:
+        return await asyncio.to_thread(self._store.list_tasks)
 
-    def list_tasks_summary(self, *, terminal: bool | None = None) -> list[Task]:
+    async def list_tasks_summary(self, *, terminal: bool | None = None) -> list[Task]:
         """Return tasks without history. Optionally filter to terminal-only or active-only."""
-        tasks = self._store.list_tasks_summary()
+        tasks = await asyncio.to_thread(self._store.list_tasks_summary)
         if terminal is None:
             return tasks
         return [t for t in tasks if (t.state in TERMINAL_LABELS) == terminal]
+
+    def _tasks_snapshot(self, *, terminal: bool | None = None) -> tuple[int, list[Task]]:
+        """Read version + task list atomically (no event-loop yield between them).
+
+        Called via ``asyncio.to_thread`` in the list-tasks route so the X-Tasks-Version header
+        and the response body can't be separated by a concurrent mutation.
+        """
+        tasks = self._store.list_tasks_summary()
+        if terminal is not None:
+            tasks = [t for t in tasks if (t.state in TERMINAL_LABELS) == terminal]
+        return self.tasks_version(), tasks
 
     def tasks_version(self) -> int:
         """The change-feed version — bumped on every task mutation (ADR 0006 single writer) **and**
@@ -288,45 +300,45 @@ class TaskService:
         for listener in self._change_listeners:
             listener()
 
-    def legal_transitions(self, task_id: str) -> list[str]:
+    async def legal_transitions(self, task_id: str) -> list[str]:
         """The states the task may move to next (its workflow's edges out of the current state)."""
-        task = self.get_task(task_id)
+        task = await self.get_task(task_id)
         return sorted(self._workflow(task.workflow).transitions(task.state))
 
-    def workflow_states(self, task_id: str) -> list[str]:
+    async def workflow_states(self, task_id: str) -> list[str]:
         """Every state of the task's workflow — the candidates for a free state-set (set_state)."""
-        task = self.get_task(task_id)
+        task = await self.get_task(task_id)
         return list(self._workflow(task.workflow).labels())
 
-    def operations(self, task_id: str) -> dict[str, str]:
+    async def operations(self, task_id: str) -> dict[str, str]:
         """The named core operations available now (verb → target state) — advance/drop."""
-        task = self.get_task(task_id)
+        task = await self.get_task(task_id)
         return self._workflow(task.workflow).operations(task.state)
 
-    def skills(self, task_id: str) -> list[Skill]:
+    async def skills(self, task_id: str) -> list[Skill]:
         """The in-container skills for a task: the agnostic `provision` skill (every task names
         itself to get a branch, ADR 0011) followed by the active workflow's own skills."""
-        task = self.get_task(task_id)
+        task = await self.get_task(task_id)
         return [PROVISION_SKILL, *self._workflow(task.workflow).skills()]
 
-    def briefing(self, task_id: str) -> str:
+    async def briefing(self, task_id: str) -> str:
         """A short briefing on the task's current phase (state + responsibilities + how it advances),
         rendered from the workflow so the in-container agent knows *where it is* (the hook emits it)."""
-        task = self.get_task(task_id)
+        task = await self.get_task(task_id)
         return self._workflow(task.workflow).briefing(task, artifacts=self._artifacts)
 
-    def workflow_overview(self, task_id: str) -> str:
+    async def workflow_overview(self, task_id: str) -> str:
         """A one-time map of the task's whole workflow (the agent gets this in its system prompt)."""
-        task = self.get_task(task_id)
+        task = await self.get_task(task_id)
         return self._workflow(task.workflow).overview()
 
-    def apply_operation(self, task_id: str, operation: str, *, note: str | None = None) -> Task:
+    async def apply_operation(self, task_id: str, operation: str, *, note: str | None = None) -> Task:
         """Apply a named core operation (advance/drop) — a gated move along the declared graph."""
-        task = self.get_task(task_id)
+        task = await self.get_task(task_id)
         to_state = self._workflow(task.workflow).resolve_operation(task.state, operation)
-        return self.request_transition(task_id, to_state, trigger=operation, note=note)
+        return await self.request_transition(task_id, to_state, trigger=operation, note=note)
 
-    def request_transition(
+    async def request_transition(
         self,
         task_id: str,
         to_state: str,
@@ -334,17 +346,17 @@ class TaskService:
         trigger: str | None = None,
         note: str | None = None,
     ) -> Task:
-        task = self.get_task(task_id)
+        task = await self.get_task(task_id)
         wf = self._workflow(task.workflow)
-        return self._commit_transition(task, wf, to_state, force=False, trigger=trigger, note=note)
+        return await self._commit_transition(task, wf, to_state, force=False, trigger=trigger, note=note)
 
-    def set_state(self, task_id: str, to_state: str, *, note: str | None = None) -> Task:
+    async def set_state(self, task_id: str, to_state: str, *, note: str | None = None) -> Task:
         """The user's free override: move the task to any state, bypassing the graph and the gate."""
-        task = self.get_task(task_id)
+        task = await self.get_task(task_id)
         wf = self._workflow(task.workflow)
-        return self._commit_transition(task, wf, to_state, force=True, trigger="set-state", note=note)
+        return await self._commit_transition(task, wf, to_state, force=True, trigger="set-state", note=note)
 
-    def _commit_transition(
+    async def _commit_transition(
         self, task: Task, wf: Workflow, to_state: str, *, force: bool, trigger: str | None, note: str | None
     ) -> Task:
         from_state = task.state
@@ -355,101 +367,101 @@ class TaskService:
         # Deterministic lifecycle hook (e.g. seed the plan on plan acceptance) — may touch the
         # task/artifacts; run before the single save so any task mutation persists with it.
         wf.on_transition(task, from_state=from_state, to_state=task.state, artifacts=self._artifacts)
-        self._save_task(task)
+        await self._save_task(task)
         return task
 
-    def resolve_responsibility(
+    async def resolve_responsibility(
         self, task_id: str, key: str, *, status: Status, comment: str | None = None
     ) -> Task:
         """Record the agent's progress on one promised responsibility (fulfilled in place)."""
-        task = self.get_task(task_id)
+        task = await self.get_task(task_id)
         task.resolve_responsibility(key=key, status=status, comment=comment)
-        self._save_task(task)
+        await self._save_task(task)
         return task
 
-    def set_slug(self, task_id: str, slug: str) -> Task:
-        task = self.get_task(task_id)
+    async def set_slug(self, task_id: str, slug: str) -> Task:
+        task = await self.get_task(task_id)
         previous = task.slug
         task.slug = slug
-        self._save_task(task)
+        await self._save_task(task)
         # Expose the task's artifacts under the slug alias; drop a stale one on a re-slug so the
         # tasks/ dir keeps a single live alias per task (the symlinks live on the artifact store).
         if previous is not None and previous != slug:
-            self._artifacts.unlink_slug(previous)
-        self._artifacts.link_slug(task_id, slug)
+            await asyncio.to_thread(self._artifacts.unlink_slug, previous)
+        await asyncio.to_thread(self._artifacts.link_slug, task_id, slug)
         return task
 
-    def set_url(self, task_id: str, url: str) -> Task:
+    async def set_url(self, task_id: str, url: str) -> Task:
         """Record an external URL for the task (its PR, an issue, …); the dashboard's `p`
         hotkey opens it. A plain recorded fact, like the slug — no transition, no git."""
-        task = self.get_task(task_id)
+        task = await self.get_task(task_id)
         task.url = url
-        self._save_task(task)
+        await self._save_task(task)
         return task
 
-    def set_tokens_used(self, task_id: str, tokens_used: int) -> Task:
+    async def set_tokens_used(self, task_id: str, tokens_used: int) -> Task:
         """Record the cumulative tokens the container's claude has used (its Stop hook reports the
         recomputed session total). A plain recorded fact, like the slug — no transition, no git."""
-        task = self.get_task(task_id)
+        task = await self.get_task(task_id)
         task.tokens_used = tokens_used
-        self._save_task(task)
+        await self._save_task(task)
         return task
 
-    def set_token_estimate(self, task_id: str, token_estimate: int) -> Task:
+    async def set_token_estimate(self, task_id: str, token_estimate: int) -> Task:
         """Record the agent's forecast of the total tokens this task will consume (set once during
         planning). A plain recorded fact, like the slug — no transition, no git."""
-        task = self.get_task(task_id)
+        task = await self.get_task(task_id)
         task.token_estimate = token_estimate
-        self._save_task(task)
+        await self._save_task(task)
         return task
 
-    def set_turn(self, task_id: str, turn: Actor) -> Task:
+    async def set_turn(self, task_id: str, turn: Actor) -> Task:
         """Flip who holds the turn within a state (the in-container hooks' callback).
 
         This is the agnostic agent↔user ball tracking (ADR 0004). It leaves ``blocked``
         untouched, so a deliberate block survives turn flips.
         """
-        task = self.get_task(task_id)
+        task = await self.get_task(task_id)
         task.turn = turn
-        self._save_task(task)
+        await self._save_task(task)
         return task
 
-    def set_blocked(self, task_id: str, blocked: bool) -> Task:
+    async def set_blocked(self, task_id: str, blocked: bool) -> Task:
         """Set/clear the task's deliberate ``blocked`` marker (orthogonal to the turn)."""
-        task = self.get_task(task_id)
+        task = await self.get_task(task_id)
         task.blocked = blocked
-        self._save_task(task)
+        await self._save_task(task)
         return task
 
     # -- claim (a runner owns the task; the spawn gate, ADR 0008) --------------------------
 
-    def claim(self, task_id: str, runner_id: str) -> Task:
+    async def claim(self, task_id: str, runner_id: str) -> Task:
         """Claim an unclaimed task for ``runner_id`` (a session service claims before spawning).
 
         Compare-and-set: succeeds if the task is unclaimed (idempotent if this runner already holds
         it); raises :class:`AlreadyClaimed` if a different runner does. The store is the single
         writer, so the check-and-set is serialized.
         """
-        task = self.get_task(task_id)
+        task = await self.get_task(task_id)
         if task.claimed_by not in (None, runner_id):
             raise AlreadyClaimed(f"task {task_id!r} is already claimed by {task.claimed_by!r}")
         task.claimed_by = runner_id
         self.clear_lifecycle(task_id)  # drop any stale phase from a prior owner; this spawn re-reports
-        self._save_task(task)
+        await self._save_task(task)
         return task
 
-    def release(self, task_id: str) -> Task:
+    async def release(self, task_id: str) -> Task:
         """Release a task's claim (back to unclaimed) so it can be re-claimed / respawned. Clears any
         reported lifecycle phase so the task reads ``queued`` until the runner re-claims + re-reports."""
-        task = self.get_task(task_id)
+        task = await self.get_task(task_id)
         task.claimed_by = None
         self.clear_lifecycle(task_id)
-        self._save_task(task)
+        await self._save_task(task)
         return task
 
     # -- provisioning (the session service does the host git; the service only records) ---
 
-    def record_provisioning(self, task_id: str, *, branch: str, clone: str) -> Task:
+    async def record_provisioning(self, task_id: str, *, branch: str, clone: str) -> Task:
         """Record the slug-named branch + per-task clone the session service created **on the
         host** for this task (ADR 0010/0011 / ARCHITECTURE §9).
 
@@ -463,27 +475,27 @@ class TaskService:
         host-side-vs-recorded-fact split of that hook an open question; until it's designed (and a
         workflow needs it), ``Workflow.provision`` stays a declared seam, unwired here.
         """
-        task = self.get_task(task_id)
+        task = await self.get_task(task_id)
         if task.slug is None:
             raise ValueError("cannot record provisioning before the task's slug is set")
         task.branch = branch
         task.clone = clone
-        self._save_task(task)
+        await self._save_task(task)
         return task
 
     # -- artifacts ----------------------------------------------------------------
 
-    def put_artifact(self, task_id: str, name: str, content: bytes) -> None:
-        self.get_task(task_id)  # ensure the task exists
-        self._artifacts.put(task_id, name, content)
+    async def put_artifact(self, task_id: str, name: str, content: bytes) -> None:
+        await self.get_task(task_id)  # ensure the task exists
+        await asyncio.to_thread(self._artifacts.put, task_id, name, content)
 
-    def get_artifact(self, task_id: str, name: str) -> bytes | None:
-        self.get_task(task_id)
-        return self._artifacts.get(task_id, name)
+    async def get_artifact(self, task_id: str, name: str) -> bytes | None:
+        await self.get_task(task_id)
+        return await asyncio.to_thread(self._artifacts.get, task_id, name)
 
-    def list_artifacts(self, task_id: str) -> list[str]:
-        self.get_task(task_id)
-        return self._artifacts.list(task_id)
+    async def list_artifacts(self, task_id: str) -> list[str]:
+        await self.get_task(task_id)
+        return await asyncio.to_thread(self._artifacts.list, task_id)
 
     # -- liveness -----------------------------------------------------------------
     #
@@ -493,10 +505,10 @@ class TaskService:
     # noticed immediately — no heartbeat to miss, no wall-clock TTL to age out (so a container
     # that dies can't linger as "live", and ``registrations`` reads no clock at all).
 
-    def register(
+    async def register(
         self, task_id: str, container_id: str, runner_id: str | None = None
     ) -> Registration:
-        self.get_task(task_id)  # ensure the task exists
+        await self.get_task(task_id)  # ensure the task exists
         reg = Registration(
             id=self._id(),
             task_id=task_id,
@@ -508,7 +520,7 @@ class TaskService:
         self._notify_change()  # a container going live wakes the dashboard's long-poll
         return reg
 
-    def deregister(self, registration_id: str) -> None:
+    async def deregister(self, registration_id: str) -> None:
         if self._registrations.pop(registration_id, None) is not None:
             self._notify_change()  # a container dropping wakes the long-poll (live → down/awaiting)
 
@@ -525,11 +537,11 @@ class TaskService:
     # cleared on claim release/reclaim — and folded with registration presence + runner liveness
     # into the displayed :class:`ContainerStatus` by :meth:`container_status`.
 
-    def report_lifecycle(
+    async def report_lifecycle(
         self, task_id: str, runner_id: str, phase: LifecyclePhase, detail: str | None = None
     ) -> ContainerLifecycle:
         """Record the runner's latest spawn phase for a task (an upsert; the newest wins)."""
-        self.get_task(task_id)  # ensure the task exists
+        await self.get_task(task_id)  # ensure the task exists
         lifecycle = ContainerLifecycle(
             task_id=task_id, runner_id=runner_id, phase=phase, detail=detail, at=self._clock()
         )
@@ -567,13 +579,13 @@ class TaskService:
     # to tell "runner dead" from "runner idle"; now a dead runner falls out of ``live_runners`` and
     # an operator (or a future supervisor) can release its claims so a healthy host respawns them.
 
-    def register_runner(self, runner_id: str) -> RunnerRegistration:
+    async def register_runner(self, runner_id: str) -> RunnerRegistration:
         reg = RunnerRegistration(id=self._id(), runner_id=runner_id, registered_at=self._clock())
         self._runner_registrations[reg.id] = reg
         self._notify_change()  # a runner (re)connecting can flip its tasks disconnected → …
         return reg
 
-    def deregister_runner(self, registration_id: str) -> None:
+    async def deregister_runner(self, registration_id: str) -> None:
         if self._runner_registrations.pop(registration_id, None) is not None:
             self._notify_change()  # a runner dropping flips its claimed tasks → disconnected
 
@@ -581,7 +593,7 @@ class TaskService:
         """The set of runner ids currently holding a host-liveness connection (no clock read)."""
         return {r.runner_id for r in self._runner_registrations.values()}
 
-    def reclaim(self, runner_id: str) -> list[Task]:
+    async def reclaim(self, runner_id: str) -> list[Task]:
         """Release every non-terminal task claimed by ``runner_id`` so a healthy host can re-claim
         and respawn it. The operator-gated answer to a dead runner (justification 2): its containers
         died with it, but its claims would otherwise linger forever.
@@ -593,10 +605,10 @@ class TaskService:
         spawner it would respawn a duplicate container on a transient host blip, so the release stays
         a deliberate action until spawn-dedup exists."""
         reclaimed = []
-        for task in self._store.list_tasks():
+        for task in await asyncio.to_thread(self._store.list_tasks):
             if task.claimed_by == runner_id and task.state not in TERMINAL_LABELS:
                 task.claimed_by = None
                 self.clear_lifecycle(task.id)  # the dead runner's phase is stale; start clean
-                self._save_task(task)
+                await self._save_task(task)
                 reclaimed.append(task)
         return reclaimed

@@ -6,6 +6,7 @@ removes the registration, the way a dying container does. No Docker, no LLM."""
 
 from __future__ import annotations
 
+import asyncio
 import socket
 import threading
 import time
@@ -47,7 +48,7 @@ def served(tmp_path: Path) -> Iterator[tuple[TaskService, str]]:
     service = TaskService(
         SqlAlchemyStore("sqlite://"), {"spike": Spike()}, FilesystemArtifactStore(tmp_path)
     )
-    service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
+    asyncio.run(service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git")))
     port = _free_port()
     config = uvicorn.Config(create_app(service), host="127.0.0.1", port=port, log_level="warning")
     server = uvicorn.Server(config)
@@ -65,7 +66,7 @@ def test_live_connection_registers_on_connect_and_reaps_on_disconnect(
     served: tuple[TaskService, str],
 ) -> None:
     service, base = served
-    task_id = service.create_task("r1", "spike").id
+    task_id = asyncio.run(service.create_task("r1", "spike")).id
     client = TaskServiceClient(httpx.Client(base_url=base, timeout=10.0))
 
     # Open the held liveness connection; the first tick means the server accepted it (registered).
@@ -81,7 +82,7 @@ def test_live_connection_registers_on_connect_and_reaps_on_disconnect(
 
 def test_reconnect_re_registers_after_a_drop(served: tuple[TaskService, str]) -> None:
     service, base = served
-    task_id = service.create_task("r1", "spike").id
+    task_id = asyncio.run(service.create_task("r1", "spike")).id
     client = TaskServiceClient(httpx.Client(base_url=base, timeout=10.0))
 
     first = client.live(task_id, container_id="c-live")

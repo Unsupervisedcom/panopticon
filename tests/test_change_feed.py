@@ -22,9 +22,9 @@ from panopticon.taskservice.store_sqlalchemy import SqlAlchemyStore
 from panopticon.workflows import Spike
 
 
-def _service(tmp_path: Path) -> TaskService:
+async def _service(tmp_path: Path) -> TaskService:
     svc = TaskService(SqlAlchemyStore(), {"spike": Spike()}, FilesystemArtifactStore(tmp_path))
-    svc.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
+    await svc.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
     return svc
 
 
@@ -34,18 +34,18 @@ def _client(svc: TaskService) -> httpx.AsyncClient:
 
 
 async def test_plain_list_carries_the_version_header(tmp_path: Path) -> None:
-    svc = _service(tmp_path)
+    svc = await _service(tmp_path)
     async with _client(svc) as http:
         before = await http.get("/tasks")
         assert before.headers[TASKS_VERSION_HEADER] == "0"  # no task written yet
-        svc.create_task("r1", "spike")
+        await svc.create_task("r1", "spike")
         after = await http.get("/tasks")
         assert int(after.headers[TASKS_VERSION_HEADER]) > 0
 
 
 async def test_long_poll_blocks_until_a_concurrent_mutation(tmp_path: Path) -> None:
-    svc = _service(tmp_path)
-    svc.create_task("r1", "spike")
+    svc = await _service(tmp_path)
+    await svc.create_task("r1", "spike")
     async with _client(svc) as http:
         snapshot = await http.get("/tasks")
         version = int(snapshot.headers[TASKS_VERSION_HEADER])
@@ -69,10 +69,10 @@ async def test_long_poll_blocks_until_a_concurrent_mutation(tmp_path: Path) -> N
 
 
 async def test_stale_cursor_returns_immediately(tmp_path: Path) -> None:
-    svc = _service(tmp_path)
+    svc = await _service(tmp_path)
     async with _client(svc) as http:
         version = int((await http.get("/tasks")).headers[TASKS_VERSION_HEADER])
-        svc.create_task("r1", "spike")  # version moves past the cursor before we ask
+        await svc.create_task("r1", "spike")  # version moves past the cursor before we ask
 
         # Even with a long ?wait, a stale ?since returns at once (no blocking).
         resp = await asyncio.wait_for(
@@ -83,8 +83,8 @@ async def test_stale_cursor_returns_immediately(tmp_path: Path) -> None:
 
 
 async def test_quiet_wait_times_out_without_changing_the_version(tmp_path: Path) -> None:
-    svc = _service(tmp_path)
-    svc.create_task("r1", "spike")
+    svc = await _service(tmp_path)
+    await svc.create_task("r1", "spike")
     async with _client(svc) as http:
         version = int((await http.get("/tasks")).headers[TASKS_VERSION_HEADER])
         # No mutation: the wait elapses and returns the same version (a 200, not an error).

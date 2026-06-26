@@ -4,6 +4,7 @@ controller depend on. (The end-to-end liveness/registration path is in test_skel
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -22,7 +23,7 @@ from panopticon.workflows import Spike
 @pytest.fixture
 def client(tmp_path: Path) -> Iterator[TaskServiceClient]:
     service = TaskService(SqlAlchemyStore("sqlite://"), {"spike": Spike()}, FilesystemArtifactStore(tmp_path))
-    service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
+    asyncio.run(service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git")))
     with TestClient(create_app(service)) as http:
         yield TaskServiceClient(http)
 

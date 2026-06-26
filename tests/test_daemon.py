@@ -4,6 +4,7 @@ fakes; an integration test runs it against the real task service over REST. No D
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -131,9 +132,9 @@ def test_daemon_against_the_real_service(tmp_path: Path) -> None:
     """The loop branches a task the moment the change feed surfaces its slug, then no-ops — end to
     end over REST. `git` is faked; the branch + clone path land on the real task service."""
     service = TaskService(SqlAlchemyStore(), {"spike": Spike()}, FilesystemArtifactStore(tmp_path))
-    service.create_repo(
+    asyncio.run(service.create_repo(
         Repo(id="r1", name="acme/widgets", git_url="https://forge/r1.git", default_base="trunk")
-    )
+    ))
     with TestClient(create_app(service)) as http:
         client = TaskServiceClient(http)
         task_id = client.create_task("r1", "spike")["id"]
@@ -173,7 +174,7 @@ def test_run_daemon_provisions_a_slugged_task_over_one_pass(tmp_path: Path) -> N
     """The launch path (`run_daemon`) wires the provisioner + watch-set and branches a slugged
     task — end to end over REST, `git` faked, stopped after one pass."""
     service = TaskService(SqlAlchemyStore(), {"spike": Spike()}, FilesystemArtifactStore(tmp_path))
-    service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://forge/r1.git", default_base="trunk"))
+    asyncio.run(service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://forge/r1.git", default_base="trunk")))
     with TestClient(create_app(service)) as http:
         client = TaskServiceClient(http)
         task_id = client.create_task("r1", "spike")["id"]
