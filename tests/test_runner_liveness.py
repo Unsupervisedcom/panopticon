@@ -7,6 +7,7 @@ does. ``reclaim`` is exercised over REST. No Docker, no LLM."""
 
 from __future__ import annotations
 
+import asyncio
 import socket
 import threading
 import time
@@ -49,7 +50,7 @@ def served(tmp_path: Path) -> Iterator[tuple[TaskService, str]]:
     service = TaskService(
         SqlAlchemyStore("sqlite://"), {"spike": Spike()}, FilesystemArtifactStore(tmp_path)
     )
-    service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
+    asyncio.run(service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git")))
     port = _free_port()
     config = uvicorn.Config(create_app(service), host="127.0.0.1", port=port, log_level="warning")
     server = uvicorn.Server(config)

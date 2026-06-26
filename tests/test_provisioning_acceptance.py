@@ -11,6 +11,7 @@ unit tests + the Slice 2 acceptance); this proves the git reality of provisionin
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import subprocess
 from pathlib import Path
@@ -47,7 +48,7 @@ def test_provisioning_end_to_end_with_real_git(tmp_path: Path) -> None:
     _git(origin, "commit", "--message", "init")
 
     service = TaskService(SqlAlchemyStore(), {"spike": Spike()}, FilesystemArtifactStore(tmp_path))
-    service.create_repo(Repo(id="r1", name="acme/widgets", git_url=str(origin), default_base="main"))
+    asyncio.run(service.create_repo(Repo(id="r1", name="acme/widgets", git_url=str(origin), default_base="main")))
     with TestClient(create_app(service)) as http:
         client = TaskServiceClient(http)
         task_id = client.create_task("r1", "spike")["id"]

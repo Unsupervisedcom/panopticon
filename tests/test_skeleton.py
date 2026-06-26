@@ -7,6 +7,7 @@ container registers (liveness) -> sets a slug -> requests a transition the workf
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -31,7 +32,7 @@ def client(tmp_path: Path) -> Iterator[TaskServiceClient]:
         {"spike": Spike()},
         FilesystemArtifactStore(tmp_path),
     )
-    service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
+    asyncio.run(service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git")))
     with TestClient(create_app(service)) as http:
         yield TaskServiceClient(http)
 

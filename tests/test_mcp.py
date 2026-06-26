@@ -15,20 +15,20 @@ from panopticon.taskservice.store_sqlalchemy import SqlAlchemyStore
 from panopticon.workflows import GithubSelfReviewed, Orchestrator, Spike
 
 
-def _service(tmp_path: Path) -> TaskService:
+async def _service(tmp_path: Path) -> TaskService:
     svc = TaskService(
         SqlAlchemyStore(),
         {"spike": Spike(), "orchestrator": Orchestrator(), "github-self-reviewed": GithubSelfReviewed()},
         FilesystemArtifactStore(tmp_path),
     )
-    svc.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
-    svc.create_repo(Repo(id="r2", name="acme/other", git_url="https://x/r2.git"))
+    await svc.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
+    await svc.create_repo(Repo(id="r2", name="acme/other", git_url="https://x/r2.git"))
     return svc
 
 
 async def test_tools_are_exposed_and_drive_the_task(tmp_path: Path) -> None:
-    svc = _service(tmp_path)
-    task = svc.create_task("r1", "spike")
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")
     async with connect(build_mcp_server(svc)) as s:
         await s.initialize()
         names = {t.name for t in (await s.list_tools()).tools}
@@ -41,23 +41,23 @@ async def test_tools_are_exposed_and_drive_the_task(tmp_path: Path) -> None:
         assert result.isError is False
         assert result.structuredContent is not None
         assert result.structuredContent["state"] == "COMPLETE"
-    assert svc.get_task(task.id).state == "COMPLETE"  # the tool actually mutated the task
+    assert (await svc.get_task(task.id)).state == "COMPLETE"  # the tool actually mutated the task
 
 
 async def test_artifacts_round_trip_via_tool_and_resource(tmp_path: Path) -> None:
-    svc = _service(tmp_path)
-    task = svc.create_task("r1", "spike")
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")
     async with connect(build_mcp_server(svc)) as s:
         await s.initialize()
         await s.call_tool("put_artifact", {"task_id": task.id, "name": "plan.md", "content": "# Plan"})
         res = await s.read_resource(f"panopticon://tasks/{task.id}/artifacts/plan.md")
         assert res.contents[0].text == "# Plan"  # type: ignore[union-attr]
-    assert svc.get_artifact(task.id, "plan.md") == b"# Plan"
+    assert await svc.get_artifact(task.id, "plan.md") == b"# Plan"
 
 
 async def test_list_artifacts_returns_names_and_readable_uris(tmp_path: Path) -> None:
-    svc = _service(tmp_path)
-    task = svc.create_task("r1", "spike")
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")
     async with connect(build_mcp_server(svc)) as s:
         await s.initialize()
         await s.call_tool("put_artifact", {"task_id": task.id, "name": "plan.md", "content": "# Plan"})
@@ -76,8 +76,8 @@ async def test_list_artifacts_returns_names_and_readable_uris(tmp_path: Path) ->
 
 
 async def test_list_artifacts_is_empty_when_none(tmp_path: Path) -> None:
-    svc = _service(tmp_path)
-    task = svc.create_task("r1", "spike")
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")
     async with connect(build_mcp_server(svc)) as s:
         await s.initialize()
         result = await s.call_tool("list_artifacts", {"task_id": task.id})
@@ -86,8 +86,8 @@ async def test_list_artifacts_is_empty_when_none(tmp_path: Path) -> None:
 
 
 async def test_set_turn_via_tool(tmp_path: Path) -> None:
-    svc = _service(tmp_path)
-    task = svc.create_task("r1", "spike")
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")
     async with connect(build_mcp_server(svc)) as s:
         await s.initialize()
         result = await s.call_tool("set_turn", {"task_id": task.id, "turn": "user"})
@@ -96,44 +96,44 @@ async def test_set_turn_via_tool(tmp_path: Path) -> None:
 
 
 async def test_set_url_via_tool(tmp_path: Path) -> None:
-    svc = _service(tmp_path)
-    task = svc.create_task("r1", "spike")
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")
     url = "https://github.com/acme/widgets/pull/7"
     async with connect(build_mcp_server(svc)) as s:
         await s.initialize()
         result = await s.call_tool("set_url", {"task_id": task.id, "url": url})
         assert result.structuredContent is not None
         assert result.structuredContent["url"] == url
-    assert svc.get_task(task.id).url == url  # the tool actually mutated the task
+    assert (await svc.get_task(task.id)).url == url  # the tool actually mutated the task
 
 
 async def test_set_tokens_used_via_tool(tmp_path: Path) -> None:
-    svc = _service(tmp_path)
-    task = svc.create_task("r1", "spike")
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")
     async with connect(build_mcp_server(svc)) as s:
         await s.initialize()
         result = await s.call_tool("set_tokens_used", {"task_id": task.id, "tokens_used": 5000})
         assert result.structuredContent is not None
         assert result.structuredContent["tokens_used"] == 5000
-    assert svc.get_task(task.id).tokens_used == 5000  # the tool actually mutated the task
+    assert (await svc.get_task(task.id)).tokens_used == 5000  # the tool actually mutated the task
 
 
 async def test_set_token_estimate_via_tool(tmp_path: Path) -> None:
-    svc = _service(tmp_path)
-    task = svc.create_task("r1", "spike")
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")
     async with connect(build_mcp_server(svc)) as s:
         await s.initialize()
         result = await s.call_tool("set_token_estimate", {"task_id": task.id, "token_estimate": 500000})
         assert result.structuredContent is not None
         assert result.structuredContent["token_estimate"] == 500000
-    assert svc.get_task(task.id).token_estimate == 500000  # the tool actually mutated the task
+    assert (await svc.get_task(task.id)).token_estimate == 500000  # the tool actually mutated the task
 
 
 # -- orchestration tools (gated to workflows whose `orchestrates` is set) --------------------
 
 
 async def test_orchestration_tools_are_exposed(tmp_path: Path) -> None:
-    svc = _service(tmp_path)
+    svc = await _service(tmp_path)
     async with connect(build_mcp_server(svc)) as s:
         await s.initialize()
         names = {t.name for t in (await s.list_tools()).tools}
@@ -141,8 +141,8 @@ async def test_orchestration_tools_are_exposed(tmp_path: Path) -> None:
 
 
 async def test_orchestrator_creates_in_its_own_repo(tmp_path: Path) -> None:
-    svc = _service(tmp_path)
-    boss = svc.create_task("r2", "orchestrator")  # the orchestrator lives in r2
+    svc = await _service(tmp_path)
+    boss = await svc.create_task("r2", "orchestrator")  # the orchestrator lives in r2
     async with connect(build_mcp_server(svc)) as s:
         await s.initialize()
         wfs = await s.call_tool("list_workflows", {"orchestrator_task_id": boss.id})
@@ -155,14 +155,14 @@ async def test_orchestrator_creates_in_its_own_repo(tmp_path: Path) -> None:
         assert result.isError is False
         child_id = result.structuredContent["id"]  # type: ignore[index]
         assert result.structuredContent["state"] == "PLANNING"  # type: ignore[index]
-    child = svc.get_task(child_id)
+    child = await svc.get_task(child_id)
     assert child.workflow == "github-self-reviewed"  # the tool really created it
     assert child.repo_id == "r2"  # in the orchestrator's own repo, not some other repo
 
 
 async def test_create_task_rejected_for_non_orchestrator(tmp_path: Path) -> None:
-    svc = _service(tmp_path)
-    task = svc.create_task("r1", "spike")  # spike does not orchestrate
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")  # spike does not orchestrate
     async with connect(build_mcp_server(svc)) as s:
         await s.initialize()
         for tool in ("create_task", "list_workflows"):
@@ -171,13 +171,13 @@ async def test_create_task_rejected_for_non_orchestrator(tmp_path: Path) -> None
                 args |= {"workflow": "spike"}
             result = await s.call_tool(tool, args)
             assert result.isError is True  # the gate holds: a non-orchestrator may not orchestrate
-    assert len(svc.list_tasks()) == 1  # nothing was created
+    assert len(await svc.list_tasks()) == 1  # nothing was created
 
 
 async def test_create_task_with_initial_prompt_and_artifacts(tmp_path: Path) -> None:
     """create_task with initial_prompt and artifacts writes both atomically."""
-    svc = _service(tmp_path)
-    boss = svc.create_task("r1", "orchestrator")
+    svc = await _service(tmp_path)
+    boss = await svc.create_task("r1", "orchestrator")
     async with connect(build_mcp_server(svc)) as s:
         await s.initialize()
         result = await s.call_tool(
@@ -193,18 +193,18 @@ async def test_create_task_with_initial_prompt_and_artifacts(tmp_path: Path) -> 
         assert result.isError is False
         child_id = result.structuredContent["id"]  # type: ignore[index]
 
-    child = svc.get_task(child_id)
+    child = await svc.get_task(child_id)
     assert child.initial_prompt == "review your plan"
     # plan.md is present immediately — no separate put_artifact call needed
-    assert svc.get_artifact(child_id, "plan.md") == b"# Plan\nDo the thing."
+    assert await svc.get_artifact(child_id, "plan.md") == b"# Plan\nDo the thing."
 
 
 async def test_orchestrator_seeds_a_child_ready_to_approve(tmp_path: Path) -> None:
     """The motivating end-to-end: create a github-self-reviewed task with the plan inline —
     plan.md written, a token estimate recorded, `plan-written`/`token-estimated` met, turn handed
     to the user."""
-    svc = _service(tmp_path)
-    boss = svc.create_task("r1", "orchestrator")
+    svc = await _service(tmp_path)
+    boss = await svc.create_task("r1", "orchestrator")
     async with connect(build_mcp_server(svc)) as s:
         await s.initialize()
         created = await s.call_tool(
@@ -230,10 +230,10 @@ async def test_orchestrator_seeds_a_child_ready_to_approve(tmp_path: Path) -> No
         )
         await s.call_tool("set_turn", {"task_id": child_id, "turn": "user"})
 
-    child = svc.get_task(child_id)
+    child = await svc.get_task(child_id)
     assert child.state == "PLANNING"  # still in planning, awaiting the user's approval
     assert child.slug == "add-healthz"
     assert child.turn is Actor.USER  # handed to the user to review/advance
     assert child.token_estimate == 500000  # the orchestrator recorded its forecast
     assert child.outstanding_responsibilities == []  # the gate is clear — the user can advance
-    assert svc.get_artifact(child_id, "plan.md") == b"# Plan\n..."
+    assert await svc.get_artifact(child_id, "plan.md") == b"# Plan\n..."
