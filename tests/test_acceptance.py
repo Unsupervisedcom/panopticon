@@ -107,10 +107,10 @@ def test_runner_spawns_real_container_that_registers_and_loses_liveness(
 
         # 2. the slug hook ran in-container
         for _ in range(40):
-            if service.get_task(task_id).slug == "acc-slug":
+            if asyncio.run(service.get_task(task_id)).slug == "acc-slug":
                 break
             time.sleep(0.25)
-        assert service.get_task(task_id).slug == "acc-slug"
+        assert asyncio.run(service.get_task(task_id)).slug == "acc-slug"
 
         # 3. tmux session exists (operator could `tmux attach`)
         assert subprocess.run(
