@@ -437,12 +437,14 @@ def create_app(service: TaskService) -> FastAPI:
             version = await feed.wait(since=since, timeout=min(wait, MAX_WAIT_SECONDS))
         else:
             version = service.tasks_version()
-        # DB query runs in a thread so it doesn't block the event loop. The version captured
-        # above is a lower bound: the snapshot may include mutations that bumped the version
-        # past it, but that only means the client's next ?since= poll returns sooner.
-        tasks = await asyncio.to_thread(
-            lambda: [_task_summary_out(t) for t in service.list_tasks_summary(terminal=terminal)]
+        # DB query runs in a thread so it doesn't block the event loop. The in-memory enrichment
+        # (_task_summary_out reads _registrations / _runner_registrations) stays on the loop so
+        # it's serialized with the liveness-stream connect/disconnect mutations — no dict-iteration
+        # races. Version above is a lower bound: snapshot may include later mutations, which is fine.
+        summaries = await asyncio.to_thread(
+            lambda: service.list_tasks_summary(terminal=terminal)
         )
+        tasks = [_task_summary_out(t) for t in summaries]
         response.headers[TASKS_VERSION_HEADER] = str(version)
         return tasks
 
