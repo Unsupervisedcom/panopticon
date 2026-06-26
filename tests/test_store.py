@@ -479,3 +479,31 @@ def test_list_tasks_summary_returns_tasks_without_history(store: Store) -> None:
     # list_tasks still returns full history
     full = store.list_tasks()
     assert len(full[0].history) == 1
+
+
+# -- on-disk engine config (WAL + QueuePool) ----------------------------------------
+
+
+def test_on_disk_store_uses_queue_pool(tmp_path: Path) -> None:
+    from sqlalchemy.pool import QueuePool
+
+    store = SqlAlchemyStore(f"sqlite:///{tmp_path / 'tasks.db'}")
+    assert isinstance(store._engine.pool, QueuePool)
+    store.close()
+
+
+def test_on_disk_store_enables_wal_mode(tmp_path: Path) -> None:
+    store = SqlAlchemyStore(f"sqlite:///{tmp_path / 'tasks.db'}")
+    with store._engine.connect() as conn:
+        result = conn.exec_driver_sql("PRAGMA journal_mode").fetchone()
+    assert result is not None
+    assert result[0] == "wal"
+    store.close()
+
+
+def test_in_memory_store_uses_static_pool(tmp_path: Path) -> None:
+    from sqlalchemy.pool import StaticPool
+
+    store = SqlAlchemyStore("sqlite://")
+    assert isinstance(store._engine.pool, StaticPool)
+    store.close()

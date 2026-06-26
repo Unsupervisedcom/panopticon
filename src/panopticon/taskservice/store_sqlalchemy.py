@@ -25,7 +25,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import JSON, ForeignKey, ForeignKeyConstraint, create_engine, select
+from sqlalchemy import JSON, ForeignKey, ForeignKeyConstraint, create_engine, event, select
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
@@ -35,7 +35,7 @@ from sqlalchemy.orm import (
     relationship,
     sessionmaker,
 )
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import QueuePool, StaticPool
 
 from panopticon.core.models import Actor, HistoryEntry, Repo, Responsibility, Status, Task
 from panopticon.core.store import (
@@ -46,6 +46,18 @@ from panopticon.core.store import (
 )
 
 _IN_MEMORY = ("sqlite://", "sqlite:///:memory:")
+_SQLITE_PREFIX = "sqlite:///"  # on-disk SQLite file URLs
+
+
+def _set_wal_mode(dbapi_conn: Any, _: Any) -> None:
+    """Enable WAL journal mode and a busy timeout on every new on-disk SQLite connection.
+
+    WAL lets readers proceed without blocking writers (and vice versa). The busy_timeout
+    makes writers retry for up to 5 s instead of raising immediately when another writer
+    holds the lock — safe under the single-writer SQLite model.
+    """
+    dbapi_conn.execute("PRAGMA journal_mode=WAL")
+    dbapi_conn.execute("PRAGMA busy_timeout=5000")
 
 
 # -- ORM row classes (mutable; live only in this adapter; own their translation) ----
@@ -252,7 +264,17 @@ class SqlAlchemyStore(Store):
             self._engine = create_engine(
                 url, connect_args={"check_same_thread": False}, poolclass=StaticPool
             )
+        elif url.startswith(_SQLITE_PREFIX):
+            # On-disk SQLite: a real pool so concurrent threads each hold their own connection,
+            # plus WAL mode so reads don't block writes (and vice versa).
+            self._engine = create_engine(
+                url,
+                poolclass=QueuePool,
+                connect_args={"check_same_thread": False},
+            )
+            event.listen(self._engine, "connect", _set_wal_mode)
         else:
+            # Non-SQLite backends (PostgreSQL, MySQL, …): use SQLAlchemy defaults.
             self._engine = create_engine(url)
         _Base.metadata.create_all(self._engine)
         self._session: sessionmaker[Session] = sessionmaker(self._engine)
