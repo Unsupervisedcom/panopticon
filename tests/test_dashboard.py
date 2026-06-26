@@ -300,11 +300,12 @@ async def test_pressing_d_toggles_the_detail_pane() -> None:
 
 
 async def test_tasks_are_sorted_live_then_user_then_slug() -> None:
-    # The order: (1) non-terminal above terminal, (2) the user's turn above the agent's,
-    # (3) most recently updated first, (4) slug (then id) as the stable tiebreaker.
+    # The order: (1) non-terminal above terminal, (2) turn priority differs by group — active tasks
+    # surface the user's turn first (operator action needed), terminal tasks surface the agent's turn
+    # first (just finished); (3) most recently updated first, (4) slug (then id) tiebreaker.
     # Here all tasks share the same updated_at (None → 0.0), so slug is the effective tiebreaker.
     tasks = [
-        # terminal tasks — sink below all live work.
+        # terminal tasks — sink below all live work; agent-turn rises to top of this section.
         {**_TASK, "id": "t-done", "slug": "done", "state": "COMPLETE", "turn": "user"},
         {**_TASK, "id": "t-drop", "slug": "drop", "state": "DROPPED", "turn": "agent"},
         # live agent-turn tasks — below the user-turn ones, sorted by slug.
@@ -323,11 +324,11 @@ async def test_tasks_are_sorted_live_then_user_then_slug() -> None:
         assert order == [
             "t-user-a", "t-user-b",    # live, user's turn, slug order
             "t-agent-a", "t-agent-b",  # live, agent's turn, slug order
-            "t-done", "t-drop",        # terminal last
+            "t-drop", "t-done",        # terminal: agent-turn first (just finished), then user-turn
         ]
         # the divider sits exactly between the last active row and the first terminal one
         assert keys.index(_SEPARATOR_KEY) == keys.index("t-agent-b") + 1
-        assert keys.index(_SEPARATOR_KEY) == keys.index("t-done") - 1
+        assert keys.index(_SEPARATOR_KEY) == keys.index("t-drop") - 1
 
 
 async def test_sort_uses_recency_within_tier() -> None:

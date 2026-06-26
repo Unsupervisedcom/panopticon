@@ -81,18 +81,22 @@ def _sort_key(task: JsonObj) -> tuple[bool, bool, float, str]:
     """Order rows for the operator: live work first, then by whose turn it is, then recency.
 
     1. non-terminal before terminal — COMPLETE/DROPPED sink to the bottom;
-    2. the user's turn before the agent's — tasks waiting on the operator surface first;
+    2. turn priority differs by group: for active tasks the user's turn comes first (tasks waiting
+       on the operator surface early); for terminal tasks the agent's turn comes first (tasks the
+       agent just finished surface at the top of the completed section);
     3. most recently updated first (negative timestamp);
     4. slug (then id) for a stable, readable order within each tier.
     """
+    is_terminal = task["state"] in TERMINAL_LABELS
     raw = task.get("updated_at") or ""
     try:
         ts = -datetime.fromisoformat(raw).timestamp()
     except ValueError:
         ts = 0.0
+    turn_first = "agent" if is_terminal else "user"
     return (
-        task["state"] in TERMINAL_LABELS,  # False (live) before True (terminal)
-        task["turn"] != "user",  # False (user) before True (agent)
+        is_terminal,  # False (live) before True (terminal)
+        task["turn"] != turn_first,  # False (priority turn) before True (other turn)
         ts,  # negative so newest sorts first
         task["slug"] or task["id"],
     )
