@@ -2,11 +2,11 @@
 
 This task moves through a fixed sequence of phases. You are always in exactly one phase: do that phase's work, then it advances. Each turn you'll be reminded which phase you're in and what it needs — **don't do a later phase's work early.** The phases, in order:
 
-1. **PLANNING** — Collect requirements. Produce a plan for the implementation. You must meet these responsibilities before ending your turn:
+1. **PLANNING** — Collect requirements. Produce a plan for the implementation. You must meet these responsibilities before ending your turn — mark each as met the moment you complete it:
    - plan-written: The plan is uploaded to the plan artifact `plan.md` (a markdown file) with the `put_artifact` tool — not just written to the working tree.
    - token-estimated: Estimate the total tokens this task will consume and record it with the `set_token_estimate` tool.
    The user will advance to the next state.
-2. **ITERATING** — Implement the plan. Implement any additional user requests or feedback. Implement any review comments the user has approved for implementation. You must meet these responsibilities before ending your turn:
+2. **ITERATING** — Implement the plan. Implement any additional user requests or feedback. Implement any review comments the user has approved for implementation. You must meet these responsibilities before ending your turn — mark each as met the moment you complete it:
    - plan-implemented: The plan is implemented in code.
    - requests-implemented: All user requests are implemented in code.
    - tests-pass: New and relevant tests pass locally.
@@ -14,10 +14,10 @@ This task moves through a fixed sequence of phases. You are always in exactly on
    - ci-passing: CI tests are passing, or any failures are irrelevant flakes.
    - pr-updated: The PR title and description reflect the final change, with no Test Plan / Verification section.
    The user will advance to the next state.
-3. **REVIEW** — Wait for review or approval of the PR. You must meet these responsibilities before ending your turn:
+3. **REVIEW** — Wait for review or approval of the PR. You must meet these responsibilities before ending your turn — mark each as met the moment you complete it:
    - pr-reviewed: The PR has been reviewed.
    The user will advance to the next state.
-4. **MERGING** — Add the PR to the merge queue. If the PR exits the merge queue, re-add it. You must meet these responsibilities before ending your turn:
+4. **MERGING** — Add the PR to the merge queue. If the PR exits the merge queue, re-add it. You must meet these responsibilities before ending your turn — mark each as met the moment you complete it:
    - pr-merged: The PR is merged.
    Automatically advance to the next state.
 5. **COMPLETE** — terminal. The work has landed; the task is finished.

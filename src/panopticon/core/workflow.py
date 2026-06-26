@@ -315,7 +315,7 @@ class Workflow(ABC):
                 else "The user will advance to the next state."
             )
             if responsibilities:
-                lines.append(f"{i}. **{label}** — {lead}You must meet these responsibilities before ending your turn:")
+                lines.append(f"{i}. **{label}** — {lead}You must meet these responsibilities before ending your turn — mark each as met the moment you complete it:")
                 lines += [f"   - {r.key}: {r.description}" for r in responsibilities]
                 lines.append(f"   {advance}")
             else:
@@ -365,7 +365,7 @@ class Workflow(ABC):
 
         responsibilities = list(task.current_entry.responsibilities)
         if responsibilities:
-            lines += ["", "This phase's responsibilities (resolve each before ending your turn):"]
+            lines += ["", "This phase's responsibilities (resolve each one as you complete it — don't wait until the end of your turn to mark them all):"]
             lines += [f"- [{r.status.value}] {r.key}: {r.description}" for r in responsibilities]
 
         target = self.operations(label).get("advance")

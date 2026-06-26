@@ -98,7 +98,7 @@ def test_workflow_overview_maps_the_ordered_phases() -> None:
     assert "Add the PR to the merge queue." in text  # MERGING
     # the responsibility gate and who advances are two separate sentences (gate before the bullets,
     # advance after them) — meeting the responsibilities is not what triggers the advance
-    assert "You must meet these responsibilities before ending your turn:" in text
+    assert "You must meet these responsibilities before ending your turn — mark each as met the moment you complete it:" in text
     assert "The user will advance to the next state." in text  # user-advanced phases
     assert "Automatically advance to the next state." in text  # MERGING (agent-advanced)
     assert "terminal" in text  # COMPLETE
