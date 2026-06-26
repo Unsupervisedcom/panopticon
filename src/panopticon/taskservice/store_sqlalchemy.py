@@ -46,6 +46,7 @@ from panopticon.core.store import (
 )
 
 _IN_MEMORY = ("sqlite://", "sqlite:///:memory:")
+_SQLITE_PREFIX = "sqlite:///"  # on-disk SQLite file URLs
 
 
 def _set_wal_mode(dbapi_conn: Any, _: Any) -> None:
@@ -263,7 +264,7 @@ class SqlAlchemyStore(Store):
             self._engine = create_engine(
                 url, connect_args={"check_same_thread": False}, poolclass=StaticPool
             )
-        else:
+        elif url.startswith(_SQLITE_PREFIX):
             # On-disk SQLite: a real pool so concurrent threads each hold their own connection,
             # plus WAL mode so reads don't block writes (and vice versa).
             self._engine = create_engine(
@@ -272,6 +273,9 @@ class SqlAlchemyStore(Store):
                 connect_args={"check_same_thread": False},
             )
             event.listen(self._engine, "connect", _set_wal_mode)
+        else:
+            # Non-SQLite backends (PostgreSQL, MySQL, …): use SQLAlchemy defaults.
+            self._engine = create_engine(url)
         _Base.metadata.create_all(self._engine)
         self._session: sessionmaker[Session] = sessionmaker(self._engine)
 
