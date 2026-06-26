@@ -8,6 +8,7 @@ reach a task's artifacts by its readable label as well as its opaque id.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from panopticon.core.artifacts import ArtifactStore, InvalidArtifactName, validate_segment
@@ -35,30 +36,28 @@ class FilesystemArtifactStore(ArtifactStore):
         path = self._task_dir(task_id) / name
         return path if path.is_file() else None
 
-    def put(self, task_id: str, name: str, content: bytes) -> None:
+    async def put(self, task_id: str, name: str, content: bytes) -> None:
         validate_segment(name)
         task_dir = self._task_dir(task_id)
-        task_dir.mkdir(parents=True, exist_ok=True)
-        (task_dir / name).write_bytes(content)
+        await asyncio.to_thread(task_dir.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread((task_dir / name).write_bytes, content)
 
-    def get(self, task_id: str, name: str) -> bytes | None:
+    async def get(self, task_id: str, name: str) -> bytes | None:
         validate_segment(name)
         path = self._task_dir(task_id) / name
-        return path.read_bytes() if path.is_file() else None
+        if not await asyncio.to_thread(path.is_file):
+            return None
+        return await asyncio.to_thread(path.read_bytes)
 
-    def list(self, task_id: str) -> list[str]:
+    async def list(self, task_id: str) -> list[str]:
         task_dir = self._task_dir(task_id)
-        if not task_dir.is_dir():
+        if not await asyncio.to_thread(task_dir.is_dir):
             return []
-        return sorted(p.name for p in task_dir.iterdir() if p.is_file())
+        return await asyncio.to_thread(
+            lambda: sorted(p.name for p in task_dir.iterdir() if p.is_file())
+        )
 
-    def link_slug(self, task_id: str, slug: str) -> None:
-        """Alias ``<root>/tasks/<slug>`` to the task's id-named directory.
-
-        The link is **relative** (its target is just ``<task_id>``, a sibling under
-        ``tasks/``) so the whole root stays relocatable. Idempotent, and it refuses to clobber
-        a real (non-symlink) entry — the slug is validated like any other path segment first.
-        """
+    def _link_slug_sync(self, task_id: str, slug: str) -> None:
         validate_segment(task_id)
         validate_segment(slug)
         link = self._root / "tasks" / slug
@@ -73,9 +72,17 @@ class FilesystemArtifactStore(ArtifactStore):
         link.parent.mkdir(parents=True, exist_ok=True)
         link.symlink_to(task_id, target_is_directory=True)
 
-    def unlink_slug(self, slug: str) -> None:
+    async def link_slug(self, task_id: str, slug: str) -> None:
+        """Alias ``<root>/tasks/<slug>`` to the task's id-named directory.
+
+        The link is **relative** (its target is just ``<task_id>``, a sibling under
+        ``tasks/``) so the whole root stays relocatable. Idempotent, and it refuses to clobber
+        a real (non-symlink) entry — the slug is validated like any other path segment first.
+        """
+        await asyncio.to_thread(self._link_slug_sync, task_id, slug)
+
+    async def unlink_slug(self, slug: str) -> None:
         """Remove a slug alias (only if it is a symlink); ignore an absent one."""
         validate_segment(slug)
         link = self._root / "tasks" / slug
-        if link.is_symlink():
-            link.unlink()
+        await asyncio.to_thread(lambda: link.unlink() if link.is_symlink() else None)

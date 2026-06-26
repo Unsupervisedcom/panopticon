@@ -21,5 +21,5 @@ class LayerStore(ABC):
     """Read layer files (Dockerfile fragments) by name, relative to a configured root."""
 
     @abstractmethod
-    def get(self, name: str) -> bytes | None:
+    async def get(self, name: str) -> bytes | None:
         """Return the layer file's bytes, or ``None`` if no such file exists."""

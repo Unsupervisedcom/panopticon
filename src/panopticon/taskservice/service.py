@@ -10,7 +10,6 @@ deterministic. No LLM (the determinism invariant).
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
@@ -180,7 +179,7 @@ class TaskService:
             return ""
         if self._layers is None:
             raise NotFound(f"no layer store configured to read image layer {name!r}")
-        content = await asyncio.to_thread(self._layers.get, name)
+        content = await self._layers.get(name)
         if content is None:
             raise NotFound(f"image layer file {name!r} not found")
         return content.decode()
@@ -329,7 +328,7 @@ class TaskService:
         """A short briefing on the task's current phase (state + responsibilities + how it advances),
         rendered from the workflow so the in-container agent knows *where it is* (the hook emits it)."""
         task = await self.get_task(task_id)
-        return self._workflow(task.workflow).briefing(task, artifacts=self._artifacts)
+        return await self._workflow(task.workflow).briefing(task, artifacts=self._artifacts)
 
     async def workflow_overview(self, task_id: str) -> str:
         """A one-time map of the task's whole workflow (the agent gets this in its system prompt)."""
@@ -370,7 +369,7 @@ class TaskService:
             wf.apply_transition(task, to_state, at=self._clock(), trigger=trigger, note=note)
         # Deterministic lifecycle hook (e.g. seed the plan on plan acceptance) — may touch the
         # task/artifacts; run before the single save so any task mutation persists with it.
-        wf.on_transition(task, from_state=from_state, to_state=task.state, artifacts=self._artifacts)
+        await wf.on_transition(task, from_state=from_state, to_state=task.state, artifacts=self._artifacts)
         await self._save_task(task)
         return task
 
@@ -391,8 +390,8 @@ class TaskService:
         # Expose the task's artifacts under the slug alias; drop a stale one on a re-slug so the
         # tasks/ dir keeps a single live alias per task (the symlinks live on the artifact store).
         if previous is not None and previous != slug:
-            await asyncio.to_thread(self._artifacts.unlink_slug, previous)
-        await asyncio.to_thread(self._artifacts.link_slug, task_id, slug)
+            await self._artifacts.unlink_slug(previous)
+        await self._artifacts.link_slug(task_id, slug)
         return task
 
     async def set_url(self, task_id: str, url: str) -> Task:
@@ -491,15 +490,15 @@ class TaskService:
 
     async def put_artifact(self, task_id: str, name: str, content: bytes) -> None:
         await self.get_task(task_id)  # ensure the task exists
-        await asyncio.to_thread(self._artifacts.put, task_id, name, content)
+        await self._artifacts.put(task_id, name, content)
 
     async def get_artifact(self, task_id: str, name: str) -> bytes | None:
         await self.get_task(task_id)
-        return await asyncio.to_thread(self._artifacts.get, task_id, name)
+        return await self._artifacts.get(task_id, name)
 
     async def list_artifacts(self, task_id: str) -> list[str]:
         await self.get_task(task_id)
-        return await asyncio.to_thread(self._artifacts.list, task_id)
+        return await self._artifacts.list(task_id)
 
     # -- liveness -----------------------------------------------------------------
     #

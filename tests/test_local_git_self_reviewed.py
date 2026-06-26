@@ -8,6 +8,7 @@ the inability to skip straight to COMPLETE, no forge dependencies, and the unive
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -105,10 +106,10 @@ def test_briefing_surfaces_the_plan_uri_once_the_plan_artifact_exists(tmp_path: 
     artifacts = FilesystemArtifactStore(tmp_path)
     task = WF.start_task("t1", "r1", at="t0")
 
-    assert "panopticon://" not in WF.briefing(task, artifacts=artifacts)  # no plan yet → no URI
+    assert "panopticon://" not in asyncio.run(WF.briefing(task, artifacts=artifacts))  # no plan yet → no URI
 
-    artifacts.put(task.id, "plan.md", b"# Plan")
-    text = WF.briefing(task, artifacts=artifacts)
+    asyncio.run(artifacts.put(task.id, "plan.md", b"# Plan"))
+    text = asyncio.run(WF.briefing(task, artifacts=artifacts))
     assert "panopticon://tasks/t1/artifacts/plan.md" in text
     assert "don't guess" in text
 
