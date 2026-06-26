@@ -39,6 +39,7 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
         {"spike": Spike()},
         FilesystemArtifactStore(tmp_path),
     )
+    asyncio.run(service.init())
     asyncio.run(service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git")))
     with TestClient(create_app(service)) as c:
         yield c
@@ -78,6 +79,7 @@ def _repo_layer_client(tmp_path: Path, *, image_layer_file: str | None) -> TestC
         SqlAlchemyStore(), {"spike": Spike()}, FilesystemArtifactStore(tmp_path / "artifacts"),
         layers=FilesystemLayerStore(layers),
     )
+    asyncio.run(svc.init())
     asyncio.run(svc.create_repo(Repo(id="r1", name="acme", git_url="https://x/r1.git", image_layer_file=image_layer_file)))
     return TestClient(create_app(svc))
 
@@ -289,6 +291,7 @@ def gated_client(tmp_path: Path) -> Iterator[TestClient]:
         {"gated": _GatedWorkflow()},
         FilesystemArtifactStore(tmp_path),
     )
+    asyncio.run(service.init())
     asyncio.run(service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git")))
     with TestClient(create_app(service)) as c:
         yield c

@@ -133,20 +133,24 @@ class TaskService:
         self._ephemeral_epoch = 0
         self._change_listeners: list[Callable[[], None]] = []
 
+    async def init(self) -> None:
+        """Bootstrap the store's schema (idempotent). Called by the task service's lifespan."""
+        await self._store.init()
+
     # -- repos --------------------------------------------------------------------
 
     async def create_repo(self, repo: Repo) -> Repo:
-        await asyncio.to_thread(self._store.create_repo, repo)
+        await self._store.create_repo(repo)
         return repo
 
     async def get_repo(self, repo_id: str) -> Repo:
-        repo = await asyncio.to_thread(self._store.get_repo, repo_id)
+        repo = await self._store.get_repo(repo_id)
         if repo is None:
             raise NotFound(f"repo {repo_id!r} does not exist")
         return repo
 
     async def list_repos(self) -> list[Repo]:
-        return await asyncio.to_thread(self._store.list_repos)
+        return await self._store.list_repos()
 
     async def update_repo(self, repo_id: str, changes: Mapping[str, Any]) -> Repo:
         """Apply a partial update to a repo: merge ``changes`` onto the stored repo and persist.
@@ -159,7 +163,7 @@ class TaskService:
         if "id" in changes and changes["id"] != repo_id:
             raise ValueError("a repo's id cannot be changed")
         updated = replace(existing, **{k: v for k, v in changes.items() if k != "id"})
-        await asyncio.to_thread(self._store.update_repo, updated)
+        await self._store.update_repo(updated)
         return updated
 
     async def repo_image_layer(self, repo_id: str) -> str:
@@ -202,7 +206,7 @@ class TaskService:
     async def _save_task(self, task: Task) -> None:
         """Stamp ``updated_at`` and persist. All task mutations route through here."""
         task.updated_at = self._clock()
-        await asyncio.to_thread(self._store.save_task, task)
+        await self._store.save_task(task)
 
     async def create_task(
         self, repo_id: str, workflow_name: str, *, memo: str | None = None
@@ -212,7 +216,7 @@ class TaskService:
         now = self._clock()
         task = wf.start_task(self._id(), repo_id, at=now, memo=memo)
         task.updated_at = now  # creation time = first mutation
-        await asyncio.to_thread(self._store.create_task, task)
+        await self._store.create_task(task)
         return task
 
     async def _require_orchestrator(self, actor_task_id: str) -> Task:
@@ -254,17 +258,17 @@ class TaskService:
         return await self.workflow_names()
 
     async def get_task(self, task_id: str) -> Task:
-        task = await asyncio.to_thread(self._store.get_task, task_id)
+        task = await self._store.get_task(task_id)
         if task is None:
             raise NotFound(f"task {task_id!r} does not exist")
         return task
 
     async def list_tasks(self) -> list[Task]:
-        return await asyncio.to_thread(self._store.list_tasks)
+        return await self._store.list_tasks()
 
     async def list_tasks_summary(self, *, terminal: bool | None = None) -> list[Task]:
         """Return tasks without history. Optionally filter to terminal-only or active-only."""
-        tasks = await asyncio.to_thread(self._store.list_tasks_summary)
+        tasks = await self._store.list_tasks_summary()
         if terminal is None:
             return tasks
         return [t for t in tasks if (t.state in TERMINAL_LABELS) == terminal]
@@ -605,7 +609,7 @@ class TaskService:
         spawner it would respawn a duplicate container on a transient host blip, so the release stays
         a deliberate action until spawn-dedup exists."""
         reclaimed = []
-        for task in await asyncio.to_thread(self._store.list_tasks):
+        for task in await self._store.list_tasks():
             if task.claimed_by == runner_id and task.state not in TERMINAL_LABELS:
                 task.claimed_by = None
                 self.clear_lifecycle(task.id)  # the dead runner's phase is stale; start clean

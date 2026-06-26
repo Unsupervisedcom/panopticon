@@ -292,6 +292,7 @@ def create_app(service: TaskService) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        await service.init()
         async with mcp.session_manager.run():
             yield
 

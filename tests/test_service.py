@@ -37,6 +37,7 @@ async def make_service(tmp_path: Path) -> TaskService:
         clock=lambda: next(times),
         id_factory=lambda: next(ids),
     )
+    await svc.init()
     await svc.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
     return svc
 
@@ -136,6 +137,7 @@ async def test_skills_exposes_the_active_workflows_skills(tmp_path: Path) -> Non
             return (Skill("babysit-ci", "Watch CI.", "Do it."),)
 
     svc = TaskService(SqlAlchemyStore(), {"skilled": Skilled()}, FilesystemArtifactStore(tmp_path))
+    await svc.init()
     await svc.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
     task = await svc.create_task("r1", "skilled")
     skills = await svc.skills(task.id)
@@ -165,6 +167,7 @@ async def test_on_transition_hook_fires_through_the_service(tmp_path: Path) -> N
             calls.append((from_state, to_state))
 
     svc = TaskService(SqlAlchemyStore(), {"hooked": Hooked()}, FilesystemArtifactStore(tmp_path))
+    await svc.init()
     await svc.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
     task = await svc.create_task("r1", "hooked")
     await svc.apply_operation(task.id, "advance")  # A -> COMPLETE
@@ -470,6 +473,7 @@ async def test_registrations_do_not_age_out_on_the_clock(tmp_path: Path) -> None
         SqlAlchemyStore(), {"spike": Spike()}, FilesystemArtifactStore(tmp_path),
         clock=lambda: now["t"],
     )
+    await svc.init()
     await svc.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
     task = await svc.create_task("r1", "spike")
     reg = await svc.register(task.id, container_id="c-abc")
@@ -498,6 +502,7 @@ async def make_gated_service(tmp_path: Path) -> TaskService:
         {"gated": _Gated()},
         FilesystemArtifactStore(tmp_path),
     )
+    await svc.init()
     await svc.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
     return svc
 

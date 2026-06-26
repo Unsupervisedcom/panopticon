@@ -228,6 +228,7 @@ def test_hold_runner_liveness_reconnects_after_a_drop_until_stopped() -> None:
 
 def test_run_host_spawns_then_provisions_end_to_end(tmp_path: Path) -> None:
     service = TaskService(SqlAlchemyStore(), {"spike": Spike()}, FilesystemArtifactStore(tmp_path))
+    asyncio.run(service.init())
     asyncio.run(service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://forge/r1.git", default_base="trunk")))
     with TestClient(create_app(service)) as http:
         client = TaskServiceClient(http)

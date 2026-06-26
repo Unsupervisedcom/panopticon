@@ -24,6 +24,7 @@ from panopticon.workflows import Spike
 
 async def _service(tmp_path: Path) -> TaskService:
     svc = TaskService(SqlAlchemyStore(), {"spike": Spike()}, FilesystemArtifactStore(tmp_path))
+    await svc.init()
     await svc.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
     return svc
 
