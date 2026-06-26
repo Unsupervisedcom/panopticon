@@ -435,11 +435,12 @@ def create_app(service: TaskService) -> FastAPI:
         # the cap elapses); without it, it's an immediate snapshot — today's behaviour.
         if wait is not None:
             version = await feed.wait(since=since, timeout=min(wait, MAX_WAIT_SECONDS))
+            tasks_raw = await service.list_tasks_summary(terminal=terminal)
         else:
-            version = service.tasks_version()
-        # No await between reading the version and the snapshot, so they're consistent: a mutation
-        # (which runs on this same loop) can't interleave to leave the body ahead of the header.
-        tasks = [_task_summary_out(t) for t in await service.list_tasks_summary(terminal=terminal)]
+            # Read version and snapshot in a single thread call so no event-loop yield can
+            # interleave a mutation between them — preserving the original atomicity invariant.
+            version, tasks_raw = await asyncio.to_thread(service._tasks_snapshot, terminal=terminal)
+        tasks = [_task_summary_out(t) for t in tasks_raw]
         response.headers[TASKS_VERSION_HEADER] = str(version)
         return tasks
 

@@ -269,6 +269,17 @@ class TaskService:
             return tasks
         return [t for t in tasks if (t.state in TERMINAL_LABELS) == terminal]
 
+    def _tasks_snapshot(self, *, terminal: bool | None = None) -> tuple[int, list[Task]]:
+        """Read version + task list atomically (no event-loop yield between them).
+
+        Called via ``asyncio.to_thread`` in the list-tasks route so the X-Tasks-Version header
+        and the response body can't be separated by a concurrent mutation.
+        """
+        tasks = self._store.list_tasks_summary()
+        if terminal is not None:
+            tasks = [t for t in tasks if (t.state in TERMINAL_LABELS) == terminal]
+        return self.tasks_version(), tasks
+
     def tasks_version(self) -> int:
         """The change-feed version — bumped on every task mutation (ADR 0006 single writer) **and**
         on every ephemeral liveness change (registration, runner liveness, lifecycle phase), so a
