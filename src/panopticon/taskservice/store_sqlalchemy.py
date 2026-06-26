@@ -12,12 +12,14 @@ template methods; this adapter implements the persistence primitives. ``_update_
 appends new entries and updates the current entry's promises in place — never rewriting
 recorded history — rather than letting the unit-of-work write whatever is dirty.
 
-Schema management: ``__init__`` calls ``metadata.create_all`` to bootstrap a fresh database
-(zero-config dev + the ephemeral in-memory engine the tests use). Versioned evolution is owned
-by **Alembic** (``migrations/``, ADR 0001 §3) — the initial migration reproduces this exact
-schema, and ``tests/test_migrations.py`` guards the two against drift. On a persistent
-deployment, run ``alembic upgrade head`` to apply migrations; ``alembic stamp head`` aligns a
-dev database that ``create_all`` already bootstrapped.
+Schema management: call :meth:`SqlAlchemyStore.init` (async) to bootstrap the schema before
+first use. All writes go through the async engine (``aiosqlite`` for SQLite URLs). Alembic
+owns versioned evolution of any persistent DB (``migrations/``, ADR 0001 §3) — its
+``alembic.ini`` keeps a plain ``sqlite://`` URL so the Alembic tooling stays synchronous; the
+adapter translates ``sqlite://`` → ``sqlite+aiosqlite://`` internally. The initial migration
+reproduces this exact schema, and ``tests/test_migrations.py`` guards the two against drift.
+On a persistent deployment, run ``alembic upgrade head`` to apply migrations; ``alembic stamp
+head`` aligns a dev database that ``create_all`` already bootstrapped.
 """
 
 from __future__ import annotations
@@ -25,15 +27,18 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import JSON, ForeignKey, ForeignKeyConstraint, create_engine, select
+from sqlalchemy import JSON, ForeignKey, ForeignKeyConstraint, select
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
-    Session,
     mapped_column,
     noload,
     relationship,
-    sessionmaker,
 )
 from sqlalchemy.pool import StaticPool
 
@@ -46,6 +51,13 @@ from panopticon.core.store import (
 )
 
 _IN_MEMORY = ("sqlite://", "sqlite:///:memory:")
+
+
+def _to_async_url(url: str) -> str:
+    """Translate a plain ``sqlite://`` URL to its ``sqlite+aiosqlite://`` equivalent."""
+    if url.startswith("sqlite://"):
+        return "sqlite+aiosqlite" + url[len("sqlite"):]
+    return url
 
 
 # -- ORM row classes (mutable; live only in this adapter; own their translation) ----
@@ -246,43 +258,55 @@ def _fulfil_current_promises(history_row: _HistoryRow, entry: HistoryEntry) -> N
 
 
 class SqlAlchemyStore(Store):
-    """A :class:`~panopticon.core.store.Store` backed by SQLAlchemy."""
+    """A :class:`~panopticon.core.store.Store` backed by async SQLAlchemy (aiosqlite for SQLite).
+
+    Call :meth:`init` before first use to create the schema (or rely on the task service's
+    lifespan hook, which does it automatically).
+    """
 
     def __init__(self, url: str = "sqlite://") -> None:
         super().__init__()  # the base Store's change-feed counter + listeners
+        async_url = _to_async_url(url)
         if url in _IN_MEMORY:
-            # An in-memory SQLite DB lives only as long as its single connection — pin one.
-            self._engine = create_engine(
-                url, connect_args={"check_same_thread": False}, poolclass=StaticPool
+            # Pin one connection for in-memory SQLite so schema and data survive across sessions.
+            self._engine = create_async_engine(
+                async_url, connect_args={"check_same_thread": False}, poolclass=StaticPool
             )
         else:
-            self._engine = create_engine(url)
-        _Base.metadata.create_all(self._engine)
-        self._session: sessionmaker[Session] = sessionmaker(self._engine)
+            self._engine = create_async_engine(async_url)
+        self._session: async_sessionmaker[AsyncSession] = async_sessionmaker(
+            self._engine, class_=AsyncSession, expire_on_commit=False
+        )
 
-    def close(self) -> None:
-        self._engine.dispose()
+    async def init(self) -> None:
+        """Create the schema (idempotent). Must be called before first use."""
+        async with self._engine.begin() as conn:
+            await conn.run_sync(_Base.metadata.create_all)
+
+    async def close(self) -> None:
+        await self._engine.dispose()
 
     # -- repos --------------------------------------------------------------------
 
-    def _create_repo(self, repo: Repo) -> None:
-        with self._session.begin() as s:
-            if s.get(_RepoRow, repo.id) is not None:
+    async def _create_repo(self, repo: Repo) -> None:
+        async with self._session.begin() as s:
+            if await s.get(_RepoRow, repo.id) is not None:
                 raise AlreadyExists(f"repo {repo.id!r} already exists")
             s.add(_RepoRow.from_domain(repo))
 
-    def _get_repo(self, repo_id: str) -> Repo | None:
-        with self._session() as s:
-            row = s.get(_RepoRow, repo_id)
+    async def _get_repo(self, repo_id: str) -> Repo | None:
+        async with self._session() as s:
+            row = await s.get(_RepoRow, repo_id)
             return row.to_domain() if row is not None else None
 
-    def _list_repos(self) -> list[Repo]:
-        with self._session() as s:
-            return [r.to_domain() for r in s.scalars(select(_RepoRow).order_by(_RepoRow.id))]
+    async def _list_repos(self) -> list[Repo]:
+        async with self._session() as s:
+            result = await s.execute(select(_RepoRow).order_by(_RepoRow.id))
+            return [r.to_domain() for r in result.scalars()]
 
-    def _update_repo(self, repo: Repo) -> None:
-        with self._session.begin() as s:
-            row = s.get(_RepoRow, repo.id)
+    async def _update_repo(self, repo: Repo) -> None:
+        async with self._session.begin() as s:
+            row = await s.get(_RepoRow, repo.id)
             if row is None:
                 raise NotFound(f"repo {repo.id!r} does not exist")
             row.name = repo.name
@@ -295,40 +319,41 @@ class SqlAlchemyStore(Store):
 
     # -- tasks: reads + persistence primitives (the base's template methods drive these) --
 
-    def _get_task(self, task_id: str) -> Task | None:
-        with self._session() as s:
-            row = s.get(_TaskRow, task_id)
+    async def _get_task(self, task_id: str) -> Task | None:
+        async with self._session() as s:
+            row = await s.get(_TaskRow, task_id)
             return row.to_domain() if row is not None else None
 
-    def _list_tasks(self) -> list[Task]:
-        with self._session() as s:
-            return [r.to_domain() for r in s.scalars(select(_TaskRow).order_by(_TaskRow.id))]
+    async def _list_tasks(self) -> list[Task]:
+        async with self._session() as s:
+            result = await s.execute(select(_TaskRow).order_by(_TaskRow.id))
+            return [r.to_domain() for r in result.scalars()]
 
-    def _list_tasks_summary(self) -> list[Task]:
-        with self._session() as s:
-            rows = s.scalars(
+    async def _list_tasks_summary(self) -> list[Task]:
+        async with self._session() as s:
+            result = await s.execute(
                 select(_TaskRow).options(noload(_TaskRow.history)).order_by(_TaskRow.id)
             )
-            return [r.to_domain() for r in rows]
+            return [r.to_domain() for r in result.scalars()]
 
-    def _create_task(self, task: Task) -> None:
-        with self._session.begin() as s:
-            if s.get(_TaskRow, task.id) is not None:
+    async def _create_task(self, task: Task) -> None:
+        async with self._session.begin() as s:
+            if await s.get(_TaskRow, task.id) is not None:
                 raise AlreadyExists(f"task {task.id!r} already exists")
-            if s.get(_RepoRow, task.repo_id) is None:
+            if await s.get(_RepoRow, task.repo_id) is None:
                 raise NotFound(f"repo {task.repo_id!r} does not exist")
             s.add(_TaskRow.from_domain(task))  # cascade inserts history + responsibilities
 
-    def _stored_history(self, task_id: str) -> list[HistoryEntry]:
-        with self._session() as s:
-            row = s.get(_TaskRow, task_id)
+    async def _stored_history(self, task_id: str) -> list[HistoryEntry]:
+        async with self._session() as s:
+            row = await s.get(_TaskRow, task_id)
             if row is None:
                 raise NotFound(f"task {task_id!r} does not exist")
             return [h.to_domain() for h in row.history]
 
-    def _update_task(self, task: Task, stored: Sequence[HistoryEntry]) -> None:
-        with self._session.begin() as s:
-            row = s.get(_TaskRow, task.id)
+    async def _update_task(self, task: Task, stored: Sequence[HistoryEntry]) -> None:
+        async with self._session.begin() as s:
+            row = await s.get(_TaskRow, task.id)
             if row is None:  # defensive: single-writer, so it still exists after _stored_history
                 raise NotFound(f"task {task.id!r} does not exist")
             row.state = task.state

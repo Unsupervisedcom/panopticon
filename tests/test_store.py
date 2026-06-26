@@ -8,7 +8,7 @@ silently drift apart.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from dataclasses import MISSING, fields
 from pathlib import Path
 from typing import Any, get_origin, get_type_hints
@@ -31,33 +31,34 @@ WF = Spike()
 
 
 @pytest.fixture(params=["memory", "file"])
-def store(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Store]:
+async def store(request: pytest.FixtureRequest, tmp_path: Path) -> AsyncIterator[Store]:
     # Both backends are the one SQLAlchemy adapter; "memory" is an in-memory SQLite engine,
     # "file" is on-disk SQLite (so we also exercise persistence across a real connection).
     if request.param == "memory":
         r = SqlAlchemyStore("sqlite://")
     else:
         r = SqlAlchemyStore(f"sqlite:///{tmp_path / 'tasks.db'}")
+    await r.init()
     yield r
-    r.close()
+    await r.close()
 
 
-def _seed_repo(store: Store, repo_id: str = "r1") -> None:
-    store.create_repo(Repo(id=repo_id, name="acme/widgets", git_url="https://github.com/acme/widgets.git"))
+async def _seed_repo(store: Store, repo_id: str = "r1") -> None:
+    await store.create_repo(Repo(id=repo_id, name="acme/widgets", git_url="https://github.com/acme/widgets.git"))
 
 
-def _new_task(store: Store, task_id: str = "t1", repo_id: str = "r1") -> Task:
+async def _new_task(store: Store, task_id: str = "t1", repo_id: str = "r1") -> Task:
     task = WF.start_task(task_id, repo_id, at="t0")
-    store.create_task(task)
+    await store.create_task(task)
     return task
 
 
 # -- repos --------------------------------------------------------------------------
 
 
-def test_create_and_get_repo(store: Store) -> None:
-    _seed_repo(store)
-    got = store.get_repo("r1")
+async def test_create_and_get_repo(store: Store) -> None:
+    await _seed_repo(store)
+    got = await store.get_repo("r1")
     assert got is not None
     assert got.name == "acme/widgets"
     assert got.default_base == "main"
@@ -66,46 +67,46 @@ def test_create_and_get_repo(store: Store) -> None:
     assert got.capabilities == {}  # no elevated capabilities by default
 
 
-def test_repo_secret_references_round_trip(store: Store) -> None:
-    store.create_repo(
+async def test_repo_secret_references_round_trip(store: Store) -> None:
+    await store.create_repo(
         Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git",
              env_file="/secrets/r1.env",
              image_layer_file="r1.layer", capabilities={"docker_in_docker": True})
     )
-    got = store.get_repo("r1")
+    got = await store.get_repo("r1")
     assert got is not None
     assert got.env_file == "/secrets/r1.env"
     assert got.capabilities == {"docker_in_docker": True}  # JSON capabilities round-trip
     assert got.image_layer_file == "r1.layer"  # ADR 0005 repo tier round-trips
 
 
-def test_get_missing_repo_returns_none(store: Store) -> None:
-    assert store.get_repo("nope") is None
+async def test_get_missing_repo_returns_none(store: Store) -> None:
+    assert await store.get_repo("nope") is None
 
 
-def test_duplicate_repo_raises(store: Store) -> None:
-    _seed_repo(store)
+async def test_duplicate_repo_raises(store: Store) -> None:
+    await _seed_repo(store)
     with pytest.raises(AlreadyExists):
-        _seed_repo(store)
+        await _seed_repo(store)
 
 
-def test_list_repos(store: Store) -> None:
-    store.create_repo(Repo(id="r1", name="a", git_url="https://x/a.git"))
-    store.create_repo(Repo(id="r2", name="b", git_url="https://x/b.git"))
-    assert {r.id for r in store.list_repos()} == {"r1", "r2"}
+async def test_list_repos(store: Store) -> None:
+    await store.create_repo(Repo(id="r1", name="a", git_url="https://x/a.git"))
+    await store.create_repo(Repo(id="r2", name="b", git_url="https://x/b.git"))
+    assert {r.id for r in await store.list_repos()} == {"r1", "r2"}
 
 
-def test_update_repo_round_trips(store: Store) -> None:
-    store.create_repo(
+async def test_update_repo_round_trips(store: Store) -> None:
+    await store.create_repo(
         Repo(id="r1", name="old", git_url="https://x/old.git",
              image_layer_file="r1.layer", capabilities={"docker_in_docker": True})
     )
-    store.update_repo(
+    await store.update_repo(
         Repo(id="r1", name="new", git_url="https://x/new.git", default_base="trunk",
              env_file="/secrets/r1.env",
              image_layer_file="r1.layer", capabilities={"docker_in_docker": True})
     )
-    got = store.get_repo("r1")
+    got = await store.get_repo("r1")
     assert got is not None
     assert got.name == "new"
     assert got.git_url == "https://x/new.git"
@@ -115,25 +116,25 @@ def test_update_repo_round_trips(store: Store) -> None:
     assert got.capabilities == {"docker_in_docker": True}
 
 
-def test_update_missing_repo_raises(store: Store) -> None:
+async def test_update_missing_repo_raises(store: Store) -> None:
     with pytest.raises(NotFound):
-        store.update_repo(Repo(id="ghost", name="x", git_url="https://x/x.git"))
+        await store.update_repo(Repo(id="ghost", name="x", git_url="https://x/x.git"))
 
 
 # -- task creation ------------------------------------------------------------------
 
 
-def test_create_task_requires_existing_repo(store: Store) -> None:
+async def test_create_task_requires_existing_repo(store: Store) -> None:
     task = WF.start_task("t1", "ghost", at="t0")
     with pytest.raises(NotFound):
-        store.create_task(task)
+        await store.create_task(task)
 
 
-def test_create_and_get_task_roundtrips(store: Store) -> None:
-    _seed_repo(store)
-    task = _new_task(store)
+async def test_create_and_get_task_roundtrips(store: Store) -> None:
+    await _seed_repo(store)
+    task = await _new_task(store)
     task.slug = "fix-widget"  # not yet persisted
-    got = store.get_task("t1")
+    got = await store.get_task("t1")
     assert got is not None
     assert got.state == "ITERATING"
     assert got.turn is Actor.USER  # spike's initial state → turn starts with the user
@@ -142,15 +143,15 @@ def test_create_and_get_task_roundtrips(store: Store) -> None:
     assert [(h.from_state, h.to_state) for h in got.history] == [(None, "ITERATING")]
 
 
-def test_duplicate_task_raises(store: Store) -> None:
-    _seed_repo(store)
-    _new_task(store)
+async def test_duplicate_task_raises(store: Store) -> None:
+    await _seed_repo(store)
+    await _new_task(store)
     with pytest.raises(AlreadyExists):
-        _new_task(store)
+        await _new_task(store)
 
 
-def test_create_task_rejects_inconsistent_state(store: Store) -> None:
-    _seed_repo(store)
+async def test_create_task_rejects_inconsistent_state(store: Store) -> None:
+    await _seed_repo(store)
     bad = Task(
         id="t1",
         repo_id="r1",
@@ -160,20 +161,20 @@ def test_create_task_rejects_inconsistent_state(store: Store) -> None:
         history=[HistoryEntry(at="t0", from_state=None, to_state="ITERATING")],
     )
     with pytest.raises(IntegrityError):
-        store.create_task(bad)
+        await store.create_task(bad)
 
 
 # -- saving / append-only -----------------------------------------------------------
 
 
-def test_save_persists_transition_and_slug(store: Store) -> None:
-    _seed_repo(store)
-    task = _new_task(store)
+async def test_save_persists_transition_and_slug(store: Store) -> None:
+    await _seed_repo(store)
+    task = await _new_task(store)
     WF.apply_transition(task, "COMPLETE", at="t1", trigger="finish")
     task.slug = "fix-widget"
-    store.save_task(task)
+    await store.save_task(task)
 
-    got = store.get_task("t1")
+    got = await store.get_task("t1")
     assert got is not None
     assert got.state == "COMPLETE"
     assert got.turn is Actor.USER  # COMPLETE is a terminal (foreground) state
@@ -181,52 +182,52 @@ def test_save_persists_transition_and_slug(store: Store) -> None:
     assert [h.to_state for h in got.history] == ["ITERATING", "COMPLETE"]
 
 
-def test_url_round_trips(store: Store) -> None:
-    _seed_repo(store)
-    task = _new_task(store)
-    assert store.get_task("t1").url is None  # default on create  # type: ignore[union-attr]
+async def test_url_round_trips(store: Store) -> None:
+    await _seed_repo(store)
+    task = await _new_task(store)
+    assert (await store.get_task("t1")).url is None  # type: ignore[union-attr]
     task.url = "https://github.com/acme/widgets/pull/7"
-    store.save_task(task)
-    assert store.get_task("t1").url == "https://github.com/acme/widgets/pull/7"  # type: ignore[union-attr]
+    await store.save_task(task)
+    assert (await store.get_task("t1")).url == "https://github.com/acme/widgets/pull/7"  # type: ignore[union-attr]
 
 
-def test_tokens_used_round_trips(store: Store) -> None:
-    _seed_repo(store)
-    task = _new_task(store)
-    assert store.get_task("t1").tokens_used is None  # default on create  # type: ignore[union-attr]
+async def test_tokens_used_round_trips(store: Store) -> None:
+    await _seed_repo(store)
+    task = await _new_task(store)
+    assert (await store.get_task("t1")).tokens_used is None  # type: ignore[union-attr]
     task.tokens_used = 12750
-    store.save_task(task)
-    assert store.get_task("t1").tokens_used == 12750  # type: ignore[union-attr]
+    await store.save_task(task)
+    assert (await store.get_task("t1")).tokens_used == 12750  # type: ignore[union-attr]
 
 
-def test_token_estimate_round_trips(store: Store) -> None:
-    _seed_repo(store)
-    task = _new_task(store)
-    assert store.get_task("t1").token_estimate is None  # default on create  # type: ignore[union-attr]
+async def test_token_estimate_round_trips(store: Store) -> None:
+    await _seed_repo(store)
+    task = await _new_task(store)
+    assert (await store.get_task("t1")).token_estimate is None  # type: ignore[union-attr]
     task.token_estimate = 500_000
-    store.save_task(task)
-    assert store.get_task("t1").token_estimate == 500_000  # type: ignore[union-attr]
+    await store.save_task(task)
+    assert (await store.get_task("t1")).token_estimate == 500_000  # type: ignore[union-attr]
 
 
-def test_blocked_marker_round_trips(store: Store) -> None:
-    _seed_repo(store)
-    task = _new_task(store)
-    assert store.get_task("t1").blocked is False  # default on create  # type: ignore[union-attr]
+async def test_blocked_marker_round_trips(store: Store) -> None:
+    await _seed_repo(store)
+    task = await _new_task(store)
+    assert (await store.get_task("t1")).blocked is False  # type: ignore[union-attr]
     task.blocked = True
-    store.save_task(task)
-    assert store.get_task("t1").blocked is True  # type: ignore[union-attr]
+    await store.save_task(task)
+    assert (await store.get_task("t1")).blocked is True  # type: ignore[union-attr]
 
 
-def test_save_missing_task_raises(store: Store) -> None:
-    _seed_repo(store)
+async def test_save_missing_task_raises(store: Store) -> None:
+    await _seed_repo(store)
     task = WF.start_task("ghost", "r1", at="t0")
     with pytest.raises(NotFound):
-        store.save_task(task)
+        await store.save_task(task)
 
 
-def test_save_rejects_history_rewrite(store: Store) -> None:
-    _seed_repo(store)
-    _new_task(store)
+async def test_save_rejects_history_rewrite(store: Store) -> None:
+    await _seed_repo(store)
+    await _new_task(store)
     # Same length as stored, but the (only) existing entry is altered.
     tampered = Task(
         id="t1",
@@ -237,14 +238,14 @@ def test_save_rejects_history_rewrite(store: Store) -> None:
         history=[HistoryEntry(at="t0", from_state=None, to_state="COMPLETE")],
     )
     with pytest.raises(IntegrityError):
-        store.save_task(tampered)
+        await store.save_task(tampered)
 
 
-def test_save_rejects_history_shrink(store: Store) -> None:
-    _seed_repo(store)
-    task = _new_task(store)
+async def test_save_rejects_history_shrink(store: Store) -> None:
+    await _seed_repo(store)
+    task = await _new_task(store)
     WF.apply_transition(task, "COMPLETE", at="t1")
-    store.save_task(task)  # stored history now length 2
+    await store.save_task(task)  # stored history now length 2
 
     truncated = Task(
         id="t1",
@@ -255,35 +256,35 @@ def test_save_rejects_history_shrink(store: Store) -> None:
         history=[HistoryEntry(at="t0", from_state=None, to_state="ITERATING")],
     )
     with pytest.raises(IntegrityError):
-        store.save_task(truncated)
+        await store.save_task(truncated)
 
 
 # -- change feed (block-until-change cursor) ----------------------------------------
 
 
-def test_version_starts_at_zero_and_bumps_on_each_task_write(store: Store) -> None:
-    _seed_repo(store)  # repo writes are not task mutations
+async def test_version_starts_at_zero_and_bumps_on_each_task_write(store: Store) -> None:
+    await _seed_repo(store)  # repo writes are not task mutations
     assert store.version() == 0
 
-    task = _new_task(store)  # create_task
+    task = await _new_task(store)  # create_task
     v_after_create = store.version()
     assert v_after_create > 0
 
     WF.apply_transition(task, "COMPLETE", at="t1", trigger="finish")
-    store.save_task(task)  # save_task
+    await store.save_task(task)  # save_task
     assert store.version() > v_after_create
 
 
-def test_subscribed_listener_fires_on_every_task_mutation(store: Store) -> None:
+async def test_subscribed_listener_fires_on_every_task_mutation(store: Store) -> None:
     bumps: list[int] = []
     store.subscribe(lambda: bumps.append(store.version()))
 
-    _seed_repo(store)  # a repo write must not wake task-change subscribers
+    await _seed_repo(store)  # a repo write must not wake task-change subscribers
     assert bumps == []
 
-    task = _new_task(store)
+    task = await _new_task(store)
     task.slug = "name-it"
-    store.save_task(task)
+    await store.save_task(task)
 
     # One notification per task write (create + save), each carrying the bumped version.
     assert bumps == [1, 2]
@@ -292,19 +293,19 @@ def test_subscribed_listener_fires_on_every_task_mutation(store: Store) -> None:
 # -- isolation ----------------------------------------------------------------------
 
 
-def test_get_returns_independent_copy(store: Store) -> None:
-    _seed_repo(store)
-    _new_task(store)
-    got = store.get_task("t1")
+async def test_get_returns_independent_copy(store: Store) -> None:
+    await _seed_repo(store)
+    await _new_task(store)
+    got = await store.get_task("t1")
     assert got is not None
     got.state = "COMPLETE"  # mutating the returned object must not change storage
-    again = store.get_task("t1")
+    again = await store.get_task("t1")
     assert again is not None
     assert again.state == "ITERATING"
 
 
-def test_resolved_responsibilities_roundtrip(store: Store) -> None:
-    _seed_repo(store)
+async def test_resolved_responsibilities_roundtrip(store: Store) -> None:
+    await _seed_repo(store)
     # Responsibilities live on the entry for the state that defines them (WORKING here).
     resolved = [
         Responsibility(key="tests-pass", description="Tests pass", status=Status.MET),
@@ -323,16 +324,16 @@ def test_resolved_responsibilities_roundtrip(store: Store) -> None:
             HistoryEntry(at="t1", from_state="WORKING", to_state="COMPLETE"),
         ],
     )
-    store.create_task(task)
+    await store.create_task(task)
 
-    got = store.get_task("t1")
+    got = await store.get_task("t1")
     assert got is not None
     assert got.history[0].responsibilities == resolved  # order, status, and comment preserved
     assert got.history[1].responsibilities == []
 
 
-def test_current_entry_responsibilities_persist_in_place(store: Store) -> None:
-    _seed_repo(store)
+async def test_current_entry_responsibilities_persist_in_place(store: Store) -> None:
+    await _seed_repo(store)
     task = Task(
         id="t1",
         repo_id="r1",
@@ -349,13 +350,13 @@ def test_current_entry_responsibilities_persist_in_place(store: Store) -> None:
             ),
         ],
     )
-    store.create_task(task)
+    await store.create_task(task)
 
     # Fulfil the promise on the current entry and save — the in-place change must persist.
     task.resolve_responsibility(key="tests-pass", status=Status.MET)
-    store.save_task(task)
+    await store.save_task(task)
 
-    got = store.get_task("t1")
+    got = await store.get_task("t1")
     assert got is not None
     assert got.history[-1].responsibilities[0].status is Status.MET
 
@@ -454,8 +455,8 @@ def _assert_every_field_exercised(instances: list[Any], domain: type) -> None:
             pytest.fail(f"{domain.__name__}.{f.name} is never exercised — extend _fully_populated_task")
 
 
-def test_full_task_round_trips_and_exercises_every_field(store: Store) -> None:
-    _seed_repo(store)
+async def test_full_task_round_trips_and_exercises_every_field(store: Store) -> None:
+    await _seed_repo(store)
     task = _fully_populated_task()
     entries = task.history
     responsibilities = [r for e in entries for r in e.responsibilities]
@@ -463,19 +464,19 @@ def test_full_task_round_trips_and_exercises_every_field(store: Store) -> None:
     _assert_every_field_exercised(entries, HistoryEntry)
     _assert_every_field_exercised(responsibilities, Responsibility)
 
-    store.create_task(task)
-    assert store.get_task(task.id) == task  # every field survives the round trip (dataclass __eq__)
+    await store.create_task(task)
+    assert await store.get_task(task.id) == task  # every field survives the round trip (dataclass __eq__)
 
 
-def test_list_tasks_summary_returns_tasks_without_history(store: Store) -> None:
-    _seed_repo(store)
-    _new_task(store)
-    tasks = store.list_tasks_summary()
+async def test_list_tasks_summary_returns_tasks_without_history(store: Store) -> None:
+    await _seed_repo(store)
+    await _new_task(store)
+    tasks = await store.list_tasks_summary()
     assert len(tasks) == 1
     assert tasks[0].history == []  # no history loaded
     assert tasks[0].state == "ITERATING"  # scalar fields are present
     assert tasks[0].id == "t1"
 
     # list_tasks still returns full history
-    full = store.list_tasks()
+    full = await store.list_tasks()
     assert len(full[0].history) == 1

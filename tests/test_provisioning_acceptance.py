@@ -48,6 +48,7 @@ def test_provisioning_end_to_end_with_real_git(tmp_path: Path) -> None:
     _git(origin, "commit", "--message", "init")
 
     service = TaskService(SqlAlchemyStore(), {"spike": Spike()}, FilesystemArtifactStore(tmp_path))
+    asyncio.run(service.init())
     asyncio.run(service.create_repo(Repo(id="r1", name="acme/widgets", git_url=str(origin), default_base="main")))
     with TestClient(create_app(service)) as http:
         client = TaskServiceClient(http)

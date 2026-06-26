@@ -424,6 +424,7 @@ def test_spawn_skips_hook_when_repo_has_no_hook_file() -> None:
 
 def test_spawner_against_the_real_service(tmp_path: Path) -> None:
     service = TaskService(SqlAlchemyStore(), {"spike": Spike()}, FilesystemArtifactStore(tmp_path))
+    asyncio.run(service.init())
     asyncio.run(service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://forge/r1.git")))
     with TestClient(create_app(service)) as http:
         client = TaskServiceClient(http)

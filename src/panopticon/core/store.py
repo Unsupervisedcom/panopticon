@@ -85,95 +85,99 @@ class Store(ABC):
         for listener in self._change_listeners:
             listener()
 
+    async def init(self) -> None:
+        """Bootstrap the store's schema if needed (idempotent). Adapters override this when
+        the backing store requires async setup (e.g. ``CREATE TABLE`` via an async engine)."""
+
     # -- repos (public façade) ----------------------------------------------------
 
-    def create_repo(self, repo: Repo) -> None:
+    async def create_repo(self, repo: Repo) -> None:
         """Persist a new repo. Raises :class:`AlreadyExists` if its id is taken."""
-        self._create_repo(repo)
+        await self._create_repo(repo)
 
-    def get_repo(self, repo_id: str) -> Repo | None:
+    async def get_repo(self, repo_id: str) -> Repo | None:
         """Return the repo, or ``None`` if it does not exist."""
-        return self._get_repo(repo_id)
+        return await self._get_repo(repo_id)
 
-    def list_repos(self) -> list[Repo]:
+    async def list_repos(self) -> list[Repo]:
         """Return all repos."""
-        return self._list_repos()
+        return await self._list_repos()
 
-    def update_repo(self, repo: Repo) -> None:
+    async def update_repo(self, repo: Repo) -> None:
         """Persist changes to an existing repo (a full-row write). Raises :class:`NotFound`
         if no repo with its id exists. The *merge* of a partial update is the caller's job
         (the service reads-modifies-writes); the store just overwrites the row."""
-        self._update_repo(repo)
+        await self._update_repo(repo)
 
     # -- tasks (public façade; create/save also enforce the integrity rules) ------
 
-    def create_task(self, task: Task) -> None:
+    async def create_task(self, task: Task) -> None:
         """Persist a new task and its initial history, after checking consistency."""
         validate_task_consistency(task)
-        self._create_task(task)
+        await self._create_task(task)
         self._bump_version()
 
-    def get_task(self, task_id: str) -> Task | None:
+    async def get_task(self, task_id: str) -> Task | None:
         """Return the task (with full history), or ``None`` if it does not exist."""
-        return self._get_task(task_id)
+        return await self._get_task(task_id)
 
-    def list_tasks(self) -> list[Task]:
+    async def list_tasks(self) -> list[Task]:
         """Return all tasks (with full history)."""
-        return self._list_tasks()
+        return await self._list_tasks()
 
-    def list_tasks_summary(self) -> list[Task]:
+    async def list_tasks_summary(self) -> list[Task]:
         """Return all tasks without history (cheap: tasks-table data only)."""
-        return self._list_tasks_summary()
+        return await self._list_tasks_summary()
 
-    def save_task(self, task: Task) -> None:
+    async def save_task(self, task: Task) -> None:
         """Persist an updated task, enforcing consistency and append-only history."""
         validate_task_consistency(task)
-        stored = self._stored_history(task.id)
+        stored = await self._stored_history(task.id)
         validate_history_append_only(stored, task.history)
-        self._update_task(task, stored)
+        await self._update_task(task, stored)
         self._bump_version()
 
     # -- persistence primitives (adapters implement these) -----------------------
 
     @abstractmethod
-    def _create_repo(self, repo: Repo) -> None:
+    async def _create_repo(self, repo: Repo) -> None:
         """Insert a new repo. Raise :class:`AlreadyExists` if its id is taken."""
 
     @abstractmethod
-    def _get_repo(self, repo_id: str) -> Repo | None:
+    async def _get_repo(self, repo_id: str) -> Repo | None:
         """Return the repo, or ``None``."""
 
     @abstractmethod
-    def _list_repos(self) -> list[Repo]:
+    async def _list_repos(self) -> list[Repo]:
         """Return all repos."""
 
     @abstractmethod
-    def _update_repo(self, repo: Repo) -> None:
+    async def _update_repo(self, repo: Repo) -> None:
         """Overwrite an existing repo's row. Raise :class:`NotFound` if its id is unknown."""
 
     @abstractmethod
-    def _create_task(self, task: Task) -> None:
+    async def _create_task(self, task: Task) -> None:
         """Insert a new task + its history. Raise :class:`AlreadyExists` if the id is taken,
         :class:`NotFound` if its ``repo_id`` does not exist."""
 
     @abstractmethod
-    def _get_task(self, task_id: str) -> Task | None:
+    async def _get_task(self, task_id: str) -> Task | None:
         """Return the task (with full history), or ``None``."""
 
     @abstractmethod
-    def _list_tasks(self) -> list[Task]:
+    async def _list_tasks(self) -> list[Task]:
         """Return all tasks (with full history)."""
 
     @abstractmethod
-    def _list_tasks_summary(self) -> list[Task]:
+    async def _list_tasks_summary(self) -> list[Task]:
         """Return all tasks with ``history=[]`` (no history loaded)."""
 
     @abstractmethod
-    def _stored_history(self, task_id: str) -> list[HistoryEntry]:
+    async def _stored_history(self, task_id: str) -> list[HistoryEntry]:
         """Return the task's persisted history. Raise :class:`NotFound` if it does not exist."""
 
     @abstractmethod
-    def _update_task(self, task: Task, stored: Sequence[HistoryEntry]) -> None:
+    async def _update_task(self, task: Task, stored: Sequence[HistoryEntry]) -> None:
         """Persist scalar changes, fulfil the current entry's promises, and append new entries
         (``stored`` is the already-validated persisted history)."""
 

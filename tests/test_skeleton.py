@@ -32,6 +32,7 @@ def client(tmp_path: Path) -> Iterator[TaskServiceClient]:
         {"spike": Spike()},
         FilesystemArtifactStore(tmp_path),
     )
+    asyncio.run(service.init())
     asyncio.run(service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git")))
     with TestClient(create_app(service)) as http:
         yield TaskServiceClient(http)
