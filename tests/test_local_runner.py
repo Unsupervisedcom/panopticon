@@ -223,6 +223,24 @@ def test_spawn_prefills_the_input_box_with_the_memo_on_first_spawn(tmp_path: Pat
     os.unlink(str(call["prompt_file"]))
 
 
+def test_spawn_prefills_with_initial_prompt_taking_precedence_over_memo(tmp_path: Path) -> None:
+    rec, prefill = _Recorder(), _FakePrefill()
+    runner = LocalRunner("http://svc", run=rec, prefill=prefill)
+    runner.spawn("t1", memo="build the thing", initial_prompt="review your plan")
+    assert len(prefill.calls) == 1
+    assert Path(str(prefill.calls[0]["prompt_file"])).read_text() == "review your plan"
+    os.unlink(str(prefill.calls[0]["prompt_file"]))
+
+
+def test_spawn_prefills_with_initial_prompt_when_no_memo(tmp_path: Path) -> None:
+    rec, prefill = _Recorder(), _FakePrefill()
+    runner = LocalRunner("http://svc", run=rec, prefill=prefill)
+    runner.spawn("t1", initial_prompt="review your plan")
+    assert len(prefill.calls) == 1
+    assert Path(str(prefill.calls[0]["prompt_file"])).read_text() == "review your plan"
+    os.unlink(str(prefill.calls[0]["prompt_file"]))
+
+
 def test_spawn_does_not_prefill_without_a_memo() -> None:
     rec, prefill = _Recorder(), _FakePrefill()
     LocalRunner("http://svc", run=rec, prefill=prefill).spawn("t1")

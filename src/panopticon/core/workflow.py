@@ -427,12 +427,19 @@ class Workflow(ABC):
         return list(self.responsibilities(label))
 
     def start_task(
-        self, task_id: str, repo_id: str, *, at: str, memo: str | None = None
+        self,
+        task_id: str,
+        repo_id: str,
+        *,
+        at: str,
+        memo: str | None = None,
+        initial_prompt: str | None = None,
     ) -> Task:
         """Create a task in this workflow's initial state, with turn and seed history set.
 
         The seed history entry carries the initial state's responsibilities (all ``PENDING``).
         ``memo`` is the optional brief one-line reminder of what the task is, collected at creation.
+        ``initial_prompt`` is optional text prefilled into Claude's input box on first spawn.
         """
         state = self.initial_label
         return Task(
@@ -442,6 +449,7 @@ class Workflow(ABC):
             state=state,
             turn=self.turn_on_enter(state),
             memo=memo,
+            initial_prompt=initial_prompt,
             history=[
                 HistoryEntry(
                     at=at,

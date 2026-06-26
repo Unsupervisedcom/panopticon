@@ -124,7 +124,8 @@ class Spawner:
                 workspace=workspace,
                 image=image,
                 docker_in_docker=bool((repo.get("capabilities") or {}).get("docker_in_docker")),
-                memo=task.get("memo"),  # pre-filled into claude's input box on first spawn
+                memo=task.get("memo"),
+                initial_prompt=task.get("initial_prompt"),  # takes precedence over memo for prefill
                 progress=lambda phase: self._report(task_id, phase),  # STARTING then AWAITING
             )
         except Exception as exc:

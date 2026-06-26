@@ -97,6 +97,7 @@ class _TaskRow(_Base):
     turn: Mapped[str]
     blocked: Mapped[bool] = mapped_column(default=False)
     memo: Mapped[str | None] = mapped_column(default=None)
+    initial_prompt: Mapped[str | None] = mapped_column(default=None)
     slug: Mapped[str | None]
     url: Mapped[str | None] = mapped_column(default=None)
     branch: Mapped[str | None] = mapped_column(default=None)
@@ -121,6 +122,7 @@ class _TaskRow(_Base):
             turn=Actor(self.turn),
             blocked=self.blocked,
             memo=self.memo,
+            initial_prompt=self.initial_prompt,
             slug=self.slug,
             url=self.url,
             branch=self.branch,
@@ -142,6 +144,7 @@ class _TaskRow(_Base):
             turn=task.turn.value,
             blocked=task.blocked,
             memo=task.memo,
+            initial_prompt=task.initial_prompt,
             slug=task.slug,
             url=task.url,
             branch=task.branch,

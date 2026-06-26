@@ -229,6 +229,9 @@ class Task:
     #: lives in the task's plan artifact). Distinct from the ``slug`` (a short identifier the
     #: agent sets later); ``None`` when the creator gave none.
     memo: str | None = None
+    #: Optional text prefilled (unsent) into Claude's input box on the task's first spawn,
+    #: taking precedence over ``memo`` for that purpose. ``None`` until set at creation.
+    initial_prompt: str | None = None
     slug: str | None = None
     #: An optional external URL for the task — its pull request, an issue, a dashboard link
     #: (cloude-cade's ``pr_url``). Set via :meth:`TaskService.set_url`; the dashboard's ``p``

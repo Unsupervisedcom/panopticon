@@ -204,14 +204,22 @@ class TaskService:
         self._store.save_task(task)
 
     def create_task(
-        self, repo_id: str, workflow_name: str, *, memo: str | None = None
+        self,
+        repo_id: str,
+        workflow_name: str,
+        *,
+        memo: str | None = None,
+        initial_prompt: str | None = None,
+        artifacts: dict[str, str] | None = None,
     ) -> Task:
         self.get_repo(repo_id)  # ensure exists (raises NotFound)
         wf = self._workflow(workflow_name)
         now = self._clock()
-        task = wf.start_task(self._id(), repo_id, at=now, memo=memo)
+        task = wf.start_task(self._id(), repo_id, at=now, memo=memo, initial_prompt=initial_prompt)
         task.updated_at = now  # creation time = first mutation
         self._store.create_task(task)
+        for name, content in (artifacts or {}).items():
+            self.put_artifact(task.id, name, content.encode())
         return task
 
     def _require_orchestrator(self, actor_task_id: str) -> Task:
@@ -235,6 +243,8 @@ class TaskService:
         workflow_name: str,
         *,
         memo: str | None = None,
+        initial_prompt: str | None = None,
+        artifacts: dict[str, str] | None = None,
     ) -> Task:
         """Create a task **on behalf of an orchestrator task** — gated to orchestration workflows.
 
@@ -245,7 +255,13 @@ class TaskService:
         :meth:`create_task` (and REST ``POST /tasks``) remain the ungated user/dashboard path.
         """
         actor = self._require_orchestrator(actor_task_id)
-        return self.create_task(actor.repo_id, workflow_name, memo=memo)
+        return self.create_task(
+            actor.repo_id,
+            workflow_name,
+            memo=memo,
+            initial_prompt=initial_prompt,
+            artifacts=artifacts,
+        )
 
     def workflow_names_as(self, actor_task_id: str) -> list[str]:
         """List workflow names for an orchestrator task (gated): discovery for a child's ``workflow``."""
