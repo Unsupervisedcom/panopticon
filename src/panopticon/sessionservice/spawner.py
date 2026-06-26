@@ -156,7 +156,7 @@ class Spawner:
                 image=image,
                 docker_in_docker=bool((repo.get("capabilities") or {}).get("docker_in_docker")),
                 memo=task.get("memo"),
-                initial_prompt=task.get("initial_prompt"),  # takes precedence over memo for prefill
+                initial_prompt=task.get("initial_prompt"),  # passed as a CLI arg to claude; suppresses memo prefill
                 progress=lambda phase: self._report(task_id, phase),  # STARTING then AWAITING
             )
         except Exception as exc:

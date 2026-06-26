@@ -150,8 +150,10 @@ class LocalRunner(Runner):
         (base → workflow → repo, ADR 0005); ``None`` uses the configured base. ``docker_in_docker``
         (the repo's ``capabilities``) runs the container ``--privileged`` and tells the entrypoint to
         start a nested Docker daemon — a trust escalation, opt-in per repo. ``initial_prompt``
-        takes precedence over ``memo`` for the prefill: whichever is non-empty is prefilled
-        unsent into Claude's input box on **first** spawn — see :func:`_maybe_prefill`. ``progress``
+        is passed as a positional arg to ``claude`` on the first run (no prior session) via the
+        ``PANOPTICON_INITIAL_PROMPT`` env var; when set it also suppresses the ``memo`` prefill so
+        both don't fire. ``memo`` is prefilled unsent into Claude's input box on **first** spawn
+        only when ``initial_prompt`` is absent — see :func:`_maybe_prefill`. ``progress``
         (optional) is called with each spawn phase the runner passes through (``STARTING`` before
         ``docker run``, ``AWAITING`` once the tmux session is up) so the caller can surface it — see
         :class:`~panopticon.core.models.LifecyclePhase`."""
@@ -159,11 +161,11 @@ class LocalRunner(Runner):
             if progress is not None:
                 progress(phase)
 
-        prefill_content = initial_prompt or memo
         # The container name doubles as the tmux session name, so stop() needs only the id.
         container = f"panopticon-{task_id}"
         # Decide *before* `docker run` (which creates the config volume) whether this is the task's
         # first spawn — only then do we prefill, so a respawn doesn't paste into a --continue'd box.
+        prefill_content = memo if not initial_prompt else None
         first_spawn = self._wants_prefill(prefill_content) and not self._config_volume_exists(task_id)
         puid, _, pgid = self._user.partition(":")
         env = {
@@ -177,6 +179,10 @@ class LocalRunner(Runner):
             "PANOPTICON_PGID": pgid,
             **self._extra_env,
         }
+        if initial_prompt:
+            # The agent launcher reads this and passes it as a positional arg to `claude` on the
+            # first run (no prior session), so the agent's first action is to process the prompt.
+            env["PANOPTICON_INITIAL_PROMPT"] = initial_prompt
         docker_run = [
             "docker", "run", "--detach",
             "--name", container,
