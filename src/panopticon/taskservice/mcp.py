@@ -10,7 +10,6 @@ in-container agent launcher points claude at it (`container/agent.py`).
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -39,31 +38,31 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
 
     @mcp.tool(description="Fetch a task: state, turn, blocked, slug, and history.")
     async def get_task(task_id: str) -> dict[str, Any]:
-        return _task(await asyncio.to_thread(service.get_task, task_id))
+        return _task(await service.get_task(task_id))
 
     @mcp.tool(description="Set the task's human-readable slug.")
     async def set_slug(task_id: str, slug: str) -> dict[str, Any]:
-        return _task(await asyncio.to_thread(service.set_slug, task_id, slug))
+        return _task(await service.set_slug(task_id, slug))
 
     @mcp.tool(description="Record an external URL for the task (e.g. its PR); the dashboard's 'p' hotkey opens it.")
     async def set_url(task_id: str, url: str) -> dict[str, Any]:
-        return _task(await asyncio.to_thread(service.set_url, task_id, url))
+        return _task(await service.set_url(task_id, url))
 
     @mcp.tool(description="Record the cumulative tokens claude in this container has used.")
     async def set_tokens_used(task_id: str, tokens_used: int) -> dict[str, Any]:
-        return _task(await asyncio.to_thread(service.set_tokens_used, task_id, tokens_used))
+        return _task(await service.set_tokens_used(task_id, tokens_used))
 
     @mcp.tool(description="Record an estimate of the total tokens this task will consume (set when planning).")
     async def set_token_estimate(task_id: str, token_estimate: int) -> dict[str, Any]:
-        return _task(await asyncio.to_thread(service.set_token_estimate, task_id, token_estimate))
+        return _task(await service.set_token_estimate(task_id, token_estimate))
 
     @mcp.tool(description="Apply a named core operation (e.g. 'advance', 'drop').")
     async def apply_operation(task_id: str, operation: str) -> dict[str, Any]:
-        return _task(await asyncio.to_thread(service.apply_operation, task_id, operation))
+        return _task(await service.apply_operation(task_id, operation))
 
     @mcp.tool(description="Move the task to any state directly (free move; bypasses the gate).")
     async def set_state(task_id: str, state: str) -> dict[str, Any]:
-        return _task(await asyncio.to_thread(service.set_state, task_id, state))
+        return _task(await service.set_state(task_id, state))
 
     @mcp.tool(
         description="Resolve one promised responsibility ('met', or 'failed' with a comment)."
@@ -71,17 +70,15 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
     async def resolve_responsibility(
         task_id: str, key: str, status: str, comment: str | None = None
     ) -> dict[str, Any]:
-        return _task(await asyncio.to_thread(
-            service.resolve_responsibility, task_id, key, status=Status(status), comment=comment
-        ))
+        return _task(await service.resolve_responsibility(task_id, key, status=Status(status), comment=comment))
 
     @mcp.tool(description="Flip who holds the turn: 'user' or 'agent'.")
     async def set_turn(task_id: str, turn: str) -> dict[str, Any]:
-        return _task(await asyncio.to_thread(service.set_turn, task_id, Actor(turn)))
+        return _task(await service.set_turn(task_id, Actor(turn)))
 
     @mcp.tool(description="Set or clear the deliberate 'blocked' marker (survives turn flips).")
     async def set_blocked(task_id: str, blocked: bool) -> dict[str, Any]:
-        return _task(await asyncio.to_thread(service.set_blocked, task_id, blocked))
+        return _task(await service.set_blocked(task_id, blocked))
 
     # -- orchestration (gated to workflows whose `orchestrates` is set) -----------------------
     # These widen an agent beyond its own task — creating tasks and discovering workflows — so
@@ -101,17 +98,17 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
     async def create_task(
         orchestrator_task_id: str, workflow: str, memo: str | None = None
     ) -> dict[str, Any]:
-        return _task(await asyncio.to_thread(
-            service.create_task_as, orchestrator_task_id, workflow, memo=memo
-        ))
+        return _task(
+            await service.create_task_as(orchestrator_task_id, workflow, memo=memo)
+        )
 
     @mcp.tool(description="List workflow names (gated to orchestration workflows); pass your own task id as orchestrator_task_id.")
     async def list_workflows(orchestrator_task_id: str) -> list[str]:
-        return await asyncio.to_thread(service.workflow_names_as, orchestrator_task_id)
+        return await service.workflow_names_as(orchestrator_task_id)
 
     @mcp.tool(description="Write (create or overwrite) a task artifact, e.g. the plan. Returns its URI.")
     async def put_artifact(task_id: str, name: str, content: str) -> str:
-        await asyncio.to_thread(service.put_artifact, task_id, name, content.encode())
+        await service.put_artifact(task_id, name, content.encode())
         return mcp_uri(task_id, name)
 
     @mcp.tool(
@@ -122,12 +119,12 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
         )
     )
     async def list_artifacts(task_id: str) -> list[dict[str, str]]:
-        names = await asyncio.to_thread(service.list_artifacts, task_id)
+        names = await service.list_artifacts(task_id)
         return [{"name": name, "uri": mcp_uri(task_id, name)} for name in names]
 
     @mcp.resource(ARTIFACT_URI, description="A task's file-backed artifact (plan, notes).")
     async def artifact(task_id: str, name: str) -> str:
-        data = await asyncio.to_thread(service.get_artifact, task_id, name)
+        data = await service.get_artifact(task_id, name)
         if data is None:
             raise FileNotFoundError(f"no artifact {name!r} for task {task_id!r}")
         return data.decode()

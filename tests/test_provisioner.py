@@ -4,6 +4,7 @@ service over REST. No Docker, no LLM — `git` is a fake command-runner."""
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from pathlib import Path
 
@@ -88,9 +89,9 @@ def test_provisioner_against_the_real_service(tmp_path: Path) -> None:
     """End to end against the real task service over REST: provisioning records the branch + clone
     path, and the second pass is a no-op (the pull loop can call it repeatedly)."""
     service = TaskService(SqlAlchemyStore(), {"spike": Spike()}, FilesystemArtifactStore(tmp_path))
-    service.create_repo(
+    asyncio.run(service.create_repo(
         Repo(id="r1", name="acme/widgets", git_url="https://forge/r1.git", default_base="trunk")
-    )
+    ))
     with TestClient(create_app(service)) as http:
         client = TaskServiceClient(http)
         task_id = client.create_task("r1", "spike")["id"]
