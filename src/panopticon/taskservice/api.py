@@ -440,7 +440,7 @@ def create_app(service: TaskService) -> FastAPI:
         else:
             # Read version and snapshot in a single thread call so no event-loop yield can
             # interleave a mutation between them — preserving the original atomicity invariant.
-            version, tasks_raw = await asyncio.to_thread(service._tasks_snapshot, terminal=terminal)
+            version, tasks_raw = await service._tasks_snapshot(terminal=terminal)
         tasks = [_task_summary_out(t) for t in tasks_raw]
         response.headers[TASKS_VERSION_HEADER] = str(version)
         return tasks

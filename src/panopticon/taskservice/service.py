@@ -273,15 +273,13 @@ class TaskService:
             return tasks
         return [t for t in tasks if (t.state in TERMINAL_LABELS) == terminal]
 
-    def _tasks_snapshot(self, *, terminal: bool | None = None) -> tuple[int, list[Task]]:
-        """Read version + task list atomically (no event-loop yield between them).
+    async def _tasks_snapshot(self, *, terminal: bool | None = None) -> tuple[int, list[Task]]:
+        """Await the task list then read the version synchronously (no yield between the two).
 
-        Called via ``asyncio.to_thread`` in the list-tasks route so the X-Tasks-Version header
-        and the response body can't be separated by a concurrent mutation.
+        The caller reads the version immediately after the awaited list, so the version is
+        guaranteed to be >= the snapshot's generation — sufficient for the long-poll contract.
         """
-        tasks = self._store.list_tasks_summary()
-        if terminal is not None:
-            tasks = [t for t in tasks if (t.state in TERMINAL_LABELS) == terminal]
+        tasks = await self.list_tasks_summary(terminal=terminal)
         return self.tasks_version(), tasks
 
     def tasks_version(self) -> int:
