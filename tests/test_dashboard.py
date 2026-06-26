@@ -14,8 +14,8 @@ from textual.widgets import Checkbox, DataTable, Input, Static
 
 from panopticon.terminal import dashboard
 from panopticon.terminal.dashboard import (
-    BoundaryDataTable,
     Dashboard,
+    _SEPARATOR_KEY,
     _matches,
     _repo_cell,
     _short_tokens,
@@ -45,11 +45,6 @@ _TASK: dict[str, Any] = {
         },
     ],
 }
-
-
-def _at(stamp: str) -> list[dict[str, Any]]:
-    """A one-entry history whose latest timestamp is ``stamp`` (the sort's recency key)."""
-    return [{"at": stamp, "from_state": None, "to_state": "WORKING", "responsibilities": []}]
 
 
 def _raise(*args: Any, **kwargs: Any) -> Any:
@@ -275,7 +270,7 @@ async def test_dashboard_mounts_lists_tasks_and_shows_detail() -> None:
     app = Dashboard(_FakeClient([_TASK]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        table = app.query_one("#tasks-active", BoundaryDataTable)
+        table = app.query_one("#tasks", DataTable)
         assert table.row_count == 1
         # detail pane is hidden by default — open it, then check content
         await pilot.press("d")
@@ -308,52 +303,65 @@ async def test_pressing_d_toggles_the_detail_pane() -> None:
         assert not app._detail_visible and detail.styles.display == "none"
 
 
-async def test_tasks_are_sorted_live_then_user_then_recent() -> None:
-    # The order: (1) non-terminal above terminal, (2) turn priority differs by group — for active
-    # tasks the user's turn surfaces first; for terminal tasks the agent's turn surfaces first
-    # (tasks the agent just finished appear at the top of the completed section),
-    # (3) most-recently-updated (latest history `at`) first.
+async def test_tasks_are_sorted_live_then_user_then_slug() -> None:
+    # The order: (1) non-terminal above terminal, (2) turn priority differs by group — active tasks
+    # surface the user's turn first (operator action needed), terminal tasks surface the agent's turn
+    # first (just finished); (3) most recently updated first, (4) slug (then id) as the stable tiebreaker.
+    # Here all tasks share the same updated_at (None → 0.0), so slug is the effective tiebreaker.
     tasks = [
-        # terminal tasks — sink to #tasks-terminal even though their `at` is most recent.
-        # Within the terminal section, agent-turn (t-drop) comes before user-turn (t-done).
-        {**_TASK, "id": "t-done", "state": "COMPLETE", "turn": "user", "history": _at("2026-06-22T23:00:00+00:00")},
-        {**_TASK, "id": "t-drop", "state": "DROPPED", "turn": "agent", "history": _at("2026-06-22T22:00:00+00:00")},
-        # live agent-turn tasks — below the user-turn ones, newest of the two first.
-        {**_TASK, "id": "t-agent-new", "turn": "agent", "history": _at("2026-06-22T13:00:00+00:00")},
-        {**_TASK, "id": "t-agent-old", "turn": "agent", "history": _at("2026-06-22T08:00:00+00:00")},
-        # live user-turn tasks — at the very top of #tasks-active, newest first.
-        {**_TASK, "id": "t-user-new", "turn": "user", "history": _at("2026-06-22T10:00:00+00:00")},
-        {**_TASK, "id": "t-user-old", "turn": "user", "history": _at("2026-06-22T09:00:00+00:00")},
+        # terminal tasks — sink below all live work; agent-turn rises to top of this section.
+        {**_TASK, "id": "t-done", "slug": "done", "state": "COMPLETE", "turn": "user"},
+        {**_TASK, "id": "t-drop", "slug": "drop", "state": "DROPPED", "turn": "agent"},
+        # live agent-turn tasks — below the user-turn ones, sorted by slug.
+        {**_TASK, "id": "t-agent-b", "slug": "bravo", "turn": "agent"},
+        {**_TASK, "id": "t-agent-a", "slug": "alpha", "turn": "agent"},
+        # live user-turn tasks — at the very top, sorted by slug.
+        {**_TASK, "id": "t-user-b", "slug": "zebra", "turn": "user"},
+        {**_TASK, "id": "t-user-a", "slug": "mango", "turn": "user"},
     ]
     app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        active_keys = [str(k.value) for k in app.query_one("#tasks-active", BoundaryDataTable).rows]
-        terminal_keys = [str(k.value) for k in app.query_one("#tasks-terminal", BoundaryDataTable).rows]
-        assert active_keys == [
-            "t-user-new", "t-user-old",    # live, user's turn, newest first
-            "t-agent-new", "t-agent-old",  # live, agent's turn, newest first
+        table = app.query_one("#tasks", DataTable)
+        keys = [str(k.value) for k in table.rows]
+        order = [k for k in keys if k != _SEPARATOR_KEY]  # task order, ignoring the divider row
+        assert order == [
+            "t-user-a", "t-user-b",    # live, user's turn, slug order
+            "t-agent-a", "t-agent-b",  # live, agent's turn, slug order
+            "t-drop", "t-done",        # terminal: agent-turn first (just finished), then user-turn
         ]
-        assert terminal_keys == [
-            "t-drop", "t-done",  # terminal; agent-turn (t-drop) before user-turn (t-done)
-        ]
+        # the divider sits exactly between the last active row and the first terminal one
+        assert keys.index(_SEPARATOR_KEY) == keys.index("t-agent-b") + 1
+        assert keys.index(_SEPARATOR_KEY) == keys.index("t-drop") - 1
+
+
+async def test_sort_uses_recency_within_tier() -> None:
+    # Within the same (terminal, turn) tier, more recently updated tasks sort first.
+    tasks = [
+        {**_TASK, "id": "t-old", "slug": "alpha", "turn": "user", "updated_at": "2026-06-01T00:00:00"},
+        {**_TASK, "id": "t-new", "slug": "zebra", "turn": "user", "updated_at": "2026-06-25T00:00:00"},
+    ]
+    app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        order = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
+        assert order == ["t-new", "t-old"]  # newer first, despite "zebra" > "alpha"
 
 
 async def test_sort_breaks_ties_on_slug() -> None:
-    # Same terminal-ness, turn, and `at` → fall back to slug (then id) for a stable order.
-    at = _at("2026-06-22T10:00:00+00:00")
+    # Same terminal-ness, turn, and updated_at → fall back to slug (then id) for a stable order.
     tasks = [
-        {**_TASK, "id": "t2", "slug": "zebra", "turn": "user", "history": at},
-        {**_TASK, "id": "t1", "slug": "alpha", "turn": "user", "history": at},
+        {**_TASK, "id": "t2", "slug": "zebra", "turn": "user"},
+        {**_TASK, "id": "t1", "slug": "alpha", "turn": "user"},
     ]
     app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        order = [str(k.value) for k in app.query_one("#tasks-active", BoundaryDataTable).rows]
+        order = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
         assert order == ["t1", "t2"]  # alpha < zebra
 
 
-# -- active/terminal split ----------------------------------------------------------
+# -- active/terminal divider --------------------------------------------------------
 
 _ACTIVE_A = {**_TASK, "id": "t-a", "slug": "alpha", "state": "WORKING", "turn": "user"}
 _ACTIVE_B = {**_TASK, "id": "t-b", "slug": "bravo", "state": "ITERATING", "turn": "user"}
@@ -361,70 +369,74 @@ _TERM_A = {**_TASK, "id": "t-done", "slug": "done", "state": "COMPLETE", "turn":
 _TERM_B = {**_TASK, "id": "t-drop", "slug": "dropped", "state": "DROPPED", "turn": "user"}
 
 
-async def test_active_and_terminal_tasks_go_to_separate_tables() -> None:
-    # Active tasks land in #tasks-active, terminal tasks in #tasks-terminal.
-    # A Rule separates them; the Rule is visible only when both groups are non-empty.
-    from textual.widgets import Rule
-
+async def test_separator_divides_active_from_terminal() -> None:
+    # With both groups present, a single divider row splices in at the boundary.
     app = Dashboard(_FakeClient([_ACTIVE_A, _TERM_A, _ACTIVE_B, _TERM_B]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        active_keys = [str(k.value) for k in app.query_one("#tasks-active", BoundaryDataTable).rows]
-        terminal_keys = [str(k.value) for k in app.query_one("#tasks-terminal", BoundaryDataTable).rows]
-        assert active_keys == ["t-a", "t-b"]
-        assert terminal_keys == ["t-done", "t-drop"]
-        assert app.query_one("#task-separator", Rule).styles.display == "block"  # Rule visible
+        keys = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
+        assert keys == ["t-a", "t-b", _SEPARATOR_KEY, "t-done", "t-drop"]
 
 
-async def test_rule_hidden_when_all_active() -> None:
-    from textual.widgets import Rule
-
+async def test_no_separator_when_all_active() -> None:
     app = Dashboard(_FakeClient([_ACTIVE_A, _ACTIVE_B]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert app.query_one("#task-separator", Rule).styles.display == "none"
-        assert app.query_one("#tasks-terminal", BoundaryDataTable).styles.display == "none"
+        keys = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
+        assert _SEPARATOR_KEY not in keys
 
 
-async def test_rule_hidden_when_all_terminal() -> None:
-    from textual.widgets import Rule
-
+async def test_no_separator_when_all_terminal() -> None:
     app = Dashboard(_FakeClient([_TERM_A, _TERM_B]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert app.query_one("#task-separator", Rule).styles.display == "none"
-        assert app.query_one("#tasks-active", BoundaryDataTable).row_count == 0
+        keys = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
+        assert _SEPARATOR_KEY not in keys
 
 
-async def test_rule_hidden_when_filtered_to_one_group() -> None:
-    # A search filter that leaves only active tasks hides the Rule and the terminal table.
-    from textual.widgets import Rule
-
+async def test_no_separator_when_filtered_to_one_group() -> None:
+    # A search filter that leaves only active tasks shows no divider.
     app = Dashboard(_FakeClient([_ACTIVE_A, _ACTIVE_B, _TERM_A, _TERM_B]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("slash")
         await pilot.press("a", "l", "p", "h", "a")  # matches only _ACTIVE_A's slug
         await pilot.pause()
-        active_keys = [str(k.value) for k in app.query_one("#tasks-active", BoundaryDataTable).rows]
-        assert active_keys == ["t-a"]
-        assert app.query_one("#task-separator", Rule).styles.display == "none"
+        keys = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
+        assert keys == ["t-a"]  # only the match; no divider
 
 
-async def test_arrow_keys_cross_the_table_boundary() -> None:
-    # Down at the last active row crosses into the terminal table;
-    # Up at the first terminal row crosses back to the active table.
+async def test_highlighting_the_separator_selects_no_task() -> None:
+    # If the cursor is forced onto the divider, it selects nothing and actions no-op.
+    fake = _FakeClient([_ACTIVE_A, _TERM_A])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        sep_index = [str(k.value) for k in table.rows].index(_SEPARATOR_KEY)
+        app._update_detail(_SEPARATOR_KEY)  # as a raw highlight on the sentinel would
+        await pilot.pause()
+        assert app._current is None  # no task selected
+        assert str(app.query_one("#detail", Static).render()) == ""  # blank pane
+        await pilot.press("x")  # drop no-ops with no current task
+        await pilot.pause()
+        assert fake.applied == []
+        assert sep_index == 1  # divider after the one active row
+
+
+async def test_arrow_keys_skip_the_separator() -> None:
+    # Arrowing across the boundary jumps the divider in both directions.
     app = Dashboard(_FakeClient([_ACTIVE_A, _TERM_A]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        active = app.query_one("#tasks-active", BoundaryDataTable)
-        active.move_cursor(row=0)
+        table = app.query_one("#tasks", DataTable)
+        table.move_cursor(row=0)  # the active task
         await pilot.pause()
         assert app._current == "t-a"
-        await pilot.press("down")  # at last active row → crosses to terminal table
+        await pilot.press("down")  # would land on the divider → skip to the terminal task
         await pilot.pause()
         assert app._current == "t-done"
-        await pilot.press("up")  # at first terminal row → crosses back to active
+        await pilot.press("up")  # back up over the divider → the active task again
         await pilot.pause()
         assert app._current == "t-a"
 
@@ -446,7 +458,7 @@ async def test_dashboard_refreshes_when_the_feed_signals_a_change() -> None:
     app = Dashboard(fake, refresh_interval=0.05)  # short long-poll wait so idle polls cycle fast  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        table = app.query_one("#tasks-active", BoundaryDataTable)
+        table = app.query_one("#tasks", DataTable)
         assert table.row_count == 0
         builds = fake.list_tasks_calls  # the first paint
         fake._tasks = [_TASK]  # the producer grew a task...
@@ -475,7 +487,7 @@ async def test_auto_refresh_preserves_the_highlighted_task() -> None:
     app = Dashboard(fake, refresh_interval=0)  # feed worker disabled — drive the rebuild explicitly
     async with app.run_test() as pilot:
         await pilot.pause()
-        table = app.query_one("#tasks-active", BoundaryDataTable)
+        table = app.query_one("#tasks", DataTable)
         table.move_cursor(row=1)
         await pilot.pause()
         assert app._current == "task-second9999"
@@ -489,8 +501,7 @@ async def test_dashboard_with_no_tasks() -> None:
     app = Dashboard(_FakeClient([]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert app.query_one("#tasks-active", BoundaryDataTable).row_count == 0
-        assert app.query_one("#tasks-terminal", BoundaryDataTable).row_count == 0
+        assert app.query_one("#tasks", DataTable).row_count == 0
         await pilot.press("d")  # open the detail pane
         await pilot.pause()
         assert str(app.query_one("#detail", Static).render()) == "no tasks"
@@ -807,7 +818,7 @@ async def test_pressing_slash_filters_the_task_list_as_you_type() -> None:
     app = Dashboard(_FakeClient([_FIX, _DEP]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        table = app.query_one("#tasks-active", BoundaryDataTable)
+        table = app.query_one("#tasks", DataTable)
         assert table.row_count == 2
         await pilot.press("slash")  # enter search mode → the box reveals + focuses
         await pilot.pause()
@@ -821,7 +832,7 @@ async def test_search_matches_state_and_workflow_not_just_slug() -> None:
     app = Dashboard(_FakeClient([_FIX, _DEP]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        table = app.query_one("#tasks-active", BoundaryDataTable)
+        table = app.query_one("#tasks", DataTable)
         await pilot.press("slash")
         await pilot.press("p", "l", "a", "n")  # matches _DEP's PLANNING state
         await pilot.pause()
@@ -832,7 +843,7 @@ async def test_enter_locks_the_filter_and_restores_navigation() -> None:
     app = Dashboard(_FakeClient([_FIX, _DEP]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        table = app.query_one("#tasks-active", BoundaryDataTable)
+        table = app.query_one("#tasks", DataTable)
         await pilot.press("slash")
         await pilot.press("f", "i", "x")
         await pilot.press("enter")  # lock: box hides, filter stays, table regains focus
@@ -847,7 +858,7 @@ async def test_escape_clears_the_search() -> None:
     app = Dashboard(_FakeClient([_FIX, _DEP]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        table = app.query_one("#tasks-active", BoundaryDataTable)
+        table = app.query_one("#tasks", DataTable)
         await pilot.press("slash")
         await pilot.press("f", "i", "x")
         await pilot.pause()
@@ -864,7 +875,7 @@ async def test_search_filter_survives_auto_refresh() -> None:
     app = Dashboard(_FakeClient([_FIX, _DEP]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        table = app.query_one("#tasks-active", BoundaryDataTable)
+        table = app.query_one("#tasks", DataTable)
         await pilot.press("slash")
         await pilot.press("f", "i", "x")
         await pilot.pause()
@@ -881,7 +892,7 @@ async def test_repo_column_shows_repo_name() -> None:
     app = Dashboard(_FakeClient([task], repos=repos))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        table = app.query_one("#tasks-active", BoundaryDataTable)
+        table = app.query_one("#tasks", DataTable)
         row = table.get_row(task["id"])
         # row is (state, turn, container, repo, slug[memo]) — repo is index 3
         assert row[3] == "acme/widgets"
@@ -898,7 +909,7 @@ async def test_search_matches_repo_name() -> None:
     app = Dashboard(_FakeClient([task_w, task_a], repos=repos))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        table = app.query_one("#tasks-active", BoundaryDataTable)
+        table = app.query_one("#tasks", DataTable)
         assert table.row_count == 2
         await pilot.press("slash")
         await pilot.press("w", "i", "d", "g", "e", "t", "s")  # matches "acme/widgets" repo name
@@ -914,7 +925,7 @@ async def test_repo_names_refresh_after_repo_edit() -> None:
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        table = app.query_one("#tasks-active", BoundaryDataTable)
+        table = app.query_one("#tasks", DataTable)
         assert table.get_row(task["id"])[3] == "old-name"
         # Simulate a rename via the service (as RepoFormScreen would do) then the dismiss reload.
         fake.update_repo("r1", name="new-name")
