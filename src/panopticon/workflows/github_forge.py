@@ -71,7 +71,19 @@ class GithubForgeWorkflow(PlannedWorkflow):
                 "not the user's job). Then, per failing check: rerun obvious flakes (don't count "
                 "them), else diagnose, fix in the worktree, and commit + push. Budget: ≤3 post-fix "
                 "retries per check and ~2h wall-clock. Stop when CI is green — report and hand back "
-                "to the user (don't auto-advance) — or when the budget is spent.",
+                "to the user (don't auto-advance) — or when the budget is spent.\n\n"
+                "**CI-watch: use the blocking commands — do not hand-roll a polling loop.**\n"
+                "- Preferred: `gh pr checks --watch` (blocks until all PR checks settle; non-zero "
+                "on failure) or `gh run watch <run_id> --exit-status` (blocks until that run "
+                "finishes). No shell loop, no SHA arithmetic.\n"
+                "- If polling is ever unavoidable: match runs with "
+                "`headSha.startswith(\"<short-sha>\")` — never a fixed-length slice (`[:7]`, "
+                "`[:8]`) which silently mismatches — **and** gate on `status == \"completed\"` "
+                "before reading `conclusion`.\n"
+                "- Never grep `displayTitle`: GitHub rewrites it on PR rename and the pattern "
+                "will match the wrong (renamed-old) run.\n"
+                "- Never treat a run appearing in the list as done — only `conclusion` tells "
+                "you the result.",
             ),
             Skill(
                 "babysit-merge",
