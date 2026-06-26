@@ -163,7 +163,7 @@ async def test_on_transition_hook_fires_through_the_service(tmp_path: Path) -> N
 
         initial = A
 
-        def on_transition(self, task, *, from_state, to_state, artifacts):  # type: ignore[override]
+        async def on_transition(self, task, *, from_state, to_state, artifacts):  # type: ignore[override]
             calls.append((from_state, to_state))
 
     svc = TaskService(SqlAlchemyStore(), {"hooked": Hooked()}, FilesystemArtifactStore(tmp_path))
