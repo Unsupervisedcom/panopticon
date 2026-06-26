@@ -8,6 +8,7 @@ stay-alive liveness connection)."""
 
 from __future__ import annotations
 
+import asyncio
 import socket
 import subprocess
 import threading
@@ -75,8 +76,8 @@ def test_runner_spawns_real_container_that_registers_and_loses_liveness(
         ["docker", "build", "--tag", _IMAGE, "--file", "docker/Dockerfile", "."],
         check=True, capture_output=True,
     )
-    service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
-    task_id = service.create_task("r1", "spike").id
+    asyncio.run(service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git")))
+    task_id = asyncio.run(service.create_task("r1", "spike")).id
 
     runner = LocalRunner(
         f"http://host.docker.internal:{port}",
