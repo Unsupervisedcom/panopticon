@@ -65,10 +65,16 @@ def test_start_task_sets_initial_state_turn_and_history() -> None:
     assert task.state == "PLAN"
     assert task.turn is Actor.USER  # PLAN is the initial state → turn starts with the user
     assert task.slug is None
+    assert task.initial_prompt is None
     assert task.history[0].from_state is None
     assert task.history[0].to_state == "PLAN"
     assert task.history[0].trigger == "start"
     assert task.history[0].responsibilities == []  # PLAN is ungated
+
+
+def test_start_task_records_initial_prompt() -> None:
+    task = WF.start_task("t1", "r1", at="t0", initial_prompt="review your plan")
+    assert task.initial_prompt == "review your plan"
 
 
 # -- resolution: string + class refs, inherited DROPPED -----------------------------

@@ -140,6 +140,7 @@ class LocalRunner(Runner):
         image: str | None = None,
         docker_in_docker: bool = False,
         memo: str | None = None,
+        initial_prompt: str | None = None,
         progress: Callable[[LifecyclePhase], None] | None = None,
     ) -> str:
         """Spawn the task container. ``env_file`` is the task's repo's secret reference (ADR
@@ -148,11 +149,13 @@ class LocalRunner(Runner):
         the agent's working dir. ``image`` overrides the default base with the task's composed image
         (base → workflow → repo, ADR 0005); ``None`` uses the configured base. ``docker_in_docker``
         (the repo's ``capabilities``) runs the container ``--privileged`` and tells the entrypoint to
-        start a nested Docker daemon — a trust escalation, opt-in per repo. ``memo`` (the
-        task's brief one-line reminder of what it is) is pre-filled into claude's input box on a
-        **first** spawn, left unsent — see :func:`_maybe_prefill`. ``progress`` (optional) is called
-        with each spawn phase the runner passes through (``STARTING`` before ``docker run``,
-        ``AWAITING`` once the tmux session is up) so the caller can surface it — see
+        start a nested Docker daemon — a trust escalation, opt-in per repo. ``initial_prompt``
+        is passed as a positional arg to ``claude`` on the first run (no prior session) via the
+        ``PANOPTICON_INITIAL_PROMPT`` env var; when set it also suppresses the ``memo`` prefill so
+        both don't fire. ``memo`` is prefilled unsent into Claude's input box on **first** spawn
+        only when ``initial_prompt`` is absent — see :func:`_maybe_prefill`. ``progress``
+        (optional) is called with each spawn phase the runner passes through (``STARTING`` before
+        ``docker run``, ``AWAITING`` once the tmux session is up) so the caller can surface it — see
         :class:`~panopticon.core.models.LifecyclePhase`."""
         def _report(phase: LifecyclePhase) -> None:
             if progress is not None:
@@ -160,9 +163,12 @@ class LocalRunner(Runner):
 
         # The container name doubles as the tmux session name, so stop() needs only the id.
         container = f"panopticon-{task_id}"
-        # Decide *before* `docker run` (which creates the config volume) whether this is the task's
-        # first spawn — only then do we prefill, so a respawn doesn't paste into a --continue'd box.
-        first_spawn = self._wants_prefill(memo) and not self._config_volume_exists(task_id)
+        # Prefill only when (a) there's memo content worth pasting and (b) the per-task config
+        # volume doesn't yet exist — i.e. this is the first spawn and claude will start fresh
+        # (no --continue). Probe *before* `docker run`, which creates the volume.
+        # initial_prompt suppresses memo prefill: it's delivered as a CLI arg to claude instead.
+        prefill_content = memo if not initial_prompt else None
+        should_prefill = self._wants_prefill(prefill_content) and not self._config_volume_exists(task_id)
         puid, _, pgid = self._user.partition(":")
         env = {
             "PANOPTICON_SERVICE_URL": self._service_url,
@@ -175,6 +181,10 @@ class LocalRunner(Runner):
             "PANOPTICON_PGID": pgid,
             **self._extra_env,
         }
+        if initial_prompt:
+            # The agent launcher reads this and passes it as a positional arg to `claude` on the
+            # first run (no prior session), so the agent's first action is to process the prompt.
+            env["PANOPTICON_INITIAL_PROMPT"] = initial_prompt
         docker_run = [
             "docker", "run", "--detach",
             "--name", container,
@@ -212,8 +222,9 @@ class LocalRunner(Runner):
                 container, *self._agent_command,
             )
         )
-        if first_spawn and memo is not None:
-            self._maybe_prefill(container, memo)
+        if should_prefill:
+            assert prefill_content is not None  # _wants_prefill returned True → non-empty str
+            self._maybe_prefill(container, prefill_content)
         _report(LifecyclePhase.AWAITING)  # container + tmux up; waiting for its /live registration
         return container
 
