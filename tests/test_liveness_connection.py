@@ -48,6 +48,7 @@ def served(tmp_path: Path) -> Iterator[tuple[TaskService, str]]:
     service = TaskService(
         SqlAlchemyStore("sqlite://"), {"spike": Spike()}, FilesystemArtifactStore(tmp_path)
     )
+    asyncio.run(service.init())
     asyncio.run(service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git")))
     port = _free_port()
     config = uvicorn.Config(create_app(service), host="127.0.0.1", port=port, log_level="warning")

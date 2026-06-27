@@ -7,6 +7,7 @@ agent doesn't charge ahead — e.g. start implementing during a github-peer-revi
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Sequence
 from pathlib import Path
@@ -54,7 +55,7 @@ def test_briefing_names_the_phase_responsibilities_and_user_advance(tmp_path: Pa
     wf = GithubPeerReviewed()
     task = wf.start_task("t1", "r1", at="t0")  # initial state: PLANNING (user-advanced)
 
-    text = wf.briefing(task, artifacts=_artifacts(tmp_path))
+    text = asyncio.run(wf.briefing(task, artifacts=_artifacts(tmp_path)))
 
     assert "PLANNING" in text  # the agent learns which phase it's in
     assert "later phase" in text  # ... and not to do later-phase work (e.g. implementing)
@@ -69,7 +70,7 @@ def test_briefing_for_an_agent_advanced_phase(tmp_path: Path) -> None:
     wf = GithubPeerReviewed()
     task = wf.force_transition(wf.start_task("t1", "r1", at="t0"), "MERGING", at="t1")
 
-    text = wf.briefing(task, artifacts=_artifacts(tmp_path))
+    text = asyncio.run(wf.briefing(task, artifacts=_artifacts(tmp_path)))
 
     assert "MERGING" in text and "pr-merged" in text
     assert "advance the task yourself" in text  # MERGING is agent-advanced (background)
@@ -80,7 +81,7 @@ def test_briefing_for_a_terminal_state(tmp_path: Path) -> None:
     wf = GithubPeerReviewed()
     task = wf.force_transition(wf.start_task("t1", "r1", at="t0"), "COMPLETE", at="t1")
 
-    text = wf.briefing(task, artifacts=_artifacts(tmp_path))
+    text = asyncio.run(wf.briefing(task, artifacts=_artifacts(tmp_path)))
 
     assert "COMPLETE" in text and "finished" in text  # nothing to do in a terminal state
 
@@ -137,9 +138,9 @@ class _ExtrasWorkflow(Workflow):
     def _overview_extras(self) -> Sequence[str]:
         return ["Injected overview note."]
 
-    def _briefing_extras(self, task: Task, *, artifacts: ArtifactStore) -> Sequence[str]:
+    async def _briefing_extras(self, task: Task, *, artifacts: ArtifactStore) -> Sequence[str]:
         # The hook receives the artifact store, so it can key off what's been written for the task.
-        names = artifacts.list(task.id)
+        names = await artifacts.list(task.id)
         return [f"Artifacts so far: {', '.join(names) or 'none'}."]
 
 
@@ -154,18 +155,18 @@ def test_briefing_extras_are_appended_and_get_the_artifact_store(tmp_path: Path)
     artifacts = _artifacts(tmp_path)
 
     # No artifacts yet → the hook (given the store) renders accordingly.
-    assert "Artifacts so far: none." in wf.briefing(task, artifacts=artifacts)
+    assert "Artifacts so far: none." in asyncio.run(wf.briefing(task, artifacts=artifacts))
 
     # Write one → the hook sees it, proving the seam is handed the live artifact store.
-    artifacts.put(task.id, "plan.md", b"# Plan")
-    assert "Artifacts so far: plan.md." in wf.briefing(task, artifacts=artifacts)
+    asyncio.run(artifacts.put(task.id, "plan.md", b"# Plan"))
+    assert "Artifacts so far: plan.md." in asyncio.run(wf.briefing(task, artifacts=artifacts))
 
 
 def test_default_extras_leave_the_output_unchanged(tmp_path: Path) -> None:
     # A workflow that overrides neither hook gets exactly the generic rendering (no stray blank
     # lines / separators) — the seam is opt-in.
     wf, task = _gpr_task_in("PLANNING")
-    assert not wf.briefing(task, artifacts=_artifacts(tmp_path)).endswith("\n")
+    assert not asyncio.run(wf.briefing(task, artifacts=_artifacts(tmp_path))).endswith("\n")
     assert not wf.overview().endswith("\n")
 
 
@@ -181,4 +182,4 @@ def test_github_peer_reviewed_system_prompt_matches_fixture() -> None:
 def test_github_peer_reviewed_state_briefing_matches_fixture(state: str, tmp_path: Path) -> None:
     # The per-turn briefing for each github-peer-reviewed phase, captured verbatim.
     wf, task = _gpr_task_in(state)
-    _assert_matches_fixture(f"github_peer_reviewed_state_{state}.md", wf.briefing(task, artifacts=_artifacts(tmp_path)))
+    _assert_matches_fixture(f"github_peer_reviewed_state_{state}.md", asyncio.run(wf.briefing(task, artifacts=_artifacts(tmp_path))))

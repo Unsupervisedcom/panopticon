@@ -58,11 +58,11 @@ class PlannedWorkflow(Workflow):
         """
         return mcp_uri(task_id, cls.PLAN_ARTIFACT_NAME)
 
-    def _briefing_extras(self, task: Task, *, artifacts: ArtifactStore) -> Sequence[str]:
+    async def _briefing_extras(self, task: Task, *, artifacts: ArtifactStore) -> Sequence[str]:
         """Once the plan artifact exists, surface its canonical MCP URI in the per-turn
         briefing. Gated on existence so a still-to-be-planned PLANNING turn doesn't point
         at a missing file."""
-        if self.PLAN_ARTIFACT_NAME not in artifacts.list(task.id):
+        if self.PLAN_ARTIFACT_NAME not in await artifacts.list(task.id):
             return ()
         return [
             f"This task's plan is the `{self.PLAN_ARTIFACT_NAME}` artifact — read it at this exact MCP "

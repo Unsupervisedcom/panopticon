@@ -21,6 +21,7 @@ async def _service(tmp_path: Path) -> TaskService:
         {"spike": Spike(), "orchestrator": Orchestrator(), "github-self-reviewed": GithubSelfReviewed()},
         FilesystemArtifactStore(tmp_path),
     )
+    await svc.init()
     await svc.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
     await svc.create_repo(Repo(id="r2", name="acme/other", git_url="https://x/r2.git"))
     return svc

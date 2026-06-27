@@ -43,18 +43,18 @@ class ArtifactStore(ABC):
     """Read/write per-task artifact files."""
 
     @abstractmethod
-    def put(self, task_id: str, name: str, content: bytes) -> None:
+    async def put(self, task_id: str, name: str, content: bytes) -> None:
         """Create or overwrite an artifact."""
 
     @abstractmethod
-    def get(self, task_id: str, name: str) -> bytes | None:
+    async def get(self, task_id: str, name: str) -> bytes | None:
         """Return artifact bytes, or ``None`` if it does not exist."""
 
     @abstractmethod
-    def list(self, task_id: str) -> list[str]:
+    async def list(self, task_id: str) -> list[str]:
         """Return the names of a task's artifacts (empty if none)."""
 
-    def link_slug(self, task_id: str, slug: str) -> None:
+    async def link_slug(self, task_id: str, slug: str) -> None:
         """Expose a task's artifacts under a readable ``slug`` alias (best-effort).
 
         Symlinks are a filesystem concept, so the default is a no-op; the filesystem adapter
@@ -62,5 +62,5 @@ class ArtifactStore(ABC):
         an alias they have no notion of.
         """
 
-    def unlink_slug(self, slug: str) -> None:
+    async def unlink_slug(self, slug: str) -> None:
         """Remove a slug alias created by :meth:`link_slug` (best-effort no-op default)."""

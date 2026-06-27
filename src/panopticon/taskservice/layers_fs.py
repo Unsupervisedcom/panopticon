@@ -8,6 +8,7 @@ Layout: ``<root>/<name>`` (nested names allowed; ``..``/absolute escapes rejecte
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from panopticon.core.layers import InvalidLayerName, LayerStore
@@ -31,6 +32,8 @@ class FilesystemLayerStore(LayerStore):
             raise InvalidLayerName(f"layer name {name!r} escapes the layers root")
         return path
 
-    def get(self, name: str) -> bytes | None:
+    async def get(self, name: str) -> bytes | None:
         path = self._resolve(name)
-        return path.read_bytes() if path.is_file() else None
+        if not await asyncio.to_thread(path.is_file):
+            return None
+        return await asyncio.to_thread(path.read_bytes)

@@ -343,7 +343,7 @@ class Workflow(ABC):
             lines += ["", *extras]
         return "\n".join(lines)
 
-    def briefing(self, task: Task, *, artifacts: ArtifactStore) -> str:
+    async def briefing(self, task: Task, *, artifacts: ArtifactStore) -> str:
         """A short briefing on the task's current phase: its responsibilities and how it advances.
 
         The per-turn "you are here" pin (the container's user-prompt hook emits it). A workflow
@@ -379,7 +379,7 @@ class Workflow(ABC):
             else:
                 lines.append(f"When these are met, advance the task yourself (the `advance` operation → {target}).")
 
-        extras = list(self._briefing_extras(task, artifacts=artifacts))
+        extras = list(await self._briefing_extras(task, artifacts=artifacts))
         if extras:
             lines += ["", *extras]
         return "\n".join(lines)
@@ -390,7 +390,7 @@ class Workflow(ABC):
         after a blank separator."""
         return ()
 
-    def _briefing_extras(self, task: Task, *, artifacts: ArtifactStore) -> Sequence[str]:
+    async def _briefing_extras(self, task: Task, *, artifacts: ArtifactStore) -> Sequence[str]:
         """Extra lines a workflow injects into the per-turn :meth:`briefing`. Default none; a
         subclass overrides to surface task-specific context — ``artifacts`` is the task's artifact
         store so it can key off what's been written (e.g. point at the plan's URI once it exists).
@@ -399,7 +399,7 @@ class Workflow(ABC):
 
     # -- lifecycle hooks (deterministic; run in the control plane, no LLM) ---------------
 
-    def on_transition(
+    async def on_transition(
         self, task: Task, *, from_state: str | None, to_state: str, artifacts: ArtifactStore
     ) -> None:
         """Hook run by the task service after a transition is applied, before persistence.
