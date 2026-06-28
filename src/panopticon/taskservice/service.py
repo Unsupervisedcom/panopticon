@@ -208,12 +208,20 @@ class TaskService:
         await self._store.save_task(task)
 
     async def create_task(
-        self, repo_id: str, workflow_name: str, *, memo: str | None = None
+        self,
+        repo_id: str,
+        workflow_name: str,
+        *,
+        memo: str | None = None,
+        governor_task_id: str | None = None,
     ) -> Task:
         await self.get_repo(repo_id)  # ensure exists (raises NotFound)
+        if governor_task_id is not None:
+            await self.get_task(governor_task_id)  # ensure governor exists (raises NotFound)
         wf = self._workflow(workflow_name)
         now = self._clock()
         task = wf.start_task(self._id(), repo_id, at=now, memo=memo)
+        task.governor_task_id = governor_task_id
         task.updated_at = now  # creation time = first mutation
         await self._store.create_task(task)
         return task
@@ -249,7 +257,9 @@ class TaskService:
         :meth:`create_task` (and REST ``POST /tasks``) remain the ungated user/dashboard path.
         """
         actor = await self._require_orchestrator(actor_task_id)
-        return await self.create_task(actor.repo_id, workflow_name, memo=memo)
+        return await self.create_task(
+            actor.repo_id, workflow_name, memo=memo, governor_task_id=actor_task_id
+        )
 
     async def workflow_names_as(self, actor_task_id: str) -> list[str]:
         """List workflow names for an orchestrator task (gated): discovery for a child's ``workflow``."""
@@ -433,6 +443,19 @@ class TaskService:
         """Set/clear the task's deliberate ``blocked`` marker (orthogonal to the turn)."""
         task = await self.get_task(task_id)
         task.blocked = blocked
+        await self._save_task(task)
+        return task
+
+    async def set_governor(self, task_id: str, governor_task_id: str | None) -> Task:
+        """Set or clear the governor task for ``task_id``.
+
+        Pass a non-None ``governor_task_id`` to link an overseer; pass ``None`` to remove it.
+        When non-None, the governor task must exist (raises :class:`NotFound` if not).
+        """
+        task = await self.get_task(task_id)
+        if governor_task_id is not None:
+            await self.get_task(governor_task_id)  # ensure governor exists
+        task.governor_task_id = governor_task_id
         await self._save_task(task)
         return task
 

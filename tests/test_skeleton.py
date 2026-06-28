@@ -163,6 +163,28 @@ def test_list_tasks_returns_no_history(client: TaskServiceClient) -> None:
     assert len(detail["history"]) > 0
 
 
+def test_governor_task_id_over_rest(client: TaskServiceClient) -> None:
+    governor_id = client.create_task("r1", "spike")["id"]
+    child_id = client.create_task("r1", "spike")["id"]
+
+    # Unset on create by default.
+    assert client.get_task(child_id)["governor_task_id"] is None
+
+    # Create with governor_task_id set via the body.
+    child2 = client._json(client._http.post(
+        "/tasks", json={"repo_id": "r1", "workflow": "spike", "governor_task_id": governor_id}
+    ))
+    assert child2["governor_task_id"] == governor_id
+
+    # Set/clear via PUT /tasks/{id}/governor.
+    out = client.set_governor(child_id, governor_id)
+    assert out["governor_task_id"] == governor_id
+    assert client.get_task(child_id)["governor_task_id"] == governor_id  # persisted
+
+    cleared = client.set_governor(child_id, None)
+    assert cleared["governor_task_id"] is None
+
+
 def test_list_tasks_terminal_filter(client: TaskServiceClient) -> None:
     # Create one active task and one complete task.
     active_id = client.create_task("r1", "spike")["id"]

@@ -161,6 +161,21 @@ async def test_orchestrator_creates_in_its_own_repo(tmp_path: Path) -> None:
     assert child.repo_id == "r2"  # in the orchestrator's own repo, not some other repo
 
 
+async def test_create_task_as_sets_governor_task_id(tmp_path: Path) -> None:
+    svc = await _service(tmp_path)
+    boss = await svc.create_task("r1", "orchestrator")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        result = await s.call_tool(
+            "create_task",
+            {"orchestrator_task_id": boss.id, "workflow": "spike"},
+        )
+        assert result.isError is False
+        child_id = result.structuredContent["id"]  # type: ignore[index]
+    child = await svc.get_task(child_id)
+    assert child.governor_task_id == boss.id  # auto-wired to the orchestrator
+
+
 async def test_create_task_rejected_for_non_orchestrator(tmp_path: Path) -> None:
     svc = await _service(tmp_path)
     task = await svc.create_task("r1", "spike")  # spike does not orchestrate

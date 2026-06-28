@@ -263,6 +263,10 @@ class Task:
     #: actual). The GithubForge workflows and the orchestrator record it when producing the plan.
     #: ``None`` until estimated.
     token_estimate: int | None = None
+    #: The task that *governs* (oversees) this one — its ``id``. Set by the orchestrator on the
+    #: tasks it creates so the relationship is recorded; also settable manually via
+    #: :meth:`TaskService.set_governor`. ``None`` for ungoverned tasks.
+    governor_task_id: str | None = None
     #: ISO-8601 timestamp of the last mutation (any field change or history update), stamped by
     #: the task service. ``None`` only for tasks created before this field was introduced.
     updated_at: str | None = None
