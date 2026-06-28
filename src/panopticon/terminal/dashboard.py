@@ -124,7 +124,7 @@ _SEPARATOR_KEY = "__separator__"
 def _separator_cells(columns: int) -> list[Text]:
     """A dim box-drawing rule, one cell per task-table column — the visual divider between the
     active tasks and the terminal (COMPLETE/DROPPED) ones that sink below them."""
-    return [Text("─" * 8, style="dim") for _ in range(columns)]
+    return [Text("─" * 200, style="dim") for _ in range(columns)]
 
 
 def _slug_cell(task: JsonObj, prefix: str = "") -> Text:
