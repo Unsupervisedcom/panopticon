@@ -36,24 +36,63 @@ you want to spawn. Throughout, your *own* task id is shown below; the new task h
 1. **Choose the workflow.** Pick the `workflow` (usually `github-self-reviewed` or
    `github-peer-reviewed`; `list_workflows` lists the valid names). New tasks are created in
    *your own* repo — this first iteration can't create tasks in another repo.
-2. **Create it.** Call the `create_task` tool with `orchestrator_task_id` set to *your own* task
-   id, plus `workflow`, and a `memo` — a **brief reminder of what the task is** (a one-line
-   label for the dashboard), **not** a full description. The full description goes in the
-   `plan.md` you write in step 4, not the memo. Record the **new task's id** from the result.
+2. **Create it.** Call the `create_task` tool with:
+   - `orchestrator_task_id` set to *your own* task id
+   - `workflow`
+   - `memo` — a **brief one-line label for the dashboard** (not a full description)
+   - `initial_prompt="review your plan"` — prefilled into the child agent's input box on first
+     spawn so it starts by reading the plan you wrote rather than re-planning
+   - `artifacts={{"plan.md": "<full markdown plan>"}}` — write the plan **inside this call** so
+     it exists before the spawner can ever pick up the task; the spawner finds it present
+   Record the **new task's id** from the result.
 3. **Name it.** `set_slug` on the new id with a short kebab-case slug.
-4. **Write its plan.** `put_artifact` on the new id with `name="{GithubForgeWorkflow.PLAN_ARTIFACT_NAME}"` and the full
-   markdown plan for *that* task.
-5. **Estimate its cost.** `set_token_estimate` on the new id with your forecast of the total
+4. **Estimate its cost.** `set_token_estimate` on the new id with your forecast of the total
    tokens *that* task will consume.
-6. **Clear the planning gates.** `resolve_responsibility` on the new id with `key="plan-written"`,
+5. **Clear the planning gates.** `resolve_responsibility` on the new id with `key="plan-written"`,
    `status="met"`, then again with `key="token-estimated"`, `status="met"`.
-7. **Hand it to the user.** `set_turn` on the new id with `turn="user"`.
+6. **Hand it to the user.** `set_turn` on the new id with `turn="user"`.
 
 The new task now sits in **PLANNING** with its plan written and the gate cleared — the user
-approves it by advancing it to ITERATING. (A container will later spawn for it; because
-`plan-written` is already met and the turn is the user's, its own agent will hand straight back
-rather than re-plan.) When you have spawned everything the request calls for, hand back to the
-user — they mark this orchestrator task COMPLETE when satisfied.
+approves it by advancing it to ITERATING. When its container starts, the agent sees
+"review your plan" prefilled in its input box; `plan.md` is guaranteed to already exist
+because it was written inside step 2. When you have spawned everything the request calls
+for, hand back to the user — they mark this orchestrator task COMPLETE when satisfied.
+"""
+
+
+_REVIEW_TASK_INSTRUCTIONS = """\
+Review a spawned task's change and either approve it or leave a `review.md` artifact on the task.
+Pass the child task's id as the argument when invoking this skill.
+
+1. **Get the task.** Call `get_task` with the child task id from `$ARGUMENTS`. Note its slug,
+   state, URL (the PR link, if any), and memo.
+2. **Read its plan.** Call `list_artifacts` on the child task id, then read its `plan.md`
+   artifact (via the returned MCP URI) to understand what the task set out to do.
+3. **Inspect the diff.** If the task has a URL (a PR link):
+   - `gh pr view <URL>` — read the PR title and description.
+   - `gh pr diff <URL>` — read the full diff.
+4. **Assess.** Does the implementation match the plan? Are there correctness bugs, missing edge
+   cases, or clear simplifications? Is scope appropriate (no extra changes beyond what was planned)?
+5. **Decide — two outcomes only:**
+   - **Agree:** If the change looks correct and complete, state your approval briefly in the
+     conversation. No artifact is written to the child task.
+   - **Have feedback:** If there are issues, write a `review.md` artifact to the *child task*:
+
+     ```
+     put_artifact(task_id=<child_task_id>, name="review.md", content=<findings>)
+     ```
+
+     Format `review.md` as:
+     ```
+     # Review — <slug>
+
+     ## Must fix
+     - <actionable finding>
+
+     ## Suggestions
+     - <optional, lower-priority finding>
+     ```
+     Omit a section if empty. Keep findings concrete and actionable (file + line where relevant).
 """
 
 
@@ -72,11 +111,16 @@ class Orchestrator(Workflow):
     initial = Orchestrating
 
     def skills(self) -> Sequence[Skill]:
-        """The ``spawn-task`` skill: the recipe for creating one task and seeding it plan-ready."""
+        """``spawn-task`` seeds a new child task plan-ready; ``review-task`` reviews one."""
         return (
             Skill(
                 "spawn-task",
                 "Create a new task and seed it with a plan, ready for the user to approve.",
                 _SPAWN_TASK_INSTRUCTIONS,
+            ),
+            Skill(
+                "review-task",
+                "Review a spawned task's change — approve it or leave a review.md artifact on the task.",
+                _REVIEW_TASK_INSTRUCTIONS,
             ),
         )

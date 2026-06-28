@@ -223,6 +223,25 @@ def test_spawn_prefills_the_input_box_with_the_memo_on_first_spawn(tmp_path: Pat
     os.unlink(str(call["prompt_file"]))
 
 
+def test_spawn_passes_initial_prompt_as_env_var_and_suppresses_memo_prefill() -> None:
+    rec, prefill = _Recorder(), _FakePrefill()
+    runner = LocalRunner("http://svc", run=rec, prefill=prefill)
+    runner.spawn("t1", memo="build the thing", initial_prompt="review your plan")
+    docker_run = rec.calls[2][0]
+    assert "PANOPTICON_INITIAL_PROMPT=review your plan" in docker_run
+    assert prefill.calls == []  # memo is NOT prefilled when initial_prompt is set
+    assert not any(c[:3] == ["docker", "volume", "inspect"] for c, _ in rec.calls)  # no vol probe
+
+
+def test_spawn_passes_initial_prompt_as_env_var_when_no_memo() -> None:
+    rec, prefill = _Recorder(), _FakePrefill()
+    runner = LocalRunner("http://svc", run=rec, prefill=prefill)
+    runner.spawn("t1", initial_prompt="review your plan")
+    docker_run = rec.calls[2][0]
+    assert "PANOPTICON_INITIAL_PROMPT=review your plan" in docker_run
+    assert prefill.calls == []  # nothing is prefilled (initial_prompt goes via CLI arg, not prefill)
+
+
 def test_spawn_does_not_prefill_without_a_memo() -> None:
     rec, prefill = _Recorder(), _FakePrefill()
     LocalRunner("http://svc", run=rec, prefill=prefill).spawn("t1")

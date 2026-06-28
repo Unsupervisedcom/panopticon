@@ -44,9 +44,10 @@ def test_can_always_drop() -> None:
     assert task.state == "DROPPED"
 
 
-def test_exposes_spawn_task_skill() -> None:
+def test_exposes_spawn_task_and_review_task_skills() -> None:
     names = {s.name for s in WF.skills()}
-    assert names == {"spawn-task"}
+    assert names == {"spawn-task", "review-task"}
+    assert all(s.description and s.instructions for s in WF.skills())
 
 
 def test_carries_no_forge_plumbing() -> None:

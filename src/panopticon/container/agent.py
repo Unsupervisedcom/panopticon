@@ -100,7 +100,7 @@ def trust_workspace(config_dir: Path, cwd: Path) -> Path:
     return config
 
 
-def _claude_argv(config_dir: Path, cwd: Path) -> list[str]:
+def _claude_argv(config_dir: Path, cwd: Path, *, initial_prompt: str | None = None) -> list[str]:
     """`claude` argv, resuming the project's most recent conversation if one exists.
 
     The agent runs unattended in a throwaway container on a per-task clone, so it launches with
@@ -111,6 +111,10 @@ def _claude_argv(config_dir: Path, cwd: Path) -> list[str]:
     so this resumes both within a container's life and **across respawn/recreate** — claude history
     persists even though the container layer is thrown away. If our path encoding ever misses
     claude's, we simply start fresh — a safe degradation.
+
+    On a **first run** (no prior session) with an ``initial_prompt``, the prompt is appended as a
+    positional argument so claude processes it immediately. On a resumed session (``--continue``) the
+    prompt is omitted — the agent is already mid-task and re-sending it would be noise.
     """
     argv = ["claude", "--dangerously-skip-permissions"]
     overview = config_dir / WORKFLOW_OVERVIEW_FILE
@@ -122,6 +126,8 @@ def _claude_argv(config_dir: Path, cwd: Path) -> list[str]:
     project = config_dir / "projects" / str(cwd).replace("/", "-")
     if any(project.glob("*.jsonl")):
         argv.append("--continue")
+    elif initial_prompt:
+        argv.append(initial_prompt)  # positional: claude sends this as the agent's first message
     return argv
 
 
@@ -131,7 +137,8 @@ def _run_claude(config_dir: Path) -> None:  # pragma: no cover - real LLM; skipi
     Unlike an ``exec``, this returns control to :func:`main` when claude exits, so it can stop the
     container (the task → down → respawn). claude inherits this pane's TTY (it's the interactive
     surface ``tmux attach`` reaches)."""
-    argv = _claude_argv(config_dir, Path.cwd())
+    initial_prompt = os.environ.get("PANOPTICON_INITIAL_PROMPT") or None
+    argv = _claude_argv(config_dir, Path.cwd(), initial_prompt=initial_prompt)
     subprocess.run(argv, env={**os.environ, "CLAUDE_CONFIG_DIR": str(config_dir)})
 
 

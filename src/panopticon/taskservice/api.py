@@ -70,6 +70,7 @@ class TaskSummaryOut(BaseModel):
     turn: Actor
     blocked: bool
     memo: str | None
+    initial_prompt: str | None
     slug: str | None
     url: str | None
     branch: str | None
@@ -94,6 +95,7 @@ class TaskOut(BaseModel):
     turn: Actor
     blocked: bool
     memo: str | None  # a brief one-line reminder of what the task is, collected at creation (shown in the summary)
+    initial_prompt: str | None  # optional text prefilled into Claude's input box on first spawn
     slug: str | None
     url: str | None  # an optional external URL (PR, issue, …); the dashboard's `p` hotkey opens it
     branch: str | None
@@ -156,6 +158,8 @@ class CreateTaskIn(BaseModel):
     workflow: str
     memo: str | None = None
     governor_task_id: str | None = None
+    initial_prompt: str | None = None
+    artifacts: dict[str, str] | None = None
 
 
 class GovernorIn(BaseModel):
@@ -423,6 +427,8 @@ def create_app(service: TaskService) -> FastAPI:
                 body.workflow,
                 memo=body.memo,
                 governor_task_id=body.governor_task_id,
+                initial_prompt=body.initial_prompt,
+                artifacts=body.artifacts,
             )
         )
 

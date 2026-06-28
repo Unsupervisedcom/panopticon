@@ -92,15 +92,29 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
             "workflows). The task is created in your own repo. Pass your own task id as "
             "orchestrator_task_id. The `memo` is a brief, one-line reminder of what the task "
             "is (shown in the dashboard) — not a full description; the full description goes "
-            "in the task's plan.md. The new task's governor_task_id is set to orchestrator_task_id "
+            "in the task's plan.md. `initial_prompt` (optional) is text prefilled unsent into "
+            "Claude's input box on first spawn — e.g. \"review your plan\". `artifacts` "
+            "(optional) is a name→content map of artifacts to write immediately (e.g. "
+            "{\"plan.md\": \"...\"}) — written before the call returns so the spawner always "
+            "finds them present. The new task's governor_task_id is set to orchestrator_task_id "
             "automatically. Returns the new task."
         )
     )
     async def create_task(
-        orchestrator_task_id: str, workflow: str, memo: str | None = None
+        orchestrator_task_id: str,
+        workflow: str,
+        memo: str | None = None,
+        initial_prompt: str | None = None,
+        artifacts: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         return _task(
-            await service.create_task_as(orchestrator_task_id, workflow, memo=memo)
+            await service.create_task_as(
+                orchestrator_task_id,
+                workflow,
+                memo=memo,
+                initial_prompt=initial_prompt,
+                artifacts=artifacts,
+            )
         )
 
     @mcp.tool(description="List workflow names (gated to orchestration workflows); pass your own task id as orchestrator_task_id.")

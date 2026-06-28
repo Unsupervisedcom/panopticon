@@ -190,8 +190,33 @@ async def test_create_task_rejected_for_non_orchestrator(tmp_path: Path) -> None
     assert len(await svc.list_tasks()) == 1  # nothing was created
 
 
+async def test_create_task_with_initial_prompt_and_artifacts(tmp_path: Path) -> None:
+    """create_task with initial_prompt and artifacts writes both atomically."""
+    svc = await _service(tmp_path)
+    boss = await svc.create_task("r1", "orchestrator")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        result = await s.call_tool(
+            "create_task",
+            {
+                "orchestrator_task_id": boss.id,
+                "workflow": "github-self-reviewed",
+                "memo": "Add a /healthz endpoint",
+                "initial_prompt": "review your plan",
+                "artifacts": {"plan.md": "# Plan\nDo the thing."},
+            },
+        )
+        assert result.isError is False
+        child_id = result.structuredContent["id"]  # type: ignore[index]
+
+    child = await svc.get_task(child_id)
+    assert child.initial_prompt == "review your plan"
+    # plan.md is present immediately — no separate put_artifact call needed
+    assert await svc.get_artifact(child_id, "plan.md") == b"# Plan\nDo the thing."
+
+
 async def test_orchestrator_seeds_a_child_ready_to_approve(tmp_path: Path) -> None:
-    """The motivating end-to-end: create a github-self-reviewed task, then seed it plan-ready —
+    """The motivating end-to-end: create a github-self-reviewed task with the plan inline —
     plan.md written, a token estimate recorded, `plan-written`/`token-estimated` met, turn handed
     to the user."""
     svc = await _service(tmp_path)
@@ -204,11 +229,12 @@ async def test_orchestrator_seeds_a_child_ready_to_approve(tmp_path: Path) -> No
                 "orchestrator_task_id": boss.id,
                 "workflow": "github-self-reviewed",
                 "memo": "Add a /healthz endpoint",
+                "initial_prompt": "review your plan",
+                "artifacts": {"plan.md": "# Plan\n..."},
             },
         )
         child_id = created.structuredContent["id"]  # type: ignore[index]
         await s.call_tool("set_slug", {"task_id": child_id, "slug": "add-healthz"})
-        await s.call_tool("put_artifact", {"task_id": child_id, "name": "plan.md", "content": "# Plan\n..."})
         await s.call_tool("set_token_estimate", {"task_id": child_id, "token_estimate": 500000})
         await s.call_tool(
             "resolve_responsibility",

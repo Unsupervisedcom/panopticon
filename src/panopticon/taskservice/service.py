@@ -214,16 +214,20 @@ class TaskService:
         *,
         memo: str | None = None,
         governor_task_id: str | None = None,
+        initial_prompt: str | None = None,
+        artifacts: dict[str, str] | None = None,
     ) -> Task:
         await self.get_repo(repo_id)  # ensure exists (raises NotFound)
         if governor_task_id is not None:
             await self.get_task(governor_task_id)  # ensure governor exists (raises NotFound)
         wf = self._workflow(workflow_name)
         now = self._clock()
-        task = wf.start_task(self._id(), repo_id, at=now, memo=memo)
+        task = wf.start_task(self._id(), repo_id, at=now, memo=memo, initial_prompt=initial_prompt)
         task.governor_task_id = governor_task_id
         task.updated_at = now  # creation time = first mutation
         await self._store.create_task(task)
+        for name, content in (artifacts or {}).items():
+            await self.put_artifact(task.id, name, content.encode())
         return task
 
     async def _require_orchestrator(self, actor_task_id: str) -> Task:
@@ -247,6 +251,8 @@ class TaskService:
         workflow_name: str,
         *,
         memo: str | None = None,
+        initial_prompt: str | None = None,
+        artifacts: dict[str, str] | None = None,
     ) -> Task:
         """Create a task **on behalf of an orchestrator task** — gated to orchestration workflows.
 
@@ -258,7 +264,12 @@ class TaskService:
         """
         actor = await self._require_orchestrator(actor_task_id)
         return await self.create_task(
-            actor.repo_id, workflow_name, memo=memo, governor_task_id=actor_task_id
+            actor.repo_id,
+            workflow_name,
+            memo=memo,
+            governor_task_id=actor_task_id,
+            initial_prompt=initial_prompt,
+            artifacts=artifacts,
         )
 
     async def workflow_names_as(self, actor_task_id: str) -> list[str]:
