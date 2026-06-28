@@ -28,6 +28,7 @@ import os
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 import httpx
 
@@ -161,13 +162,16 @@ def run_host(
     cache: CloneCache,
     git: GitClones,
     images: ImageBuilder | None = None,
+    makedirs: Callable[[str], None] = lambda p: Path(p).mkdir(parents=True, exist_ok=True),
     interval: float = 2.0,
     until: Callable[[], bool] | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
     """Wire the spawner + provisioner over a shared per-task-clone root and run the host loop."""
+    git.configure_safe_directory()
     spawner = Spawner(
-        client, runner, runner_id=runner_id, cache=cache, tasks_root=tasks_root, git=git, images=images
+        client, runner, runner_id=runner_id, cache=cache, tasks_root=tasks_root, git=git, images=images,
+        makedirs=makedirs,
     )
     provisioner = Provisioner(client, clones_root=tasks_root, git=git)
     HostDaemon(client, spawner, provisioner, interval=interval, sleep=sleep).run(until=until)

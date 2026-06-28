@@ -28,7 +28,7 @@ def test_path_is_repo_scoped_under_root() -> None:
 
 def test_clones_on_first_use() -> None:
     rec = _Recorder()
-    cache = CloneCache("/clones", run=rec, exists=lambda _p: False)
+    cache = CloneCache("/clones", run=rec, exists=lambda _p: False, makedirs=lambda _p: None)
     path = cache.ensure("r1", "https://x/r1.git")
     assert path == "/clones/r1"
     assert rec.calls == [["git", "clone", "https://x/r1.git", "/clones/r1"]]
@@ -36,13 +36,21 @@ def test_clones_on_first_use() -> None:
 
 def test_fetches_when_the_clone_exists() -> None:
     rec = _Recorder()
-    cache = CloneCache("/clones", run=rec, exists=lambda _p: True)
+    cache = CloneCache("/clones", run=rec, exists=lambda _p: True, makedirs=lambda _p: None)
     path = cache.ensure("r1", "https://x/r1.git")
     assert path == "/clones/r1"
     assert rec.calls == [
         ["git", "-C", "/clones/r1", "fetch", "--all", "--prune"],
         ["git", "-C", "/clones/r1", "merge", "--ff-only"],  # advance local base to upstream (else stale)
     ]
+
+
+def test_ensure_creates_root_dir_before_cloning(tmp_path: Path) -> None:
+    root = tmp_path / "clones"
+    assert not root.exists()
+    cache = CloneCache(str(root), run=lambda *_a, **_kw: "", exists=lambda _p: False)
+    cache.ensure("r1", "https://x/r1.git")
+    assert root.is_dir()
 
 
 # -- integration: a real git repo ---------------------------------------------------

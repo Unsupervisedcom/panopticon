@@ -107,3 +107,7 @@ class GitClones:
     def set_origin(self, *, repo_path: str, url: str) -> None:
         """``git -C <repo> remote set-url origin <url>`` — point at the forge, not the cache."""
         self._run(["git", "-C", repo_path, "remote", "set-url", "origin", url])
+
+    def configure_safe_directory(self) -> None:
+        """Allow git operations on any path regardless of ownership (idempotent)."""
+        self._run(["git", "config", "--global", "--add", "safe.directory", "*"])

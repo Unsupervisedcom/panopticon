@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
+from pathlib import Path
 
 from panopticon.core.git import CommandRunner, _subprocess_run
 
@@ -34,10 +35,12 @@ class CloneCache:
         *,
         run: CommandRunner = _subprocess_run,
         exists: Callable[[str], bool] = os.path.isdir,
+        makedirs: Callable[[str], None] = lambda p: Path(p).mkdir(parents=True, exist_ok=True),
     ) -> None:
         self._root = root.rstrip("/")
         self._run = run
         self._exists = exists
+        self._makedirs = makedirs
 
     def path(self, repo_id: str) -> str:
         """Where this repo's clone lives — ``<root>/<repo_id>`` (the worktree base)."""
@@ -57,5 +60,6 @@ class CloneCache:
             self._run(["git", "-C", path, "fetch", "--all", "--prune"])
             self._run(["git", "-C", path, "merge", "--ff-only"])  # advance the base branch to upstream
         else:
+            self._makedirs(self._root)
             self._run(["git", "clone", git_url, path])
         return path
