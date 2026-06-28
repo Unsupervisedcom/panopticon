@@ -1455,13 +1455,23 @@ def test_group_by_governor_governor_not_in_list_behaves_as_root() -> None:
     assert [(t["id"], p) for t, p in result] == [("wrk", "")]
 
 
-def test_group_by_governor_cross_section_not_grouped() -> None:
-    # Active governor + terminal governed → different sections, so not grouped.
+def test_group_by_governor_terminal_governed_follows_active_governor() -> None:
+    # A governed task in COMPLETE state is pulled into the active section when its governor
+    # is still active, so it nests under the governor above the divider.
     governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None, "state": "WORKING"}
     governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov", "state": "COMPLETE"}
     sorted_tasks = sorted([governor, governed], key=_sort_key)
     result = _group_by_governor(sorted_tasks)
-    assert [(t["id"], p) for t, p in result] == [("gov", ""), ("wrk", "")]
+    assert [(t["id"], p) for t, p in result] == [("gov", ""), ("wrk", "└─ ")]
+
+
+def test_group_by_governor_all_terminal_no_governor_stays_terminal() -> None:
+    # Two unrelated terminal tasks: no governor chain → both stay in the terminal section.
+    t1 = {**_TASK, "id": "t1", "slug": "alpha", "governor_task_id": None, "state": "COMPLETE"}
+    t2 = {**_TASK, "id": "t2", "slug": "bravo", "governor_task_id": None, "state": "DROPPED"}
+    result = _group_by_governor([t1, t2])
+    # Both terminal → active list is empty; terminal list contains both at root depth.
+    assert [(t["id"], p) for t, p in result] == [("t1", ""), ("t2", "")]
 
 
 def test_group_by_governor_multiple_governed_tasks_in_sort_order() -> None:
