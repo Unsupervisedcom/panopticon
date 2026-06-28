@@ -57,6 +57,42 @@ user — they mark this orchestrator task COMPLETE when satisfied.
 """
 
 
+_REVIEW_TASK_INSTRUCTIONS = """\
+Review a spawned task's change and either approve it or leave a `review.md` artifact on the task.
+Pass the child task's id as the argument when invoking this skill.
+
+1. **Get the task.** Call `get_task` with the child task id from `$ARGUMENTS`. Note its slug,
+   state, URL (the PR link, if any), and memo.
+2. **Read its plan.** Call `list_artifacts` on the child task id, then read its `plan.md`
+   artifact (via the returned MCP URI) to understand what the task set out to do.
+3. **Inspect the diff.** If the task has a URL (a PR link):
+   - `gh pr view <URL>` — read the PR title and description.
+   - `gh pr diff <URL>` — read the full diff.
+4. **Assess.** Does the implementation match the plan? Are there correctness bugs, missing edge
+   cases, or clear simplifications? Is scope appropriate (no extra changes beyond what was planned)?
+5. **Decide — two outcomes only:**
+   - **Agree:** If the change looks correct and complete, state your approval briefly in the
+     conversation. No artifact is written to the child task.
+   - **Have feedback:** If there are issues, write a `review.md` artifact to the *child task*:
+
+     ```
+     put_artifact(task_id=<child_task_id>, name="review.md", content=<findings>)
+     ```
+
+     Format `review.md` as:
+     ```
+     # Review — <slug>
+
+     ## Must fix
+     - <actionable finding>
+
+     ## Suggestions
+     - <optional, lower-priority finding>
+     ```
+     Omit a section if empty. Keep findings concrete and actionable (file + line where relevant).
+"""
+
+
 class Orchestrator(Workflow):
     """ORCHESTRATING → {COMPLETE, DROPPED}. Agent-driven, ungated, and allowed to create and
     pre-plan other tasks (``orchestrates = True``)."""
@@ -72,11 +108,16 @@ class Orchestrator(Workflow):
     initial = Orchestrating
 
     def skills(self) -> Sequence[Skill]:
-        """The ``spawn-task`` skill: the recipe for creating one task and seeding it plan-ready."""
+        """``spawn-task`` seeds a new child task plan-ready; ``review-task`` reviews one."""
         return (
             Skill(
                 "spawn-task",
                 "Create a new task and seed it with a plan, ready for the user to approve.",
                 _SPAWN_TASK_INSTRUCTIONS,
+            ),
+            Skill(
+                "review-task",
+                "Review a spawned task's change — approve it or leave a review.md artifact on the task.",
+                _REVIEW_TASK_INSTRUCTIONS,
             ),
         )
