@@ -241,3 +241,62 @@ def test_list_tasks_terminal_filter(client: TaskServiceClient) -> None:
 
     terminal_only = http.get("/tasks", params={"terminal": "true"}).json()
     assert [t["id"] for t in terminal_only] == [done_id]
+
+
+# -- cascade-drop: dropping a governor drops all non-terminal governed tasks -----
+
+
+def _make_governed(client: TaskServiceClient, gov_id: str) -> str:
+    """Create a spike task governed by gov_id; return its id."""
+    return client._json(
+        client._http.post("/tasks", json={"repo_id": "r1", "workflow": "spike", "governor_task_id": gov_id})
+    )["id"]
+
+
+def test_cascade_drop_governed_tasks(client: TaskServiceClient) -> None:
+    gov_id = client.create_task("r1", "spike")["id"]
+    child1_id = _make_governed(client, gov_id)
+    child2_id = _make_governed(client, gov_id)
+
+    client.request_transition(gov_id, "DROPPED", trigger="drop")
+
+    assert client.get_task(gov_id)["state"] == "DROPPED"
+    assert client.get_task(child1_id)["state"] == "DROPPED"
+    assert client.get_task(child2_id)["state"] == "DROPPED"
+
+
+def test_cascade_drop_recursive(client: TaskServiceClient) -> None:
+    # Governor → child → grandchild; dropping governor cascades through all levels.
+    gov_id = client.create_task("r1", "spike")["id"]
+    child_id = _make_governed(client, gov_id)
+    grandchild_id = _make_governed(client, child_id)
+
+    client.request_transition(gov_id, "DROPPED", trigger="drop")
+
+    assert client.get_task(gov_id)["state"] == "DROPPED"
+    assert client.get_task(child_id)["state"] == "DROPPED"
+    assert client.get_task(grandchild_id)["state"] == "DROPPED"
+
+
+def test_cascade_drop_skips_already_terminal_governed(client: TaskServiceClient) -> None:
+    # A governed task that is already COMPLETE before the governor drops stays COMPLETE.
+    gov_id = client.create_task("r1", "spike")["id"]
+    done_child_id = _make_governed(client, gov_id)
+    active_child_id = _make_governed(client, gov_id)
+
+    client.request_transition(done_child_id, "COMPLETE", trigger="advance")
+    client.request_transition(gov_id, "DROPPED", trigger="drop")
+
+    assert client.get_task(done_child_id)["state"] == "COMPLETE"   # untouched
+    assert client.get_task(active_child_id)["state"] == "DROPPED"  # cascaded
+
+
+def test_cascade_drop_via_set_state(client: TaskServiceClient) -> None:
+    # cascade-drop also fires when the governor is dropped via set_state (free move).
+    gov_id = client.create_task("r1", "spike")["id"]
+    child_id = _make_governed(client, gov_id)
+
+    client._http.put(f"/tasks/{gov_id}/state", json={"state": "DROPPED"})
+
+    assert client.get_task(gov_id)["state"] == "DROPPED"
+    assert client.get_task(child_id)["state"] == "DROPPED"
