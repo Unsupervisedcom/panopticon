@@ -1421,22 +1421,22 @@ async def test_help_screen_closes_on_escape() -> None:
         assert app.is_running
 
 
-# -- governor grouping (_group_by_governor / _slug_cell depth) ----------------------
+# -- governor grouping (_group_by_governor / _slug_cell prefix) ----------------------
 
 
 def test_group_by_governor_ungoverned_tasks_unchanged() -> None:
     t1 = {**_TASK, "id": "t1", "slug": "alpha", "governor_task_id": None}
     t2 = {**_TASK, "id": "t2", "slug": "bravo", "governor_task_id": None}
     result = _group_by_governor([t1, t2])
-    assert [(t["id"], d) for t, d in result] == [("t1", 0), ("t2", 0)]
+    assert [(t["id"], p) for t, p in result] == [("t1", ""), ("t2", "")]
 
 
 def test_group_by_governor_governed_task_appears_after_governor() -> None:
-    # Both active; governed sorted after governor by slug → stays after, depth 1.
+    # Both active; governed is the only (last) child → gets "└─ " connector.
     governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
     governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov"}
     result = _group_by_governor([governor, governed])
-    assert [(t["id"], d) for t, d in result] == [("gov", 0), ("wrk", 1)]
+    assert [(t["id"], p) for t, p in result] == [("gov", ""), ("wrk", "└─ ")]
 
 
 def test_group_by_governor_governed_before_governor_in_sort_still_groups() -> None:
@@ -1446,13 +1446,13 @@ def test_group_by_governor_governed_before_governor_in_sort_still_groups() -> No
     sorted_tasks = sorted([governor, governed], key=_sort_key)
     assert sorted_tasks[0]["id"] == "wrk"  # governed sorts first alphabetically
     result = _group_by_governor(sorted_tasks)
-    assert [(t["id"], d) for t, d in result] == [("gov", 0), ("wrk", 1)]
+    assert [(t["id"], p) for t, p in result] == [("gov", ""), ("wrk", "└─ ")]
 
 
 def test_group_by_governor_governor_not_in_list_behaves_as_root() -> None:
     governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "missing-id"}
     result = _group_by_governor([governed])
-    assert [(t["id"], d) for t, d in result] == [("wrk", 0)]
+    assert [(t["id"], p) for t, p in result] == [("wrk", "")]
 
 
 def test_group_by_governor_cross_section_not_grouped() -> None:
@@ -1461,7 +1461,7 @@ def test_group_by_governor_cross_section_not_grouped() -> None:
     governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov", "state": "COMPLETE"}
     sorted_tasks = sorted([governor, governed], key=_sort_key)
     result = _group_by_governor(sorted_tasks)
-    assert [(t["id"], d) for t, d in result] == [("gov", 0), ("wrk", 0)]
+    assert [(t["id"], p) for t, p in result] == [("gov", ""), ("wrk", "")]
 
 
 def test_group_by_governor_multiple_governed_tasks_in_sort_order() -> None:
@@ -1470,23 +1470,40 @@ def test_group_by_governor_multiple_governed_tasks_in_sort_order() -> None:
     w2 = {**_TASK, "id": "w2", "slug": "bravo", "governor_task_id": "gov"}
     sorted_tasks = sorted([governor, w1, w2], key=_sort_key)
     result = _group_by_governor(sorted_tasks)
-    assert [(t["id"], d) for t, d in result] == [("gov", 0), ("w1", 1), ("w2", 1)]
+    assert [(t["id"], p) for t, p in result] == [("gov", ""), ("w1", "├─ "), ("w2", "└─ ")]
 
 
-def test_slug_cell_depth_adds_indentation() -> None:
+def test_group_by_governor_tree_connectors_nested() -> None:
+    # Governor → child-1 (non-last) → grandchild; Governor → child-2 (last).
+    gov = {**_TASK, "id": "gov", "slug": "orch", "governor_task_id": None}
+    c1 = {**_TASK, "id": "c1", "slug": "child-1", "governor_task_id": "gov"}
+    gc = {**_TASK, "id": "gc", "slug": "grand", "governor_task_id": "c1"}
+    c2 = {**_TASK, "id": "c2", "slug": "child-2", "governor_task_id": "gov"}
+    sorted_tasks = sorted([gov, c1, gc, c2], key=_sort_key)
+    result = _group_by_governor(sorted_tasks)
+    assert [(t["id"], p) for t, p in result] == [
+        ("gov", ""),
+        ("c1", "├─ "),
+        ("gc", "│  └─ "),
+        ("c2", "└─ "),
+    ]
+
+
+def test_slug_cell_prefix_tree_connectors() -> None:
     task = {**_TASK, "slug": "worker", "memo": None}
-    assert _slug_cell(task, depth=0).plain == "worker"  # unchanged
-    assert _slug_cell(task, depth=1).plain == "  worker"
-    assert _slug_cell(task, depth=2).plain == "    worker"
+    assert _slug_cell(task).plain == "worker"             # no prefix (root)
+    assert _slug_cell(task, "├─ ").plain == "├─ worker"   # non-last child
+    assert _slug_cell(task, "└─ ").plain == "└─ worker"   # last child
+    assert _slug_cell(task, "│  └─ ").plain == "│  └─ worker"  # nested
 
 
-def test_slug_cell_depth_with_memo() -> None:
+def test_slug_cell_prefix_with_memo() -> None:
     task = {"slug": "worker", "memo": "fix it"}
-    assert _slug_cell(task, depth=1).plain == "  worker[fix it]"
+    assert _slug_cell(task, "├─ ").plain == "├─ worker[fix it]"
 
 
 async def test_governed_task_appears_under_governor_in_dashboard() -> None:
-    # Governor and governed both active; governed must follow governor with an indented slug.
+    # Governor and governed both active; governed follows governor with a tree connector.
     governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
     governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov"}
     app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
@@ -1497,5 +1514,5 @@ async def test_governed_task_appears_under_governor_in_dashboard() -> None:
         assert order == ["gov", "wrk"]
         gov_row = table.get_row("gov")
         wrk_row = table.get_row("wrk")
-        assert gov_row[4].plain == "orchestrator"  # slug column (index 4) — not indented
-        assert wrk_row[4].plain == "  worker"      # two-space indent
+        assert gov_row[4].plain == "orchestrator"        # slug column (index 4) — no prefix
+        assert wrk_row[4].plain == "└─ worker"           # last (only) child gets └─
