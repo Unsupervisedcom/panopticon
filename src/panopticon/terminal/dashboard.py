@@ -192,12 +192,24 @@ def _group_section(tasks: list[JsonObj]) -> list[tuple[JsonObj, str]]:
 def _group_by_governor(tasks: list[JsonObj]) -> list[tuple[JsonObj, str]]:
     """Reorder tasks so governed tasks appear immediately after their governor.
 
-    Groups are applied separately within the active and terminal sections so the
-    active-before-terminal ordering invariant (and the separator) is preserved.
-    A governed task whose governor is in the other section appears at root depth 0
-    (empty prefix) in its own section."""
-    active = [t for t in tasks if t["state"] not in TERMINAL_LABELS]
-    terminal = [t for t in tasks if t["state"] in TERMINAL_LABELS]
+    Section (active vs terminal) is determined by the governor chain, not just the task's
+    own state: a task is "active" for placement purposes if it *or any ancestor governor*
+    is non-terminal. This keeps governed tasks nested under their governor in the active
+    section even when the governed task itself has reached a terminal state."""
+    task_by_id = {t["id"]: t for t in tasks}
+
+    def section_is_active(task_id: str, visited: set[str]) -> bool:
+        if task_id not in task_by_id or task_id in visited:
+            return False
+        visited.add(task_id)
+        task = task_by_id[task_id]
+        if task["state"] not in TERMINAL_LABELS:
+            return True
+        gov_id = task.get("governor_task_id")
+        return section_is_active(gov_id, visited) if gov_id else False
+
+    active = [t for t in tasks if section_is_active(t["id"], set())]
+    terminal = [t for t in tasks if not section_is_active(t["id"], set())]
     return _group_section(active) + _group_section(terminal)
 
 

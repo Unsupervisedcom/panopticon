@@ -29,7 +29,7 @@ from panopticon.core.models import (
     compose_container_status,
 )
 from panopticon.core.provisioning import PROVISION_SKILL
-from panopticon.core.state import TERMINAL_LABELS
+from panopticon.core.state import TERMINAL_LABELS, Dropped
 from panopticon.core.store import NotFound, Store
 from panopticon.core.workflow import Workflow
 
@@ -397,7 +397,18 @@ class TaskService:
         # task/artifacts; run before the single save so any task mutation persists with it.
         await wf.on_transition(task, from_state=from_state, to_state=task.state, artifacts=self._artifacts)
         await self._save_task(task)
+        if to_state == Dropped.label:
+            await self._cascade_drop_governed(task.id, trigger=trigger, note=note)
         return task
+
+    async def _cascade_drop_governed(self, governor_id: str, *, trigger: str | None, note: str | None) -> None:
+        """Drop every non-terminal task governed by governor_id.
+
+        Called after a governor lands in DROPPED. Each child's own _commit_transition also
+        runs this, so nested governor chains cascade without an explicit outer loop."""
+        for child in await self._store.list_tasks_summary():
+            if child.governor_task_id == governor_id and child.state not in TERMINAL_LABELS:
+                await self.request_transition(child.id, Dropped.label, trigger="cascade-drop", note=note)
 
     async def resolve_responsibility(
         self, task_id: str, key: str, *, status: Status, comment: str | None = None
