@@ -94,7 +94,7 @@ def test_babysit_merge_skill_covers_key_protocol_elements() -> None:
     instructions = merge_skill.instructions
     assert "CLOSED" in instructions          # Gap 3: PR closed without merge
     assert "run_in_background" in instructions  # Gap 1: push-driven, non-blocking watch
-    assert "state file" in instructions.lower() or "state_file" in instructions or ".panopticon-babysit-merge-state" in instructions  # Gap 2: cross-turn state
+    assert "state artifact" in instructions.lower() or "babysit-merge-state" in instructions  # Gap 2: cross-turn state (stored as task artifact)
     assert "double" in instructions.lower() or "already" in instructions.lower() or "autoMergeRequest" in instructions  # Gap 4: no double-queuing
 
 
