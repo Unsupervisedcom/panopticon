@@ -31,8 +31,7 @@ serve:  ## Run the task service over HTTP (the control plane)
 dashboard:  ## Launch the dashboard (foreground; no tmux)
 	uv run panopticon dashboard
 
-start:  ## Run panopticon: task service + session-service runner (background) + dashboard supervisor
-	$(MAKE) migrate
+start: migrate  ## Run panopticon: task service + session-service runner (background) + dashboard supervisor
 	# Always kill-and-recreate so a crashed process doesn't leave a stale session that make start silently reuses.
 	tmux -L panopticon kill-session -t service 2>/dev/null || true
 	tmux -L panopticon new-session -d -s service 'uv run python -m panopticon.taskservice'
