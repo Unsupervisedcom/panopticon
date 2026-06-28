@@ -165,6 +165,11 @@ class TaskServiceClient:
         """Set/clear the deliberate `blocked` marker (survives turn flips)."""
         return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/blocked", json={"blocked": blocked})))
 
+    def set_governor(self, task_id: str, governor_task_id: str | None) -> JsonObj:
+        """Set or clear the governor task (the task that oversees this one)."""
+        return cast(JsonObj, self._json(self._http.put(
+            f"/tasks/{task_id}/governor", json={"governor_task_id": governor_task_id})))
+
     def record_provisioning(self, task_id: str, branch: str, clone: str) -> JsonObj:
         """Record the slug-named branch + per-task clone the session service created (ADR 0011)."""
         body: JsonObj = {"branch": branch, "clone": clone}

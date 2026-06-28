@@ -213,13 +213,17 @@ class TaskService:
         workflow_name: str,
         *,
         memo: str | None = None,
+        governor_task_id: str | None = None,
         initial_prompt: str | None = None,
         artifacts: dict[str, str] | None = None,
     ) -> Task:
         await self.get_repo(repo_id)  # ensure exists (raises NotFound)
+        if governor_task_id is not None:
+            await self.get_task(governor_task_id)  # ensure governor exists (raises NotFound)
         wf = self._workflow(workflow_name)
         now = self._clock()
         task = wf.start_task(self._id(), repo_id, at=now, memo=memo, initial_prompt=initial_prompt)
+        task.governor_task_id = governor_task_id
         task.updated_at = now  # creation time = first mutation
         await self._store.create_task(task)
         for name, content in (artifacts or {}).items():
@@ -263,6 +267,7 @@ class TaskService:
             actor.repo_id,
             workflow_name,
             memo=memo,
+            governor_task_id=actor_task_id,
             initial_prompt=initial_prompt,
             artifacts=artifacts,
         )
@@ -449,6 +454,19 @@ class TaskService:
         """Set/clear the task's deliberate ``blocked`` marker (orthogonal to the turn)."""
         task = await self.get_task(task_id)
         task.blocked = blocked
+        await self._save_task(task)
+        return task
+
+    async def set_governor(self, task_id: str, governor_task_id: str | None) -> Task:
+        """Set or clear the governor task for ``task_id``.
+
+        Pass a non-None ``governor_task_id`` to link an overseer; pass ``None`` to remove it.
+        When non-None, the governor task must exist (raises :class:`NotFound` if not).
+        """
+        task = await self.get_task(task_id)
+        if governor_task_id is not None:
+            await self.get_task(governor_task_id)  # ensure governor exists
+        task.governor_task_id = governor_task_id
         await self._save_task(task)
         return task
 

@@ -78,6 +78,7 @@ class TaskSummaryOut(BaseModel):
     claimed_by: str | None
     tokens_used: int | None
     token_estimate: int | None
+    governor_task_id: str | None = None
     updated_at: str | None = None
     provisioned: bool
     container_status: str = "–"
@@ -102,6 +103,7 @@ class TaskOut(BaseModel):
     claimed_by: str | None  # the runner that owns this task (the spawn gate), or None
     tokens_used: int | None  # cumulative tokens the container's claude has used (None until reported)
     token_estimate: int | None  # the agent's forecast of total tokens (set in planning; None until then)
+    governor_task_id: str | None = None  # the task that oversees this one, or None for ungoverned tasks
     updated_at: str | None = None  # ISO-8601 timestamp of the last mutation, stamped by the task service
     provisioned: bool  # computed (Task.provisioned): branch + clone recorded
     #: The composed container-lifecycle status the dashboard displays (the task service folds the
@@ -155,8 +157,13 @@ class CreateTaskIn(BaseModel):
     repo_id: str
     workflow: str
     memo: str | None = None
+    governor_task_id: str | None = None
     initial_prompt: str | None = None
     artifacts: dict[str, str] | None = None
+
+
+class GovernorIn(BaseModel):
+    governor_task_id: str | None
 
 
 class ResponsibilityIn(BaseModel):
@@ -419,6 +426,7 @@ def create_app(service: TaskService) -> FastAPI:
                 body.repo_id,
                 body.workflow,
                 memo=body.memo,
+                governor_task_id=body.governor_task_id,
                 initial_prompt=body.initial_prompt,
                 artifacts=body.artifacts,
             )
@@ -537,6 +545,10 @@ def create_app(service: TaskService) -> FastAPI:
     @app.put("/tasks/{task_id}/blocked")
     async def set_blocked(task_id: str, body: BlockedIn) -> TaskOut:
         return _task_out(await service.set_blocked(task_id, body.blocked))
+
+    @app.put("/tasks/{task_id}/governor")
+    async def set_governor(task_id: str, body: GovernorIn) -> TaskOut:
+        return _task_out(await service.set_governor(task_id, body.governor_task_id))
 
     @app.put("/tasks/{task_id}/claim")
     async def claim(task_id: str, body: ClaimIn) -> TaskOut:

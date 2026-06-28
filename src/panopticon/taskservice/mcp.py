@@ -96,7 +96,8 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
             "Claude's input box on first spawn — e.g. \"review your plan\". `artifacts` "
             "(optional) is a name→content map of artifacts to write immediately (e.g. "
             "{\"plan.md\": \"...\"}) — written before the call returns so the spawner always "
-            "finds them present. Returns the new task."
+            "finds them present. The new task's governor_task_id is set to orchestrator_task_id "
+            "automatically. Returns the new task."
         )
     )
     async def create_task(
