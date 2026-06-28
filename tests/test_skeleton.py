@@ -142,17 +142,17 @@ def test_set_dependencies_over_rest(client: TaskServiceClient) -> None:
     task_a = client.create_task("r1", "spike")["id"]
     task_b = client.create_task("r1", "spike")["id"]
 
-    assert client.get_task(task_a)["depends_on"] == []  # empty on create
+    assert client.get_task(task_a)["depends_on_task_ids"] == []  # empty on create
 
     # Set a dependency and verify it's returned and persisted.
     out = client.set_dependencies(task_a, [task_b])
-    assert out["depends_on"] == [task_b]
-    assert client.get_task(task_a)["depends_on"] == [task_b]
+    assert out["depends_on_task_ids"] == [task_b]
+    assert client.get_task(task_a)["depends_on_task_ids"] == [task_b]
 
     # Replace with an empty list — clears all dependencies.
     out = client.set_dependencies(task_a, [])
-    assert out["depends_on"] == []
-    assert client.get_task(task_a)["depends_on"] == []
+    assert out["depends_on_task_ids"] == []
+    assert client.get_task(task_a)["depends_on_task_ids"] == []
 
 
 def test_set_dependencies_rejects_unknown_dep(client: TaskServiceClient) -> None:
@@ -174,8 +174,8 @@ def test_depends_on_included_in_list_summary(client: TaskServiceClient) -> None:
     task_b = client.create_task("r1", "spike")["id"]
     client.set_dependencies(task_a, [task_b])
     summaries = {t["id"]: t for t in client.list_tasks()}
-    assert summaries[task_a]["depends_on"] == [task_b]
-    assert summaries[task_b]["depends_on"] == []
+    assert summaries[task_a]["depends_on_task_ids"] == [task_b]
+    assert summaries[task_b]["depends_on_task_ids"] == []
 
 
 def test_registration_active_during_work(client: TaskServiceClient) -> None:

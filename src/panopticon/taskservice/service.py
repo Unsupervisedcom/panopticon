@@ -216,7 +216,7 @@ class TaskService:
         governor_task_id: str | None = None,
         initial_prompt: str | None = None,
         artifacts: dict[str, str] | None = None,
-        depends_on: list[str] | None = None,
+        depends_on_task_ids: list[str] | None = None,
     ) -> Task:
         await self.get_repo(repo_id)  # ensure exists (raises NotFound)
         if governor_task_id is not None:
@@ -229,8 +229,8 @@ class TaskService:
         await self._store.create_task(task)
         for name, content in (artifacts or {}).items():
             await self.put_artifact(task.id, name, content.encode())
-        if depends_on:
-            task = await self.set_dependencies(task.id, depends_on)
+        if depends_on_task_ids:
+            task = await self.set_dependencies(task.id, depends_on_task_ids)
         return task
 
     async def _require_orchestrator(self, actor_task_id: str) -> Task:
@@ -256,7 +256,7 @@ class TaskService:
         memo: str | None = None,
         initial_prompt: str | None = None,
         artifacts: dict[str, str] | None = None,
-        depends_on: list[str] | None = None,
+        depends_on_task_ids: list[str] | None = None,
     ) -> Task:
         """Create a task **on behalf of an orchestrator task** — gated to orchestration workflows.
 
@@ -274,7 +274,7 @@ class TaskService:
             governor_task_id=actor_task_id,
             initial_prompt=initial_prompt,
             artifacts=artifacts,
-            depends_on=depends_on,
+            depends_on_task_ids=depends_on_task_ids,
         )
 
     async def workflow_names_as(self, actor_task_id: str) -> list[str]:
@@ -488,7 +488,7 @@ class TaskService:
         for dep_id in dep_ids:
             if await self._store.get_task(dep_id) is None:
                 raise NotFound(f"dependency task {dep_id!r} does not exist")
-        task.depends_on = list(dep_ids)
+        task.depends_on_task_ids = list(dep_ids)
         await self._save_task(task)
         return task
 

@@ -80,7 +80,7 @@ class TaskSummaryOut(BaseModel):
     token_estimate: int | None
     governor_task_id: str | None = None
     updated_at: str | None = None
-    depends_on: list[str] = []
+    depends_on_task_ids: list[str] = []
     provisioned: bool
     container_status: str = "–"
     lifecycle_detail: str | None = None
@@ -106,7 +106,7 @@ class TaskOut(BaseModel):
     token_estimate: int | None  # the agent's forecast of total tokens (set in planning; None until then)
     governor_task_id: str | None = None  # the task that oversees this one, or None for ungoverned tasks
     updated_at: str | None = None  # ISO-8601 timestamp of the last mutation, stamped by the task service
-    depends_on: list[str] = []  # task IDs that must complete before work on this task should begin
+    depends_on_task_ids: list[str] = []  # task IDs that must complete before work on this task should begin
     provisioned: bool  # computed (Task.provisioned): branch + clone recorded
     #: The composed container-lifecycle status the dashboard displays (the task service folds the
     #: session service's reported phase with registration presence + runner liveness). Not a domain
@@ -162,7 +162,7 @@ class CreateTaskIn(BaseModel):
     governor_task_id: str | None = None
     initial_prompt: str | None = None
     artifacts: dict[str, str] | None = None
-    depends_on: list[str] = []
+    depends_on_task_ids: list[str] = []
 
 
 class DependenciesIn(BaseModel):
@@ -436,7 +436,7 @@ def create_app(service: TaskService) -> FastAPI:
                 governor_task_id=body.governor_task_id,
                 initial_prompt=body.initial_prompt,
                 artifacts=body.artifacts,
-                depends_on=body.depends_on or None,
+                depends_on_task_ids=body.depends_on_task_ids or None,
             )
         )
 

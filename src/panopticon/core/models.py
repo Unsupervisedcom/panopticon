@@ -275,7 +275,7 @@ class Task:
     updated_at: str | None = None
     #: Task IDs that must reach a terminal state before work on this task should begin.
     #: Tracking only — the state machine does not enforce this constraint.
-    depends_on: list[str] = field(default_factory=list)
+    depends_on_task_ids: list[str] = field(default_factory=list)
     history: list[HistoryEntry] = field(default_factory=list)
 
     @property

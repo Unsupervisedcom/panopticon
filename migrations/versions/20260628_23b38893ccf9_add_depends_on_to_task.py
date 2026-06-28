@@ -23,9 +23,9 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     # Task IDs that must complete before work on this task should begin (tracking only).
     with op.batch_alter_table('task', schema=None) as batch_op:
-        batch_op.add_column(sa.Column('depends_on', sa.JSON(), nullable=False, server_default='[]'))
+        batch_op.add_column(sa.Column('depends_on_task_ids', sa.JSON(), nullable=False, server_default='[]'))
 
 
 def downgrade() -> None:
     with op.batch_alter_table('task', schema=None) as batch_op:
-        batch_op.drop_column('depends_on')
+        batch_op.drop_column('depends_on_task_ids')

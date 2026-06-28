@@ -47,7 +47,7 @@ def test_blocked_defaults_false() -> None:
 
 
 def test_depends_on_defaults_to_empty_list() -> None:
-    assert _working_task().depends_on == []
+    assert _working_task().depends_on_task_ids == []
 
 
 def test_provisioned_reflects_the_branch() -> None:

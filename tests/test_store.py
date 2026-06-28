@@ -223,45 +223,45 @@ async def test_depends_on_defaults_to_empty(store: Store) -> None:
     await _new_task(store)
     got = await store.get_task("t1")
     assert got is not None
-    assert got.depends_on == []
+    assert got.depends_on_task_ids == []
 
 
 async def test_depends_on_round_trips(store: Store) -> None:
     await _seed_repo(store)
     task = await _new_task(store)
-    task.depends_on = ["t-a", "t-b"]
+    task.depends_on_task_ids = ["t-a", "t-b"]
     await store.save_task(task)
     got = await store.get_task("t1")
     assert got is not None
-    assert got.depends_on == ["t-a", "t-b"]
+    assert got.depends_on_task_ids == ["t-a", "t-b"]
 
 
 async def test_depends_on_replace_clears_previous(store: Store) -> None:
     await _seed_repo(store)
     task = await _new_task(store)
-    task.depends_on = ["t-a", "t-b"]
+    task.depends_on_task_ids = ["t-a", "t-b"]
     await store.save_task(task)
     task2 = await store.get_task("t1")
     assert task2 is not None
-    task2.depends_on = ["t-c"]
+    task2.depends_on_task_ids = ["t-c"]
     await store.save_task(task2)
     got = await store.get_task("t1")
     assert got is not None
-    assert got.depends_on == ["t-c"]  # previous deps replaced, not merged
+    assert got.depends_on_task_ids == ["t-c"]  # previous deps replaced, not merged
 
 
 async def test_depends_on_cleared_to_empty(store: Store) -> None:
     await _seed_repo(store)
     task = await _new_task(store)
-    task.depends_on = ["t-a"]
+    task.depends_on_task_ids = ["t-a"]
     await store.save_task(task)
     task2 = await store.get_task("t1")
     assert task2 is not None
-    task2.depends_on = []
+    task2.depends_on_task_ids = []
     await store.save_task(task2)
     got = await store.get_task("t1")
     assert got is not None
-    assert got.depends_on == []
+    assert got.depends_on_task_ids == []
 
 
 async def test_save_missing_task_raises(store: Store) -> None:
@@ -471,7 +471,7 @@ def _fully_populated_task() -> Task:
         token_estimate=500_000,
         governor_task_id="t-governor",
         updated_at="t2",
-        depends_on=["t-dep"],
+        depends_on_task_ids=["t-dep"],
         history=[
             HistoryEntry(
                 at="t0", from_state=None, to_state="PLAN", trigger="start", note="kickoff"
