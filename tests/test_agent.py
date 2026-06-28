@@ -18,6 +18,7 @@ class _FakeClient:
         self._skills = skills
         self._operations = operations or {}
         self._overview = overview
+        self.lifecycle_calls: list[dict[str, str | None]] = []
 
     def list_skills(self, task_id: str) -> list[dict[str, str]]:
         return self._skills
@@ -27,6 +28,12 @@ class _FakeClient:
 
     def workflow_overview(self, task_id: str) -> str:
         return self._overview
+
+    def report_lifecycle(
+        self, task_id: str, runner_id: str, phase: str, detail: str | None = None
+    ) -> dict[str, str | None]:
+        self.lifecycle_calls.append({"task_id": task_id, "runner_id": runner_id, "phase": phase, "detail": detail})
+        return {}
 
 
 def test_render_skills_writes_command_files(tmp_path: Path) -> None:
@@ -142,6 +149,7 @@ def test_main_bootstraps_into_a_container_local_config_dir_then_launches(
 ) -> None:
     monkeypatch.setenv("PANOPTICON_SERVICE_URL", "http://svc")
     monkeypatch.setenv("PANOPTICON_TASK_ID", "t1")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-test")
     events: list[str] = []
     agent.main(
         client_factory=lambda url: _FakeClient(  # type: ignore[arg-type,return-value]
@@ -163,3 +171,64 @@ def test_main_bootstraps_into_a_container_local_config_dir_then_launches(
     assert trust["projects"][str(Path.cwd())]["hasTrustDialogAccepted"] is True  # ...trust seeded...
     # ...launched with the container-local config dir, then the container is stopped on agent exit
     assert events == [f"launch:{tmp_path / '.claude'}", "on_exit"]
+
+
+def test_main_fails_fast_when_no_auth_token_is_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PANOPTICON_SERVICE_URL", "http://svc")
+    monkeypatch.setenv("PANOPTICON_TASK_ID", "t1")
+    monkeypatch.setenv("PANOPTICON_RUNNER_ID", "runner-1")
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    launched: list[str] = []
+    fake = _FakeClient([])
+    agent.main(
+        client_factory=lambda url: fake,  # type: ignore[arg-type,return-value]
+        home=tmp_path,
+        launch=lambda cfg: launched.append("launched"),
+        on_exit=lambda: launched.append("on_exit"),
+    )
+    assert launched == []  # launch must not be called
+    assert len(fake.lifecycle_calls) == 1
+    call = fake.lifecycle_calls[0]
+    assert call["phase"] == "failed"
+    assert call["runner_id"] == "runner-1"
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in (call["detail"] or "")
+
+
+def test_main_proceeds_when_anthropic_api_key_is_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PANOPTICON_SERVICE_URL", "http://svc")
+    monkeypatch.setenv("PANOPTICON_TASK_ID", "t1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    launched: list[str] = []
+    agent.main(
+        client_factory=lambda url: _FakeClient([]),  # type: ignore[arg-type,return-value]
+        home=tmp_path,
+        launch=lambda cfg: launched.append("launched"),
+        on_exit=lambda: launched.append("on_exit"),
+    )
+    assert "launched" in launched  # ANTHROPIC_API_KEY alone is sufficient
+
+
+def test_main_returns_early_without_lifecycle_call_when_runner_id_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PANOPTICON_SERVICE_URL", "http://svc")
+    monkeypatch.setenv("PANOPTICON_TASK_ID", "t1")
+    monkeypatch.delenv("PANOPTICON_RUNNER_ID", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    launched: list[str] = []
+    fake = _FakeClient([])
+    agent.main(
+        client_factory=lambda url: fake,  # type: ignore[arg-type,return-value]
+        home=tmp_path,
+        launch=lambda cfg: launched.append("launched"),
+        on_exit=lambda: launched.append("on_exit"),
+    )
+    assert launched == []  # still returns early without launching
+    assert fake.lifecycle_calls == []  # no lifecycle call when runner_id absent
