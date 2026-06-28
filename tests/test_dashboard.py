@@ -1427,16 +1427,18 @@ async def test_help_screen_closes_on_escape() -> None:
 def test_group_by_governor_ungoverned_tasks_unchanged() -> None:
     t1 = {**_TASK, "id": "t1", "slug": "alpha", "governor_task_id": None}
     t2 = {**_TASK, "id": "t2", "slug": "bravo", "governor_task_id": None}
-    result = _group_by_governor([t1, t2])
-    assert [(t["id"], p) for t, p in result] == [("t1", ""), ("t2", "")]
+    active, terminal = _group_by_governor([t1, t2])
+    assert [(t["id"], p) for t, p in active] == [("t1", ""), ("t2", "")]
+    assert terminal == []
 
 
 def test_group_by_governor_governed_task_appears_after_governor() -> None:
     # Both active; governed is the only (last) child → gets "└─ " connector.
     governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
     governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov"}
-    result = _group_by_governor([governor, governed])
-    assert [(t["id"], p) for t, p in result] == [("gov", ""), ("wrk", "└─ ")]
+    active, terminal = _group_by_governor([governor, governed])
+    assert [(t["id"], p) for t, p in active] == [("gov", ""), ("wrk", "└─ ")]
+    assert terminal == []
 
 
 def test_group_by_governor_governed_before_governor_in_sort_still_groups() -> None:
@@ -1445,14 +1447,16 @@ def test_group_by_governor_governed_before_governor_in_sort_still_groups() -> No
     governed = {**_TASK, "id": "wrk", "slug": "alpha", "governor_task_id": "gov"}
     sorted_tasks = sorted([governor, governed], key=_sort_key)
     assert sorted_tasks[0]["id"] == "wrk"  # governed sorts first alphabetically
-    result = _group_by_governor(sorted_tasks)
-    assert [(t["id"], p) for t, p in result] == [("gov", ""), ("wrk", "└─ ")]
+    active, terminal = _group_by_governor(sorted_tasks)
+    assert [(t["id"], p) for t, p in active] == [("gov", ""), ("wrk", "└─ ")]
+    assert terminal == []
 
 
 def test_group_by_governor_governor_not_in_list_behaves_as_root() -> None:
     governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "missing-id"}
-    result = _group_by_governor([governed])
-    assert [(t["id"], p) for t, p in result] == [("wrk", "")]
+    active, terminal = _group_by_governor([governed])
+    assert [(t["id"], p) for t, p in active] == [("wrk", "")]
+    assert terminal == []
 
 
 def test_group_by_governor_terminal_governed_follows_active_governor() -> None:
@@ -1461,17 +1465,18 @@ def test_group_by_governor_terminal_governed_follows_active_governor() -> None:
     governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None, "state": "WORKING"}
     governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov", "state": "COMPLETE"}
     sorted_tasks = sorted([governor, governed], key=_sort_key)
-    result = _group_by_governor(sorted_tasks)
-    assert [(t["id"], p) for t, p in result] == [("gov", ""), ("wrk", "└─ ")]
+    active, terminal = _group_by_governor(sorted_tasks)
+    assert [(t["id"], p) for t, p in active] == [("gov", ""), ("wrk", "└─ ")]
+    assert terminal == []
 
 
 def test_group_by_governor_all_terminal_no_governor_stays_terminal() -> None:
     # Two unrelated terminal tasks: no governor chain → both stay in the terminal section.
     t1 = {**_TASK, "id": "t1", "slug": "alpha", "governor_task_id": None, "state": "COMPLETE"}
     t2 = {**_TASK, "id": "t2", "slug": "bravo", "governor_task_id": None, "state": "DROPPED"}
-    result = _group_by_governor([t1, t2])
-    # Both terminal → active list is empty; terminal list contains both at root depth.
-    assert [(t["id"], p) for t, p in result] == [("t1", ""), ("t2", "")]
+    active, terminal = _group_by_governor([t1, t2])
+    assert active == []
+    assert [(t["id"], p) for t, p in terminal] == [("t1", ""), ("t2", "")]
 
 
 def test_group_by_governor_multiple_governed_tasks_in_sort_order() -> None:
@@ -1479,8 +1484,9 @@ def test_group_by_governor_multiple_governed_tasks_in_sort_order() -> None:
     w1 = {**_TASK, "id": "w1", "slug": "alpha", "governor_task_id": "gov"}
     w2 = {**_TASK, "id": "w2", "slug": "bravo", "governor_task_id": "gov"}
     sorted_tasks = sorted([governor, w1, w2], key=_sort_key)
-    result = _group_by_governor(sorted_tasks)
-    assert [(t["id"], p) for t, p in result] == [("gov", ""), ("w1", "├─ "), ("w2", "└─ ")]
+    active, terminal = _group_by_governor(sorted_tasks)
+    assert [(t["id"], p) for t, p in active] == [("gov", ""), ("w1", "├─ "), ("w2", "└─ ")]
+    assert terminal == []
 
 
 def test_group_by_governor_tree_connectors_nested() -> None:
@@ -1490,13 +1496,14 @@ def test_group_by_governor_tree_connectors_nested() -> None:
     gc = {**_TASK, "id": "gc", "slug": "grand", "governor_task_id": "c1"}
     c2 = {**_TASK, "id": "c2", "slug": "child-2", "governor_task_id": "gov"}
     sorted_tasks = sorted([gov, c1, gc, c2], key=_sort_key)
-    result = _group_by_governor(sorted_tasks)
-    assert [(t["id"], p) for t, p in result] == [
+    active, terminal = _group_by_governor(sorted_tasks)
+    assert [(t["id"], p) for t, p in active] == [
         ("gov", ""),
         ("c1", "├─ "),
         ("gc", "│  └─ "),
         ("c2", "└─ "),
     ]
+    assert terminal == []
 
 
 def test_slug_cell_prefix_tree_connectors() -> None:
@@ -1526,3 +1533,31 @@ async def test_governed_task_appears_under_governor_in_dashboard() -> None:
         wrk_row = table.get_row("wrk")
         assert gov_row[4].plain == "orchestrator"        # slug column (index 4) — no prefix
         assert wrk_row[4].plain == "└─ worker"           # last (only) child gets └─
+
+
+async def test_separator_after_group_not_mid_group() -> None:
+    # Regression: a terminal governed task whose governor is still active must stay in the
+    # active section, so the separator appears *after* the whole group — not between the
+    # governor and its child.
+    governor = {
+        **_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None,
+        "state": "WORKING",
+    }
+    governed = {
+        **_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov",
+        "state": "COMPLETE", "turn": "agent",
+    }
+    other_done = {
+        **_TASK, "id": "done", "slug": "other", "governor_task_id": None,
+        "state": "COMPLETE", "turn": "agent",
+    }
+    tasks = sorted([governor, governed, other_done], key=_sort_key)
+    app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        keys = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
+        # Governor and its terminal child both appear above the divider; unrelated terminal
+        # task appears below it.
+        assert keys.index("gov") < keys.index(_SEPARATOR_KEY)
+        assert keys.index("wrk") < keys.index(_SEPARATOR_KEY)
+        assert keys.index("done") > keys.index(_SEPARATOR_KEY)

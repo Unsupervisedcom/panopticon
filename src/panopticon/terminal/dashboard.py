@@ -189,13 +189,18 @@ def _group_section(tasks: list[JsonObj]) -> list[tuple[JsonObj, str]]:
     return result
 
 
-def _group_by_governor(tasks: list[JsonObj]) -> list[tuple[JsonObj, str]]:
+def _group_by_governor(
+    tasks: list[JsonObj],
+) -> tuple[list[tuple[JsonObj, str]], list[tuple[JsonObj, str]]]:
     """Reorder tasks so governed tasks appear immediately after their governor.
 
     Section (active vs terminal) is determined by the governor chain, not just the task's
     own state: a task is "active" for placement purposes if it *or any ancestor governor*
     is non-terminal. This keeps governed tasks nested under their governor in the active
-    section even when the governed task itself has reached a terminal state."""
+    section even when the governed task itself has reached a terminal state.
+
+    Returns ``(active_section, terminal_section)`` as separate lists so the caller can
+    insert the divider at the structural boundary rather than inspecting per-row state."""
     task_by_id = {t["id"]: t for t in tasks}
 
     def section_is_active(task_id: str, visited: set[str]) -> bool:
@@ -210,7 +215,7 @@ def _group_by_governor(tasks: list[JsonObj]) -> list[tuple[JsonObj, str]]:
 
     active = [t for t in tasks if section_is_active(t["id"], set())]
     terminal = [t for t in tasks if not section_is_active(t["id"], set())]
-    return _group_section(active) + _group_section(terminal)
+    return _group_section(active), _group_section(terminal)
 
 
 # Fields a search query matches against (cloude-cade filters on the task title; our nearest
@@ -945,19 +950,24 @@ class Dashboard(App[None]):
         for task in ordered:
             task["repo_name"] = self._repo_names.get(str(task.get("repo_id") or ""), "")
         # Group governed tasks under their governor (within each section), then filter.
-        grouped = _group_by_governor(ordered)
-        visible = [(t, p) for t, p in grouped if _matches(t, self._query)]
+        # The two sections come back separately so the divider sits at the structural
+        # boundary — not based on individual task state (a terminal governed task can live
+        # in the active section when its governor is still active).
+        active_group, terminal_group = _group_by_governor(ordered)
+        active_visible = [(t, p) for t, p in active_group if _matches(t, self._query)]
+        terminal_visible = [(t, p) for t, p in terminal_group if _matches(t, self._query)]
+        visible = active_visible + terminal_visible
         self._tasks = {t["id"]: t for t, _ in visible}
-        # Draw the active↔terminal divider once, before the first terminal row — but only when an
-        # active row precedes it (an all-terminal list gets no divider).
-        seen_active = False
-        separated = False
-        for task, prefix in visible:
-            terminal = task["state"] in TERMINAL_LABELS
-            if terminal and seen_active and not separated:
-                table.add_row(*_separator_cells(len(table.ordered_columns)), key=_SEPARATOR_KEY)
-                separated = True
-            seen_active = seen_active or not terminal
+        for task, prefix in active_visible:
+            table.add_row(
+                task["state"], _turn_cell(task), _status_cell(task),
+                _repo_cell(task, self._repo_names), _slug_cell(task, prefix),
+                key=task["id"],
+            )
+        # Draw the active↔terminal divider — only when both groups are non-empty.
+        if active_visible and terminal_visible:
+            table.add_row(*_separator_cells(len(table.ordered_columns)), key=_SEPARATOR_KEY)
+        for task, prefix in terminal_visible:
             table.add_row(
                 task["state"], _turn_cell(task), _status_cell(task),
                 _repo_cell(task, self._repo_names), _slug_cell(task, prefix),
