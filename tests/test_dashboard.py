@@ -16,10 +16,12 @@ from panopticon.terminal import dashboard
 from panopticon.terminal.dashboard import (
     Dashboard,
     _SEPARATOR_KEY,
+    _group_by_governor,
     _matches,
     _repo_cell,
     _short_tokens,
     _slug_cell,
+    _sort_key,
     _status_cell,
     _turn_cell,
     render_detail,
@@ -1417,3 +1419,83 @@ async def test_help_screen_closes_on_escape() -> None:
         await pilot.pause()
         assert len(app.screen_stack) == 1  # dismissed — back to the task view
         assert app.is_running
+
+
+# -- governor grouping (_group_by_governor / _slug_cell depth) ----------------------
+
+
+def test_group_by_governor_ungoverned_tasks_unchanged() -> None:
+    t1 = {**_TASK, "id": "t1", "slug": "alpha", "governor_task_id": None}
+    t2 = {**_TASK, "id": "t2", "slug": "bravo", "governor_task_id": None}
+    result = _group_by_governor([t1, t2])
+    assert [(t["id"], d) for t, d in result] == [("t1", 0), ("t2", 0)]
+
+
+def test_group_by_governor_governed_task_appears_after_governor() -> None:
+    # Both active; governed sorted after governor by slug → stays after, depth 1.
+    governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
+    governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov"}
+    result = _group_by_governor([governor, governed])
+    assert [(t["id"], d) for t, d in result] == [("gov", 0), ("wrk", 1)]
+
+
+def test_group_by_governor_governed_before_governor_in_sort_still_groups() -> None:
+    # Governed slug sorts before the governor, but it must still appear AFTER the governor.
+    governor = {**_TASK, "id": "gov", "slug": "zoo", "governor_task_id": None}
+    governed = {**_TASK, "id": "wrk", "slug": "alpha", "governor_task_id": "gov"}
+    sorted_tasks = sorted([governor, governed], key=_sort_key)
+    assert sorted_tasks[0]["id"] == "wrk"  # governed sorts first alphabetically
+    result = _group_by_governor(sorted_tasks)
+    assert [(t["id"], d) for t, d in result] == [("gov", 0), ("wrk", 1)]
+
+
+def test_group_by_governor_governor_not_in_list_behaves_as_root() -> None:
+    governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "missing-id"}
+    result = _group_by_governor([governed])
+    assert [(t["id"], d) for t, d in result] == [("wrk", 0)]
+
+
+def test_group_by_governor_cross_section_not_grouped() -> None:
+    # Active governor + terminal governed → different sections, so not grouped.
+    governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None, "state": "WORKING"}
+    governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov", "state": "COMPLETE"}
+    sorted_tasks = sorted([governor, governed], key=_sort_key)
+    result = _group_by_governor(sorted_tasks)
+    assert [(t["id"], d) for t, d in result] == [("gov", 0), ("wrk", 0)]
+
+
+def test_group_by_governor_multiple_governed_tasks_in_sort_order() -> None:
+    governor = {**_TASK, "id": "gov", "slug": "orch", "governor_task_id": None}
+    w1 = {**_TASK, "id": "w1", "slug": "alpha", "governor_task_id": "gov"}
+    w2 = {**_TASK, "id": "w2", "slug": "bravo", "governor_task_id": "gov"}
+    sorted_tasks = sorted([governor, w1, w2], key=_sort_key)
+    result = _group_by_governor(sorted_tasks)
+    assert [(t["id"], d) for t, d in result] == [("gov", 0), ("w1", 1), ("w2", 1)]
+
+
+def test_slug_cell_depth_adds_indentation() -> None:
+    task = {**_TASK, "slug": "worker", "memo": None}
+    assert _slug_cell(task, depth=0).plain == "worker"  # unchanged
+    assert _slug_cell(task, depth=1).plain == "  worker"
+    assert _slug_cell(task, depth=2).plain == "    worker"
+
+
+def test_slug_cell_depth_with_memo() -> None:
+    task = {"slug": "worker", "memo": "fix it"}
+    assert _slug_cell(task, depth=1).plain == "  worker[fix it]"
+
+
+async def test_governed_task_appears_under_governor_in_dashboard() -> None:
+    # Governor and governed both active; governed must follow governor with an indented slug.
+    governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
+    governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov"}
+    app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        order = [str(k.value) for k in table.rows]
+        assert order == ["gov", "wrk"]
+        gov_row = table.get_row("gov")
+        wrk_row = table.get_row("wrk")
+        assert gov_row[4].plain == "orchestrator"  # slug column (index 4) — not indented
+        assert wrk_row[4].plain == "  worker"      # two-space indent
