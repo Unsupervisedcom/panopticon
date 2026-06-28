@@ -127,20 +127,65 @@ def _separator_cells(columns: int) -> list[Text]:
     return [Text("─" * 8, style="dim") for _ in range(columns)]
 
 
-def _slug_cell(task: JsonObj) -> Text:
+def _slug_cell(task: JsonObj, depth: int = 0) -> Text:
     """The ``slug[memo]`` column: the slug followed by the task's memo in brackets.
 
     Bare slug when there's no memo; bare ``[memo]`` (no leading dash) when there's a
     memo but no slug; ``-`` only when neither is set.
+
+    ``depth`` adds two leading spaces per level for governed tasks nested under a governor.
 
     Returned as a Rich ``Text`` (like :func:`_turn_cell`), **not** a markup string: Textual renders
     bare ``str`` cells through console markup, which swallows the ``[…]`` — so a plain string would
     show just the bare slug (the bug that hid memos; the header had the same problem)."""
     slug = task.get("slug") or ""
     memo = task.get("memo")
+    indent = "  " * depth
     if memo:
-        return Text(f"{slug}[{memo}]")
-    return Text(slug or "-")
+        return Text(f"{indent}{slug}[{memo}]")
+    return Text(f"{indent}{slug or '-'}")
+
+
+def _group_section(tasks: list[JsonObj]) -> list[tuple[JsonObj, int]]:
+    """Group governed tasks under their governor within a single section (active or terminal).
+
+    Takes a pre-sorted list of tasks from one section and returns ``(task, depth)`` pairs.
+    A governed task whose ``governor_task_id`` matches another task in this list appears
+    immediately after that governor at ``depth = governor_depth + 1``.  Tasks whose governor
+    is absent from the list appear at root depth 0."""
+    task_ids = {t["id"] for t in tasks}
+    children: dict[str, list[JsonObj]] = {}
+    for t in tasks:
+        gov = t.get("governor_task_id")
+        if gov and gov in task_ids:
+            children.setdefault(gov, []).append(t)
+
+    governed_ids = {t["id"] for bucket in children.values() for t in bucket}
+
+    def expand(task: JsonObj, depth: int) -> list[tuple[JsonObj, int]]:
+        return [(task, depth)] + [
+            pair
+            for child in children.get(task["id"], [])
+            for pair in expand(child, depth + 1)
+        ]
+
+    result: list[tuple[JsonObj, int]] = []
+    for task in tasks:
+        if task["id"] not in governed_ids:
+            result.extend(expand(task, 0))
+    return result
+
+
+def _group_by_governor(tasks: list[JsonObj]) -> list[tuple[JsonObj, int]]:
+    """Reorder tasks so governed tasks appear immediately after their governor.
+
+    Groups are applied separately within the active and terminal sections so the
+    active-before-terminal ordering invariant (and the separator) is preserved.
+    A governed task whose governor is in the other section appears at root depth 0
+    in its own section."""
+    active = [t for t in tasks if t["state"] not in TERMINAL_LABELS]
+    terminal = [t for t in tasks if t["state"] in TERMINAL_LABELS]
+    return _group_section(active) + _group_section(terminal)
 
 
 # Fields a search query matches against (cloude-cade filters on the task title; our nearest
@@ -874,13 +919,15 @@ class Dashboard(App[None]):
         # Inject repo_name so _matches can search on it without a separate lookup per task.
         for task in ordered:
             task["repo_name"] = self._repo_names.get(str(task.get("repo_id") or ""), "")
-        visible = [t for t in ordered if _matches(t, self._query)]  # apply the search filter
-        self._tasks = {t["id"]: t for t in visible}
+        # Group governed tasks under their governor (within each section), then filter.
+        grouped = _group_by_governor(ordered)
+        visible = [(t, d) for t, d in grouped if _matches(t, self._query)]
+        self._tasks = {t["id"]: t for t, _ in visible}
         # Draw the active↔terminal divider once, before the first terminal row — but only when an
         # active row precedes it (an all-terminal list gets no divider).
         seen_active = False
         separated = False
-        for task in visible:
+        for task, depth in visible:
             terminal = task["state"] in TERMINAL_LABELS
             if terminal and seen_active and not separated:
                 table.add_row(*_separator_cells(len(table.ordered_columns)), key=_SEPARATOR_KEY)
@@ -888,7 +935,7 @@ class Dashboard(App[None]):
             seen_active = seen_active or not terminal
             table.add_row(
                 task["state"], _turn_cell(task), _status_cell(task),
-                _repo_cell(task, self._repo_names), _slug_cell(task),
+                _repo_cell(task, self._repo_names), _slug_cell(task, depth),
                 key=task["id"],
             )
         target = selected if selected in self._tasks else next(iter(self._tasks), None)
