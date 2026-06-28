@@ -81,6 +81,9 @@ def test_github_self_reviewed_inherits_the_forge_skills() -> None:
     skills = WF.skills()
     assert {s.name for s in skills} == {"open-pr", "babysit-ci", "babysit-merge"}
     assert all(s.description and s.instructions for s in skills)  # functional specs, not stubs
+    babysit = next(s for s in skills if s.name == "babysit-ci")
+    assert "run_in_background" in babysit.instructions  # push-driven pattern, not blocking watch
+    assert "state file" in babysit.instructions  # cross-turn state for retry budget
 
 
 def test_plan_artifact_name_and_uri_are_single_sourced_on_the_forge_base() -> None:

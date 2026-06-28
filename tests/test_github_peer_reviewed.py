@@ -87,6 +87,9 @@ def test_github_peer_reviewed_exposes_forge_skills() -> None:
     skills = WF.skills()
     assert {s.name for s in skills} == {"open-pr", "babysit-ci", "babysit-merge"}
     assert all(s.description and s.instructions for s in skills)  # functional specs, not stubs
+    babysit = next(s for s in skills if s.name == "babysit-ci")
+    assert "run_in_background" in babysit.instructions  # push-driven pattern, not blocking watch
+    assert "state file" in babysit.instructions  # cross-turn state for retry budget
 
 
 def test_github_peer_reviewed_image_layer_installs_gh() -> None:
