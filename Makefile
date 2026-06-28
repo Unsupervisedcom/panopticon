@@ -6,7 +6,7 @@
 IMAGE ?= panopticon-base
 
 help:  ## List available targets
-	@grep --no-filename --extended-regexp '^[a-z][a-z-]*:.*## ' $(MAKEFILE_LIST) | sort | awk -F':.*## ' '{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
+	@grep -h -E '^[a-z][a-z-]*:.*## ' $(MAKEFILE_LIST) | sort | awk -F':.*## ' '{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
 sync:  ## Create the venv and install dependencies
 	uv sync
@@ -40,7 +40,7 @@ start:  ## Run panopticon: task service + session-service runner (background) + 
 	uv run panopticon console
 
 stop:  ## Stop everything `make start` started: the task containers + the -L panopticon tmux server
-	-docker ps --all --quiet --filter name=^panopticon- | xargs --no-run-if-empty docker rm --force
+	-docker ps --all --quiet --filter name=^panopticon- | { ids=$$(cat); [ -z "$$ids" ] || docker rm --force $$ids; }
 	-tmux -L panopticon kill-server 2>/dev/null
 
 build:  ## Build the base task-container image (override with IMAGE=)
@@ -48,4 +48,4 @@ build:  ## Build the base task-container image (override with IMAGE=)
 
 clean:  ## Remove the base image and any composed panopticon-* images
 	-docker rmi --force $(IMAGE)
-	-docker images --quiet 'panopticon-*' | sort --unique | xargs --no-run-if-empty docker rmi --force
+	-docker images --quiet 'panopticon-*' | sort -u | { ids=$$(cat); [ -z "$$ids" ] || docker rmi --force $$ids; }
