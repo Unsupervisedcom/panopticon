@@ -168,7 +168,6 @@ def run_host(
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
     """Wire the spawner + provisioner over a shared per-task-clone root and run the host loop."""
-    git.configure_safe_directory()
     spawner = Spawner(
         client, runner, runner_id=runner_id, cache=cache, tasks_root=tasks_root, git=git, images=images,
         makedirs=makedirs,

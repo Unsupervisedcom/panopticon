@@ -263,29 +263,3 @@ def test_run_host_spawns_then_provisions_end_to_end(tmp_path: Path) -> None:
         got = client.get_task(task_id)
         assert runner.spawned == [task_id]  # not spawned again
         assert got["branch"] == "panopticon/fix-widget" and got["clone"] == f"/clones/{task_id}"
-
-
-def test_run_host_configures_safe_directory_at_startup(tmp_path: Path) -> None:
-    # run_host emits `git config --global --add safe.directory *` once before the daemon loop, via
-    # the injectable GitClones runner — so it's testable without a real git install.
-    service = TaskService(SqlAlchemyStore(), {"spike": Spike()}, FilesystemArtifactStore(tmp_path))
-    asyncio.run(service.init())
-    asyncio.run(service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://forge/r1.git", default_base="trunk")))
-    with TestClient(create_app(service)) as http:
-        client = TaskServiceClient(http)
-        git_calls: list[list[str]] = []
-
-        def recording_run(args: object, *, check: bool = True) -> str:
-            git_calls.append(list(args))  # type: ignore[arg-type]
-            return ""
-
-        run_host(
-            client, _FakeRunner(),
-            runner_id="host-1", tasks_root="/clones",
-            cache=CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None),
-            git=GitClones(run=recording_run),
-            makedirs=lambda _p: None,
-            sleep=lambda _s: None,
-            until=lambda: True,  # zero passes — only the startup call runs
-        )
-        assert ["git", "config", "--global", "--add", "safe.directory", "*"] in git_calls
