@@ -273,6 +273,9 @@ class Task:
     #: ISO-8601 timestamp of the last mutation (any field change or history update), stamped by
     #: the task service. ``None`` only for tasks created before this field was introduced.
     updated_at: str | None = None
+    #: Task IDs that must reach a terminal state before work on this task should begin.
+    #: Tracking only — the state machine does not enforce this constraint.
+    depends_on_task_ids: list[str] = field(default_factory=list)
     history: list[HistoryEntry] = field(default_factory=list)
 
     @property

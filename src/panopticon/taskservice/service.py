@@ -216,6 +216,7 @@ class TaskService:
         governor_task_id: str | None = None,
         initial_prompt: str | None = None,
         artifacts: dict[str, str] | None = None,
+        depends_on_task_ids: list[str] | None = None,
     ) -> Task:
         await self.get_repo(repo_id)  # ensure exists (raises NotFound)
         if governor_task_id is not None:
@@ -228,6 +229,8 @@ class TaskService:
         await self._store.create_task(task)
         for name, content in (artifacts or {}).items():
             await self.put_artifact(task.id, name, content.encode())
+        if depends_on_task_ids:
+            task = await self.set_dependencies(task.id, depends_on_task_ids)
         return task
 
     async def _require_orchestrator(self, actor_task_id: str) -> Task:
@@ -253,6 +256,7 @@ class TaskService:
         memo: str | None = None,
         initial_prompt: str | None = None,
         artifacts: dict[str, str] | None = None,
+        depends_on_task_ids: list[str] | None = None,
     ) -> Task:
         """Create a task **on behalf of an orchestrator task** — gated to orchestration workflows.
 
@@ -270,6 +274,7 @@ class TaskService:
             governor_task_id=actor_task_id,
             initial_prompt=initial_prompt,
             artifacts=artifacts,
+            depends_on_task_ids=depends_on_task_ids,
         )
 
     async def workflow_names_as(self, actor_task_id: str) -> list[str]:
@@ -467,6 +472,23 @@ class TaskService:
         if governor_task_id is not None:
             await self.get_task(governor_task_id)  # ensure governor exists
         task.governor_task_id = governor_task_id
+        await self._save_task(task)
+        return task
+
+    async def set_dependencies(self, task_id: str, dep_ids: list[str]) -> Task:
+        """Replace the task's dependency list with ``dep_ids``.
+
+        Each ID must reference an existing task; self-references are rejected. Passing an
+        empty list clears all dependencies. This is a plain recorded fact — the state machine
+        does not enforce the constraint.
+        """
+        if task_id in dep_ids:
+            raise ValueError(f"task {task_id!r} cannot depend on itself")
+        task = await self.get_task(task_id)
+        for dep_id in dep_ids:
+            if await self._store.get_task(dep_id) is None:
+                raise NotFound(f"dependency task {dep_id!r} does not exist")
+        task.depends_on_task_ids = list(dep_ids)
         await self._save_task(task)
         return task
 

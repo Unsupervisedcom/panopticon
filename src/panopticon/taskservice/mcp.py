@@ -80,6 +80,19 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
     async def set_blocked(task_id: str, blocked: bool) -> dict[str, Any]:
         return _task(await service.set_blocked(task_id, blocked))
 
+    @mcp.tool(
+        description=(
+            "Replace the task's dependency list with the given task IDs. "
+            "Each ID must reference an existing task; pass an empty list to clear all dependencies. "
+            "Dependencies are tracking only — the state machine does not enforce them."
+        )
+    )
+    async def set_dependencies(task_id: str, dep_ids: list[str]) -> dict[str, Any]:
+        try:
+            return _task(await service.set_dependencies(task_id, dep_ids))
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+
     # -- orchestration (gated to workflows whose `orchestrates` is set) -----------------------
     # These widen an agent beyond its own task — creating tasks and discovering workflows — so
     # each takes the acting orchestrator task's id and the service authorizes it against that
