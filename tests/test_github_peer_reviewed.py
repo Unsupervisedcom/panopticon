@@ -89,6 +89,15 @@ def test_github_peer_reviewed_exposes_forge_skills() -> None:
     assert all(s.description and s.instructions for s in skills)  # functional specs, not stubs
 
 
+def test_babysit_merge_skill_covers_key_protocol_elements() -> None:
+    merge_skill = next(s for s in WF.skills() if s.name == "babysit-merge")
+    instructions = merge_skill.instructions
+    assert "CLOSED" in instructions          # Gap 3: PR closed without merge
+    assert "run_in_background" in instructions  # Gap 1: push-driven, non-blocking watch
+    assert "state artifact" in instructions.lower() or "babysit-merge-state" in instructions  # Gap 2: cross-turn state (stored as task artifact)
+    assert "double" in instructions.lower() or "already" in instructions.lower() or "autoMergeRequest" in instructions  # Gap 4: no double-queuing
+
+
 def test_github_peer_reviewed_image_layer_installs_gh() -> None:
     assert "gh" in WF.image_layer()  # forge skills need gh layered onto the base image
 

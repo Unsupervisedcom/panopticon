@@ -152,6 +152,7 @@ class Spawner:
             if hook_file := repo.get("hook_file"):
                 self._run_hook(hook_file, task_id, repo["name"], workspace)
             self._report(task_id, LifecyclePhase.BUILDING)
+            self._images.build_base_if_missing()
             image = self._compose_image(task["workflow"], repo)
             return self._runner.spawn(
                 task_id,

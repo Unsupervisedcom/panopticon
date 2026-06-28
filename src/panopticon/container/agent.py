@@ -172,6 +172,16 @@ def main(
     client = client_factory(service_url)
     config_dir = (home or Path.home()) / ".claude"
     task_id = env["PANOPTICON_TASK_ID"]
+    runner_id = env.get("PANOPTICON_RUNNER_ID")
+    if not env.get("CLAUDE_CODE_OAUTH_TOKEN") and not env.get("ANTHROPIC_API_KEY"):
+        if runner_id:
+            client.report_lifecycle(
+                task_id,
+                runner_id,
+                phase="failed",
+                detail="No auth token — set CLAUDE_CODE_OAUTH_TOKEN in the repo's env_file (see docs/container-auth.md)",
+            )
+        return
     render_skills(client, task_id, config_dir.parent)
     render_operations(client, task_id, config_dir.parent)  # advance/drop/… as slash-commands
     write_settings(config_dir.parent)  # turn-flip hooks → <home>/.claude/settings.json

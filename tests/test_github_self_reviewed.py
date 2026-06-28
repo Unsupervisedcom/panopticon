@@ -83,6 +83,15 @@ def test_github_self_reviewed_inherits_the_forge_skills() -> None:
     assert all(s.description and s.instructions for s in skills)  # functional specs, not stubs
 
 
+def test_babysit_merge_skill_covers_key_protocol_elements() -> None:
+    merge_skill = next(s for s in WF.skills() if s.name == "babysit-merge")
+    instructions = merge_skill.instructions
+    assert "CLOSED" in instructions          # Gap 3: PR closed without merge
+    assert "run_in_background" in instructions  # Gap 1: push-driven, non-blocking watch
+    assert "state artifact" in instructions.lower() or "babysit-merge-state" in instructions  # Gap 2: cross-turn state (stored as task artifact)
+    assert "double" in instructions.lower() or "already" in instructions.lower() or "autoMergeRequest" in instructions  # Gap 4: no double-queuing
+
+
 def test_plan_artifact_name_and_uri_are_single_sourced_on_the_forge_base() -> None:
     # The forge base owns the plan convention; the subclass inherits the name + URI resolver.
     assert GithubForgeWorkflow.PLAN_ARTIFACT_NAME == "plan.md"

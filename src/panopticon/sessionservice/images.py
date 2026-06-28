@@ -9,11 +9,14 @@ daemon). LLM-free. The runner builds the composed image, then spawns the task on
 
 from __future__ import annotations
 
+import logging
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
 from panopticon.sessionservice.local_runner import DEFAULT_IMAGE, CommandRunner, _subprocess_run
+
+_log = logging.getLogger(__name__)
 
 
 def image_tag(workflow: str, repo_id: str) -> str:
@@ -42,3 +45,21 @@ class ImageBuilder:
             (Path(context) / "Dockerfile").write_text(dockerfile)
             self._run(["docker", "build", "--tag", tag, context])
         return tag
+
+    def build_base_if_missing(self, *, context: str = ".") -> bool:
+        """Probe for the base image; build it from docker/Dockerfile if absent.
+
+        Uses ``docker image inspect`` (fast, ~100 ms) to check presence. If the image is missing
+        (inspect returns an empty result), builds it with ``docker build``. Returns ``True`` if a
+        build was triggered, ``False`` if the image was already present."""
+        result = self._run(
+            ["docker", "image", "inspect", self._base], check=False
+        )
+        if result.strip() in ("", "[]"):
+            _log.warning("base image %r not found — building automatically", self._base)
+            self._run(
+                ["docker", "build", "--tag", self._base,
+                 "--file", "docker/Dockerfile", context]
+            )
+            return True
+        return False
