@@ -122,6 +122,7 @@ class _TaskRow(_Base):
     token_estimate: Mapped[int | None] = mapped_column(default=None)
     governor_task_id: Mapped[str | None] = mapped_column(ForeignKey("task.id"), default=None)
     updated_at: Mapped[str | None] = mapped_column(default=None)
+    depends_on: Mapped[list[str]] = mapped_column(JSON, default=list)
     history: Mapped[list[_HistoryRow]] = relationship(
         order_by="_HistoryRow.seq",
         cascade="all, delete-orphan",
@@ -148,6 +149,7 @@ class _TaskRow(_Base):
             token_estimate=self.token_estimate,
             governor_task_id=self.governor_task_id,
             updated_at=self.updated_at,
+            depends_on=list(self.depends_on or []),
             history=[h.to_domain() for h in self.history],
         )
 
@@ -171,6 +173,7 @@ class _TaskRow(_Base):
             token_estimate=task.token_estimate,
             governor_task_id=task.governor_task_id,
             updated_at=task.updated_at,
+            depends_on=list(task.depends_on),
             history=[_HistoryRow.from_domain(e, seq) for seq, e in enumerate(task.history)],
         )
 
@@ -374,6 +377,7 @@ class SqlAlchemyStore(Store):
             row.token_estimate = task.token_estimate
             row.governor_task_id = task.governor_task_id
             row.updated_at = task.updated_at
+            row.depends_on = list(task.depends_on)
             # The current (last stored) entry's promises may have been fulfilled in place.
             if stored:
                 _fulfil_current_promises(row.history[len(stored) - 1], task.history[len(stored) - 1])

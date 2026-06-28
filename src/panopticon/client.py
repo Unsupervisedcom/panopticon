@@ -170,6 +170,10 @@ class TaskServiceClient:
         return cast(JsonObj, self._json(self._http.put(
             f"/tasks/{task_id}/governor", json={"governor_task_id": governor_task_id})))
 
+    def set_dependencies(self, task_id: str, dep_ids: list[str]) -> JsonObj:
+        """Replace the task's dependency list (task IDs that must complete first)."""
+        return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/dependencies", json={"dep_ids": dep_ids})))
+
     def record_provisioning(self, task_id: str, branch: str, clone: str) -> JsonObj:
         """Record the slug-named branch + per-task clone the session service created (ADR 0011)."""
         body: JsonObj = {"branch": branch, "clone": clone}

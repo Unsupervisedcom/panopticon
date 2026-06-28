@@ -9,9 +9,9 @@ silently drift apart.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from dataclasses import MISSING, fields
+from dataclasses import MISSING, fields, is_dataclass
 from pathlib import Path
-from typing import Any, get_origin, get_type_hints
+from typing import Any, get_args, get_origin, get_type_hints
 
 import pytest
 from sqlalchemy import inspect
@@ -218,6 +218,52 @@ async def test_blocked_marker_round_trips(store: Store) -> None:
     assert (await store.get_task("t1")).blocked is True  # type: ignore[union-attr]
 
 
+async def test_depends_on_defaults_to_empty(store: Store) -> None:
+    await _seed_repo(store)
+    await _new_task(store)
+    got = await store.get_task("t1")
+    assert got is not None
+    assert got.depends_on == []
+
+
+async def test_depends_on_round_trips(store: Store) -> None:
+    await _seed_repo(store)
+    task = await _new_task(store)
+    task.depends_on = ["t-a", "t-b"]
+    await store.save_task(task)
+    got = await store.get_task("t1")
+    assert got is not None
+    assert got.depends_on == ["t-a", "t-b"]
+
+
+async def test_depends_on_replace_clears_previous(store: Store) -> None:
+    await _seed_repo(store)
+    task = await _new_task(store)
+    task.depends_on = ["t-a", "t-b"]
+    await store.save_task(task)
+    task2 = await store.get_task("t1")
+    assert task2 is not None
+    task2.depends_on = ["t-c"]
+    await store.save_task(task2)
+    got = await store.get_task("t1")
+    assert got is not None
+    assert got.depends_on == ["t-c"]  # previous deps replaced, not merged
+
+
+async def test_depends_on_cleared_to_empty(store: Store) -> None:
+    await _seed_repo(store)
+    task = await _new_task(store)
+    task.depends_on = ["t-a"]
+    await store.save_task(task)
+    task2 = await store.get_task("t1")
+    assert task2 is not None
+    task2.depends_on = []
+    await store.save_task(task2)
+    got = await store.get_task("t1")
+    assert got is not None
+    assert got.depends_on == []
+
+
 async def test_save_missing_task_raises(store: Store) -> None:
     await _seed_repo(store)
     task = WF.start_task("ghost", "r1", at="t0")
@@ -378,9 +424,20 @@ _SCHEMA: dict[type, tuple[type, set[str]]] = {
 
 
 def _scalar_field_names(domain: type) -> set[str]:
-    """Domain field names that should map to a column — i.e. excluding nested list fields."""
+    """Domain field names that should map to a column.
+
+    Excludes entity-list fields (e.g. ``list[HistoryEntry]``) that are ORM relationships,
+    but includes primitive-list fields (e.g. ``list[str]``) that are stored as JSON columns.
+    """
     hints = get_type_hints(domain)
-    return {f.name for f in fields(domain) if get_origin(hints[f.name]) is not list}
+
+    def _is_column_backed(hint: Any) -> bool:
+        if get_origin(hint) is not list:
+            return True
+        args = get_args(hint)
+        return bool(args) and not is_dataclass(args[0])
+
+    return {f.name for f in fields(domain) if _is_column_backed(hints[f.name])}
 
 
 @pytest.mark.parametrize("domain", list(_SCHEMA))
@@ -414,6 +471,7 @@ def _fully_populated_task() -> Task:
         token_estimate=500_000,
         governor_task_id="t-governor",
         updated_at="t2",
+        depends_on=["t-dep"],
         history=[
             HistoryEntry(
                 at="t0", from_state=None, to_state="PLAN", trigger="start", note="kickoff"

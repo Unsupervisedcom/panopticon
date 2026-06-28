@@ -46,6 +46,10 @@ def test_blocked_defaults_false() -> None:
     assert _working_task().blocked is False  # the deliberate marker starts clear
 
 
+def test_depends_on_defaults_to_empty_list() -> None:
+    assert _working_task().depends_on == []
+
+
 def test_provisioned_reflects_the_branch() -> None:
     task = _working_task()
     assert task.provisioned is False  # no branch yet
