@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
+from pathlib import Path
 
 from panopticon.client import JsonObj
 from panopticon.core.git import GitClones
@@ -28,6 +29,7 @@ def prepare_workspace(
     tasks_root: str,
     git: GitClones | None = None,
     exists: Callable[[str], bool] = os.path.isdir,
+    makedirs: Callable[[str], None] = lambda p: Path(p).mkdir(parents=True, exist_ok=True),
 ) -> str:
     """Ensure the task's per-task clone exists and return its path (mount this at ``/workspace``).
 
@@ -45,6 +47,7 @@ def prepare_workspace(
     git = git or GitClones()
     clone = f"{tasks_root.rstrip('/')}/{task_id}"
     if not exists(clone):
+        makedirs(str(Path(clone).parent))
         cache_path = cache.ensure(repo["id"], repo["git_url"])
         git.clone_local(cache_path=cache_path, dest=clone)
     git.set_origin(repo_path=clone, url=repo["git_url"])

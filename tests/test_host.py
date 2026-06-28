@@ -257,9 +257,9 @@ def test_run_host_spawns_then_provisions_end_to_end(tmp_path: Path) -> None:
 
         kw = dict(  # noqa: C408 - readability
             runner_id="host-1", tasks_root="/clones",
-            cache=CloneCache("/cache", run=_no_op_run, exists=lambda _p: True),
+            cache=CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None),
             git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),
-            sleep=lambda _s: None,
+            makedirs=lambda _p: None, sleep=lambda _s: None,
         )
 
         # Pass 1: fresh task → claimed + spawned; no slug yet → not provisioned.

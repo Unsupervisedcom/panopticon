@@ -15,6 +15,7 @@ import os
 import subprocess
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 import httpx
 
@@ -89,6 +90,7 @@ class Spawner:
         git: object | None = None,
         images: ImageBuilder | None = None,
         run_hook: Callable[[str, str, str, str], None] | None = None,
+        makedirs: Callable[[str], None] = lambda p: Path(p).mkdir(parents=True, exist_ok=True),
         now: Callable[[], float] = time.monotonic,
         max_respawns: int = MAX_RESPAWNS,
         respawn_reset: float = RESPAWN_RESET_SECONDS,
@@ -101,6 +103,7 @@ class Spawner:
         self._git = git
         self._images = images or ImageBuilder()
         self._run_hook = run_hook or _run_repo_hook
+        self._makedirs = makedirs
         self._now = now
         self._max_respawns = max_respawns
         self._respawn_reset = respawn_reset
@@ -143,7 +146,8 @@ class Spawner:
             repo = self._client.get_repo(task["repo_id"])
             self._report(task_id, LifecyclePhase.PREPARING)
             workspace = prepare_workspace(
-                task_id, repo, cache=self._cache, tasks_root=self._tasks_root, git=self._git  # type: ignore[arg-type]
+                task_id, repo, cache=self._cache, tasks_root=self._tasks_root, git=self._git,  # type: ignore[arg-type]
+                makedirs=self._makedirs,
             )
             if hook_file := repo.get("hook_file"):
                 self._run_hook(hook_file, task_id, repo["name"], workspace)
