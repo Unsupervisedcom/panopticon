@@ -90,6 +90,7 @@ def test_github_peer_reviewed_exposes_forge_skills() -> None:
     babysit = next(s for s in skills if s.name == "babysit-ci")
     assert "run_in_background" in babysit.instructions  # push-driven pattern, not blocking watch
     assert "state artifact" in babysit.instructions  # cross-turn state for retry budget
+    assert "retries" in babysit.instructions or "retry" in babysit.instructions  # per-check retry cap
 
 
 def test_babysit_merge_skill_covers_key_protocol_elements() -> None:
