@@ -18,11 +18,10 @@ Docker Engine alone (without Docker Desktop) is **not sufficient** on macOS — 
 ```
 macOS host                          Docker Desktop Linux VM
 ──────────────────────────────      ──────────────────────────────────
-make serve  → task service          panopticon-<id> containers
-make start  → task service             └─ agent (claude CLI)
-             + session service         └─ /workspace (per-task clone)
-             + dashboard              └─ entrypoint.sh (Linux tools)
-tmux -L panopticon server
+make start  → task service          panopticon-<id> containers
+             + session service         └─ agent (claude CLI)
+             + dashboard              └─ /workspace (per-task clone)
+tmux -L panopticon server            └─ entrypoint.sh (Linux tools)
 ```
 
 `docker/Dockerfile` and `docker/entrypoint.sh` use Linux-only commands (`groupmod`, `useradd`,
