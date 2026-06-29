@@ -12,10 +12,20 @@ puid="${PANOPTICON_PUID:-1000}"
 pgid="${PANOPTICON_PGID:-1000}"
 
 # Remap `panopticon` to the invoking ids (a no-op when they already match the baked default).
+# If the target gid/uid is already owned by a different principal, delete it first — groups
+# like `dialout` (gid 20 on Debian, same as macOS `staff`) are irrelevant in an agent container.
 if [ "$(id --group panopticon)" != "$pgid" ]; then
+    existing_group=$(getent group "$pgid" | cut --delimiter=: --fields=1 || true)
+    if [ -n "$existing_group" ] && [ "$existing_group" != "panopticon" ]; then
+        groupdel "$existing_group"
+    fi
     groupmod --gid "$pgid" panopticon
 fi
 if [ "$(id --user panopticon)" != "$puid" ]; then
+    existing_user=$(getent passwd "$puid" | cut --delimiter=: --fields=1 || true)
+    if [ -n "$existing_user" ] && [ "$existing_user" != "panopticon" ]; then
+        userdel "$existing_user"
+    fi
     usermod --uid "$puid" --gid "$pgid" panopticon
     chown --recursive "$puid:$pgid" /home/panopticon
 fi
