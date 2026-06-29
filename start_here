@@ -141,11 +141,16 @@ The repo should have a **small, self-contained coding task** to hand the agent �
 `--verbose` flag to the CLI", "fix the off-by-one in the pagination helper", "write a test for
 the `parse_config` function". Something that touches 1–3 files with a clear done state.
 
-Ask the user for (4 items):
-1 of 4. A short repo **ID** (slug) — suggest deriving it from the repo name, e.g. `myproject`
-2 of 4. The **git URL** — `https://github.com/org/repo` for GitHub, or an absolute local path
-3 of 4. The **default base branch** — usually `main`
-4 of 4. The **env file path** from Stage 3 — e.g. `/home/you/.panopticon/secrets/myproject.env`
+Ask the user for (2 items):
+1 of 2. The **git URL** — `https://github.com/org/repo` for GitHub, or an absolute local path
+2 of 2. The **env file path** from Stage 3 — e.g. `/home/you/.panopticon/secrets/myproject.env`
+
+Derive the repo **ID** automatically from the last path component of the git URL (e.g. `myproject`
+from `https://github.com/org/myproject` or `/home/user/myproject`). Use that same value as the
+display name.
+
+Assume `main` as the default base branch. Mention this assumption to the user and let them
+correct it if needed before proceeding.
 
 Then run this curl to register the repo (substituting the real values):
 ```sh
