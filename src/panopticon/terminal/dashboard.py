@@ -33,6 +33,11 @@ table filters live to tasks whose slug/state/workflow/memo contains the query
 keys return while the filter stays applied; `Esc` **clears** it (from typing or locked). The
 filter is applied in ``action_refresh``, so a change-feed refresh preserves it across rebuilds.
 
+`Enter` on a **governing task** (one with governed children) **collapses** its sub-tasks into a
+single dim ``ensemble`` row; pressing `Enter` again **expands** them. Arrow keys skip the ensemble
+row the same way they skip the active/terminal separator (it is not a real task). Expanding or
+collapsing does not affect the task service — it is pure display state local to the dashboard.
+
 The `container` column shows each task's container status: `live` (an active registration), `down`
 (was up, container gone — respawn with `R`), `starting` (claimed, no registration yet — its
 container is still coming up), `–` (unclaimed/not spawned yet), or `respawning` (just released
@@ -120,6 +125,12 @@ def _short_tokens(n: int | None) -> str:
 # handler treats it as "no task selected" and the arrow keys jump over it.
 _SEPARATOR_KEY = "__separator__"
 
+# Row-key prefix for ensemble placeholder rows. When the operator collapses a governing task
+# (Enter on a governor), its governed children are replaced by one dim ``ensemble`` row whose
+# key is ``f"{_ENSEMBLE_KEY_PREFIX}{governor_id}"``. The highlight handler skips these rows
+# (like the separator) and ``on_data_table_row_selected`` ignores them.
+_ENSEMBLE_KEY_PREFIX = "__ensemble__"
+
 
 def _separator_cells(columns: int) -> list[Text]:
     """A dim box-drawing rule, one cell per task-table column — the visual divider between the
@@ -152,7 +163,10 @@ def _slug_cell(task: JsonObj, prefix: str = "") -> Text:
     return text
 
 
-def _group_section(tasks: list[JsonObj]) -> list[tuple[JsonObj, str]]:
+def _group_section(
+    tasks: list[JsonObj],
+    collapsed: frozenset[str] | set[str] = frozenset(),
+) -> list[tuple[JsonObj, str]]:
     """Group governed tasks under their governor within a single section (active or terminal).
 
     Takes a pre-sorted list of tasks from one section and returns ``(task, prefix)`` pairs.
@@ -162,7 +176,12 @@ def _group_section(tasks: list[JsonObj]) -> list[tuple[JsonObj, str]]:
 
     Nested trees are supported: a governed task that itself governs others gets the
     appropriate continuation bars in its children's prefixes (``"│  "`` if more siblings
-    follow, ``"   "`` after the last sibling)."""
+    follow, ``"   "`` after the last sibling).
+
+    ``collapsed`` is the set of governor task IDs whose ensembles are currently collapsed.
+    A collapsed governor's children are replaced by a single synthetic ``ensemble`` row
+    (a dict with ``"_ensemble": True``) so the caller can render a dim placeholder instead
+    of the full sub-tree."""
     task_ids = {t["id"] for t in tasks}
     children: dict[str, list[JsonObj]] = {}
     for t in tasks:
@@ -174,12 +193,21 @@ def _group_section(tasks: list[JsonObj]) -> list[tuple[JsonObj, str]]:
 
     def expand(task: JsonObj, prefix: str, child_continuation: str) -> list[tuple[JsonObj, str]]:
         task_children = children.get(task["id"], [])
-        result = [(task, prefix)]
-        for i, child in enumerate(task_children):
-            is_last = i == len(task_children) - 1
-            connector = "└─ " if is_last else "├─ "
-            grandchild_cont = child_continuation + ("   " if is_last else "│  ")
-            result.extend(expand(child, child_continuation + connector, grandchild_cont))
+        result: list[tuple[JsonObj, str]] = [(task, prefix)]
+        if task["id"] in collapsed and task_children:
+            # Collapsed: replace all children with a single ensemble placeholder row.
+            ensemble: JsonObj = {
+                "_ensemble": True,
+                "_governor_id": task["id"],
+                "_count": len(task_children),
+            }
+            result.append((ensemble, child_continuation + "└─ "))
+        else:
+            for i, child in enumerate(task_children):
+                is_last = i == len(task_children) - 1
+                connector = "└─ " if is_last else "├─ "
+                grandchild_cont = child_continuation + ("   " if is_last else "│  ")
+                result.extend(expand(child, child_continuation + connector, grandchild_cont))
         return result
 
     result: list[tuple[JsonObj, str]] = []
@@ -191,6 +219,7 @@ def _group_section(tasks: list[JsonObj]) -> list[tuple[JsonObj, str]]:
 
 def _group_by_governor(
     tasks: list[JsonObj],
+    collapsed: frozenset[str] | set[str] = frozenset(),
 ) -> tuple[list[tuple[JsonObj, str]], list[tuple[JsonObj, str]]]:
     """Reorder tasks so governed tasks appear immediately after their governor.
 
@@ -200,7 +229,10 @@ def _group_by_governor(
     section even when the governed task itself has reached a terminal state.
 
     Returns ``(active_section, terminal_section)`` as separate lists so the caller can
-    insert the divider at the structural boundary rather than inspecting per-row state."""
+    insert the divider at the structural boundary rather than inspecting per-row state.
+
+    ``collapsed`` is forwarded to :func:`_group_section`; see its docs for the ensemble
+    collapse behaviour."""
     task_by_id = {t["id"]: t for t in tasks}
 
     def section_is_active(task_id: str, visited: set[str]) -> bool:
@@ -215,7 +247,7 @@ def _group_by_governor(
 
     active = [t for t in tasks if section_is_active(t["id"], set())]
     terminal = [t for t in tasks if not section_is_active(t["id"], set())]
-    return _group_section(active), _group_section(terminal)
+    return _group_section(active, collapsed), _group_section(terminal, collapsed)
 
 
 # Fields a search query matches against (cloude-cade filters on the task title; our nearest
@@ -228,7 +260,12 @@ def _matches(task: JsonObj, query: str) -> bool:
     """Case-insensitive substring match of ``query`` against a task's identifying fields.
 
     An empty query matches everything (no filter). Mirrors cloude-cade's "title contains the
-    query" — plain substring, no fuzzy ranking."""
+    query" — plain substring, no fuzzy ranking.
+
+    Ensemble placeholder rows (``"_ensemble": True``) always match: they're synthetic and
+    only emitted when their governor is visible, so filtering them would orphan the connector."""
+    if task.get("_ensemble"):
+        return True
     if not query:
         return True
     haystack = " ".join(str(task.get(field) or "") for field in _SEARCH_FIELDS).lower()
@@ -798,12 +835,15 @@ class HelpScreen(ModalScreen[None]):
     ]
 
     def compose(self) -> ComposeResult:
+        # Enter is handled via DataTable.RowSelected (not a HOTKEYS binding), so it's listed here
+        # as a literal line rather than derived from the HOTKEYS table.
+        enter_line = f"  [b]{'Enter':<5}[/b] Collapse/expand the ensemble of governed tasks under the cursor"
         rows = "\n".join(
             f"  [b]{(h.display or h.key):<5}[/b] {h.description}" for h in HOTKEYS
         )
         with Vertical(id="help-box"):
             yield Label("panopticon — keys")
-            yield Static(rows, id="help-keys")
+            yield Static(enter_line + "\n" + rows, id="help-keys")
 
     def action_close(self) -> None:
         self.dismiss(None)
@@ -854,6 +894,8 @@ class Dashboard(App[None]):
         self._query: str = ""  # active search filter ("" → no filter); see action_search
         self._detail_visible = False  # detail pane hidden by default; `d` toggles it (action_toggle_detail)
         self._last_cursor_row = 0  # previous cursor row index → infer travel direction to skip the divider
+        self._collapsed: set[str] = set()  # governor IDs whose ensembles are currently collapsed
+        self._governors: set[str] = set()  # governor IDs visible in the current table build
         # one reused scratch dir for `a`'s REST-open (lazily made, cleaned on exit) — so opening
         # many artifacts doesn't leak a temp dir each.
         self._artifact_tmp: tempfile.TemporaryDirectory[str] | None = None
@@ -953,26 +995,45 @@ class Dashboard(App[None]):
         # The two sections come back separately so the divider sits at the structural
         # boundary — not based on individual task state (a terminal governed task can live
         # in the active section when its governor is still active).
-        active_group, terminal_group = _group_by_governor(ordered)
+        active_group, terminal_group = _group_by_governor(ordered, self._collapsed)
         active_visible = [(t, p) for t, p in active_group if _matches(t, self._query)]
         terminal_visible = [(t, p) for t, p in terminal_group if _matches(t, self._query)]
         visible = active_visible + terminal_visible
-        self._tasks = {t["id"]: t for t, _ in visible}
+        # Build the task index (real tasks only; ensemble placeholders are synthetic).
+        self._tasks = {t["id"]: t for t, _ in visible if not t.get("_ensemble")}
+        # Governor IDs: the set of task IDs that have at least one governed child in the full
+        # snapshot. Computed from ``ordered`` (pre-collapse, pre-filter) so collapsing a governor
+        # doesn't remove it from the set and prevent a second Enter from re-expanding it.
+        self._governors = {
+            t["governor_task_id"]
+            for t in ordered
+            if t.get("governor_task_id")
+        }
+        # Prune stale collapsed entries for governors no longer present (e.g. task deleted).
+        self._collapsed &= self._governors
+
+        def _add_row(task: JsonObj, prefix: str) -> None:
+            if task.get("_ensemble"):
+                gov_id = task["_governor_id"]
+                slug_cell = Text(f"{prefix}ensemble", style="dim")
+                table.add_row(
+                    Text(""), Text(""), Text(""), Text(""), slug_cell,
+                    key=f"{_ENSEMBLE_KEY_PREFIX}{gov_id}",
+                )
+            else:
+                table.add_row(
+                    task["state"], _turn_cell(task), _status_cell(task),
+                    _repo_cell(task, self._repo_names), _slug_cell(task, prefix),
+                    key=task["id"],
+                )
+
         for task, prefix in active_visible:
-            table.add_row(
-                task["state"], _turn_cell(task), _status_cell(task),
-                _repo_cell(task, self._repo_names), _slug_cell(task, prefix),
-                key=task["id"],
-            )
+            _add_row(task, prefix)
         # Draw the active↔terminal divider — only when both groups are non-empty.
         if active_visible and terminal_visible:
             table.add_row(*_separator_cells(len(table.ordered_columns)), key=_SEPARATOR_KEY)
         for task, prefix in terminal_visible:
-            table.add_row(
-                task["state"], _turn_cell(task), _status_cell(task),
-                _repo_cell(task, self._repo_names), _slug_cell(task, prefix),
-                key=task["id"],
-            )
+            _add_row(task, prefix)
         target = selected if selected in self._tasks else next(iter(self._tasks), None)
         if target is not None:
             table.move_cursor(row=table.get_row_index(target))
@@ -980,10 +1041,13 @@ class Dashboard(App[None]):
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         table = self.query_one("#tasks", DataTable)
-        if event.row_key.value == _SEPARATOR_KEY:
-            # The arrow keys jump the divider: step one more row in the direction of travel
-            # (down → first terminal task, up → last active task). The divider always sits
-            # between groups, so there's a real row on both sides; move_cursor re-fires this
+        key_val = event.row_key.value
+        if key_val == _SEPARATOR_KEY or (
+            isinstance(key_val, str) and key_val.startswith(_ENSEMBLE_KEY_PREFIX)
+        ):
+            # The arrow keys jump non-task rows (the separator and ensemble placeholders):
+            # step one more row in the direction of travel. Both row types always sit between
+            # real rows, so there's a real row on both sides; move_cursor re-fires this
             # handler on that real row, so we don't recurse on the sentinel.
             step = 1 if table.cursor_row >= self._last_cursor_row else -1
             table.move_cursor(row=table.cursor_row + step)
@@ -991,6 +1055,26 @@ class Dashboard(App[None]):
         self._last_cursor_row = table.cursor_row
         key = event.row_key.value
         self._update_detail(str(key) if key is not None else None)
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """`Enter` on a governing task collapses or expands its **ensemble** of governed children.
+
+        Pressing Enter on a task that has governed children toggles its collapsed state: a
+        collapsed governor's sub-tasks are replaced by a single dim ``ensemble`` placeholder row;
+        pressing Enter again restores the full tree.  Enter on a non-governor (or on a sentinel
+        row) is a no-op."""
+        key = event.row_key.value
+        if not isinstance(key, str):
+            return
+        if key == _SEPARATOR_KEY or key.startswith(_ENSEMBLE_KEY_PREFIX):
+            return
+        if key not in self._governors:
+            return
+        if key in self._collapsed:
+            self._collapsed.discard(key)
+        else:
+            self._collapsed.add(key)
+        self.action_refresh()
 
     def _update_detail(self, task_id: str | None) -> None:
         if task_id == _SEPARATOR_KEY:  # the divider isn't a task — select nothing, blank the pane

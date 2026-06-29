@@ -15,8 +15,10 @@ from textual.widgets import Checkbox, DataTable, Input, Static
 from panopticon.terminal import dashboard
 from panopticon.terminal.dashboard import (
     Dashboard,
+    _ENSEMBLE_KEY_PREFIX,
     _SEPARATOR_KEY,
     _group_by_governor,
+    _group_section,
     _matches,
     _repo_cell,
     _short_tokens,
@@ -1561,3 +1563,133 @@ async def test_separator_after_group_not_mid_group() -> None:
         assert keys.index("gov") < keys.index(_SEPARATOR_KEY)
         assert keys.index("wrk") < keys.index(_SEPARATOR_KEY)
         assert keys.index("done") > keys.index(_SEPARATOR_KEY)
+
+
+# -- ensemble collapse (_group_section collapsed / Dashboard Enter) ---------------
+
+
+def test_ensemble_row_replaces_children_when_collapsed() -> None:
+    # A collapsed governor's single child becomes one ensemble placeholder row.
+    governor = {**_TASK, "id": "gov", "slug": "orch", "governor_task_id": None}
+    worker = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov"}
+    result = _group_section([governor, worker], collapsed={"gov"})
+    assert len(result) == 2
+    gov_row, ens_row = result
+    assert gov_row[0]["id"] == "gov"
+    assert ens_row[0].get("_ensemble") is True
+    assert ens_row[0]["_governor_id"] == "gov"
+    assert ens_row[0]["_count"] == 1
+    assert ens_row[1] == "└─ "  # sole child → last-child connector
+
+
+def test_ensemble_row_multiple_children_collapsed() -> None:
+    # All direct children collapse to one ensemble row; count reflects original child count.
+    gov = {**_TASK, "id": "gov", "slug": "orch", "governor_task_id": None}
+    w1 = {**_TASK, "id": "w1", "slug": "alpha", "governor_task_id": "gov"}
+    w2 = {**_TASK, "id": "w2", "slug": "bravo", "governor_task_id": "gov"}
+    w3 = {**_TASK, "id": "w3", "slug": "charlie", "governor_task_id": "gov"}
+    result = _group_section([gov, w1, w2, w3], collapsed={"gov"})
+    assert len(result) == 2  # governor + one ensemble row (not three child rows)
+    ens = result[1][0]
+    assert ens["_ensemble"] is True
+    assert ens["_count"] == 3
+
+
+def test_ensemble_not_emitted_when_no_children() -> None:
+    # Collapsed flag on a non-governor (no children) is silently ignored — no ensemble row.
+    solo = {**_TASK, "id": "solo", "slug": "lone", "governor_task_id": None}
+    result = _group_section([solo], collapsed={"solo"})
+    assert len(result) == 1
+    assert not result[0][0].get("_ensemble")
+
+
+def test_ensemble_connector_inherits_parent_continuation() -> None:
+    # When a nested governor (itself a child) is collapsed, its ensemble row picks up the
+    # parent's continuation bars in the prefix.
+    root = {**_TASK, "id": "root", "slug": "root", "governor_task_id": None}
+    mid = {**_TASK, "id": "mid", "slug": "mid", "governor_task_id": "root"}
+    leaf = {**_TASK, "id": "leaf", "slug": "leaf", "governor_task_id": "mid"}
+    # Collapse only the middle level.
+    result = _group_section([root, mid, leaf], collapsed={"mid"})
+    rows = [(r["id"] if not r.get("_ensemble") else "__ensemble__", p) for r, p in result]
+    assert rows == [
+        ("root", ""),
+        ("mid", "└─ "),   # mid is last (and only) child of root → └─
+        ("__ensemble__", "   └─ "),  # ensemble is child of mid; mid is last child → "   " continuation
+    ]
+
+
+def test_ensemble_unexpanded_shows_real_rows() -> None:
+    # With no collapsed governors, the output is identical to the non-collapsed path.
+    gov = {**_TASK, "id": "gov", "slug": "orch", "governor_task_id": None}
+    wrk = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov"}
+    expanded = _group_section([gov, wrk], collapsed=set())
+    assert [(r["id"], p) for r, p in expanded] == [("gov", ""), ("wrk", "└─ ")]
+
+
+def test_matches_always_passes_ensemble_rows() -> None:
+    ensemble: dict[str, Any] = {"_ensemble": True, "_governor_id": "gov", "_count": 2}
+    assert _matches(ensemble, "some-query-that-wont-match")
+    assert _matches(ensemble, "")
+
+
+async def test_enter_on_governor_collapses_to_ensemble_row() -> None:
+    # Pressing Enter on a governing task replaces its children with an ensemble row.
+    governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
+    governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov"}
+    app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        # Initial state: both rows present.
+        assert "gov" in [str(k.value) for k in table.rows]
+        assert "wrk" in [str(k.value) for k in table.rows]
+        # Move to the governor row and press Enter.
+        table.move_cursor(row=table.get_row_index("gov"))
+        await pilot.press("enter")
+        await pilot.pause()
+        keys = [str(k.value) for k in table.rows]
+        # Governor is still there; worker is gone; ensemble sentinel is present.
+        assert "gov" in keys
+        assert "wrk" not in keys
+        assert f"{_ENSEMBLE_KEY_PREFIX}gov" in keys
+        # The ensemble row's slug cell reads "ensemble" (dim, checked by plain text).
+        ens_row = table.get_row(f"{_ENSEMBLE_KEY_PREFIX}gov")
+        assert ens_row[4].plain == "└─ ensemble"
+
+
+async def test_enter_again_on_governor_expands_ensemble() -> None:
+    # Pressing Enter twice returns to the fully-expanded tree.
+    governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
+    governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov"}
+    app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        table.move_cursor(row=table.get_row_index("gov"))
+        # First Enter → collapse.
+        await pilot.press("enter")
+        await pilot.pause()
+        assert f"{_ENSEMBLE_KEY_PREFIX}gov" in [str(k.value) for k in table.rows]
+        # Second Enter → expand.
+        await pilot.press("enter")
+        await pilot.pause()
+        keys = [str(k.value) for k in table.rows]
+        assert "wrk" in keys
+        assert f"{_ENSEMBLE_KEY_PREFIX}gov" not in keys
+
+
+async def test_enter_on_non_governor_does_nothing() -> None:
+    # Pressing Enter on a task with no governed children leaves the table unchanged.
+    t1 = {**_TASK, "id": "t1", "slug": "alpha", "governor_task_id": None}
+    t2 = {**_TASK, "id": "t2", "slug": "bravo", "governor_task_id": None}
+    app = Dashboard(_FakeClient([t1, t2]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        before = [str(k.value) for k in table.rows]
+        table.move_cursor(row=table.get_row_index("t1"))
+        await pilot.press("enter")
+        await pilot.pause()
+        after = [str(k.value) for k in table.rows]
+        assert before == after
