@@ -182,9 +182,23 @@ curl -X POST http://localhost:8000/tasks \
   -d '{"repo_id":"<id>","workflow":"github-self-reviewed","memo":"<task description>"}'
 ```
 
-Show the user the returned task `id`. The runner will claim the task and spawn its container
-within a few seconds. The container status in the dashboard moves through:
-`queued -> claiming -> preparing -> building -> starting -> live`.
+Show the user the returned task `id`.
+
+**Poll until the container is live.** Run this every few seconds until `container_status` reads `live`:
+```sh
+curl -s http://localhost:8000/tasks/<id> | python3 -m json.tool
+```
+The `container_status` field moves through: `queued -> claiming -> preparing -> building -> starting -> live`.
+`building` takes the longest on first run (docker image build). Wait up to ~3 minutes.
+
+If the container does not reach `live` within ~3 minutes, diagnose:
+- `failed` with a `lifecycle_detail` message → surface that message to the user and follow it.
+  Common cause: missing or invalid `CLAUDE_CODE_OAUTH_TOKEN` in the env-file (re-run `claude
+  setup-token`, update the file, then respawn from the dashboard with `R`).
+- Stuck at `building` beyond 5 minutes → ask the user to check `make build` or docker logs for
+  build errors.
+- Stuck at `claiming` or `queued` → the runner (`python -m panopticon.sessionservice.host`) may
+  not be running; check the `runner` tmux session (`tmux -L panopticon attach -t runner`).
 
 ## Stage 7 of 7 — Attach, plan, and view the plan
 
