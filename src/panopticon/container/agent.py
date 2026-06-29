@@ -100,7 +100,17 @@ def trust_workspace(config_dir: Path, cwd: Path) -> Path:
     return config
 
 
-def _claude_argv(config_dir: Path, cwd: Path, *, initial_prompt: str | None = None) -> list[str]:
+#: Sent to claude as the first message when a container restarts mid-task on the agent's turn.
+INTERRUPT_PROMPT = "You were interrupted. Continue."
+
+
+def _claude_argv(
+    config_dir: Path,
+    cwd: Path,
+    *,
+    initial_prompt: str | None = None,
+    turn: str | None = None,
+) -> list[str]:
     """`claude` argv, resuming the project's most recent conversation if one exists.
 
     The agent runs unattended in a throwaway container on a per-task clone, so it launches with
@@ -113,8 +123,10 @@ def _claude_argv(config_dir: Path, cwd: Path, *, initial_prompt: str | None = No
     claude's, we simply start fresh — a safe degradation.
 
     On a **first run** (no prior session) with an ``initial_prompt``, the prompt is appended as a
-    positional argument so claude processes it immediately. On a resumed session (``--continue``) the
-    prompt is omitted — the agent is already mid-task and re-sending it would be noise.
+    positional argument so claude processes it immediately. On a **resumed session** (``--continue``)
+    the ``initial_prompt`` is omitted — the agent is already mid-task. When the resumed session is
+    the agent's turn (``turn == "agent"``), :data:`INTERRUPT_PROMPT` is appended instead so the
+    agent automatically picks up where it left off rather than waiting for user input.
     """
     argv = ["claude", "--dangerously-skip-permissions"]
     overview = config_dir / WORKFLOW_OVERVIEW_FILE
@@ -126,6 +138,8 @@ def _claude_argv(config_dir: Path, cwd: Path, *, initial_prompt: str | None = No
     project = config_dir / "projects" / str(cwd).replace("/", "-")
     if any(project.glob("*.jsonl")):
         argv.append("--continue")
+        if turn == "agent":
+            argv.append(INTERRUPT_PROMPT)  # positional: auto-resume after container restart
     elif initial_prompt:
         argv.append(initial_prompt)  # positional: claude sends this as the agent's first message
     return argv
@@ -138,7 +152,8 @@ def _run_claude(config_dir: Path) -> None:  # pragma: no cover - real LLM; skipi
     container (the task → down → respawn). claude inherits this pane's TTY (it's the interactive
     surface ``tmux attach`` reaches)."""
     initial_prompt = os.environ.get("PANOPTICON_INITIAL_PROMPT") or None
-    argv = _claude_argv(config_dir, Path.cwd(), initial_prompt=initial_prompt)
+    turn = os.environ.get("PANOPTICON_TASK_TURN") or None
+    argv = _claude_argv(config_dir, Path.cwd(), initial_prompt=initial_prompt, turn=turn)
     subprocess.run(argv, env={**os.environ, "CLAUDE_CONFIG_DIR": str(config_dir)})
 
 

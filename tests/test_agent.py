@@ -82,6 +82,22 @@ def test_claude_argv_omits_initial_prompt_when_continuing_a_session(tmp_path: Pa
     assert "review your plan" not in argv
 
 
+def test_claude_argv_appends_interrupt_prompt_on_respawn_for_agent_turn(tmp_path: Path) -> None:
+    project = tmp_path / "projects" / "-work-repo"
+    project.mkdir(parents=True)
+    (project / "session.jsonl").write_text("{}")
+    argv = agent._claude_argv(tmp_path, Path("/work/repo"), turn="agent")
+    assert argv == ["claude", "--dangerously-skip-permissions", "--continue", agent.INTERRUPT_PROMPT]
+
+
+def test_claude_argv_omits_interrupt_prompt_on_respawn_for_user_turn(tmp_path: Path) -> None:
+    project = tmp_path / "projects" / "-work-repo"
+    project.mkdir(parents=True)
+    (project / "session.jsonl").write_text("{}")
+    argv = agent._claude_argv(tmp_path, Path("/work/repo"), turn="user")
+    assert argv == ["claude", "--dangerously-skip-permissions", "--continue"]
+
+
 def test_write_mcp_config_points_claude_at_the_task_service_mcp(tmp_path: Path) -> None:
     import json
 
