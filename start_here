@@ -107,6 +107,8 @@ Guide the user through (5 steps total):
 
 ## Stage 4 of 7 — Start the system
 
+**Ask the user to run this command themselves** — do not run it for them:
+
 ```sh
 make start
 ```
@@ -118,9 +120,12 @@ This brings up three background sessions on the `panopticon` tmux server (`-L pa
 
 ...then attaches the terminal to the session supervisor (dashboard + attach loop).
 
-Wait a moment for the service to be ready: `curl -s http://localhost:8000/healthz` should return
-`{"status":"ok"}` (or similar). If `make start` fails, check that Docker is running and tmux is
-installed.
+Once the user confirms it is running, verify the service is ready:
+```sh
+curl -s http://localhost:8000/healthz
+```
+This should return `{"status":"ok"}` (or similar). If `make start` fails, check that Docker is
+running and tmux is installed.
 
 To stop everything later: `make stop`.
 
