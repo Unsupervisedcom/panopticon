@@ -39,8 +39,8 @@ class GithubPeerReviewed(GithubForgeWorkflow):
 
     name: ClassVar[str] = "github-peer-reviewed"
     when_to_use: ClassVar[str] = (
-        "Changes that require a peer review before merging — full PLANNING → ITERATING → "
-        "REVIEW → MERGING lifecycle on GitHub with a peer-review gate."
+        "GitHub-hosted changes that require a peer review before merging — full PLANNING → ITERATING → "
+        "REVIEW → MERGING lifecycle with a peer-review gate."
     )
 
     class Planning(InitialState):
