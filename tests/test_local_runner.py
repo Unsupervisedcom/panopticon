@@ -242,6 +242,21 @@ def test_spawn_passes_initial_prompt_as_env_var_when_no_memo() -> None:
     assert prefill.calls == []  # nothing is prefilled (initial_prompt goes via CLI arg, not prefill)
 
 
+def test_spawn_passes_turn_as_env_var() -> None:
+    rec, prefill = _Recorder(), _FakePrefill()
+    runner = LocalRunner("http://svc", run=rec, prefill=prefill)
+    runner.spawn("t1", turn="agent")
+    docker_run = rec.calls[2][0]
+    assert "PANOPTICON_TASK_TURN=agent" in docker_run
+
+
+def test_spawn_omits_turn_env_var_when_not_set() -> None:
+    rec, prefill = _Recorder(), _FakePrefill()
+    LocalRunner("http://svc", run=rec, prefill=prefill).spawn("t1")
+    docker_run = rec.calls[2][0]
+    assert not any("PANOPTICON_TASK_TURN" in arg for arg in docker_run)
+
+
 def test_spawn_does_not_prefill_without_a_memo() -> None:
     rec, prefill = _Recorder(), _FakePrefill()
     LocalRunner("http://svc", run=rec, prefill=prefill).spawn("t1")
