@@ -107,13 +107,25 @@ installed.
 
 To stop everything later: `make stop`.
 
-## Stage 5 — Configure a repo
+## Stage 5 — Choose a repo and configure it
 
-In the dashboard, press `r` to open the repo screen (it auto-opens when no repos exist).
-Fill in:
+**Choosing a good first repo**
+
+Pick a repo that is either:
+- **On GitHub** — a repo you own or have push access to (the agent will open PRs against it), OR
+- **Purely local** — a local git repo with no remote needed (good for a quick smoke test)
+
+The repo should have a **small, self-contained coding task** you can hand the agent — e.g. "add a
+`--verbose` flag to the CLI", "fix the off-by-one in the pagination helper", or "write a test for
+the `parse_config` function". Something that touches 1–3 files and has a clear done state. This
+keeps the first run short and easy to verify.
+
+**Register the repo in the dashboard**
+
+Press `r` to open the repo screen (it auto-opens when no repos exist). Fill in:
 - **ID** — short identifier, e.g. `myrepo`
 - **Name** — display name
-- **Git URL** — the repo's remote URL
+- **Git URL** — the repo's remote URL (or a local path for a purely-local repo)
 - **Default base** — e.g. `main`
 - **Env file** — the absolute path from Stage 3, e.g. `/home/you/.panopticon/secrets/myrepo.env`
 
@@ -128,28 +140,58 @@ Verify: `curl -s http://localhost:8000/repos | python3 -m json.tool`
 
 ## Stage 6 — Create a first task
 
-Recommend a **Spike** task for a first run (free-form; no GitHub workflow required):
+**Recommend `github-self-reviewed`** for a first real run — it follows the full planning → coding →
+PR → merge lifecycle, but the user self-reviews (no peer reviewer needed). If the repo is purely
+local with no GitHub remote, `spike` (free-form, no PR) works too. Steer the user toward a
+code-merging workflow so they see the full agent loop.
 
-In the dashboard, press `n` to create a new task. Choose the `spike` workflow and enter a short
-description like "hello panopticon — just attach and look around."
+In the dashboard, press `n` to create a new task. Choose the `github-self-reviewed` (or `spike`)
+workflow and enter the small coding task from Stage 5 as the memo — one or two sentences describing
+the change.
 
 Or via the API:
 ```sh
 curl -X POST http://localhost:8000/tasks \
   -H 'content-type: application/json' \
-  -d '{"repo_id":"myrepo","workflow":"spike","memo":"hello panopticon"}'
+  -d '{"repo_id":"myrepo","workflow":"github-self-reviewed","memo":"Add a --verbose flag to the CLI that prints each step as it runs."}'
 ```
 
 The runner claims the task and spawns its container within a few seconds. Watch the dashboard —
 the container status moves through `queued -> claiming -> preparing -> building -> starting -> live`.
 
-## Stage 7 — Attach and explore
+## Stage 7 — Attach, plan, and view the plan
+
+**Attaching for the first time**
 
 In the dashboard, select the task with arrow keys and press `t` to attach to its tmux session.
-You will see the Claude Code agent inside the container. Press `Ctrl-b d` to detach (the dashboard
-reattaches automatically).
+You will see the Claude Code agent's prompt inside the container. Press `Ctrl-b d` to detach at
+any time (the dashboard reattaches automatically).
 
-When you are done, press `x` in the dashboard to drop the task (-> Dropped state).
+**You are in PLANNING mode**
+
+On first attach the agent is in the PLANNING phase. It is waiting for you to give it a planning
+prompt — a short description of what you want it to build. Type your prompt and press Enter.
+
+Example planning prompt:
+> "Add a --verbose flag to the CLI. When set, print each processing step to stderr as it runs."
+
+The agent will then ask clarifying questions or start writing a plan. When planning is done, it
+advances to ITERATING automatically.
+
+**Viewing the plan in the dashboard**
+
+After the agent writes its plan, you can read it without attaching:
+1. Detach from the container (`Ctrl-b d`) to return to the dashboard.
+2. Select the task and press `a` to open the artifact browser.
+3. Select `plan.md` and press `e` to open it in your editor.
+
+**Finishing up**
+
+When the agent opens a PR (github-self-reviewed), you will see a link in the dashboard (`p` to
+open it). Review, then advance the task to MERGING from the dashboard or by telling the agent
+to advance. Once merged the task moves to COMPLETE.
+
+To drop a task without merging: press `x` in the dashboard (-> Dropped state).
 
 ## Troubleshooting
 
