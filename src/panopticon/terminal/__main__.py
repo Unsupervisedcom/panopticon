@@ -32,12 +32,18 @@ def main(
     )
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("console", help="session supervisor: dashboard + attach loop (default)")
+    sub.add_parser("onboard", help="start a Claude Code session to guide first-time setup")
     dash = sub.add_parser("dashboard", help="run the dashboard once, without the attach loop")
     # Set by the supervisor (ADR 0009): the dashboard runs inside tmux, so it reports the session
     # the operator picked with `t` by writing it here instead of returning it in-process.
     dash.add_argument("--switch-file", help=argparse.SUPPRESS)
     sub.add_parser("tasks", help="list tasks as plain text")
     args = parser.parse_args(argv)
+
+    if args.command == "onboard":
+        from panopticon.terminal.onboard import run_onboard
+
+        return run_onboard()
 
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
     if args.command == "tasks":
