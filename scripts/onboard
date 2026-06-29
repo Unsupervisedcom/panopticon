@@ -1,21 +1,23 @@
-"""``panopticon onboard`` — launch a Claude Code session to guide new-user setup.
+#!/usr/bin/env bash
+# panopticon onboard — open a Claude Code session to guide first-time setup.
+#
+# Requirements: a working `claude` install in PATH. Nothing else.
+# Works on Linux and macOS.
 
-Composes a system-prompt addendum (what Panopticon is + the step-by-step setup guide) and a
-first user message, then runs ``claude`` so the session opens with that context already loaded.
-No multi-stage Python wizard, no prereq probing, no REST calls — Claude handles the interaction.
+set -euo pipefail
 
-The only requirement is a working ``claude`` install in PATH.
-"""
+if ! command -v claude &>/dev/null; then
+    echo "Error: 'claude' not found in PATH." >&2
+    echo "Install Claude Code first: https://claude.ai/code" >&2
+    exit 1
+fi
 
-from __future__ import annotations
-
-from collections.abc import Callable
-
-import subprocess
-
-#: System-prompt addendum: what Panopticon is and the full setup guide.
-#: Injected via ``--append-system-prompt`` so Claude has the context before the first user turn.
-WIZARD_CONTEXT = """\
+# ---------------------------------------------------------------------------
+# System-prompt addendum: what Panopticon is + the full setup guide.
+# Injected via --append-system-prompt so Claude has this context before the
+# first user turn.
+# ---------------------------------------------------------------------------
+WIZARD_CONTEXT=$(cat <<'WIZARD'
 You are an onboarding assistant for Panopticon — an agentic task-orchestration system that runs
 coding agents (Claude Code) in isolated containers, one per task, coordinated by a deterministic
 control plane. Your job is to walk a new user through first-time setup interactively, one stage
@@ -38,13 +40,13 @@ command for their OS (prefer the official docs link for Docker/tmux since instal
 |------|---------|-----|
 | `python3` | 3.11+ | runs panopticon |
 | `uv` | any recent | package/venv manager (`pip install uv` or `curl -LsSf https://astral.sh/uv/install.sh | sh`) |
-| `docker` | engine ≥ 20.10 | task containers; daemon must be running; user must have non-sudo access |
+| `docker` | engine >= 20.10 | task containers; daemon must be running; user must have non-sudo access |
 | `tmux` | any | each task gets a tmux session |
 | `git` | any | per-task clone |
 | `gh` | optional | GitHub CLI — needed only for github-workflow tasks, not for local Spike tasks |
 
 Docker non-sudo access: `sudo usermod -aG docker $USER` then log out and back in (or `newgrp docker`).
-Docker daemon version check: `docker info --format '{{.ServerVersion}}'` — must be ≥ 20.10.
+Docker daemon version check: `docker info --format '{{.ServerVersion}}'` — must be >= 20.10.
 
 ## Stage 2 — Build
 
@@ -66,7 +68,7 @@ The recommended token type is a long-lived OAuth token from `claude setup-token`
 Guide the user through:
 
 1. Run `claude setup-token` on the local machine (needs a Claude subscription / browser OAuth).
-   It prints a token starting with `sk-ant-oat01-…`. This is long-lived (~1 year) and non-rotating.
+   It prints a token starting with `sk-ant-oat01-...`. This is long-lived (~1 year) and non-rotating.
 
 2. Optionally: obtain a `GH_TOKEN` (GitHub personal access token) if they plan to use
    GitHub-workflow tasks. Scopes needed: `repo`, `read:org`.
@@ -75,10 +77,10 @@ Guide the user through:
    Tell them to create the directory: `mkdir -p ~/.panopticon/secrets/`.
 
 4. Write the env-file (never echo secrets in the terminal — have the user open the file in an
-   editor or use a redirect that doesn't appear in shell history):
+   editor or use a redirect that does not appear in shell history):
    ```
-   CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-…
-   GH_TOKEN=ghp_…                          # optional
+   CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+   GH_TOKEN=ghp_...                          # optional
    ```
    Lock it down: `chmod 0600 ~/.panopticon/secrets/<repo-name>.env`
 
@@ -97,7 +99,7 @@ This brings up three background sessions on the `panopticon` tmux server (`-L pa
 - `runner` — the session service host (spawns containers, provisions clones)
 - `dashboard` — the terminal dashboard
 
-…then attaches the terminal to the session supervisor (dashboard + attach loop).
+...then attaches the terminal to the session supervisor (dashboard + attach loop).
 
 Wait a moment for the service to be ready: `curl -s http://localhost:8000/healthz` should return
 `{"status":"ok"}` (or similar). If `make start` fails, check that Docker is running and tmux is
@@ -139,19 +141,19 @@ curl -X POST http://localhost:8000/tasks \
 ```
 
 The runner claims the task and spawns its container within a few seconds. Watch the dashboard —
-the container status moves through `queued → claiming → preparing → building → starting → live`.
+the container status moves through `queued -> claiming -> preparing -> building -> starting -> live`.
 
 ## Stage 7 — Attach and explore
 
 In the dashboard, select the task with arrow keys and press `t` to attach to its tmux session.
-You'll see the Claude Code agent inside the container. Press `Ctrl-b d` to detach (the dashboard
+You will see the Claude Code agent inside the container. Press `Ctrl-b d` to detach (the dashboard
 reattaches automatically).
 
-When you're done, press `x` in the dashboard to drop the task (→ Dropped state).
+When you are done, press `x` in the dashboard to drop the task (-> Dropped state).
 
 ## Troubleshooting
 
-- **live → down** — the container exited. Usually an expired or missing token in the env-file.
+- **live -> down** — the container exited. Usually an expired or missing token in the env-file.
   Run `claude setup-token` again, update the env-file, and press `R` in the dashboard to respawn.
 - **stuck at `building`** — the docker build is slow on first run; wait it out or check `make build` output.
 - **port 8000 in use** — set `PANOPTICON_PORT=8001` and restart.
@@ -163,32 +165,12 @@ When you're done, press `x` in the dashboard to drop the task (→ Dropped state
 - `design-docs` branch — goals, architecture, ADRs, and roadmap.
 - `make help` — all dev targets.
 - Multiple tasks can run concurrently; each gets its own container and tmux session.
-"""
-
-#: The first user-turn message — positions Claude to begin the interactive walkthrough.
-INITIAL_PROMPT = (
-    "Please help me set up Panopticon from scratch."
-    " I'm starting fresh — walk me through each step, one at a time."
+WIZARD
 )
 
-RunnerFn = Callable[[list[str]], int]
+# ---------------------------------------------------------------------------
+# First user-turn message — positions Claude to begin the walkthrough.
+# ---------------------------------------------------------------------------
+INITIAL_PROMPT="Please help me set up Panopticon from scratch. I'm starting fresh — walk me through each step, one at a time."
 
-
-def _default_runner(argv: list[str]) -> int:
-    return subprocess.run(argv).returncode
-
-
-def run_onboard(
-    claude_bin: str = "claude",
-    *,
-    runner: RunnerFn = _default_runner,
-) -> int:
-    """Launch a Claude Code session configured to guide the user through Panopticon setup.
-
-    Passes ``WIZARD_CONTEXT`` as ``--append-system-prompt`` so Claude has the full setup guide
-    baked into its system prompt, then ``INITIAL_PROMPT`` as the first user turn so Claude begins
-    guiding immediately without waiting for the user to type. The session is fully interactive —
-    ``subprocess.run`` inherits the caller's TTY.
-    """
-    argv = [claude_bin, "--append-system-prompt", WIZARD_CONTEXT, INITIAL_PROMPT]
-    return runner(argv)
+exec claude --append-system-prompt "$WIZARD_CONTEXT" "$INITIAL_PROMPT"
