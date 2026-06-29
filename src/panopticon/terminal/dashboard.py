@@ -133,9 +133,9 @@ _ENSEMBLE_KEY_PREFIX = "__ensemble__"
 
 
 def _separator_cells(columns: int) -> list[Text]:
-    """A dim box-drawing rule, one cell per task-table column — the visual divider between the
-    active tasks and the terminal (COMPLETE/DROPPED) ones that sink below them."""
-    return [Text("─" * 200, style="dim") for _ in range(columns)]
+    """A blank row with a muted background tint — the visual divider between the active tasks
+    and the terminal (COMPLETE/DROPPED) ones that sink below them."""
+    return [Text("", style="on grey7") for _ in range(columns)]
 
 
 def _slug_cell(task: JsonObj, prefix: str = "") -> Text:
