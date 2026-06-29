@@ -141,6 +141,7 @@ class LocalRunner(Runner):
         docker_in_docker: bool = False,
         memo: str | None = None,
         initial_prompt: str | None = None,
+        turn: str | None = None,
         progress: Callable[[LifecyclePhase], None] | None = None,
     ) -> str:
         """Spawn the task container. ``env_file`` is the task's repo's secret reference (ADR
@@ -153,9 +154,12 @@ class LocalRunner(Runner):
         is passed as a positional arg to ``claude`` on the first run (no prior session) via the
         ``PANOPTICON_INITIAL_PROMPT`` env var; when set it also suppresses the ``memo`` prefill so
         both don't fire. ``memo`` is prefilled unsent into Claude's input box on **first** spawn
-        only when ``initial_prompt`` is absent — see :func:`_maybe_prefill`. ``progress``
-        (optional) is called with each spawn phase the runner passes through (``STARTING`` before
-        ``docker run``, ``AWAITING`` once the tmux session is up) so the caller can surface it — see
+        only when ``initial_prompt`` is absent — see :func:`_maybe_prefill`. ``turn`` is the
+        task's current turn (``"agent"`` or ``"user"``); passed as ``PANOPTICON_TASK_TURN`` so the
+        agent launcher can send :data:`~panopticon.container.agent.INTERRUPT_PROMPT` on respawn when
+        the agent holds the turn. ``progress`` (optional) is called with each spawn phase the runner
+        passes through (``STARTING`` before ``docker run``, ``AWAITING`` once the tmux session is
+        up) so the caller can surface it — see
         :class:`~panopticon.core.models.LifecyclePhase`."""
         def _report(phase: LifecyclePhase) -> None:
             if progress is not None:
@@ -185,6 +189,8 @@ class LocalRunner(Runner):
             # The agent launcher reads this and passes it as a positional arg to `claude` on the
             # first run (no prior session), so the agent's first action is to process the prompt.
             env["PANOPTICON_INITIAL_PROMPT"] = initial_prompt
+        if turn:
+            env["PANOPTICON_TASK_TURN"] = turn
         docker_run = [
             "docker", "run", "--detach",
             "--name", container,

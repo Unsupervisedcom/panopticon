@@ -189,6 +189,13 @@ class TaskService:
     async def workflow_names(self) -> list[str]:
         return sorted(self._workflows)
 
+    async def list_workflow_infos(self) -> list[dict[str, str]]:
+        """Each workflow's name and when_to_use description, sorted by name."""
+        return [
+            {"name": name, "when_to_use": self._workflows[name].when_to_use}
+            for name in sorted(self._workflows)
+        ]
+
     async def workflow_image_layer(self, name: str) -> str:
         """The workflow's Docker image layer (ADR 0005) — the Dockerfile fragment the runner
         composes onto the base image (e.g. github-peer-reviewed's `gh`). Empty when the workflow needs none."""

@@ -30,7 +30,7 @@ def client(tmp_path: Path) -> Iterator[TaskServiceClient]:
 
 
 def test_reads_workflows_repos_and_tasks(client: TaskServiceClient) -> None:
-    assert client.list_workflows() == ["spike"]
+    assert [w["name"] for w in client.list_workflows()] == ["spike"]
     assert [r["id"] for r in client.list_repos()] == ["r1"]
     task = client.create_task("r1", "spike")
     listed = client.list_tasks()

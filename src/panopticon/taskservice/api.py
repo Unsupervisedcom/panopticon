@@ -384,8 +384,8 @@ def create_app(service: TaskService) -> FastAPI:
         return {"status": "ok"}
 
     @app.get("/workflows")
-    async def list_workflows() -> list[str]:
-        return await service.workflow_names()
+    async def list_workflows() -> list[dict[str, str]]:
+        return await service.list_workflow_infos()
 
     @app.get("/workflows/{name}/image-layer")
     async def workflow_image_layer(name: str) -> dict[str, str]:
