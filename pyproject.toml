@@ -14,6 +14,10 @@ dependencies = [
     "textual>=8.2.7",
     "mcp>=1.27.2",
     "aiosqlite>=0.20",
+    # SQLAlchemy's async engine requires greenlet. SQLAlchemy only declares it
+    # for select platform_machine values (e.g. Linux aarch64) and omits macOS
+    # arm64, so uv skips it there — declare it explicitly so every platform gets it.
+    "greenlet>=3",
 ]
 
 [project.scripts]
