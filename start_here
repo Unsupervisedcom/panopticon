@@ -83,15 +83,20 @@ Guide the user through (5 steps total):
    GitHub-workflow tasks. Scopes needed: `repo`, `read:org`.
 
 3 of 5. Choose an env-file path **outside** the repo, e.g. `~/.panopticon/secrets/<repo-name>.env`.
-   Tell them to create the directory: `mkdir -p ~/.panopticon/secrets/`.
+   Create the directory: `mkdir -p ~/.panopticon/secrets/`
 
-4 of 5. Write the env-file (never echo secrets in the terminal — have the user open the file in an
-   editor or use a redirect that does not appear in shell history):
+   If that file does **not** already exist, copy the repo's template in place and lock it down:
+   ```sh
+   cp panopticon.env.template ~/.panopticon/secrets/<repo-name>.env
+   chmod 0600 ~/.panopticon/secrets/<repo-name>.env
    ```
-   CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
-   GH_TOKEN=ghp_...                          # optional
-   ```
-   Lock it down: `chmod 0600 ~/.panopticon/secrets/<repo-name>.env`
+   **Do not overwrite the file if it already exists** — the user may have real credentials there.
+
+4 of 5. Tell the user to open the env-file in their editor and replace the placeholder values:
+   - `CLAUDE_CODE_OAUTH_TOKEN=YOUR_TOKEN_HERE` → the real `sk-ant-oat01-...` token from step 1 of 5
+   - Uncomment `GH_TOKEN=YOUR_GH_TOKEN_HERE` and fill in the real token if they obtained one in step 2 of 5
+
+   Never echo, print, or display secret values. Only confirm the file has been edited.
 
 5 of 5. Confirm the file exists and is 0600: `ls -l ~/.panopticon/secrets/<repo-name>.env`
 
