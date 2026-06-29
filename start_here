@@ -62,15 +62,18 @@ Docker daemon version check: `docker info --format '{{.ServerVersion}}'` — mus
 
 ## Stage 2 of 7 — Build
 
-From inside the panopticon repo directory:
+**YOU (the assistant) must run these commands** — do not ask the user to do it.
+
+From inside the panopticon repo directory, run them in order:
 
 ```sh
 make sync    # uv sync — creates the venv and installs all deps
 make build   # docker build the base task-container image (panopticon-base)
 ```
 
-`make build` takes a few minutes the first time. Verify: `docker image ls panopticon-base` should
-show the image. If it fails, surface the docker build output so the user can diagnose.
+`make build` takes a few minutes the first time; stream its output so the user can see progress.
+Verify: `docker image ls panopticon-base` should show the image. If it fails, surface the docker
+build output so the user can diagnose.
 
 ## Stage 3 of 7 — Auth
 
