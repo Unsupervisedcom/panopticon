@@ -1044,7 +1044,7 @@ class Dashboard(App[None]):
         def _add_row(task: JsonObj, prefix: str) -> None:
             if task.get("_ensemble"):
                 gov_id = task["_governor_id"]
-                slug_cell = Text(f"{prefix}ensemble", style="dim")
+                slug_cell = Text(f"{prefix}...", style="dim")
                 table.add_row(
                     Text(""), Text(""), Text(""), Text(""), slug_cell,
                     key=f"{_ENSEMBLE_KEY_PREFIX}{gov_id}",
