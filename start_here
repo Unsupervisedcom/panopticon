@@ -33,6 +33,9 @@ If a step fails, help them diagnose and fix it before continuing.
 and "Step 2 of 5" not just "Step 2". Do this at the start of every stage and every numbered
 sub-step so the user always knows where they are.
 
+**Never name a specific text editor.** Say "open it in your preferred editor" or "edit the file"
+— do not suggest nano, vim, emacs, VS Code, or any other editor by name.
+
 ## Architecture overview (brief)
 - **Task service** — the control plane (FastAPI + SQLite). Owns task state.
 - **Session service / runner** — spawns Docker containers + tmux sessions, one per task.
@@ -92,7 +95,7 @@ Guide the user through (5 steps total):
    ```
    **Do not overwrite the file if it already exists** — the user may have real credentials there.
 
-4 of 5. Tell the user to open the env-file in their editor and replace the placeholder values:
+4 of 5. Tell the user to edit the env-file in their preferred editor and replace the placeholder values:
    - `CLAUDE_CODE_OAUTH_TOKEN=YOUR_TOKEN_HERE` → the real `sk-ant-oat01-...` token from step 1 of 5
    - Uncomment `GH_TOKEN=YOUR_GH_TOKEN_HERE` and fill in the real token if they obtained one in step 2 of 5
 
@@ -197,7 +200,7 @@ advances to ITERATING automatically.
 After the agent writes its plan, you can read it without attaching (3 steps):
 1 of 3. Detach from the container (`Ctrl-b d`) to return to the dashboard.
 2 of 3. Select the task and press `a` to open the artifact browser.
-3 of 3. Select `plan.md` and press `e` to open it in your editor.
+3 of 3. Select `plan.md` and press `e` to open it (uses the host's default editor/handler).
 
 **Finishing up**
 
