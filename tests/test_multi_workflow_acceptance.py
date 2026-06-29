@@ -44,7 +44,7 @@ def test_multiple_workflows_are_configurable_and_run_concurrently(tmp_path: Path
     app = build_app(db="sqlite://", artifacts_root=str(tmp_path / "artifacts"), workflows_path=str(wf_dir))
     with TestClient(app) as client:
         # 1. The built-ins and the path-discovered workflow are all selectable (no core change).
-        assert {"spike", "github-peer-reviewed", "custom"} <= set(client.get("/workflows").json())
+        assert {"spike", "github-peer-reviewed", "custom"} <= {w["name"] for w in client.get("/workflows").json()}
 
         client.post("/repos", json={"id": "r1", "name": "acme/widgets", "git_url": "https://x/r1.git"})
 

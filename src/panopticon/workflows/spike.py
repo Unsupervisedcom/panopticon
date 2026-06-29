@@ -24,6 +24,10 @@ class Spike(Workflow):
     """
 
     name: ClassVar[str] = "spike"
+    when_to_use: ClassVar[str] = (
+        "Open-ended agent work with no process gates — use for explorations, prototypes, "
+        "debugging sessions, and tasks that don't need a PR or review pipeline."
+    )
 
     class Iterating(InitialState):
         label = "ITERATING"

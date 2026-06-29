@@ -74,6 +74,9 @@ class Workflow(ABC):
     name: ClassVar[str]
     #: The state a new task starts in — a nested ``State`` class or its label string.
     initial: ClassVar[type[BaseState] | str]
+    #: One-sentence description of what situation this workflow is for, shown in the dashboard's
+    #: workflow picker. Empty string means no description displayed.
+    when_to_use: ClassVar[str] = ""
     #: Whether this workflow's in-container agent may **orchestrate other tasks** — create new
     #: tasks (in its own repo) and discover the available workflows through the control plane. The
     #: orchestration MCP tools are gated to workflows that opt in (the task service checks this

@@ -27,6 +27,10 @@ class GithubSelfReviewed(GithubForgeWorkflow):
     MERGING is agent-driven."""
 
     name: ClassVar[str] = "github-self-reviewed"
+    when_to_use: ClassVar[str] = (
+        "GitHub-hosted changes you review yourself — PLANNING → ITERATING (you approve) → "
+        "MERGING, with no peer-review gate."
+    )
 
     class Planning(InitialState):
         label = "PLANNING"

@@ -38,6 +38,10 @@ class GithubPeerReviewed(GithubForgeWorkflow):
     gates the merge. Foreground states are user-advanced; MERGING is agent-driven."""
 
     name: ClassVar[str] = "github-peer-reviewed"
+    when_to_use: ClassVar[str] = (
+        "Changes that require a peer review before merging — full PLANNING → ITERATING → "
+        "REVIEW → MERGING lifecycle on GitHub with a peer-review gate."
+    )
 
     class Planning(InitialState):
         label = "PLANNING"
