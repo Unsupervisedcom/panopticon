@@ -101,6 +101,10 @@ class Orchestrator(Workflow):
     pre-plan other tasks (``orchestrates = True``)."""
 
     name: ClassVar[str] = "orchestrator"
+    when_to_use: ClassVar[str] = (
+        "Decomposes a high-level goal into multiple sub-tasks, each pre-planned and ready for "
+        "your approval — use to fan out parallel work across several agents."
+    )
     orchestrates: ClassVar[bool] = True
 
     class Orchestrating(InitialState):

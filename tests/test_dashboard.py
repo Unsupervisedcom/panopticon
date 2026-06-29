@@ -63,7 +63,7 @@ class _FakeClient:
         registrations: dict[str, list[dict[str, Any]]] | None = None,
         *,
         repos: list[str] | list[dict[str, Any]] | None = None,
-        workflows: list[str] | None = None,
+        workflows: list[dict[str, str]] | None = None,
         operations: dict[str, str] | None = None,
         artifacts: dict[str, list[str]] | None = None,
         artifact_content: bytes = b"",
@@ -158,7 +158,7 @@ class _FakeClient:
                 return repo
         return {"id": repo_id, **changes}
 
-    def list_workflows(self) -> list[str]:
+    def list_workflows(self) -> list[dict[str, str]]:
         return self._workflows
 
     def list_operations(self, task_id: str) -> dict[str, str]:
@@ -591,7 +591,7 @@ async def test_pressing_u_with_no_runner_session_does_nothing() -> None:
 
 
 async def test_pressing_n_creates_a_task_via_repo_workflow_then_memo() -> None:
-    fake = _FakeClient([], repos=["r1", "r2"], workflows=["spike"])
+    fake = _FakeClient([], repos=["r1", "r2"], workflows=[{"name": "spike", "when_to_use": ""}])
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -608,7 +608,7 @@ async def test_pressing_n_creates_a_task_via_repo_workflow_then_memo() -> None:
 
 
 async def test_pressing_n_with_a_blank_memo_creates_with_none() -> None:
-    fake = _FakeClient([], repos=["r1"], workflows=["spike"])
+    fake = _FakeClient([], repos=["r1"], workflows=[{"name": "spike", "when_to_use": ""}])
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()

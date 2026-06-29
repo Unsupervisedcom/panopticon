@@ -30,8 +30,8 @@ class TaskServiceClient:
 
     # -- reads --------------------------------------------------------------------
 
-    def list_workflows(self) -> list[str]:
-        return cast("list[str]", self._json(self._http.get("/workflows")))
+    def list_workflows(self) -> list[dict[str, str]]:
+        return cast("list[dict[str, str]]", self._json(self._http.get("/workflows")))
 
     def workflow_image_layer(self, name: str) -> str:
         """The workflow's Dockerfile layer (ADR 0005); empty when it needs none."""

@@ -465,6 +465,35 @@ class ChoiceScreen(_OptionListModal[str]):
         self.dismiss(str(event.option.prompt))
 
 
+class WorkflowScreen(_OptionListModal[str]):
+    """Workflow picker with a description area below the list.
+
+    Shows each workflow's ``when_to_use`` text in a Static pane as the user moves through the list,
+    so the operator can see what situation each workflow is designed for before committing."""
+
+    CSS = """
+    WorkflowScreen { align: center middle; }
+    #workflow-choice-box { width: 64; height: auto; max-height: 80%; padding: 1 2; border: round $accent; background: $surface; }
+    #workflow-desc { height: 4; border: tall $panel; padding: 0 1; color: $text-muted; }
+    """
+    BOX_ID = "workflow-choice-box"
+
+    def __init__(self, workflows: list[dict[str, str]]) -> None:
+        names = [w["name"] for w in workflows]
+        super().__init__("workflow", names)
+        self._workflow_map = {w["name"]: w.get("when_to_use", "") for w in workflows}
+
+    def _extra_widgets(self) -> Iterable[Widget]:
+        yield Static("", id="workflow-desc")
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        name = str(event.option.prompt)
+        self.query_one("#workflow-desc", Static).update(self._workflow_map.get(name, ""))
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(str(event.option.prompt))
+
+
 class InputScreen(ModalScreen[str | None]):
     """A modal free-text prompt: submit the text (Enter) or cancel (Escape).
 
@@ -1118,7 +1147,7 @@ class Dashboard(App[None]):
 
                 self.push_screen(InputScreen("memo"), create)
 
-            self.push_screen(ChoiceScreen("workflow", workflows), describe)
+            self.push_screen(WorkflowScreen(workflows), describe)
 
         self.push_screen(ChoiceScreen("repo", repos), pick_workflow)
 

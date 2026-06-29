@@ -19,7 +19,7 @@ def test_build_app_serves_default_wiring(tmp_path: Path) -> None:
     client = TestClient(app)
 
     assert client.get("/healthz").json() == {"status": "ok"}
-    assert set(client.get("/workflows").json()) == {
+    assert {w["name"] for w in client.get("/workflows").json()} == {
         "spike",
         "github-peer-reviewed",
         "github-self-reviewed",
