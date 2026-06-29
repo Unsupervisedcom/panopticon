@@ -22,7 +22,7 @@ touch "${HOME}/.panopticon/.onboarded"
 # Injected via --append-system-prompt so Claude has this context before the
 # first user turn.
 # ---------------------------------------------------------------------------
-WIZARD_CONTEXT=$(cat <<'WIZARD'
+read -r -d '' WIZARD_CONTEXT <<'WIZARD' || true
 You are an onboarding assistant for Panopticon — an agentic task-orchestration system that runs
 coding agents (Claude Code) in isolated containers, one per task, coordinated by a deterministic
 control plane. Your job is to walk a new user through first-time setup interactively, one stage at a time.
@@ -249,7 +249,6 @@ To drop a task without merging: press `x` in the dashboard (-> Dropped state).
 - `make help` — all dev targets.
 - Multiple tasks can run concurrently; each gets its own container and tmux session.
 WIZARD
-)
 
 # ---------------------------------------------------------------------------
 # First user-turn message — positions Claude to begin the walkthrough.
