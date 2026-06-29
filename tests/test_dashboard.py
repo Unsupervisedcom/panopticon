@@ -1653,9 +1653,9 @@ async def test_enter_on_governor_collapses_to_ensemble_row() -> None:
         assert "gov" in keys
         assert "wrk" not in keys
         assert f"{_ENSEMBLE_KEY_PREFIX}gov" in keys
-        # The ensemble row's slug cell reads "ensemble" (dim, checked by plain text).
+        # The ensemble row's slug cell reads "..." (dim, checked by plain text).
         ens_row = table.get_row(f"{_ENSEMBLE_KEY_PREFIX}gov")
-        assert ens_row[4].plain == "└─ ensemble"
+        assert ens_row[4].plain == "└─ ..."
 
 
 async def test_enter_again_on_governor_expands_ensemble() -> None:
