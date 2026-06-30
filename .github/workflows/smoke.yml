@@ -1,0 +1,70 @@
+name: Smoke Test (make start)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install tmux (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install --yes tmux
+
+      - name: Install tmux (macOS)
+        if: runner.os == 'macOS'
+        run: brew list tmux 2>/dev/null || brew install tmux
+
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Start host services
+        run: make host
+
+      - name: Wait for service health check
+        run: |
+          for i in $(seq 1 60); do
+            if curl --silent --fail http://localhost:8000/healthz; then
+              echo ""
+              echo "Service is up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Service did not come up within 60 seconds"
+          exit 1
+
+      - name: Verify service tmux session
+        run: tmux -L panopticon has-session -t service
+
+      - name: Verify runner tmux session
+        run: tmux -L panopticon has-session -t runner
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          echo "=== service pane ==="
+          tmux -L panopticon capture-pane -t service -p 2>/dev/null || echo "(no session)"
+          echo "=== runner pane ==="
+          tmux -L panopticon capture-pane -t runner -p 2>/dev/null || echo "(no session)"
+          echo "=== service log ==="
+          cat /tmp/panopticon-service.log 2>/dev/null || echo "(no log)"
+          echo "=== runner log ==="
+          cat /tmp/panopticon-runner.log 2>/dev/null || echo "(no log)"
+
+      - name: Stop services
+        if: always()
+        run: make stop
