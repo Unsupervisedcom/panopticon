@@ -1126,13 +1126,16 @@ class Dashboard(App[None]):
     def action_new_task(self) -> None:
         """`n`: create a task — pick a repo, a workflow, describe the work, then POST it."""
         repos = [str(r["id"]) for r in self._client.list_repos()]
-        workflows = self._client.list_workflows()
-        if not repos or not workflows:
-            self.notify("Need at least one repo and workflow to create a task.", severity="warning")
+        if not repos:
+            self.notify("Need at least one repo to create a task.", severity="warning")
             return
 
         def pick_workflow(repo: str | None) -> None:
             if repo is None:
+                return
+            workflows = self._client.list_workflows_for_repo(repo)
+            if not workflows:
+                self.notify(f"No workflows enabled for repo {repo!r}.", severity="warning")
                 return
 
             def describe(workflow: str | None) -> None:

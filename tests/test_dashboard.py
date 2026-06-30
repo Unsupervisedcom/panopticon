@@ -161,6 +161,9 @@ class _FakeClient:
     def list_workflows(self) -> list[dict[str, str]]:
         return self._workflows
 
+    def list_workflows_for_repo(self, repo_id: str) -> list[dict[str, str]]:
+        return self._workflows
+
     def list_operations(self, task_id: str) -> dict[str, str]:
         return self._operations
 

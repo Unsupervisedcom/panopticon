@@ -83,6 +83,11 @@ class Workflow(ABC):
     #: flag for the acting task); default off, so an ordinary workflow's agent can mutate only
     #: tasks it already knows, never create them.
     orchestrates: ClassVar[bool] = False
+    #: Whether this workflow must be **explicitly enabled** per repo before it appears in the
+    #: workflow picker. ``False`` (default) = opt-out, shown for every repo unless the repo
+    #: lists it in ``disabled_workflows``; ``True`` = opt-in, hidden unless the repo lists it
+    #: in ``enabled_workflows``.
+    opt_in: ClassVar[bool] = False
 
     # -- build / validate (the resolution pass; answers "why not a free function?") -----
 

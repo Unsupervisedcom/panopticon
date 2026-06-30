@@ -46,7 +46,8 @@ def test_multiple_workflows_are_configurable_and_run_concurrently(tmp_path: Path
         # 1. The built-ins and the path-discovered workflow are all selectable (no core change).
         assert {"spike", "github-peer-reviewed", "custom"} <= {w["name"] for w in client.get("/workflows").json()}
 
-        client.post("/repos", json={"id": "r1", "name": "acme/widgets", "git_url": "https://x/r1.git"})
+        client.post("/repos", json={"id": "r1", "name": "acme/widgets", "git_url": "https://x/r1.git",
+                                    "enabled_workflows": ["github-peer-reviewed"]})
 
         # 2. Tasks on three different workflows coexist concurrently, each in its own initial state.
         tasks = {

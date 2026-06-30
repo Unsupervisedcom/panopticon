@@ -83,6 +83,8 @@ class _RepoRow(_Base):
     image_layer_file: Mapped[str | None] = mapped_column(default=None)
     capabilities: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     hook_file: Mapped[str | None] = mapped_column(default=None)
+    enabled_workflows: Mapped[list[str]] = mapped_column(JSON, default=list)
+    disabled_workflows: Mapped[list[str]] = mapped_column(JSON, default=list)
 
     def to_domain(self) -> Repo:
         return Repo(
@@ -90,6 +92,8 @@ class _RepoRow(_Base):
             env_file=self.env_file, image_layer_file=self.image_layer_file,
             capabilities=dict(self.capabilities or {}),
             hook_file=self.hook_file,
+            enabled_workflows=list(self.enabled_workflows or []),
+            disabled_workflows=list(self.disabled_workflows or []),
         )
 
     @classmethod
@@ -99,6 +103,8 @@ class _RepoRow(_Base):
             env_file=repo.env_file, image_layer_file=repo.image_layer_file,
             capabilities=dict(repo.capabilities),
             hook_file=repo.hook_file,
+            enabled_workflows=list(repo.enabled_workflows),
+            disabled_workflows=list(repo.disabled_workflows),
         )
 
 
@@ -325,6 +331,8 @@ class SqlAlchemyStore(Store):
             row.image_layer_file = repo.image_layer_file
             row.capabilities = dict(repo.capabilities)
             row.hook_file = repo.hook_file
+            row.enabled_workflows = list(repo.enabled_workflows)
+            row.disabled_workflows = list(repo.disabled_workflows)
 
     # -- tasks: reads + persistence primitives (the base's template methods drive these) --
 
