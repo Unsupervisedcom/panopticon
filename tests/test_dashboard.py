@@ -1693,3 +1693,40 @@ async def test_enter_on_non_governor_does_nothing() -> None:
         await pilot.pause()
         after = [str(k.value) for k in table.rows]
         assert before == after
+
+
+async def test_fartbarf_sequence_opens_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Typing f-a-r-t-b-a-r-f in full fires _open_path with the encoded URL.
+    # An empty task list means _current is None, so the t/a/r keys' bound actions
+    # are no-ops — no modals, no interference.
+    opened: list[str] = []
+    monkeypatch.setattr(dashboard, "_open_path", lambda path: opened.append(path))
+    app = Dashboard(_FakeClient([]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        for key in ("f", "a", "r", "t", "b", "a", "r", "f"):
+            await pilot.press(key)
+        await pilot.pause()
+    assert opened == [dashboard._KU]
+
+
+async def test_broken_fartbarf_does_not_open_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An interrupted sequence (wrong key mid-way) does not fire _open_path.
+    opened: list[str] = []
+    monkeypatch.setattr(dashboard, "_open_path", lambda path: opened.append(path))
+    app = Dashboard(_FakeClient([]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        # f a r t <x breaks it> b a r f — never completes the sequence
+        for key in ("f", "a", "r", "t", "x", "b", "a", "r", "f"):
+            await pilot.press(key)
+        await pilot.pause()
+    assert opened == []
+
+
+def test_easter_egg_url_absent_from_hotkeys_and_help() -> None:
+    # The URL must not be visible in the footer legend or help screen.
+    for h in dashboard.HOTKEYS:
+        assert dashboard._KU not in (h.key, h.label, h.description, h.action)
+    rendered = "\n".join(
+        f"{h.display or h.key} {h.description}" for h in dashboard.HOTKEYS
+    )
+    assert dashboard._KU not in rendered
