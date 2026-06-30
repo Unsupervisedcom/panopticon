@@ -34,9 +34,9 @@ dashboard:  ## Launch the dashboard (foreground; no tmux)
 host: migrate  ## Start task service + session-service host in background tmux sessions (no console; use for CI or headless ops)
 	# Always kill-and-recreate so a crashed process doesn't leave a stale session that make host silently reuses.
 	tmux -L panopticon kill-session -t service 2>/dev/null || true
-	tmux -L panopticon new-session -d -s service 'uv run python -m panopticon.taskservice'
+	tmux -L panopticon new-session -d -s service 'uv run python -m panopticon.taskservice 2>&1 | tee /tmp/panopticon-service.log'
 	tmux -L panopticon kill-session -t runner 2>/dev/null || true
-	tmux -L panopticon new-session -d -s runner 'uv run python -m panopticon.sessionservice.host'
+	tmux -L panopticon new-session -d -s runner 'uv run python -m panopticon.sessionservice.host 2>&1 | tee /tmp/panopticon-runner.log'
 
 start: host  ## Run panopticon: task service + session-service runner (background) + dashboard supervisor
 	uv run panopticon console

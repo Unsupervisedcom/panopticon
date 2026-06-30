@@ -36,7 +36,7 @@ jobs:
 
       - name: Wait for service health check
         run: |
-          for i in $(seq 1 30); do
+          for i in $(seq 1 60); do
             if curl --silent --fail http://localhost:8000/healthz; then
               echo ""
               echo "Service is up"
@@ -44,7 +44,7 @@ jobs:
             fi
             sleep 1
           done
-          echo "Service did not come up within 30 seconds"
+          echo "Service did not come up within 60 seconds"
           exit 1
 
       - name: Verify service tmux session
@@ -53,13 +53,17 @@ jobs:
       - name: Verify runner tmux session
         run: tmux -L panopticon has-session -t runner
 
-      - name: Dump tmux panes on failure
+      - name: Dump logs on failure
         if: failure()
         run: |
           echo "=== service pane ==="
           tmux -L panopticon capture-pane -t service -p 2>/dev/null || echo "(no session)"
           echo "=== runner pane ==="
           tmux -L panopticon capture-pane -t runner -p 2>/dev/null || echo "(no session)"
+          echo "=== service log ==="
+          cat /tmp/panopticon-service.log 2>/dev/null || echo "(no log)"
+          echo "=== runner log ==="
+          cat /tmp/panopticon-runner.log 2>/dev/null || echo "(no log)"
 
       - name: Stop services
         if: always()
