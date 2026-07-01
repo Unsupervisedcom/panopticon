@@ -37,21 +37,25 @@ class ImageBuilder:
         self._base = base
         self._run = run
 
-    def build(self, workflow: str, repo_id: str, layers: Sequence[str]) -> str:
-        """Compose base → ``layers`` and `docker build` it; return the image tag."""
+    def build(self, workflow: str, repo_id: str, layers: Sequence[str], *, verbose: bool = False) -> str:
+        """Compose base → ``layers`` and `docker build` it; return the image tag.
+
+        ``verbose`` streams docker build output to the caller's stdout/stderr (visible in the
+        runner's tmux session) instead of capturing it."""
         tag = image_tag(workflow, repo_id)
         dockerfile = compose_dockerfile(self._base, layers)
         with tempfile.TemporaryDirectory() as context:
             (Path(context) / "Dockerfile").write_text(dockerfile)
-            self._run(["docker", "build", "--tag", tag, context])
+            self._run(["docker", "build", "--tag", tag, context], verbose=verbose)
         return tag
 
-    def build_base_if_missing(self, *, context: str = ".") -> bool:
+    def build_base_if_missing(self, *, context: str = ".", verbose: bool = False) -> bool:
         """Probe for the base image; build it from docker/Dockerfile if absent.
 
         Uses ``docker image inspect`` (fast, ~100 ms) to check presence. If the image is missing
         (inspect returns an empty result), builds it with ``docker build``. Returns ``True`` if a
-        build was triggered, ``False`` if the image was already present."""
+        build was triggered, ``False`` if the image was already present. ``verbose`` streams the
+        build output to the caller's stdout/stderr when a build is triggered."""
         result = self._run(
             ["docker", "image", "inspect", self._base], check=False
         )
@@ -59,7 +63,8 @@ class ImageBuilder:
             _log.warning("base image %r not found — building automatically", self._base)
             self._run(
                 ["docker", "build", "--tag", self._base,
-                 "--file", "docker/Dockerfile", context]
+                 "--file", "docker/Dockerfile", context],
+                verbose=verbose,
             )
             return True
         return False

@@ -200,6 +200,7 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
         help="change-feed long-poll wait, seconds (the keepalive ceiling between blocking calls)",
     )
     args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
     runner = LocalRunner(args.container_service_url, image=args.image, runner_id=args.runner_id)
     # Hold this host's liveness connection for the daemon's whole life, alongside the spawn/provision

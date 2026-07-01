@@ -45,10 +45,10 @@ class _FakeRunner:
 class _FakeImageBuilder:
     """Stands in for ImageBuilder (no docker); always reports the base image as present."""
 
-    def build(self, workflow: str, repo_id: str, layers: list[str]) -> str:
+    def build(self, workflow: str, repo_id: str, layers: list[str], *, verbose: bool = False) -> str:
         return f"panopticon-{workflow}-{repo_id}"
 
-    def build_base_if_missing(self, *, context: str = ".") -> bool:
+    def build_base_if_missing(self, *, context: str = ".", verbose: bool = False) -> bool:
         return False
 
 

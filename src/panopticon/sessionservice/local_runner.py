@@ -53,13 +53,14 @@ class CommandRunner(Protocol):
 
     ``interactive`` attaches the caller's terminal (stdin/stdout/stderr) instead of capturing — for
     an interactive ``docker run -it``, where capturing would leave its TTY with no real input and
-    hang."""
+    hang. ``verbose`` also inherits the caller's streams but is for non-interactive commands whose
+    output should be visible in the runner's tmux session (e.g. ``docker build``)."""
 
-    def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False) -> str: ...
+    def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False, verbose: bool = False) -> str: ...
 
 
-def _subprocess_run(args: Sequence[str], *, check: bool = True, interactive: bool = False) -> str:
-    if interactive:  # inherit the terminal so the container's TTY is the operator's (no capture)
+def _subprocess_run(args: Sequence[str], *, check: bool = True, interactive: bool = False, verbose: bool = False) -> str:
+    if interactive or verbose:  # inherit streams: TTY attachment (interactive) or visible build output (verbose)
         subprocess.run(list(args), check=check)
         return ""
     return subprocess.run(list(args), check=check, capture_output=True, text=True).stdout
