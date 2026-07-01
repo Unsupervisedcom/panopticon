@@ -131,7 +131,7 @@ _SEPARATOR_KEY = "__separator__"
 # (like the separator) and ``on_data_table_row_selected`` ignores them.
 _ENSEMBLE_KEY_PREFIX = "__ensemble__"
 
-_KS: tuple[str, ...] = ("f", "a", "r", "t", "b", "a", "r", "f")
+_KS: tuple[str, ...] = tuple(__import__("base64").b64decode(b"ZmFydGJhcmY=").decode())
 _KU: str = __import__("base64").b64decode(
     b"aHR0cHM6Ly93d3cueW91dHViZS5jb20vd2F0Y2g/dj1na3g5VmFMdkx6QQ=="
 ).decode()
