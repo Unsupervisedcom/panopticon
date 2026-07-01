@@ -16,7 +16,7 @@ from panopticon.terminal import dashboard
 from panopticon.terminal.dashboard import (
     Dashboard,
     _ENSEMBLE_KEY_PREFIX,
-    _SEPARATOR_KEY,
+    _dim,
     _group_by_governor,
     _group_section,
     _matches,
@@ -340,15 +340,11 @@ async def test_tasks_are_sorted_live_then_user_then_slug() -> None:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
         keys = [str(k.value) for k in table.rows]
-        order = [k for k in keys if k != _SEPARATOR_KEY]  # task order, ignoring the divider row
-        assert order == [
+        assert keys == [
             "t-user-a", "t-user-b",    # live, user's turn, slug order
             "t-agent-a", "t-agent-b",  # live, agent's turn, slug order
             "t-drop", "t-done",        # terminal: agent-turn first (just finished), then user-turn
         ]
-        # the divider sits exactly between the last active row and the first terminal one
-        assert keys.index(_SEPARATOR_KEY) == keys.index("t-agent-b") + 1
-        assert keys.index(_SEPARATOR_KEY) == keys.index("t-drop") - 1
 
 
 async def test_sort_uses_recency_within_tier() -> None:
@@ -377,7 +373,7 @@ async def test_sort_breaks_ties_on_slug() -> None:
         assert order == ["t1", "t2"]  # alpha < zebra
 
 
-# -- active/terminal divider --------------------------------------------------------
+# -- active/terminal dim styling ---------------------------------------------------
 
 _ACTIVE_A = {**_TASK, "id": "t-a", "slug": "alpha", "state": "WORKING", "turn": "user"}
 _ACTIVE_B = {**_TASK, "id": "t-b", "slug": "bravo", "state": "ITERATING", "turn": "user"}
@@ -385,76 +381,53 @@ _TERM_A = {**_TASK, "id": "t-done", "slug": "done", "state": "COMPLETE", "turn":
 _TERM_B = {**_TASK, "id": "t-drop", "slug": "dropped", "state": "DROPPED", "turn": "user"}
 
 
-async def test_separator_divides_active_from_terminal() -> None:
-    # With both groups present, a single divider row splices in at the boundary.
+async def test_terminal_tasks_are_faded() -> None:
+    # Terminal tasks come after active ones and all their cells carry dim styling.
     app = Dashboard(_FakeClient([_ACTIVE_A, _TERM_A, _ACTIVE_B, _TERM_B]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        keys = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
-        assert keys == ["t-a", "t-b", _SEPARATOR_KEY, "t-done", "t-drop"]
+        table = app.query_one("#tasks", DataTable)
+        keys = [str(k.value) for k in table.rows]
+        assert keys == ["t-a", "t-b", "t-done", "t-drop"]  # active before terminal, no separator
+        # Active rows: slug cell has no dim span.
+        for task_id in ("t-a", "t-b"):
+            slug_cell = table.get_row(task_id)[4]
+            assert not any(s.style == "dim" for s in slug_cell._spans)
+        # Terminal rows: every cell carries dim styling.
+        for task_id in ("t-done", "t-drop"):
+            row = table.get_row(task_id)
+            for cell in row:
+                assert cell._spans and all(s.style == "dim" for s in cell._spans), (
+                    f"{task_id} cell {cell!r} should be fully dim"
+                )
 
 
-async def test_no_separator_when_all_active() -> None:
+async def test_active_only_rows_not_faded() -> None:
     app = Dashboard(_FakeClient([_ACTIVE_A, _ACTIVE_B]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        keys = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
-        assert _SEPARATOR_KEY not in keys
-
-
-async def test_no_separator_when_all_terminal() -> None:
-    app = Dashboard(_FakeClient([_TERM_A, _TERM_B]))  # type: ignore[arg-type]
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        keys = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
-        assert _SEPARATOR_KEY not in keys
-
-
-async def test_no_separator_when_filtered_to_one_group() -> None:
-    # A search filter that leaves only active tasks shows no divider.
-    app = Dashboard(_FakeClient([_ACTIVE_A, _ACTIVE_B, _TERM_A, _TERM_B]))  # type: ignore[arg-type]
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("slash")
-        await pilot.press("a", "l", "p", "h", "a")  # matches only _ACTIVE_A's slug
-        await pilot.pause()
-        keys = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
-        assert keys == ["t-a"]  # only the match; no divider
-
-
-async def test_highlighting_the_separator_selects_no_task() -> None:
-    # If the cursor is forced onto the divider, it selects nothing and actions no-op.
-    fake = _FakeClient([_ACTIVE_A, _TERM_A])
-    app = Dashboard(fake)  # type: ignore[arg-type]
-    async with app.run_test() as pilot:
-        await pilot.pause()
         table = app.query_one("#tasks", DataTable)
-        sep_index = [str(k.value) for k in table.rows].index(_SEPARATOR_KEY)
-        app._update_detail(_SEPARATOR_KEY)  # as a raw highlight on the sentinel would
-        await pilot.pause()
-        assert app._current is None  # no task selected
-        assert str(app.query_one("#detail", Static).render()) == ""  # blank pane
-        await pilot.press("x")  # drop no-ops with no current task
-        await pilot.pause()
-        assert fake.applied == []
-        assert sep_index == 1  # divider after the one active row
+        keys = [str(k.value) for k in table.rows]
+        assert keys == ["t-a", "t-b"]
+        for task_id in ("t-a", "t-b"):
+            slug_cell = table.get_row(task_id)[4]
+            assert not any(s.style == "dim" for s in slug_cell._spans)
 
 
-async def test_arrow_keys_skip_the_separator() -> None:
-    # Arrowing across the boundary jumps the divider in both directions.
-    app = Dashboard(_FakeClient([_ACTIVE_A, _TERM_A]))  # type: ignore[arg-type]
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        table = app.query_one("#tasks", DataTable)
-        table.move_cursor(row=0)  # the active task
-        await pilot.pause()
-        assert app._current == "t-a"
-        await pilot.press("down")  # would land on the divider → skip to the terminal task
-        await pilot.pause()
-        assert app._current == "t-done"
-        await pilot.press("up")  # back up over the divider → the active task again
-        await pilot.pause()
-        assert app._current == "t-a"
+def test_dim_helper_str_and_text() -> None:
+    # _dim on a plain str or a Rich Text both produce a Text whose sole span is "dim".
+    from rich.text import Text
+    result = _dim("hello")
+    assert result.plain == "hello"
+    assert result._spans and result._spans[0].style == "dim"
+
+    t = Text("world", style="green")
+    dimmed = _dim(t)
+    assert dimmed.plain == "world"
+    assert dimmed._spans and all(s.style == "dim" for s in dimmed._spans)
+    # original is unmodified
+    assert t.plain == "world"
+    assert str(t.style) == "green"
 
 
 async def _settle(pilot: Any, predicate: Any, *, tries: int = 100, step: float = 0.02) -> None:
@@ -1601,10 +1574,9 @@ async def test_governed_task_appears_under_governor_in_dashboard() -> None:
         assert wrk_row[4].plain == "└─ worker"           # last (only) child gets └─
 
 
-async def test_separator_after_group_not_mid_group() -> None:
+async def test_active_governor_keeps_terminal_child_in_active_section() -> None:
     # Regression: a terminal governed task whose governor is still active must stay in the
-    # active section, so the separator appears *after* the whole group — not between the
-    # governor and its child.
+    # active section (above the terminal section), not below it.
     governor = {
         **_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None,
         "state": "WORKING",
@@ -1621,12 +1593,18 @@ async def test_separator_after_group_not_mid_group() -> None:
     app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        keys = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
-        # Governor and its terminal child both appear above the divider; unrelated terminal
-        # task appears below it.
-        assert keys.index("gov") < keys.index(_SEPARATOR_KEY)
-        assert keys.index("wrk") < keys.index(_SEPARATOR_KEY)
-        assert keys.index("done") > keys.index(_SEPARATOR_KEY)
+        table = app.query_one("#tasks", DataTable)
+        keys = [str(k.value) for k in table.rows]
+        # Governor and its terminal child are in the active section (above "done").
+        assert keys.index("gov") < keys.index("done")
+        assert keys.index("wrk") < keys.index("done")
+        # Active governor is not faded; both terminal tasks (standalone and governed) are.
+        assert not any(s.style == "dim" for s in table.get_row("gov")[4]._spans)
+        for task_id in ("wrk", "done"):
+            slug = table.get_row(task_id)[4]
+            assert slug._spans and all(s.style == "dim" for s in slug._spans), (
+                f"{task_id} slug should be dim"
+            )
 
 
 # -- ensemble collapse (_group_section collapsed / Dashboard Enter) ---------------
