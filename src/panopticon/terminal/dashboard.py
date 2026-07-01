@@ -4,9 +4,8 @@ A task table on the left, the highlighted task's state/turn/history on the right
 from the task service **on change** — a background worker long-polls the change feed
 (``list_tasks_versioned``), so the table redraws within a round-trip of a state change and stays
 still when nothing changes (no fixed-interval redraw); `r` forces a refresh now. The redraw
-preserves the highlighted row across the rebuild. A dim divider row splits the active tasks from
-the terminal (COMPLETE/DROPPED) ones that sink below them; the arrow keys jump over it (it's not a
-selectable task).
+preserves the highlighted row across the rebuild. Terminal (COMPLETE/DROPPED) tasks sink below
+active ones and are rendered in faded/dim styling so they recede visually without a hard separator.
 
 The footer legend shows only the essential, most-used keys — `t` hands off to the task's
 container tmux, `n` creates a task (pick repo → workflow → describe the work), `x` **drops** it,
@@ -35,8 +34,8 @@ filter is applied in ``action_refresh``, so a change-feed refresh preserves it a
 
 `Enter` on a **governing task** (one with governed children) **collapses** its sub-tasks into a
 single dim ``ensemble`` row; pressing `Enter` again **expands** them. Arrow keys skip the ensemble
-row the same way they skip the active/terminal separator (it is not a real task). Expanding or
-collapsing does not affect the task service — it is pure display state local to the dashboard.
+row (it is not a real task). Expanding or collapsing does not affect the task service — it is pure
+display state local to the dashboard.
 
 The `container` column shows each task's container status: `live` (an active registration), `down`
 (was up, container gone — respawn with `R`), `starting` (claimed, no registration yet — its
@@ -120,21 +119,17 @@ def _short_tokens(n: int | None) -> str:
     return str(n)
 
 
-# A sentinel row key for the divider drawn between the active and terminal task groups (see
-# action_refresh). It's not a real task id, so it's never in ``self._tasks`` — the highlight
-# handler treats it as "no task selected" and the arrow keys jump over it.
-_SEPARATOR_KEY = "__separator__"
-
 # Row-key prefix for ensemble placeholder rows. When the operator collapses a governing task
 # (Enter on a governor), its governed children are replaced by one dim ``ensemble`` row whose
 # key is ``f"{_ENSEMBLE_KEY_PREFIX}{governor_id}"``. The highlight handler skips these rows
 # (like the separator) and ``on_data_table_row_selected`` ignores them.
 _ENSEMBLE_KEY_PREFIX = "__ensemble__"
 
-def _separator_cells(columns: int) -> list[Text]:
-    """A blank row with a muted background tint — the visual divider between the active tasks
-    and the terminal (COMPLETE/DROPPED) ones that sink below them."""
-    return [Text("", style="on grey7") for _ in range(columns)]
+def _dim(cell: Text | str) -> Text:
+    """Return a dim copy of a cell value (str or Rich Text), fading it without erasing content."""
+    t = Text(cell if isinstance(cell, str) else cell.plain)
+    t.stylize("dim")
+    return t
 
 
 def _slug_cell(task: JsonObj, prefix: str = "") -> Text:
@@ -1117,7 +1112,7 @@ class Dashboard(App[None]):
         # Prune stale collapsed entries for governors no longer present (e.g. task deleted).
         self._collapsed &= self._governors
 
-        def _add_row(task: JsonObj, prefix: str) -> None:
+        def _add_row(task: JsonObj, prefix: str, *, terminal: bool = False) -> None:
             if task.get("_ensemble"):
                 gov_id = task["_governor_id"]
                 slug_cell = Text(f"{prefix}...", style="dim")
@@ -1126,19 +1121,26 @@ class Dashboard(App[None]):
                     key=f"{_ENSEMBLE_KEY_PREFIX}{gov_id}",
                 )
             else:
+                state_cell: Text | str = task["state"]
+                turn_cell = _turn_cell(task)
+                status_cell = _status_cell(task)
+                repo_cell: Text | str = _repo_cell(task, self._repo_names)
+                slug_cell_real = _slug_cell(task, prefix)
+                if terminal:
+                    state_cell = _dim(state_cell)
+                    turn_cell = _dim(turn_cell)
+                    status_cell = _dim(status_cell)
+                    repo_cell = _dim(repo_cell)
+                    slug_cell_real = _dim(slug_cell_real)
                 table.add_row(
-                    task["state"], _turn_cell(task), _status_cell(task),
-                    _repo_cell(task, self._repo_names), _slug_cell(task, prefix),
+                    state_cell, turn_cell, status_cell, repo_cell, slug_cell_real,
                     key=task["id"],
                 )
 
         for task, prefix in active_visible:
             _add_row(task, prefix)
-        # Draw the active↔terminal divider — only when both groups are non-empty.
-        if active_visible and terminal_visible:
-            table.add_row(*_separator_cells(len(table.ordered_columns)), key=_SEPARATOR_KEY)
         for task, prefix in terminal_visible:
-            _add_row(task, prefix)
+            _add_row(task, prefix, terminal=True)
         target = selected if selected in self._tasks else next(iter(self._tasks), None)
         if target is not None:
             table.move_cursor(row=table.get_row_index(target))
@@ -1147,13 +1149,11 @@ class Dashboard(App[None]):
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         table = self.query_one("#tasks", DataTable)
         key_val = event.row_key.value
-        if key_val == _SEPARATOR_KEY or (
-            isinstance(key_val, str) and key_val.startswith(_ENSEMBLE_KEY_PREFIX)
-        ):
-            # The arrow keys jump non-task rows (the separator and ensemble placeholders):
-            # step one more row in the direction of travel. Both row types always sit between
-            # real rows, so there's a real row on both sides; move_cursor re-fires this
-            # handler on that real row, so we don't recurse on the sentinel.
+        if isinstance(key_val, str) and key_val.startswith(_ENSEMBLE_KEY_PREFIX):
+            # The arrow keys jump ensemble placeholder rows: step one more row in the direction
+            # of travel. Placeholders always sit between real rows, so there's a real row on
+            # both sides; move_cursor re-fires this handler on that real row, so we don't
+            # recurse on the sentinel.
             step = 1 if table.cursor_row >= self._last_cursor_row else -1
             table.move_cursor(row=table.cursor_row + step)
             return
@@ -1171,7 +1171,7 @@ class Dashboard(App[None]):
         key = event.row_key.value
         if not isinstance(key, str):
             return
-        if key == _SEPARATOR_KEY or key.startswith(_ENSEMBLE_KEY_PREFIX):
+        if key.startswith(_ENSEMBLE_KEY_PREFIX):
             return
         if key not in self._governors:
             return
@@ -1182,10 +1182,6 @@ class Dashboard(App[None]):
         self.action_refresh()
 
     def _update_detail(self, task_id: str | None) -> None:
-        if task_id == _SEPARATOR_KEY:  # the divider isn't a task — select nothing, blank the pane
-            self._current = None
-            self.query_one("#detail", Static).update("")
-            return
         self._current = task_id
         if not self._detail_visible:
             return
