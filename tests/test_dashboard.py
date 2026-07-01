@@ -1713,7 +1713,7 @@ async def test_fartbarf_memo_opens_url_not_task(monkeypatch: pytest.MonkeyPatch)
             await pilot.press(ch.lower())
         await pilot.press("enter")
         await pilot.pause()
-    assert opened == [dashboard._KU]
+    assert opened == [__import__("base64").b64decode(b"aHR0cHM6Ly93d3cueW91dHViZS5jb20vd2F0Y2g/dj1na3g5VmFMdkx6QQ==").decode()]
     assert fake.created == []  # no task was actually created
 
 
@@ -1735,7 +1735,7 @@ async def test_fartbarf_memo_case_insensitive(monkeypatch: pytest.MonkeyPatch) -
             await pilot.press(ch.lower() if ch.isupper() else ch.upper())
         await pilot.press("enter")
         await pilot.pause()
-    assert opened == [dashboard._KU]
+    assert opened == [__import__("base64").b64decode(b"aHR0cHM6Ly93d3cueW91dHViZS5jb20vd2F0Y2g/dj1na3g5VmFMdkx6QQ==").decode()]
     assert fake.created == []
 
 
@@ -1763,8 +1763,8 @@ async def test_normal_memo_creates_task_not_url(monkeypatch: pytest.MonkeyPatch)
 def test_easter_egg_url_absent_from_hotkeys_and_help() -> None:
     # The URL must not be visible in the footer legend or help screen.
     for h in dashboard.HOTKEYS:
-        assert dashboard._KU not in (h.key, h.label, h.description, h.action)
+        assert __import__("base64").b64decode(b"aHR0cHM6Ly93d3cueW91dHViZS5jb20vd2F0Y2g/dj1na3g5VmFMdkx6QQ==").decode() not in (h.key, h.label, h.description, h.action)
     rendered = "\n".join(
         f"{h.display or h.key} {h.description}" for h in dashboard.HOTKEYS
     )
-    assert dashboard._KU not in rendered
+    assert __import__("base64").b64decode(b"aHR0cHM6Ly93d3cueW91dHViZS5jb20vd2F0Y2g/dj1na3g5VmFMdkx6QQ==").decode() not in rendered

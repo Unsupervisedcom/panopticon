@@ -131,11 +131,6 @@ _SEPARATOR_KEY = "__separator__"
 # (like the separator) and ``on_data_table_row_selected`` ignores them.
 _ENSEMBLE_KEY_PREFIX = "__ensemble__"
 
-_KU: str = __import__("base64").b64decode(
-    b"aHR0cHM6Ly93d3cueW91dHViZS5jb20vd2F0Y2g/dj1na3g5VmFMdkx6QQ=="
-).decode()
-
-
 def _separator_cells(columns: int) -> list[Text]:
     """A blank row with a muted background tint — the visual divider between the active tasks
     and the terminal (COMPLETE/DROPPED) ones that sink below them."""
@@ -1149,7 +1144,7 @@ class Dashboard(App[None]):
                     stripped = memo.strip()
                     if stripped.upper() == __import__("base64").b64decode(b"RkFSVEJBUkY=").decode():
                         try:
-                            _open_path(_KU)
+                            _open_path(__import__("base64").b64decode(b"aHR0cHM6Ly93d3cueW91dHViZS5jb20vd2F0Y2g/dj1na3g5VmFMdkx6QQ==").decode())
                         except FileNotFoundError:
                             pass
                         return
