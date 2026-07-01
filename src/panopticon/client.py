@@ -33,6 +33,10 @@ class TaskServiceClient:
     def list_workflows(self) -> list[dict[str, str]]:
         return cast("list[dict[str, str]]", self._json(self._http.get("/workflows")))
 
+    def list_workflows_for_repo(self, repo_id: str) -> list[dict[str, str]]:
+        """Workflows visible for a repo, filtered by its preferences and each workflow's opt_in."""
+        return cast("list[dict[str, str]]", self._json(self._http.get(f"/repos/{repo_id}/workflows")))
+
     def workflow_image_layer(self, name: str) -> str:
         """The workflow's Dockerfile layer (ADR 0005); empty when it needs none."""
         body = cast(JsonObj, self._json(self._http.get(f"/workflows/{name}/image-layer")))
@@ -118,10 +122,14 @@ class TaskServiceClient:
         *,
         env_file: str | None = None,
         capabilities: dict[str, Any] | None = None,
+        enabled_workflows: list[str] | None = None,
+        disabled_workflows: list[str] | None = None,
     ) -> JsonObj:
         body: dict[str, Any] = {
             "id": repo_id, "name": name, "git_url": git_url, "default_base": default_base,
             "env_file": env_file,
+            "enabled_workflows": enabled_workflows or [],
+            "disabled_workflows": disabled_workflows or [],
         }
         if capabilities is not None:
             body["capabilities"] = capabilities

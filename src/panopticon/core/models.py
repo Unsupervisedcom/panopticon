@@ -190,6 +190,8 @@ class Repo:
     image_layer_file: str | None = None
     capabilities: dict[str, Any] = field(default_factory=dict)
     hook_file: str | None = None
+    enabled_workflows: list[str] = field(default_factory=list)
+    disabled_workflows: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

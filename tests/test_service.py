@@ -38,7 +38,8 @@ async def make_service(tmp_path: Path) -> TaskService:
         id_factory=lambda: next(ids),
     )
     await svc.init()
-    await svc.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git"))
+    await svc.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git",
+                               enabled_workflows=["github-peer-reviewed"]))
     return svc
 
 
@@ -53,7 +54,8 @@ async def test_create_task_as_orchestrator_is_allowed(tmp_path: Path) -> None:
 
 async def test_create_task_as_uses_the_orchestrators_own_repo(tmp_path: Path) -> None:
     svc = await make_service(tmp_path)
-    await svc.create_repo(Repo(id="r2", name="acme/other", git_url="https://x/r2.git"))
+    await svc.create_repo(Repo(id="r2", name="acme/other", git_url="https://x/r2.git",
+                               enabled_workflows=["github-peer-reviewed"]))
     boss = await svc.create_task("r2", "orchestrator")  # the orchestrator lives in r2
     child = await svc.create_task_as(boss.id, "github-peer-reviewed")
     assert child.repo_id == "r2"  # first iteration: always the orchestrator's own repo
@@ -95,6 +97,48 @@ async def test_create_task_unknown_workflow(tmp_path: Path) -> None:
     svc = await make_service(tmp_path)
     with pytest.raises(UnknownWorkflow):
         await svc.create_task("r1", "nope")
+
+
+async def test_create_task_opt_in_workflow_not_enabled_is_rejected(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    # spike is opt-out so it is always allowed; github-peer-reviewed is opt-in and IS enabled
+    # on r1 (via make_service). Create a repo without it enabled to verify the gate.
+    await svc.create_repo(Repo(id="r2", name="acme/other", git_url="https://x/r2.git"))
+    with pytest.raises(NotAuthorized, match="github-peer-reviewed"):
+        await svc.create_task("r2", "github-peer-reviewed")
+
+
+async def test_create_task_opt_out_workflow_is_allowed_by_default(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    task = await svc.create_task("r1", "spike")  # spike is opt-out → always visible
+    assert task.workflow == "spike"
+
+
+async def test_create_task_opt_out_workflow_can_be_disabled(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    await svc.create_repo(Repo(id="r2", name="acme/other", git_url="https://x/r2.git",
+                               disabled_workflows=["spike"]))
+    with pytest.raises(NotAuthorized, match="spike"):
+        await svc.create_task("r2", "spike")
+
+
+async def test_list_workflow_infos_for_repo_shows_opt_in_and_filters(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    # r1 has github-peer-reviewed enabled, spike is opt-out → both visible
+    infos = await svc.list_workflow_infos_for_repo("r1")
+    names = {w["name"] for w in infos}
+    assert "spike" in names
+    assert "github-peer-reviewed" in names
+    # All infos carry opt_in
+    assert all("opt_in" in w for w in infos)
+
+
+async def test_list_workflow_infos_for_repo_hides_disabled_opt_out(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    await svc.create_repo(Repo(id="r2", name="acme/other", git_url="https://x/r2.git",
+                               disabled_workflows=["spike"]))
+    names = {w["name"] for w in await svc.list_workflow_infos_for_repo("r2")}
+    assert "spike" not in names
 
 
 async def test_create_task_missing_repo(tmp_path: Path) -> None:

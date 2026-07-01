@@ -28,7 +28,7 @@ from panopticon.core.artifacts import ArtifactError
 from panopticon.core.models import Actor, LifecyclePhase, Repo, Status, Task
 from panopticon.core.store import AlreadyExists, NotFound, StoreError
 from panopticon.core.workflow import IllegalTransition, InvalidWorkflow, ResponsibilitiesNotMet
-from panopticon.taskservice.service import AlreadyClaimed, TaskService, UnknownWorkflow
+from panopticon.taskservice.service import AlreadyClaimed, NotAuthorized, TaskService, UnknownWorkflow
 
 # -- wire schemas -------------------------------------------------------------------
 
@@ -125,6 +125,8 @@ class RepoIn(BaseModel):
     image_layer_file: str | None = None
     capabilities: dict[str, Any] = Field(default_factory=dict)
     hook_file: str | None = None
+    enabled_workflows: list[str] = Field(default_factory=list)
+    disabled_workflows: list[str] = Field(default_factory=list)
 
 
 class RepoOut(BaseModel):
@@ -138,6 +140,8 @@ class RepoOut(BaseModel):
     image_layer_file: str | None = None
     capabilities: dict[str, Any] = Field(default_factory=dict)
     hook_file: str | None = None
+    enabled_workflows: list[str] = Field(default_factory=list)
+    disabled_workflows: list[str] = Field(default_factory=list)
 
 
 class RepoPatchIn(BaseModel):
@@ -153,6 +157,8 @@ class RepoPatchIn(BaseModel):
     image_layer_file: str | None = None
     capabilities: dict[str, Any] | None = None
     hook_file: str | None = None
+    enabled_workflows: list[str] | None = None
+    disabled_workflows: list[str] | None = None
 
 
 class CreateTaskIn(BaseModel):
@@ -361,6 +367,10 @@ def create_app(service: TaskService) -> FastAPI:
     async def _responsibilities(_: Request, exc: ResponsibilitiesNotMet) -> JSONResponse:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 
+    @app.exception_handler(NotAuthorized)
+    async def _not_authorized(_: Request, exc: NotAuthorized) -> JSONResponse:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+
     @app.exception_handler(UnknownWorkflow)
     async def _unknown_wf(_: Request, exc: UnknownWorkflow) -> JSONResponse:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
@@ -406,6 +416,12 @@ def create_app(service: TaskService) -> FastAPI:
     @app.get("/repos/{repo_id}")
     async def get_repo(repo_id: str) -> RepoOut:
         return RepoOut.model_validate(await service.get_repo(repo_id))
+
+    @app.get("/repos/{repo_id}/workflows")
+    async def list_repo_workflows(repo_id: str) -> list[dict[str, str]]:
+        """Workflows available for this repo, filtered by its ``enabled_workflows`` /
+        ``disabled_workflows`` preferences and each workflow's ``opt_in`` flag."""
+        return await service.list_workflow_infos_for_repo(repo_id)
 
     @app.get("/repos/{repo_id}/image-layer")
     async def repo_image_layer(repo_id: str) -> dict[str, str]:

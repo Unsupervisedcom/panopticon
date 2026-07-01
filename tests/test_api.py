@@ -53,7 +53,33 @@ def _new_task(client: TestClient) -> str:
 
 def test_health_and_workflows(client: TestClient) -> None:
     assert client.get("/healthz").json() == {"status": "ok"}
-    assert client.get("/workflows").json() == [{"name": "spike", "when_to_use": Spike().when_to_use}]
+    assert client.get("/workflows").json() == [{"name": "spike", "when_to_use": Spike().when_to_use, "opt_in": "false"}]
+
+
+def test_repo_workflows_endpoint_filters_by_opt_in(tmp_path: Path) -> None:
+    from panopticon.workflows import GithubSelfReviewed
+
+    svc = TaskService(
+        SqlAlchemyStore(),
+        {"spike": Spike(), "github-self-reviewed": GithubSelfReviewed()},
+        FilesystemArtifactStore(tmp_path),
+    )
+    import asyncio
+    asyncio.run(svc.init())
+    asyncio.run(svc.create_repo(Repo(id="r1", name="acme", git_url="https://x/r1.git")))
+    asyncio.run(svc.create_repo(Repo(id="r2", name="acme2", git_url="https://x/r2.git",
+                                     enabled_workflows=["github-self-reviewed"])))
+
+    with TestClient(create_app(svc)) as c:
+        # r1: no enabled_workflows → opt-out only (spike); opt-in github-self-reviewed hidden
+        r1_names = {w["name"] for w in c.get("/repos/r1/workflows").json()}
+        assert "spike" in r1_names
+        assert "github-self-reviewed" not in r1_names
+
+        # r2: github-self-reviewed explicitly enabled
+        r2_names = {w["name"] for w in c.get("/repos/r2/workflows").json()}
+        assert "spike" in r2_names
+        assert "github-self-reviewed" in r2_names
 
 
 def test_workflow_image_layer_endpoint(client: TestClient) -> None:

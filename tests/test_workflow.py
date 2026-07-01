@@ -366,3 +366,31 @@ def test_initial_state_starts_on_the_users_turn() -> None:
 
     assert Good().turn_on_enter("A") is Actor.USER
     assert Good().start_task("t1", "r1", at="t0").turn is Actor.USER
+
+
+# -- opt_in class var ---------------------------------------------------------------
+
+
+def test_opt_in_defaults_to_false() -> None:
+    assert GatedWorkflow.opt_in is False
+
+
+def test_opt_in_can_be_overridden_to_true() -> None:
+    class OptInWorkflow(GatedWorkflow):
+        name = "opt-in-wf"
+        opt_in = True
+
+    assert OptInWorkflow.opt_in is True
+    assert OptInWorkflow().opt_in is True
+
+
+def test_opt_in_does_not_bleed_across_subclasses() -> None:
+    class A(GatedWorkflow):
+        name = "opt-in-a"
+        opt_in = True
+
+    class B(GatedWorkflow):
+        name = "opt-in-b"
+
+    assert A.opt_in is True
+    assert B.opt_in is False

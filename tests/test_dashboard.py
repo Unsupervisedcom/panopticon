@@ -139,10 +139,14 @@ class _FakeClient:
         self, repo_id: str, name: str, git_url: str, default_base: str = "main",
         *, env_file: str | None = None,
         capabilities: dict[str, Any] | None = None,
+        enabled_workflows: list[str] | None = None,
+        disabled_workflows: list[str] | None = None,
     ) -> dict[str, Any]:
         repo: dict[str, Any] = {
             "id": repo_id, "name": name, "git_url": git_url, "default_base": default_base,
             "env_file": env_file,
+            "enabled_workflows": enabled_workflows or [],
+            "disabled_workflows": disabled_workflows or [],
         }
         if capabilities is not None:
             repo["capabilities"] = capabilities
@@ -159,6 +163,9 @@ class _FakeClient:
         return {"id": repo_id, **changes}
 
     def list_workflows(self) -> list[dict[str, str]]:
+        return self._workflows
+
+    def list_workflows_for_repo(self, repo_id: str) -> list[dict[str, str]]:
         return self._workflows
 
     def list_operations(self, task_id: str) -> dict[str, str]:
@@ -1027,6 +1034,7 @@ async def test_repos_screen_creates_a_repo_autofilling_from_the_git_url() -> Non
         assert fake.created_repos == [
             {"id": "widgets", "name": "widgets", "git_url": "git@github.com:acme/widgets.git",
              "default_base": "main", "env_file": None,
+             "enabled_workflows": [], "disabled_workflows": [],
              "capabilities": {"docker_in_docker": False}}
         ]
 
@@ -1049,6 +1057,7 @@ async def test_repo_form_autofill_only_fills_blank_fields() -> None:
         assert fake.created_repos == [
             {"id": "r9", "name": "acme/new", "git_url": "https://x/widgets.git",
              "default_base": "main", "env_file": None,
+             "enabled_workflows": [], "disabled_workflows": [],
              "capabilities": {"docker_in_docker": False}}
         ]
 
@@ -1136,8 +1145,33 @@ async def test_repos_screen_edits_a_repo_via_patch() -> None:
         assert fake.updated_repos == [
             ("r1", {"name": "new", "git_url": "https://x/r1.git", "default_base": "main",
                     "env_file": None,
-                    "capabilities": {"docker_in_docker": False}})
+                    "capabilities": {"docker_in_docker": False},
+                    "enabled_workflows": [], "disabled_workflows": []})
         ]
+
+
+async def test_repo_form_workflow_fields_are_saved_and_reloaded() -> None:
+    existing = {"id": "r1", "name": "old", "git_url": "https://x/r1.git", "default_base": "main",
+                "enabled_workflows": ["github-self-reviewed"],
+                "disabled_workflows": ["orchestrator"]}
+    fake = _FakeClient([], repos=[existing])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        # Pre-populated from the stored repo
+        assert app.screen.query_one("#field-enabled_workflows", Input).value == "github-self-reviewed"
+        assert app.screen.query_one("#field-disabled_workflows", Input).value == "orchestrator"
+        # User changes enabled workflows
+        app.screen.query_one("#field-enabled_workflows", Input).value = "github-self-reviewed, github-peer-reviewed"
+        app.screen.query_one("#field-disabled_workflows", Input).value = ""
+        await pilot.press("enter")
+        await pilot.pause()
+        assert fake.updated_repos[0][1]["enabled_workflows"] == ["github-self-reviewed", "github-peer-reviewed"]
+        assert fake.updated_repos[0][1]["disabled_workflows"] == []
 
 
 async def test_repos_screen_creates_a_repo_with_privileged_docker_enabled() -> None:

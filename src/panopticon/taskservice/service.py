@@ -190,11 +190,35 @@ class TaskService:
         return sorted(self._workflows)
 
     async def list_workflow_infos(self) -> list[dict[str, str]]:
-        """Each workflow's name and when_to_use description, sorted by name."""
+        """Each workflow's name, when_to_use description, and opt_in flag, sorted by name."""
         return [
-            {"name": name, "when_to_use": self._workflows[name].when_to_use}
+            {
+                "name": name,
+                "when_to_use": self._workflows[name].when_to_use,
+                "opt_in": str(self._workflows[name].opt_in).lower(),
+            }
             for name in sorted(self._workflows)
         ]
+
+    async def list_workflow_infos_for_repo(self, repo_id: str) -> list[dict[str, str]]:
+        """Workflows visible for a repo, filtered by opt_in and the repo's workflow preferences."""
+        repo = await self.get_repo(repo_id)
+        return [
+            {
+                "name": name,
+                "when_to_use": self._workflows[name].when_to_use,
+                "opt_in": str(self._workflows[name].opt_in).lower(),
+            }
+            for name in sorted(self._workflows)
+            if self._workflow_visible(self._workflows[name], repo)
+        ]
+
+    def _workflow_visible(self, workflow: Workflow, repo: Repo) -> bool:
+        if workflow.name in repo.disabled_workflows:
+            return False
+        if workflow.opt_in:
+            return workflow.name in repo.enabled_workflows
+        return True
 
     async def workflow_image_layer(self, name: str) -> str:
         """The workflow's Docker image layer (ADR 0005) — the Dockerfile fragment the runner
@@ -225,10 +249,14 @@ class TaskService:
         artifacts: dict[str, str] | None = None,
         depends_on_task_ids: list[str] | None = None,
     ) -> Task:
-        await self.get_repo(repo_id)  # ensure exists (raises NotFound)
+        repo = await self.get_repo(repo_id)  # ensure exists (raises NotFound)
         if governor_task_id is not None:
             await self.get_task(governor_task_id)  # ensure governor exists (raises NotFound)
         wf = self._workflow(workflow_name)
+        if not self._workflow_visible(wf, repo):
+            raise NotAuthorized(
+                f"workflow {workflow_name!r} is not enabled for repo {repo_id!r}"
+            )
         now = self._clock()
         task = wf.start_task(self._id(), repo_id, at=now, memo=memo, initial_prompt=initial_prompt)
         task.governor_task_id = governor_task_id
