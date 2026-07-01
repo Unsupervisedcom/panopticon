@@ -10,11 +10,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from textual.widgets import Checkbox, DataTable, Input, Static
+from textual.widgets import Button, Checkbox, DataTable, Input, Static
 
 from panopticon.terminal import dashboard
 from panopticon.terminal.dashboard import (
     Dashboard,
+    SpaceCheckbox,
     _ENSEMBLE_KEY_PREFIX,
     _SEPARATOR_KEY,
     _group_by_governor,
@@ -1150,11 +1151,17 @@ async def test_repos_screen_edits_a_repo_via_patch() -> None:
         ]
 
 
-async def test_repo_form_workflow_fields_are_saved_and_reloaded() -> None:
+async def test_repo_form_workflow_config_saves_existing_values() -> None:
+    """Workflow preferences pre-populate the summary and round-trip through save unchanged."""
     existing = {"id": "r1", "name": "old", "git_url": "https://x/r1.git", "default_base": "main",
                 "enabled_workflows": ["github-self-reviewed"],
                 "disabled_workflows": ["orchestrator"]}
-    fake = _FakeClient([], repos=[existing])
+    workflows = [
+        {"name": "spike", "when_to_use": "free-form", "opt_in": False},
+        {"name": "github-self-reviewed", "when_to_use": "self-reviewed", "opt_in": True},
+        {"name": "orchestrator", "when_to_use": "orchestrator workflow", "opt_in": False},
+    ]
+    fake = _FakeClient([], repos=[existing], workflows=workflows)
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -1162,16 +1169,46 @@ async def test_repo_form_workflow_fields_are_saved_and_reloaded() -> None:
         await pilot.pause()
         await pilot.press("e")
         await pilot.pause()
-        # Pre-populated from the stored repo
-        assert app.screen.query_one("#field-enabled_workflows", Input).value == "github-self-reviewed"
-        assert app.screen.query_one("#field-disabled_workflows", Input).value == "orchestrator"
-        # User changes enabled workflows
-        app.screen.query_one("#field-enabled_workflows", Input).value = "github-self-reviewed, github-peer-reviewed"
-        app.screen.query_one("#field-disabled_workflows", Input).value = ""
+        # Form loaded the repo's workflow preferences into its internal state
+        assert app.screen._wf_enabled == ["github-self-reviewed"]  # type: ignore[union-attr]
+        assert app.screen._wf_disabled == ["orchestrator"]  # type: ignore[union-attr]
+        # Save without changing anything — original preferences round-trip
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert fake.updated_repos[0][1]["enabled_workflows"] == ["github-self-reviewed"]
+        assert fake.updated_repos[0][1]["disabled_workflows"] == ["orchestrator"]
+
+
+async def test_repo_form_workflow_config_modal_changes() -> None:
+    """Opening the workflow config modal, toggling workflows, and saving updates the stored prefs."""
+    existing = {"id": "r1", "name": "old", "git_url": "https://x/r1.git", "default_base": "main",
+                "enabled_workflows": [], "disabled_workflows": []}
+    workflows = [
+        {"name": "spike", "when_to_use": "free-form", "opt_in": False},
+        {"name": "github-peer-reviewed", "when_to_use": "review workflow", "opt_in": True},
+    ]
+    fake = _FakeClient([], repos=[existing], workflows=workflows)
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        # Open the workflow config modal via the button
+        app.screen.query_one("#btn-workflows", Button).focus()
         await pilot.press("enter")
         await pilot.pause()
-        assert fake.updated_repos[0][1]["enabled_workflows"] == ["github-self-reviewed", "github-peer-reviewed"]
-        assert fake.updated_repos[0][1]["disabled_workflows"] == []
+        # In WorkflowConfigScreen: enable the opt-in workflow, disable the opt-out one
+        app.screen.query_one("#wf-github-peer-reviewed", SpaceCheckbox).value = True
+        app.screen.query_one("#wf-spike", SpaceCheckbox).value = False
+        await pilot.press("ctrl+s")  # save the modal
+        await pilot.pause()
+        # Back in RepoFormScreen — save the form
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert fake.updated_repos[0][1]["enabled_workflows"] == ["github-peer-reviewed"]
+        assert fake.updated_repos[0][1]["disabled_workflows"] == ["spike"]
 
 
 async def test_repos_screen_creates_a_repo_with_privileged_docker_enabled() -> None:

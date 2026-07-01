@@ -71,10 +71,10 @@ from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widget import Widget
-from textual.widgets import Checkbox, DataTable, Footer, Header, Input, Label, OptionList, Static
+from textual.widgets import Button, Checkbox, DataTable, Footer, Header, Input, Label, OptionList, Static
 from textual.worker import get_current_worker
 
 from panopticon.client import JsonObj, TaskServiceClient
@@ -559,6 +559,95 @@ class SpaceCheckbox(Checkbox, inherit_bindings=False):
     BINDINGS = [Binding("space", "toggle_button", "Toggle", show=False)]
 
 
+class WorkflowConfigScreen(ModalScreen["tuple[list[str], list[str]] | None"]):
+    """Configure which workflows are available for a repo.
+
+    Shows all known workflows as a togglable checklist. The enabled/disabled semantics differ
+    by workflow type (``opt_in``):
+
+    - ``opt_in=True`` (e.g. ``github-peer-reviewed``): only active when explicitly opted in.
+      Checked → the workflow name lands in ``enabled_workflows``.
+    - ``opt_in=False`` (e.g. ``spike``): active by default; unchecking hides it.
+      Unchecked → the workflow name lands in ``disabled_workflows``.
+
+    Space toggles the focused checkbox. Enter or Ctrl+S saves and dismisses
+    ``(enabled_workflows, disabled_workflows)``. Escape cancels (dismisses ``None``)."""
+
+    CSS = """
+    WorkflowConfigScreen { align: center middle; }
+    #wf-config-box { width: 72; height: auto; max-height: 80%; padding: 1 2; border: round $accent; background: $surface; }
+    #wf-config-scroll { max-height: 16; }
+    #wf-config-scroll SpaceCheckbox { margin-bottom: 0; }
+    #wf-config-desc { height: 4; border: tall $panel; padding: 0 1; color: $text-muted; margin-top: 1; }
+    """
+    BINDINGS = [
+        ("escape", "cancel", "Cancel"),
+        ("enter", "submit", "Save"),
+        ("ctrl+s", "submit", "Save"),
+    ]
+
+    def __init__(
+        self,
+        workflows: list[dict[str, Any]],
+        enabled: list[str],
+        disabled: list[str],
+    ) -> None:
+        super().__init__()
+        self._workflows = workflows
+        self._enabled = set(enabled)
+        self._disabled = set(disabled)
+
+    def _checkbox_id(self, name: str) -> str:
+        return f"wf-{name}"
+
+    def _is_checked(self, wf: dict[str, Any]) -> bool:
+        name = wf["name"]
+        if wf.get("opt_in"):
+            return name in self._enabled
+        return name not in self._disabled
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="wf-config-box"):
+            yield Label("configure workflows — space: toggle   enter/ctrl+s: save   esc: cancel")
+            with VerticalScroll(id="wf-config-scroll"):
+                for wf in self._workflows:
+                    label = wf["name"]
+                    if wf.get("opt_in"):
+                        label += "  [opt-in]"
+                    yield SpaceCheckbox(label, value=self._is_checked(wf), id=self._checkbox_id(wf["name"]))
+            yield Static("", id="wf-config-desc")
+
+    def on_mount(self) -> None:
+        checkboxes = self.query(SpaceCheckbox)
+        if checkboxes:
+            checkboxes.first().focus()
+
+    def on_descendant_focus(self, event: events.DescendantFocus) -> None:
+        widget = event.widget
+        if not isinstance(widget, SpaceCheckbox) or widget.id is None:
+            return
+        name = widget.id.removeprefix("wf-")
+        desc = next((w.get("when_to_use", "") for w in self._workflows if w["name"] == name), "")
+        self.query_one("#wf-config-desc", Static).update(desc)
+
+    def action_submit(self) -> None:
+        enabled: list[str] = []
+        disabled: list[str] = []
+        for wf in self._workflows:
+            name = wf["name"]
+            checked = self.query_one(f"#{self._checkbox_id(name)}", SpaceCheckbox).value
+            if wf.get("opt_in"):
+                if checked:
+                    enabled.append(name)
+            else:
+                if not checked:
+                    disabled.append(name)
+        self.dismiss((enabled, disabled))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     """A modal form for a repo's fields. Submits a ``{field: value}`` dict on save (Enter
     or Ctrl+S), or ``None`` on cancel (Escape). The text fields are strings; the privileged
@@ -584,10 +673,13 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     #repo-form { width: 72; height: auto; padding: 1 2; border: round $accent; background: $surface; }
     #repo-form Input { margin-bottom: 1; }
     #repo-form Checkbox { margin-bottom: 1; }
+    #repo-form #wf-summary { color: $text-muted; margin-bottom: 0; }
+    #repo-form #btn-workflows { margin-top: 0; margin-bottom: 1; }
     """
     # Enter saves from any field. Text Inputs consume Enter via their own submit binding (posting
     # Input.Submitted → on_input_submitted), so this screen binding only fires for fields that
-    # don't — the SpaceCheckbox and the read-only id Label — and never double-saves.
+    # don't — the SpaceCheckbox, the read-only id Label, and the workflows Button — and never
+    # double-saves.
     BINDINGS = [
         ("escape", "cancel", "Cancel"),
         ("enter", "submit", "Save"),
@@ -604,11 +696,16 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
         "name": lambda repo: repo,
     }
 
-    def __init__(self, title: str, repo: JsonObj | None = None) -> None:
+    def __init__(
+        self, title: str, repo: JsonObj | None = None, workflows: list[dict[str, Any]] | None = None
+    ) -> None:
         super().__init__()
         self._title = title
         self._repo = repo or {}
         self._editing = repo is not None
+        self._workflows = workflows or []
+        self._wf_enabled: list[str] = list(self._repo.get("enabled_workflows") or [])
+        self._wf_disabled: list[str] = list(self._repo.get("disabled_workflows") or [])
 
     def _initial(self, name: str) -> str:
         """A field's pre-populated value: the repo's stored value, else (create mode only)
@@ -618,10 +715,16 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
             return str(stored)
         return "main" if name == "default_base" and not self._editing else ""
 
-    def _initial_list(self, name: str) -> str:
-        """A list field's pre-populated value as a comma-separated string."""
-        stored = self._repo.get(name)
-        return ", ".join(stored) if stored else ""
+    def _wf_summary(self) -> str:
+        """One-liner describing the current workflow configuration."""
+        opted_in = [n for n in self._wf_enabled if n]
+        disabled = [n for n in self._wf_disabled if n]
+        parts: list[str] = []
+        if opted_in:
+            parts.append(f"{len(opted_in)} opted-in")
+        if disabled:
+            parts.append(f"{len(disabled)} disabled")
+        return ", ".join(parts) if parts else "defaults"
 
     def compose(self) -> ComposeResult:
         with Vertical(id="repo-form"):
@@ -638,16 +741,8 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
                 value=bool(self._repo.get("capabilities", {}).get("docker_in_docker")),
                 id="field-docker_in_docker",
             )
-            yield Input(
-                value=self._initial_list("enabled_workflows"),
-                placeholder="enabled_workflows — opt-in workflows, comma-separated",
-                id="field-enabled_workflows",
-            )
-            yield Input(
-                value=self._initial_list("disabled_workflows"),
-                placeholder="disabled_workflows — opt-out workflows to hide, comma-separated",
-                id="field-disabled_workflows",
-            )
+            yield Static(self._wf_summary(), id="wf-summary")
+            yield Button("configure workflows", id="btn-workflows")
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
@@ -670,6 +765,19 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
         if event.widget.id == "field-git_url":
             self._autofill_from_git_url()
 
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-workflows":
+            def apply(result: tuple[list[str], list[str]] | None) -> None:
+                if result is None:
+                    return
+                self._wf_enabled, self._wf_disabled = result
+                self.query_one("#wf-summary", Static).update(self._wf_summary())
+
+            self.app.push_screen(
+                WorkflowConfigScreen(self._workflows, self._wf_enabled, self._wf_disabled),
+                apply,
+            )
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self.action_submit()
 
@@ -681,9 +789,8 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
         for name in self.FIELDS:
             values[name] = self.query_one(f"#field-{name}", Input).value.strip()
         values["docker_in_docker"] = self.query_one("#field-docker_in_docker", Checkbox).value
-        for name in ("enabled_workflows", "disabled_workflows"):
-            raw = self.query_one(f"#field-{name}", Input).value
-            values[name] = [w.strip() for w in raw.split(",") if w.strip()]
+        values["enabled_workflows"] = self._wf_enabled
+        values["disabled_workflows"] = self._wf_disabled
         self.dismiss(values)
 
     def action_cancel(self) -> None:
@@ -761,7 +868,8 @@ class ReposScreen(ModalScreen[None]):
                 return
             self._refresh()
 
-        self.app.push_screen(RepoFormScreen("new repo"), create)
+        workflows = self._client.list_workflows()
+        self.app.push_screen(RepoFormScreen("new repo", workflows=workflows), create)
 
     def action_edit_repo(self) -> None:
         if self._current is None:
@@ -791,7 +899,10 @@ class ReposScreen(ModalScreen[None]):
                 return
             self._refresh()
 
-        self.app.push_screen(RepoFormScreen(f"edit {repo_id}", repo=self._repos[repo_id]), save)
+        workflows = self._client.list_workflows()
+        self.app.push_screen(
+            RepoFormScreen(f"edit {repo_id}", repo=self._repos[repo_id], workflows=workflows), save
+        )
 
 
 def _detail(exc: httpx.HTTPStatusError) -> str:
