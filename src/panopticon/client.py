@@ -122,10 +122,14 @@ class TaskServiceClient:
         *,
         env_file: str | None = None,
         capabilities: dict[str, Any] | None = None,
+        enabled_workflows: list[str] | None = None,
+        disabled_workflows: list[str] | None = None,
     ) -> JsonObj:
         body: dict[str, Any] = {
             "id": repo_id, "name": name, "git_url": git_url, "default_base": default_base,
             "env_file": env_file,
+            "enabled_workflows": enabled_workflows or [],
+            "disabled_workflows": disabled_workflows or [],
         }
         if capabilities is not None:
             body["capabilities"] = capabilities

@@ -608,6 +608,11 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
             return str(stored)
         return "main" if name == "default_base" and not self._editing else ""
 
+    def _initial_list(self, name: str) -> str:
+        """A list field's pre-populated value as a comma-separated string."""
+        stored = self._repo.get(name)
+        return ", ".join(stored) if stored else ""
+
     def compose(self) -> ComposeResult:
         with Vertical(id="repo-form"):
             yield Label(self._title)
@@ -622,6 +627,16 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
                 "privileged docker (docker-in-docker)",
                 value=bool(self._repo.get("capabilities", {}).get("docker_in_docker")),
                 id="field-docker_in_docker",
+            )
+            yield Input(
+                value=self._initial_list("enabled_workflows"),
+                placeholder="enabled_workflows — opt-in workflows, comma-separated",
+                id="field-enabled_workflows",
+            )
+            yield Input(
+                value=self._initial_list("disabled_workflows"),
+                placeholder="disabled_workflows — opt-out workflows to hide, comma-separated",
+                id="field-disabled_workflows",
             )
 
     def on_mount(self) -> None:
@@ -656,6 +671,9 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
         for name in self.FIELDS:
             values[name] = self.query_one(f"#field-{name}", Input).value.strip()
         values["docker_in_docker"] = self.query_one("#field-docker_in_docker", Checkbox).value
+        for name in ("enabled_workflows", "disabled_workflows"):
+            raw = self.query_one(f"#field-{name}", Input).value
+            values[name] = [w.strip() for w in raw.split(",") if w.strip()]
         self.dismiss(values)
 
     def action_cancel(self) -> None:
@@ -725,6 +743,8 @@ class ReposScreen(ModalScreen[None]):
                     values["id"], values["name"], values["git_url"], values["default_base"] or "main",
                     env_file=values["env_file"] or None,
                     capabilities={"docker_in_docker": values["docker_in_docker"]},
+                    enabled_workflows=values["enabled_workflows"],
+                    disabled_workflows=values["disabled_workflows"],
                 )
             except httpx.HTTPStatusError as exc:
                 self.notify(f"Can't create: {_detail(exc)}", severity="error")
@@ -753,6 +773,8 @@ class ReposScreen(ModalScreen[None]):
                     default_base=values["default_base"] or "main",
                     env_file=values["env_file"] or None,
                     capabilities=capabilities,
+                    enabled_workflows=values["enabled_workflows"],
+                    disabled_workflows=values["disabled_workflows"],
                 )
             except httpx.HTTPStatusError as exc:
                 self.notify(f"Can't update: {_detail(exc)}", severity="error")
