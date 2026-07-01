@@ -28,6 +28,7 @@ class GithubSelfReviewed(GithubForgeWorkflow):
 
     name: ClassVar[str] = "github-self-reviewed"
     auto_submit_memo: ClassVar[bool] = True
+    opt_in: ClassVar[bool] = True
     when_to_use: ClassVar[str] = (
         "GitHub-hosted changes you review yourself — PLANNING → ITERATING (you approve) → "
         "MERGING, with no peer-review gate."

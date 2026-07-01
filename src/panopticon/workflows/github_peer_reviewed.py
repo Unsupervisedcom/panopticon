@@ -39,6 +39,7 @@ class GithubPeerReviewed(GithubForgeWorkflow):
 
     name: ClassVar[str] = "github-peer-reviewed"
     auto_submit_memo: ClassVar[bool] = True
+    opt_in: ClassVar[bool] = True
     when_to_use: ClassVar[str] = (
         "GitHub-hosted changes that require a peer review before merging — full PLANNING → ITERATING → "
         "REVIEW → MERGING lifecycle with a peer-review gate."

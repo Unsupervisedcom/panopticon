@@ -88,6 +88,11 @@ class Workflow(ABC):
     #: manual Enter needed) instead of the default unsent paste. Workflows where the task
     #: description is enough context for the agent to start immediately should set this.
     auto_submit_memo: ClassVar[bool] = False
+    #: Whether this workflow must be **explicitly enabled** per repo before it appears in the
+    #: workflow picker. ``False`` (default) = opt-out, shown for every repo unless the repo
+    #: lists it in ``disabled_workflows``; ``True`` = opt-in, hidden unless the repo lists it
+    #: in ``enabled_workflows``.
+    opt_in: ClassVar[bool] = False
 
     # -- build / validate (the resolution pass; answers "why not a free function?") -----
 
