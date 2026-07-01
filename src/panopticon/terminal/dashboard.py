@@ -924,6 +924,18 @@ HOTKEYS: tuple[Hotkey, ...] = (
 )
 
 
+class _StatusFooter(Footer):
+    """Footer extended with a task-counter Static docked to the right.
+
+    Subclassing (rather than passing a child to Footer()) is necessary because Footer
+    calls recompose() when ``_bindings_ready`` toggles, which clears and recreates its
+    children. By yielding the counter inside compose() we ensure it survives rebuilds."""
+
+    def compose(self) -> ComposeResult:
+        yield from super().compose()
+        yield Static("", id="task-counter")
+
+
 class HelpScreen(ModalScreen[None]):
     """A modal listing **every** hotkey — the footer shows only the essential few, so this is
     the full keymap. Escape / `?` / `q` close it."""
@@ -961,7 +973,8 @@ class Dashboard(App[None]):
 
     CSS = (
         "#tasks { width: 3fr; } #detail { width: 2fr; padding: 0 1; display: none; } "
-        "#search { display: none; }"
+        "#search { display: none; } "
+        "#task-counter { dock: right; width: auto; padding: 0 1; }"
     )
     # The change-feed long-poll's ``wait`` ceiling: the feed worker parks each request up to this
     # many seconds before re-polling, so a quiet feed reconnects this often (no redraw) while a
@@ -1011,7 +1024,7 @@ class Dashboard(App[None]):
             yield DataTable(id="tasks")
             yield Static(id="detail")
         yield Input(id="search", placeholder="search tasks…")  # hidden until `/` (CSS display:none)
-        yield Footer()
+        yield _StatusFooter()
 
     def _load_repo_names(self) -> None:
         """Refresh the repo id→name cache from the task service."""
@@ -1093,6 +1106,10 @@ class Dashboard(App[None]):
         selected = self._current  # keep the operator's highlight across the rebuild (feed refresh)
         table.clear()
         ordered = sorted(self._client.list_tasks(), key=_sort_key)  # terminal last, then slug
+        active = [t for t in ordered if t.get("state") not in TERMINAL_LABELS]
+        agent_on = sum(1 for t in active if t.get("turn") == "agent")
+        for counter in self.query("#task-counter").results(Static):
+            counter.update(f"agent {agent_on}/{len(active)}")
         # Inject repo_name so _matches can search on it without a separate lookup per task.
         for task in ordered:
             task["repo_name"] = self._repo_names.get(str(task.get("repo_id") or ""), "")
