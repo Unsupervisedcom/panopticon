@@ -161,6 +161,13 @@ class RepoPatchIn(BaseModel):
     disabled_workflows: list[str] | None = None
 
 
+class WorkflowInfo(BaseModel):
+    name: str
+    when_to_use: str
+    auto_submit_memo: bool
+    opt_in: str
+
+
 class CreateTaskIn(BaseModel):
     repo_id: str
     workflow: str
@@ -394,8 +401,8 @@ def create_app(service: TaskService) -> FastAPI:
         return {"status": "ok"}
 
     @app.get("/workflows")
-    async def list_workflows() -> list[dict[str, str]]:
-        return await service.list_workflow_infos()
+    async def list_workflows() -> list[WorkflowInfo]:
+        return await service.list_workflow_infos()  # type: ignore[return-value]
 
     @app.get("/workflows/{name}/image-layer")
     async def workflow_image_layer(name: str) -> dict[str, str]:

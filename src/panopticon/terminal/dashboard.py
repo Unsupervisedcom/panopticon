@@ -535,6 +535,50 @@ class InputScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
+    """Memo + auto-submit checkbox for task creation.
+
+    Dismisses ``(text, auto_submit)`` on submit (Enter from any widget), or ``None`` on cancel
+    (Escape). ``auto_submit_default`` seeds the checkbox; the user can toggle it with Space.
+
+    **Space toggles the checkbox; Enter saves** — same contract as :class:`RepoFormScreen`.
+    The :class:`SpaceCheckbox` drops Enter so it bubbles to the screen's ``submit`` binding."""
+
+    CSS = """
+    MemoScreen { align: center middle; }
+    #memo-box { width: 64; height: auto; padding: 1 2; border: round $accent; background: $surface; }
+    #memo-box Checkbox { margin-top: 1; }
+    """
+    BINDINGS = [
+        ("escape", "cancel", "Cancel"),
+        ("enter", "submit", "Create"),
+    ]
+
+    def __init__(self, auto_submit_default: bool) -> None:
+        super().__init__()
+        self._auto_submit_default = auto_submit_default
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="memo-box"):
+            yield Label("memo")
+            yield Input()
+            yield SpaceCheckbox("Submit as initial prompt", value=self._auto_submit_default)
+
+    def on_mount(self) -> None:
+        self.query_one(Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.action_submit()
+
+    def action_submit(self) -> None:
+        text = self.query_one(Input).value
+        auto_submit = self.query_one(SpaceCheckbox).value
+        self.dismiss((text, auto_submit))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 def _repo_name_from_git_url(url: str) -> str:
     """The repository name from a git URL, for auto-filling the repo form.
 
@@ -1174,17 +1218,23 @@ class Dashboard(App[None]):
             def describe(workflow: str | None) -> None:
                 if workflow is None:
                     return
+                wf_info = next((w for w in workflows if w["name"] == workflow), {})
+                auto_submit_default = bool(wf_info.get("auto_submit_memo", False))
 
-                def create(memo: str | None) -> None:
-                    if memo is None:  # backed out of the prompt
+                def create(result: "tuple[str, bool] | None") -> None:
+                    if result is None:  # backed out
                         return
-                    stripped = memo.strip()
+                    memo_text, auto_submit = result
+                    stripped = memo_text.strip()
                     if _apply_memo_filter(stripped):
                         return
-                    self._client.create_task(repo, workflow, stripped or None)
+                    if auto_submit and stripped:
+                        self._client.create_task(repo, workflow, stripped, initial_prompt=stripped)
+                    else:
+                        self._client.create_task(repo, workflow, stripped or None)
                     self.action_refresh()
 
-                self.push_screen(InputScreen("memo"), create)
+                self.push_screen(MemoScreen(auto_submit_default), create)
 
             self.push_screen(WorkflowScreen(workflows), describe)
 

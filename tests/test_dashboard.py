@@ -162,7 +162,7 @@ class _FakeClient:
                 return repo
         return {"id": repo_id, **changes}
 
-    def list_workflows(self) -> list[dict[str, str]]:
+    def list_workflows(self) -> list[dict[str, Any]]:
         return self._workflows
 
     def list_workflows_for_repo(self, repo_id: str) -> list[dict[str, str]]:
@@ -172,9 +172,14 @@ class _FakeClient:
         return self._operations
 
     def create_task(
-        self, repo_id: str, workflow: str, memo: str | None = None
+        self,
+        repo_id: str,
+        workflow: str,
+        memo: str | None = None,
+        *,
+        initial_prompt: str | None = None,
     ) -> dict[str, Any]:
-        self.created.append((repo_id, workflow, memo))
+        self.created.append((repo_id, workflow, memo, initial_prompt))
         return {"id": "new"}
 
     def apply_operation(self, task_id: str, operation: str) -> dict[str, Any]:
@@ -598,7 +603,9 @@ async def test_pressing_u_with_no_runner_session_does_nothing() -> None:
 
 
 async def test_pressing_n_creates_a_task_via_repo_workflow_then_memo() -> None:
-    fake = _FakeClient([], repos=["r1", "r2"], workflows=[{"name": "spike", "when_to_use": ""}])
+    fake = _FakeClient(
+        [], repos=["r1", "r2"], workflows=[{"name": "spike", "when_to_use": "", "auto_submit_memo": False}]
+    )
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -611,11 +618,14 @@ async def test_pressing_n_creates_a_task_via_repo_workflow_then_memo() -> None:
         await pilot.press("f", "i", "x")  # type a memo into the prompt
         await pilot.press("enter")  # submit
         await pilot.pause()
-        assert fake.created == [("r1", "spike", "fix")]
+        # auto_submit_memo=False → memo routed as memo (not initial_prompt)
+        assert fake.created == [("r1", "spike", "fix", None)]
 
 
 async def test_pressing_n_with_a_blank_memo_creates_with_none() -> None:
-    fake = _FakeClient([], repos=["r1"], workflows=[{"name": "spike", "when_to_use": ""}])
+    fake = _FakeClient(
+        [], repos=["r1"], workflows=[{"name": "spike", "when_to_use": "", "auto_submit_memo": False}]
+    )
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -627,7 +637,27 @@ async def test_pressing_n_with_a_blank_memo_creates_with_none() -> None:
         await pilot.pause()
         await pilot.press("enter")  # submit an empty memo
         await pilot.pause()
-        assert fake.created == [("r1", "spike", None)]
+        assert fake.created == [("r1", "spike", None, None)]
+
+
+async def test_pressing_n_auto_submits_memo_as_initial_prompt_when_workflow_opts_in() -> None:
+    fake = _FakeClient(
+        [], repos=["r1"], workflows=[{"name": "github-self-reviewed", "when_to_use": "", "auto_submit_memo": True}]
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")  # repo
+        await pilot.pause()
+        await pilot.press("enter")  # workflow (auto_submit_memo=True → checkbox pre-checked)
+        await pilot.pause()
+        await pilot.press("f", "i", "x")  # type a memo
+        await pilot.press("enter")  # submit
+        await pilot.pause()
+        # checkbox was pre-checked → memo stored AND routed as initial_prompt
+        assert fake.created == [("r1", "github-self-reviewed", "fix", "fix")]
 
 
 async def test_dashboard_drives_drop() -> None:
