@@ -1228,7 +1228,7 @@ class Dashboard(App[None]):
                     if _apply_memo_filter(stripped):
                         return
                     if auto_submit and stripped:
-                        self._client.create_task(repo, workflow, initial_prompt=stripped)
+                        self._client.create_task(repo, workflow, stripped, initial_prompt=stripped)
                     else:
                         self._client.create_task(repo, workflow, stripped or None)
                     self.action_refresh()

@@ -656,8 +656,8 @@ async def test_pressing_n_auto_submits_memo_as_initial_prompt_when_workflow_opts
         await pilot.press("f", "i", "x")  # type a memo
         await pilot.press("enter")  # submit
         await pilot.pause()
-        # checkbox was pre-checked → memo routed as initial_prompt, not memo
-        assert fake.created == [("r1", "github-self-reviewed", None, "fix")]
+        # checkbox was pre-checked → memo stored AND routed as initial_prompt
+        assert fake.created == [("r1", "github-self-reviewed", "fix", "fix")]
 
 
 async def test_dashboard_drives_drop() -> None:
