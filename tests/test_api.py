@@ -53,7 +53,9 @@ def _new_task(client: TestClient) -> str:
 
 def test_health_and_workflows(client: TestClient) -> None:
     assert client.get("/healthz").json() == {"status": "ok"}
-    assert client.get("/workflows").json() == [{"name": "spike", "when_to_use": Spike().when_to_use}]
+    assert client.get("/workflows").json() == [
+        {"name": "spike", "when_to_use": Spike().when_to_use, "auto_submit_memo": False}
+    ]
 
 
 def test_workflow_image_layer_endpoint(client: TestClient) -> None:

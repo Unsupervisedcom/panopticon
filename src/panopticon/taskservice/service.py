@@ -189,10 +189,14 @@ class TaskService:
     async def workflow_names(self) -> list[str]:
         return sorted(self._workflows)
 
-    async def list_workflow_infos(self) -> list[dict[str, str]]:
-        """Each workflow's name and when_to_use description, sorted by name."""
+    async def list_workflow_infos(self) -> list[dict[str, str | bool]]:
+        """Each workflow's name, when_to_use description, and auto_submit_memo flag, sorted by name."""
         return [
-            {"name": name, "when_to_use": self._workflows[name].when_to_use}
+            {
+                "name": name,
+                "when_to_use": self._workflows[name].when_to_use,
+                "auto_submit_memo": self._workflows[name].auto_submit_memo,
+            }
             for name in sorted(self._workflows)
         ]
 
