@@ -53,7 +53,9 @@ to Textual workers is a refinement (docs/BACKLOG.md).
 from __future__ import annotations
 
 import functools
+import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -69,7 +71,7 @@ from typing import Any, TypeVar
 import httpx
 from rich.text import Text
 from textual import events, work
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SuspendNotSupported
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
@@ -365,6 +367,22 @@ def _open_path(path: str) -> None:
     subprocess.Popen([_open_command(), path])
 
 
+def _edit_with_editor(text: str) -> str:
+    """Open ``text`` in ``$EDITOR`` (falling back to ``vi``) and return the saved content.
+
+    Uses ``shlex.split`` on the editor value so multi-word settings like ``"code --wait"``
+    or ``"vim -u NONE"`` work correctly."""
+    editor = os.environ.get("EDITOR", "vi")
+    with tempfile.NamedTemporaryFile(suffix=".md", mode="w", delete=False, encoding="utf-8") as f:
+        f.write(text)
+        path = f.name
+    try:
+        subprocess.run([*shlex.split(editor), path])
+        return Path(path).read_text(encoding="utf-8")
+    finally:
+        os.unlink(path)
+
+
 # Linux clipboard writers, in preference order: Wayland first, then the X11 tools. Each is the
 # full argv that reads the text to copy from stdin. macOS uses `pbcopy` unconditionally (it's
 # always present), so it isn't in this list — see `_clipboard_command`.
@@ -551,6 +569,7 @@ class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
     """
     BINDINGS = [
         ("escape", "cancel", "Cancel"),
+        ("ctrl+g", "edit_in_editor", "Edit"),
         ("enter", "submit", "Create"),
     ]
 
@@ -577,6 +596,18 @@ class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+    def action_edit_in_editor(self) -> None:
+        inp = self.query_one(Input)
+        try:
+            with self.app.suspend():
+                result = _edit_with_editor(inp.value)
+        except SuspendNotSupported:
+            self.app.notify("Editor not supported in this environment", severity="warning")
+            return
+        inp.value = result
+        inp.action_end()
+        inp.focus()
 
 
 def _repo_name_from_git_url(url: str) -> str:

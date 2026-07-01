@@ -5,11 +5,13 @@ real HTTP client is covered in test_terminal.py."""
 
 from __future__ import annotations
 
+import contextlib
 import threading
 from pathlib import Path
 from typing import Any
 
 import pytest
+from textual.app import App
 from textual.widgets import Checkbox, DataTable, Input, Static
 
 from panopticon.terminal import dashboard
@@ -658,6 +660,32 @@ async def test_pressing_n_auto_submits_memo_as_initial_prompt_when_workflow_opts
         await pilot.pause()
         # checkbox was pre-checked → memo stored AND routed as initial_prompt
         assert fake.created == [("r1", "github-self-reviewed", "fix", "fix")]
+
+
+async def test_memo_ctrl_g_opens_editor_and_updates_input(monkeypatch: Any) -> None:
+    # Ctrl-G should open $EDITOR and replace the Input's value with the returned text.
+    monkeypatch.setattr(dashboard, "_edit_with_editor", lambda text: f"edited:{text}")
+    # The headless test driver has can_suspend=False, which raises SuspendNotSupported.
+    # Patch App.suspend to a no-op context manager so the action runs normally in tests.
+    monkeypatch.setattr(App, "suspend", lambda self: contextlib.nullcontext())
+    fake = _FakeClient(
+        [], repos=["r1"], workflows=[{"name": "spike", "when_to_use": "", "auto_submit_memo": False}]
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")  # repo
+        await pilot.pause()
+        await pilot.press("enter")  # workflow
+        await pilot.pause()
+        await pilot.press("h", "i")  # type initial text
+        await pilot.press("ctrl+g")  # open editor
+        await pilot.pause()
+        await pilot.press("enter")  # submit
+        await pilot.pause()
+        assert fake.created == [("r1", "spike", "edited:hi", None)]
 
 
 async def test_dashboard_drives_drop() -> None:
