@@ -1695,31 +1695,69 @@ async def test_enter_on_non_governor_does_nothing() -> None:
         assert before == after
 
 
-async def test_fartbarf_sequence_opens_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Typing f-a-r-t-b-a-r-f in full fires _open_path with the encoded URL.
-    # An empty task list means _current is None, so the t/a/r keys' bound actions
-    # are no-ops — no modals, no interference.
+async def test_fartbarf_memo_opens_url_not_task(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Creating a task with memo "FARTBARF" opens the URL instead of calling create_task.
     opened: list[str] = []
     monkeypatch.setattr(dashboard, "_open_path", lambda path: opened.append(path))
-    app = Dashboard(_FakeClient([]))  # type: ignore[arg-type]
+    fake = _FakeClient([], repos=["r1"], workflows=[{"name": "spike", "when_to_use": ""}])
+    app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
-        for key in ("f", "a", "r", "t", "b", "a", "r", "f"):
-            await pilot.press(key)
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")   # pick repo r1
+        await pilot.pause()
+        await pilot.press("enter")   # pick workflow spike
+        await pilot.pause()
+        for ch in "FARTBARF":
+            await pilot.press(ch.lower())
+        await pilot.press("enter")
         await pilot.pause()
     assert opened == [dashboard._KU]
+    assert fake.created == []  # no task was actually created
 
 
-async def test_broken_fartbarf_does_not_open_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    # An interrupted sequence (wrong key mid-way) does not fire _open_path.
+async def test_fartbarf_memo_case_insensitive(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The match is case-insensitive: mixed-case still triggers the easter egg.
     opened: list[str] = []
     monkeypatch.setattr(dashboard, "_open_path", lambda path: opened.append(path))
-    app = Dashboard(_FakeClient([]))  # type: ignore[arg-type]
+    fake = _FakeClient([], repos=["r1"], workflows=[{"name": "spike", "when_to_use": ""}])
+    app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
-        # f a r t <x breaks it> b a r f — never completes the sequence
-        for key in ("f", "a", "r", "t", "x", "b", "a", "r", "f"):
-            await pilot.press(key)
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        for ch in "FaRtBaRf":
+            await pilot.press(ch.lower() if ch.isupper() else ch.upper())
+        await pilot.press("enter")
+        await pilot.pause()
+    assert opened == [dashboard._KU]
+    assert fake.created == []
+
+
+async def test_normal_memo_creates_task_not_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A normal memo goes through create_task as usual.
+    opened: list[str] = []
+    monkeypatch.setattr(dashboard, "_open_path", lambda path: opened.append(path))
+    fake = _FakeClient([], repos=["r1"], workflows=[{"name": "spike", "when_to_use": ""}])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("f", "i", "x")
+        await pilot.press("enter")
         await pilot.pause()
     assert opened == []
+    assert fake.created == [("r1", "spike", "fix")]
 
 
 def test_easter_egg_url_absent_from_hotkeys_and_help() -> None:

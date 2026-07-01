@@ -131,7 +131,6 @@ _SEPARATOR_KEY = "__separator__"
 # (like the separator) and ``on_data_table_row_selected`` ignores them.
 _ENSEMBLE_KEY_PREFIX = "__ensemble__"
 
-_KS: tuple[str, ...] = tuple(__import__("base64").b64decode(b"ZmFydGJhcmY=").decode())
 _KU: str = __import__("base64").b64decode(
     b"aHR0cHM6Ly93d3cueW91dHViZS5jb20vd2F0Y2g/dj1na3g5VmFMdkx6QQ=="
 ).decode()
@@ -933,7 +932,6 @@ class Dashboard(App[None]):
         # one reused scratch dir for `a`'s REST-open (lazily made, cleaned on exit) — so opening
         # many artifacts doesn't leak a temp dir each.
         self._artifact_tmp: tempfile.TemporaryDirectory[str] | None = None
-        self._ks_pos = 0
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -1111,18 +1109,6 @@ class Dashboard(App[None]):
             self._collapsed.add(key)
         self.action_refresh()
 
-    def on_key(self, event: events.Key) -> None:
-        if event.key == _KS[self._ks_pos]:
-            self._ks_pos += 1
-            if self._ks_pos == len(_KS):
-                self._ks_pos = 0
-                try:
-                    _open_path(_KU)
-                except FileNotFoundError:
-                    pass
-        else:
-            self._ks_pos = 1 if event.key == _KS[0] else 0
-
     def _update_detail(self, task_id: str | None) -> None:
         if task_id == _SEPARATOR_KEY:  # the divider isn't a task — select nothing, blank the pane
             self._current = None
@@ -1160,7 +1146,14 @@ class Dashboard(App[None]):
                 def create(memo: str | None) -> None:
                     if memo is None:  # backed out of the prompt
                         return
-                    self._client.create_task(repo, workflow, memo.strip() or None)
+                    stripped = memo.strip()
+                    if stripped.upper() == __import__("base64").b64decode(b"RkFSVEJBUkY=").decode():
+                        try:
+                            _open_path(_KU)
+                        except FileNotFoundError:
+                            pass
+                        return
+                    self._client.create_task(repo, workflow, stripped or None)
                     self.action_refresh()
 
                 self.push_screen(InputScreen("memo"), create)
