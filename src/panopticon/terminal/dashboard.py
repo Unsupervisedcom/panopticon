@@ -562,7 +562,7 @@ class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
         with Vertical(id="memo-box"):
             yield Label("memo")
             yield Input()
-            yield SpaceCheckbox("auto-submit", value=self._auto_submit_default)
+            yield SpaceCheckbox("Use as initial prompt", value=self._auto_submit_default)
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
