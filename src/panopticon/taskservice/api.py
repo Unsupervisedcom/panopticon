@@ -425,7 +425,7 @@ def create_app(service: TaskService) -> FastAPI:
         return RepoOut.model_validate(await service.get_repo(repo_id))
 
     @app.get("/repos/{repo_id}/workflows")
-    async def list_repo_workflows(repo_id: str) -> list[dict[str, str]]:
+    async def list_repo_workflows(repo_id: str) -> list[dict[str, str | bool]]:
         """Workflows available for this repo, filtered by its ``enabled_workflows`` /
         ``disabled_workflows`` preferences and each workflow's ``opt_in`` flag."""
         return await service.list_workflow_infos_for_repo(repo_id)

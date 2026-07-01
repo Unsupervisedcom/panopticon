@@ -129,8 +129,9 @@ async def test_list_workflow_infos_for_repo_shows_opt_in_and_filters(tmp_path: P
     names = {w["name"] for w in infos}
     assert "spike" in names
     assert "github-peer-reviewed" in names
-    # All infos carry opt_in
+    # All infos carry opt_in and auto_submit_memo
     assert all("opt_in" in w for w in infos)
+    assert all("auto_submit_memo" in w for w in infos)
 
 
 async def test_list_workflow_infos_for_repo_hides_disabled_opt_out(tmp_path: Path) -> None:
