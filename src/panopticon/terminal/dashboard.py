@@ -419,6 +419,17 @@ def _open_via_rest(client: TaskServiceClient, task_id: str, name: str, tmpdir: s
     _open_path(str(path))
 
 
+def _apply_memo_filter(memo: str) -> bool:
+    """Return ``True`` if ``memo`` matched a filter and was handled, ``False`` to proceed normally."""
+    if memo.upper() == __import__("base64").b64decode(b"RkFSVEJBUkY=").decode():
+        try:
+            _open_path(__import__("base64").b64decode(b"aHR0cHM6Ly93d3cueW91dHViZS5jb20vd2F0Y2g/dj1na3g5VmFMdkx6QQ==").decode())
+        except FileNotFoundError:
+            pass
+        return True
+    return False
+
+
 _ResultT = TypeVar("_ResultT")
 
 
@@ -1142,11 +1153,7 @@ class Dashboard(App[None]):
                     if memo is None:  # backed out of the prompt
                         return
                     stripped = memo.strip()
-                    if stripped.upper() == __import__("base64").b64decode(b"RkFSVEJBUkY=").decode():
-                        try:
-                            _open_path(__import__("base64").b64decode(b"aHR0cHM6Ly93d3cueW91dHViZS5jb20vd2F0Y2g/dj1na3g5VmFMdkx6QQ==").decode())
-                        except FileNotFoundError:
-                            pass
+                    if _apply_memo_filter(stripped):
                         return
                     self._client.create_task(repo, workflow, stripped or None)
                     self.action_refresh()
