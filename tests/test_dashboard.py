@@ -1598,10 +1598,13 @@ async def test_active_governor_keeps_terminal_child_in_active_section() -> None:
         # Governor and its terminal child are in the active section (above "done").
         assert keys.index("gov") < keys.index("done")
         assert keys.index("wrk") < keys.index("done")
-        # The active-section rows are not faded; the standalone terminal task is.
+        # Active governor is not faded; both terminal tasks (standalone and governed) are.
         assert not any(s.style == "dim" for s in table.get_row("gov")[4]._spans)
-        assert table.get_row("done")[4]._spans  # has styling
-        assert all(s.style == "dim" for s in table.get_row("done")[4]._spans)
+        for task_id in ("wrk", "done"):
+            slug = table.get_row(task_id)[4]
+            assert slug._spans and all(s.style == "dim" for s in slug._spans), (
+                f"{task_id} slug should be dim"
+            )
 
 
 # -- ensemble collapse (_group_section collapsed / Dashboard Enter) ---------------

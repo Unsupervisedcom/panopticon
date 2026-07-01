@@ -1112,7 +1112,7 @@ class Dashboard(App[None]):
         # Prune stale collapsed entries for governors no longer present (e.g. task deleted).
         self._collapsed &= self._governors
 
-        def _add_row(task: JsonObj, prefix: str, *, terminal: bool = False) -> None:
+        def _add_row(task: JsonObj, prefix: str) -> None:
             if task.get("_ensemble"):
                 gov_id = task["_governor_id"]
                 slug_cell = Text(f"{prefix}...", style="dim")
@@ -1126,7 +1126,7 @@ class Dashboard(App[None]):
                 status_cell = _status_cell(task)
                 repo_cell: Text | str = _repo_cell(task, self._repo_names)
                 slug_cell_real = _slug_cell(task, prefix)
-                if terminal:
+                if task["state"] in TERMINAL_LABELS:
                     state_cell = _dim(state_cell)
                     turn_cell = _dim(turn_cell)
                     status_cell = _dim(status_cell)
@@ -1140,7 +1140,7 @@ class Dashboard(App[None]):
         for task, prefix in active_visible:
             _add_row(task, prefix)
         for task, prefix in terminal_visible:
-            _add_row(task, prefix, terminal=True)
+            _add_row(task, prefix)
         target = selected if selected in self._tasks else next(iter(self._tasks), None)
         if target is not None:
             table.move_cursor(row=table.get_row_index(target))
