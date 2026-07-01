@@ -14,6 +14,7 @@ defaults so a bare ``python -m panopticon.taskservice`` persists across restarts
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 from collections.abc import Sequence
 
@@ -52,6 +53,7 @@ def build_app(
 
 
 def main(argv: Sequence[str] | None = None) -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     parser = argparse.ArgumentParser(
         prog="python -m panopticon.taskservice", description="Run the task service over HTTP."
     )
