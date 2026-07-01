@@ -24,7 +24,7 @@ class _Recorder:
         self.calls: list[tuple[list[str], bool]] = []
         self.interactive: list[bool] = []
 
-    def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False) -> str:
+    def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False, verbose: bool = False) -> str:
         self.calls.append((list(args), check))
         self.interactive.append(interactive)
         return ""
@@ -80,7 +80,7 @@ class _ReturningRecorder(_Recorder):
         super().__init__()
         self._output = output
 
-    def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False) -> str:
+    def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False, verbose: bool = False) -> str:
         super().__call__(args, check=check, interactive=interactive)
         return self._output
 
@@ -203,7 +203,7 @@ class _RecorderWithConfigVolume(_Recorder):
     """A recorder whose ``docker volume inspect`` reports the per-task config volume *exists*
     (i.e. simulate a respawn)."""
 
-    def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False) -> str:
+    def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False, verbose: bool = False) -> str:
         super().__call__(args, check=check, interactive=interactive)
         if list(args[:3]) == ["docker", "volume", "inspect"]:
             return '[{"Name": "panopticon-config-t1"}]'

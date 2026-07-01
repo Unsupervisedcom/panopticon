@@ -28,7 +28,7 @@ class _BuildRecorder:
         self.cmd: list[str] = []
         self.dockerfile = ""
 
-    def __call__(self, args: Sequence[str], *, check: bool = True) -> str:
+    def __call__(self, args: Sequence[str], *, check: bool = True, verbose: bool = False) -> str:
         self.cmd = list(args)
         self.dockerfile = (Path(args[-1]) / "Dockerfile").read_text()  # dir exists during the call
         return ""
@@ -49,7 +49,7 @@ class _MultiRecorder:
         self._responses = list(responses)
         self.calls: list[tuple[list[str], bool]] = []
 
-    def __call__(self, args: Sequence[str], *, check: bool = True) -> str:
+    def __call__(self, args: Sequence[str], *, check: bool = True, verbose: bool = False) -> str:
         self.calls.append((list(args), check))
         return self._responses.pop(0) if self._responses else ""
 
