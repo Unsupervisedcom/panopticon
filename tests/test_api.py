@@ -53,7 +53,9 @@ def _new_task(client: TestClient) -> str:
 
 def test_health_and_workflows(client: TestClient) -> None:
     assert client.get("/healthz").json() == {"status": "ok"}
-    assert client.get("/workflows").json() == [{"name": "spike", "when_to_use": Spike().when_to_use, "opt_in": "false"}]
+    assert client.get("/workflows").json() == [
+        {"name": "spike", "when_to_use": Spike().when_to_use, "auto_submit_memo": False, "opt_in": "false"}
+    ]
 
 
 def test_repo_workflows_endpoint_filters_by_opt_in(tmp_path: Path) -> None:

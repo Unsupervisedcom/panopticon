@@ -161,11 +161,11 @@ class _FakeImageBuilder:
         self.built: list[tuple[str, str, list[str]]] = []
         self.base_checks: int = 0
 
-    def build(self, workflow: str, repo_id: str, layers: list[str]) -> str:
+    def build(self, workflow: str, repo_id: str, layers: list[str], *, verbose: bool = False) -> str:
         self.built.append((workflow, repo_id, layers))
         return f"panopticon-{workflow}-{repo_id}"
 
-    def build_base_if_missing(self, *, context: str = ".") -> bool:
+    def build_base_if_missing(self, *, context: str = ".", verbose: bool = False) -> bool:
         self.base_checks += 1
         return False  # image is always "present" in tests — no build triggered
 

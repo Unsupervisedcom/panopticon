@@ -83,6 +83,11 @@ class Workflow(ABC):
     #: flag for the acting task); default off, so an ordinary workflow's agent can mutate only
     #: tasks it already knows, never create them.
     orchestrates: ClassVar[bool] = False
+    #: When ``True``, the dashboard's memo modal pre-checks the "auto-submit" checkbox, routing
+    #: the memo text through ``initial_prompt`` (delivered as a positional arg to ``claude`` — no
+    #: manual Enter needed) instead of the default unsent paste. Workflows where the task
+    #: description is enough context for the agent to start immediately should set this.
+    auto_submit_memo: ClassVar[bool] = False
     #: Whether this workflow must be **explicitly enabled** per repo before it appears in the
     #: workflow picker. ``False`` (default) = opt-out, shown for every repo unless the repo
     #: lists it in ``disabled_workflows``; ``True`` = opt-in, hidden unless the repo lists it

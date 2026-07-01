@@ -142,8 +142,10 @@ class Spawner:
         applies but the failure is visible, not silent."""
         task_id = task["id"]
         try:
+            _log.info("task %s: claiming", task_id)
             self._report(task_id, LifecyclePhase.CLAIMING)
             repo = self._client.get_repo(task["repo_id"])
+            _log.info("task %s: preparing workspace (repo=%s)", task_id, repo.get("name", repo["id"]))
             self._report(task_id, LifecyclePhase.PREPARING)
             workspace = prepare_workspace(
                 task_id, repo, cache=self._cache, tasks_root=self._tasks_root, git=self._git,  # type: ignore[arg-type]
@@ -151,8 +153,9 @@ class Spawner:
             )
             if hook_file := repo.get("hook_file"):
                 self._run_hook(hook_file, task_id, repo["name"], workspace)
+            _log.info("task %s: building image (workflow=%s, repo=%s)", task_id, task["workflow"], repo.get("name", repo["id"]))
             self._report(task_id, LifecyclePhase.BUILDING)
-            self._images.build_base_if_missing()
+            self._images.build_base_if_missing(verbose=True)
             image = self._compose_image(task["workflow"], repo)
             return self._runner.spawn(
                 task_id,
@@ -172,6 +175,12 @@ class Spawner:
     def _report(self, task_id: str, phase: LifecyclePhase, detail: str | None = None) -> None:
         """Push a spawn phase for ``task_id`` to the task service (best-effort: a reporting blip must
         not abort the spawn, so failures are swallowed)."""
+        if phase == LifecyclePhase.STARTING:
+            _log.info("task %s: starting container", task_id)
+        elif phase == LifecyclePhase.AWAITING:
+            _log.info("task %s: awaiting registration", task_id)
+        elif phase == LifecyclePhase.FAILED:
+            _log.error("task %s: spawn failed — %s", task_id, detail)
         try:
             self._client.report_lifecycle(task_id, self._runner_id, phase.value, detail)
         except httpx.HTTPError:
@@ -284,7 +293,7 @@ class Spawner:
         layers = [layer for layer in layers if layer.strip()]
         if not layers:
             return None
-        return self._images.build(workflow, repo["id"], layers)
+        return self._images.build(workflow, repo["id"], layers, verbose=True)
 
 
 def spawnable_tasks(client: TaskServiceClient) -> Callable[[], list[JsonObj]]:

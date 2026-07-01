@@ -30,8 +30,8 @@ class TaskServiceClient:
 
     # -- reads --------------------------------------------------------------------
 
-    def list_workflows(self) -> list[dict[str, str]]:
-        return cast("list[dict[str, str]]", self._json(self._http.get("/workflows")))
+    def list_workflows(self) -> list[JsonObj]:
+        return cast("list[JsonObj]", self._json(self._http.get("/workflows")))
 
     def list_workflows_for_repo(self, repo_id: str) -> list[dict[str, str]]:
         """Workflows visible for a repo, filtered by its preferences and each workflow's opt_in."""
@@ -141,8 +141,17 @@ class TaskServiceClient:
         are preserved."""
         return cast(JsonObj, self._json(self._http.patch(f"/repos/{repo_id}", json=changes)))
 
-    def create_task(self, repo_id: str, workflow: str, memo: str | None = None) -> JsonObj:
-        body = {"repo_id": repo_id, "workflow": workflow, "memo": memo}
+    def create_task(
+        self,
+        repo_id: str,
+        workflow: str,
+        memo: str | None = None,
+        *,
+        initial_prompt: str | None = None,
+    ) -> JsonObj:
+        body: JsonObj = {"repo_id": repo_id, "workflow": workflow, "memo": memo}
+        if initial_prompt is not None:
+            body["initial_prompt"] = initial_prompt
         return cast(JsonObj, self._json(self._http.post("/tasks", json=body)))
 
     def set_slug(self, task_id: str, slug: str) -> JsonObj:
