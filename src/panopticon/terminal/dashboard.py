@@ -553,28 +553,41 @@ class InputScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+class MemoTextArea(TextArea):
+    """TextArea for memo input where Enter submits the form instead of inserting a newline.
+
+    Multi-line content from ``ctrl+g`` (``$EDITOR``) is displayed correctly; the user just
+    can't type newlines directly — the editor is the intended path for multi-line memos."""
+
+    async def _on_key(self, event: events.Key) -> None:
+        if event.key == "enter":
+            event.prevent_default()
+            self.screen.action_submit()  # type: ignore[attr-defined]
+        else:
+            await super()._on_key(event)
+
+
 class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
     """Memo + auto-submit checkbox for task creation.
 
-    Dismisses ``(text, auto_submit)`` on submit, or ``None`` on cancel (Escape).
+    Dismisses ``(text, auto_submit)`` on submit (Enter), or ``None`` on cancel (Escape).
     ``auto_submit_default`` seeds the checkbox; the user can toggle it with Space.
 
-    The memo field is a multi-line :class:`TextArea` — Enter inserts a newline.
-    Submit is ``ctrl+s`` (same as :class:`RepoFormScreen`) or ``ctrl+g`` to open
-    the current text in ``$EDITOR`` and write the result back.
+    Uses :class:`MemoTextArea` so Enter submits rather than inserting a newline — same UX
+    as the original single-line ``Input``, but the field can display multi-line content
+    loaded by ``ctrl+g`` (open in ``$EDITOR``).
 
-    **Space toggles the checkbox; ctrl+s saves** — same contract as :class:`RepoFormScreen`."""
+    **Space toggles the checkbox; Enter saves**."""
 
     CSS = """
     MemoScreen { align: center middle; }
     #memo-box { width: 64; height: auto; padding: 1 2; border: round $accent; background: $surface; }
-    #memo-box TextArea { height: 6; margin-bottom: 1; }
+    #memo-box MemoTextArea { height: 6; margin-bottom: 1; }
     #memo-box Checkbox { margin-top: 0; }
     """
     BINDINGS = [
         ("escape", "cancel", "Cancel"),
         ("ctrl+g", "edit_in_editor", "Edit"),
-        ("ctrl+s", "submit", "Create"),
     ]
 
     def __init__(self, auto_submit_default: bool) -> None:
@@ -584,14 +597,14 @@ class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
     def compose(self) -> ComposeResult:
         with Vertical(id="memo-box"):
             yield Label("memo")
-            yield TextArea()
+            yield MemoTextArea()
             yield SpaceCheckbox("Submit as initial prompt", value=self._auto_submit_default)
 
     def on_mount(self) -> None:
-        self.query_one(TextArea).focus()
+        self.query_one(MemoTextArea).focus()
 
     def action_submit(self) -> None:
-        text = self.query_one(TextArea).text
+        text = self.query_one(MemoTextArea).text
         auto_submit = self.query_one(SpaceCheckbox).value
         self.dismiss((text, auto_submit))
 
@@ -599,7 +612,7 @@ class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
         self.dismiss(None)
 
     def action_edit_in_editor(self) -> None:
-        ta = self.query_one(TextArea)
+        ta = self.query_one(MemoTextArea)
         try:
             with self.app.suspend():
                 result = _edit_with_editor(ta.text)
