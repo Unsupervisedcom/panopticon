@@ -102,7 +102,7 @@ class TaskOut(BaseModel):
     branch: str | None
     clone: str | None
     claimed_by: str | None  # the runner that owns this task (the spawn gate), or None
-    tokens_used: int | None  # cumulative tokens the container's claude has used (None until reported)
+    tokens_used: int | None  # cost-weighted input-equivalent tokens used (None until reported)
     token_estimate: int | None  # the agent's forecast of total tokens (set in planning; None until then)
     governor_task_id: str | None = None  # the task that oversees this one, or None for ungoverned tasks
     updated_at: str | None = None  # ISO-8601 timestamp of the last mutation, stamped by the task service

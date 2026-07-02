@@ -4,7 +4,7 @@ This task moves through a fixed sequence of phases. You are always in exactly on
 
 1. **PLANNING** — Collect requirements. Produce a plan for the implementation. You must meet these responsibilities before ending your turn — mark each as met the moment you complete it:
    - plan-written: The plan is uploaded to the plan artifact `plan.md` (a markdown file) with the `put_artifact` tool — not just written to the working tree.
-   - token-estimated: Estimate the total tokens this task will consume and record it with the `set_token_estimate` tool.
+   - token-estimated: Estimate the total **cost-weighted** tokens this task will consume — i.e., input-equivalent tokens where cache-reads count ≈0.1× and output ≈5× — and record it with the `set_token_estimate` tool.
    The user will advance to the next state.
 2. **ITERATING** — Implement the plan. Implement any additional user requests or feedback. Implement any review comments the user has approved for implementation. You must meet these responsibilities before ending your turn — mark each as met the moment you complete it:
    - plan-implemented: The plan is implemented in code.

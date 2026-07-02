@@ -44,8 +44,9 @@ class PlannedWorkflow(Workflow):
     TOKEN_ESTIMATED: ClassVar[Responsibility] = Responsibility(
         key="token-estimated",
         description=(
-            "Estimate the total tokens this task will consume and record it with the "
-            "`set_token_estimate` tool."
+            "Estimate the total **cost-weighted** tokens this task will consume — i.e., "
+            "input-equivalent tokens where cache-reads count ≈0.1× and output ≈5× — and "
+            "record it with the `set_token_estimate` tool."
         ),
     )
 

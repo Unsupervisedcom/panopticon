@@ -258,10 +258,11 @@ class Task:
     #: or have it respawned. Distinct from liveness — a claimed task whose container died is
     #: "claimed but down".
     claimed_by: str | None = None
-    #: Cumulative tokens the ``claude`` agent in this task's container has used (input + output +
-    #: cache-creation + cache-read, summed across the session). The container's Stop hook reports
-    #: it via :meth:`TaskService.set_tokens_used`, recomputing the session total each turn; the
-    #: dashboard shows it in short human form. ``None`` until the first report.
+    #: Cumulative **cost-weighted** tokens the ``claude`` agent in this task's container has used,
+    #: expressed in input-equivalent units (cache-reads ≈0.1×, output ≈5×). The container's Stop
+    #: hook reports it via :meth:`TaskService.set_tokens_used`, recomputing the session total each
+    #: turn; the dashboard shows it in short human form. ``None`` until the first report. Values
+    #: recorded before cost-weighting was introduced are raw four-tier sums and are not comparable.
     tokens_used: int | None = None
     #: The agent's *forecast* of the total tokens this task will consume, set once during planning
     #: via :meth:`TaskService.set_token_estimate` (distinct from ``tokens_used``, the running
