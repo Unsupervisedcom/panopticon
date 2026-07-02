@@ -201,13 +201,14 @@ class TaskService:
             for name in sorted(self._workflows)
         ]
 
-    async def list_workflow_infos_for_repo(self, repo_id: str) -> list[dict[str, str]]:
+    async def list_workflow_infos_for_repo(self, repo_id: str) -> list[dict[str, str | bool]]:
         """Workflows visible for a repo, filtered by opt_in and the repo's workflow preferences."""
         repo = await self.get_repo(repo_id)
         return [
             {
                 "name": name,
                 "when_to_use": self._workflows[name].when_to_use,
+                "auto_submit_memo": self._workflows[name].auto_submit_memo,
                 "opt_in": str(self._workflows[name].opt_in).lower(),
             }
             for name in sorted(self._workflows)
