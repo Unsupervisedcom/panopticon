@@ -592,7 +592,7 @@ async def test_pressing_n_creates_a_task_via_repo_workflow_then_memo() -> None:
         await pilot.press("enter")  # first (only) workflow: spike
         await pilot.pause()
         await pilot.press("f", "i", "x")  # type a memo into the prompt
-        await pilot.press("enter")  # submit
+        await pilot.press("ctrl+s")  # submit (Enter inserts newline in the TextArea)
         await pilot.pause()
         # auto_submit_memo=False → memo routed as memo (not initial_prompt)
         assert fake.created == [("r1", "spike", "fix", None)]
@@ -611,7 +611,7 @@ async def test_pressing_n_with_a_blank_memo_creates_with_none() -> None:
         await pilot.pause()
         await pilot.press("enter")  # workflow
         await pilot.pause()
-        await pilot.press("enter")  # submit an empty memo
+        await pilot.press("ctrl+s")  # submit an empty memo
         await pilot.pause()
         assert fake.created == [("r1", "spike", None, None)]
 
@@ -630,14 +630,36 @@ async def test_pressing_n_auto_submits_memo_as_initial_prompt_when_workflow_opts
         await pilot.press("enter")  # workflow (auto_submit_memo=True → checkbox pre-checked)
         await pilot.pause()
         await pilot.press("f", "i", "x")  # type a memo
-        await pilot.press("enter")  # submit
+        await pilot.press("ctrl+s")  # submit (Enter inserts newline in the TextArea)
         await pilot.pause()
         # checkbox was pre-checked → memo stored AND routed as initial_prompt
         assert fake.created == [("r1", "github-self-reviewed", "fix", "fix")]
 
 
-async def test_memo_ctrl_g_opens_editor_and_updates_input(monkeypatch: Any) -> None:
-    # Ctrl-G should open $EDITOR and replace the Input's value with the returned text.
+async def test_memo_textarea_accepts_multiline_input() -> None:
+    # Enter inserts a newline; the multi-line text is stored verbatim (stripped by the caller).
+    fake = _FakeClient(
+        [], repos=["r1"], workflows=[{"name": "spike", "when_to_use": "", "auto_submit_memo": False}]
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")  # repo
+        await pilot.pause()
+        await pilot.press("enter")  # workflow
+        await pilot.pause()
+        await pilot.press("h", "i")  # first line
+        await pilot.press("enter")  # newline in TextArea (does NOT submit)
+        await pilot.press("t", "h", "e", "r", "e")  # second line
+        await pilot.press("ctrl+s")  # submit
+        await pilot.pause()
+        assert fake.created == [("r1", "spike", "hi\nthere", None)]
+
+
+async def test_memo_ctrl_g_opens_editor_and_updates_textarea(monkeypatch: Any) -> None:
+    # Ctrl-G should open $EDITOR and replace the TextArea's text with the returned content.
     monkeypatch.setattr(dashboard, "_edit_with_editor", lambda text: f"edited:{text}")
     # The headless test driver has can_suspend=False, which raises SuspendNotSupported.
     # Patch App.suspend to a no-op context manager so the action runs normally in tests.
@@ -657,7 +679,7 @@ async def test_memo_ctrl_g_opens_editor_and_updates_input(monkeypatch: Any) -> N
         await pilot.press("h", "i")  # type initial text
         await pilot.press("ctrl+g")  # open editor
         await pilot.pause()
-        await pilot.press("enter")  # submit
+        await pilot.press("ctrl+s")  # submit (Enter inserts newline in the TextArea)
         await pilot.pause()
         assert fake.created == [("r1", "spike", "edited:hi", None)]
 
@@ -860,6 +882,9 @@ def test_slug_cell_combines_slug_and_memo() -> None:
     # neither → "-"
     assert _slug_cell({"slug": None}).plain == "-"
     assert _slug_cell({}).plain == "-"
+    # multi-line memo → only the first line shown in the table cell
+    assert _slug_cell({"slug": "s", "memo": "line one\nline two"}).plain == "s[line one]"
+    assert _slug_cell({"memo": "line one\nline two"}).plain == "[line one]"
 
 
 def test_slug_cell_is_text_so_brackets_arent_eaten_as_markup() -> None:

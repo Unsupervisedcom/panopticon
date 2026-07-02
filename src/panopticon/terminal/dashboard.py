@@ -78,6 +78,7 @@ from textual.widget import Widget
 from textual.css.query import NoMatches
 from textual.widgets import (
     Checkbox, DataTable, Footer, Header, Input, Label, OptionList, Static, TabPane, TabbedContent,
+    TextArea,
 )
 from textual.worker import get_current_worker
 
@@ -156,7 +157,8 @@ def _slug_cell(task: JsonObj, prefix: str = "") -> Text:
     if prefix:
         text.append(prefix, style="dim")
     if memo:
-        text.append(f"{slug}[{memo}]")
+        first_line = memo.splitlines()[0] if memo else memo
+        text.append(f"{slug}[{first_line}]")
     else:
         text.append(slug or "-")
     return text
@@ -554,21 +556,25 @@ class InputScreen(ModalScreen[str | None]):
 class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
     """Memo + auto-submit checkbox for task creation.
 
-    Dismisses ``(text, auto_submit)`` on submit (Enter from any widget), or ``None`` on cancel
-    (Escape). ``auto_submit_default`` seeds the checkbox; the user can toggle it with Space.
+    Dismisses ``(text, auto_submit)`` on submit, or ``None`` on cancel (Escape).
+    ``auto_submit_default`` seeds the checkbox; the user can toggle it with Space.
 
-    **Space toggles the checkbox; Enter saves** — same contract as :class:`RepoFormScreen`.
-    The :class:`SpaceCheckbox` drops Enter so it bubbles to the screen's ``submit`` binding."""
+    The memo field is a multi-line :class:`TextArea` — Enter inserts a newline.
+    Submit is ``ctrl+s`` (same as :class:`RepoFormScreen`) or ``ctrl+g`` to open
+    the current text in ``$EDITOR`` and write the result back.
+
+    **Space toggles the checkbox; ctrl+s saves** — same contract as :class:`RepoFormScreen`."""
 
     CSS = """
     MemoScreen { align: center middle; }
     #memo-box { width: 64; height: auto; padding: 1 2; border: round $accent; background: $surface; }
-    #memo-box Checkbox { margin-top: 1; }
+    #memo-box TextArea { height: 6; margin-bottom: 1; }
+    #memo-box Checkbox { margin-top: 0; }
     """
     BINDINGS = [
         ("escape", "cancel", "Cancel"),
         ("ctrl+g", "edit_in_editor", "Edit"),
-        ("enter", "submit", "Create"),
+        ("ctrl+s", "submit", "Create"),
     ]
 
     def __init__(self, auto_submit_default: bool) -> None:
@@ -578,17 +584,14 @@ class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
     def compose(self) -> ComposeResult:
         with Vertical(id="memo-box"):
             yield Label("memo")
-            yield Input()
+            yield TextArea()
             yield SpaceCheckbox("Submit as initial prompt", value=self._auto_submit_default)
 
     def on_mount(self) -> None:
-        self.query_one(Input).focus()
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        self.action_submit()
+        self.query_one(TextArea).focus()
 
     def action_submit(self) -> None:
-        text = self.query_one(Input).value
+        text = self.query_one(TextArea).text
         auto_submit = self.query_one(SpaceCheckbox).value
         self.dismiss((text, auto_submit))
 
@@ -596,16 +599,15 @@ class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
         self.dismiss(None)
 
     def action_edit_in_editor(self) -> None:
-        inp = self.query_one(Input)
+        ta = self.query_one(TextArea)
         try:
             with self.app.suspend():
-                result = _edit_with_editor(inp.value)
+                result = _edit_with_editor(ta.text)
         except SuspendNotSupported:
             self.app.notify("Editor not supported in this environment", severity="warning")
             return
-        inp.value = result
-        inp.action_end()
-        inp.focus()
+        ta.load_text(result)
+        ta.focus()
 
 
 def _repo_name_from_git_url(url: str) -> str:

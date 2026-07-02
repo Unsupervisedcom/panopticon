@@ -103,7 +103,7 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
         description=(
             "Create a new task on behalf of an orchestrator task (gated to orchestration "
             "workflows). The task is created in your own repo. Pass your own task id as "
-            "orchestrator_task_id. The `memo` is a brief, one-line reminder of what the task "
+            "orchestrator_task_id. The `memo` is a brief reminder of what the task "
             "is (shown in the dashboard) — not a full description; the full description goes "
             "in the task's plan.md. `initial_prompt` (optional) is passed as Claude's first "
             "message on first spawn — the agent starts autonomously without waiting for user "
