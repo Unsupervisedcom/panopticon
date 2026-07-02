@@ -556,8 +556,11 @@ class InputScreen(ModalScreen[str | None]):
 class MemoTextArea(TextArea):
     """TextArea for memo input where Enter submits the form instead of inserting a newline.
 
-    Multi-line content from ``ctrl+g`` (``$EDITOR``) is displayed correctly; the user just
-    can't type newlines directly — the editor is the intended path for multi-line memos."""
+    Starts one row tall and grows up to ``MAX_LINES`` rows as content is loaded (e.g. from
+    ``ctrl+g`` / ``$EDITOR``). The user can't type newlines directly; the editor is the
+    intended path for multi-line memos."""
+
+    MAX_LINES = 10
 
     async def _on_key(self, event: events.Key) -> None:
         if event.key == "enter":
@@ -565,6 +568,10 @@ class MemoTextArea(TextArea):
             self.screen.action_submit()  # type: ignore[attr-defined]
         else:
             await super()._on_key(event)
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        lines = max(1, len(self.text.splitlines()))
+        self.styles.height = min(lines, self.MAX_LINES)
 
 
 class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
@@ -582,7 +589,7 @@ class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
     CSS = """
     MemoScreen { align: center middle; }
     #memo-box { width: 64; height: auto; padding: 1 2; border: round $accent; background: $surface; }
-    #memo-box MemoTextArea { height: 6; margin-bottom: 1; }
+    #memo-box MemoTextArea { height: 1; margin-bottom: 1; }
     #memo-box Checkbox { margin-top: 0; }
     """
     BINDINGS = [

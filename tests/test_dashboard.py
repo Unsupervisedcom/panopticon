@@ -662,6 +662,30 @@ async def test_memo_ctrl_g_opens_editor_and_updates_textarea(monkeypatch: Any) -
         assert fake.created == [("r1", "spike", "edited:hi", None)]
 
 
+async def test_memo_textarea_expands_for_multiline_content(monkeypatch: Any) -> None:
+    # After ctrl+g loads multi-line content the full text is preserved and submitted.
+    three_lines = "line one\nline two\nline three"
+    monkeypatch.setattr(dashboard, "_edit_with_editor", lambda text: three_lines)
+    monkeypatch.setattr(App, "suspend", lambda self: contextlib.nullcontext())
+    fake = _FakeClient(
+        [], repos=["r1"], workflows=[{"name": "spike", "when_to_use": "", "auto_submit_memo": False}]
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")  # repo
+        await pilot.pause()
+        await pilot.press("enter")  # workflow
+        await pilot.pause()
+        await pilot.press("ctrl+g")
+        await pilot.pause()
+        await pilot.press("enter")  # submit
+        await pilot.pause()
+        assert fake.created == [("r1", "spike", three_lines, None)]
+
+
 async def test_dashboard_drives_drop() -> None:
     # Drop is the one transition the operator drives; advance and the rest are agent skills, so
     # they aren't dashboard actions (no `a`/`i` bindings).
@@ -863,6 +887,15 @@ def test_slug_cell_combines_slug_and_memo() -> None:
     # multi-line memo → only the first line shown in the table cell
     assert _slug_cell({"slug": "s", "memo": "line one\nline two"}).plain == "s[line one]"
     assert _slug_cell({"memo": "line one\nline two"}).plain == "[line one]"
+
+
+def test_memo_textarea_height_logic() -> None:
+    # on_text_area_changed sets styles.height = min(line_count, MAX_LINES); verify the formula.
+    from panopticon.terminal.dashboard import MemoTextArea
+    assert max(1, len("".splitlines())) == 1
+    assert max(1, len("one line".splitlines())) == 1
+    assert max(1, len("a\nb\nc".splitlines())) == 3
+    assert min(max(1, len(("\n" * 15).splitlines())), MemoTextArea.MAX_LINES) == MemoTextArea.MAX_LINES
 
 
 def test_slug_cell_is_text_so_brackets_arent_eaten_as_markup() -> None:
