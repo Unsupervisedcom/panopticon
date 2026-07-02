@@ -565,6 +565,7 @@ class MemoTextArea(TextArea):
     async def _on_key(self, event: events.Key) -> None:
         if event.key == "enter":
             event.prevent_default()
+            event.stop()  # don't let Enter bubble to the screen's enter binding
             self.screen.action_submit()  # type: ignore[attr-defined]
         else:
             await super()._on_key(event)
@@ -591,10 +592,12 @@ class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
     #memo-box { width: 64; height: auto; padding: 1 2; border: round $accent; background: $surface; }
     #memo-box MemoTextArea { height: 1; margin-bottom: 1; }
     #memo-box Checkbox { margin-top: 0; }
+    #memo-box .memo-hint { color: $text-muted; margin-top: 1; }
     """
     BINDINGS = [
         ("escape", "cancel", "Cancel"),
         ("ctrl+g", "edit_in_editor", "Edit"),
+        ("enter", "submit", "Create"),
     ]
 
     def __init__(self, auto_submit_default: bool) -> None:
@@ -606,6 +609,7 @@ class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
             yield Label("memo")
             yield MemoTextArea(compact=True)
             yield SpaceCheckbox("Submit as initial prompt", value=self._auto_submit_default)
+            yield Label("ctrl+g: open in $EDITOR", classes="memo-hint")
 
     def on_mount(self) -> None:
         self.query_one(MemoTextArea).focus()
