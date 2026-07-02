@@ -41,6 +41,8 @@ class PlannedWorkflow(Workflow):
 
     #: Shared PLANNING responsibility: record the token forecast with ``set_token_estimate``
     #: so the task service can track cost against the estimate.
+    # TODO(multi-agent): "tokens" is a Claude-specific cost unit; generalise this responsibility
+    # description (and the set_token_estimate tool) when non-Claude agents are supported.
     TOKEN_ESTIMATED: ClassVar[Responsibility] = Responsibility(
         key="token-estimated",
         description=(

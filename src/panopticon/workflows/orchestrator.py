@@ -48,6 +48,7 @@ you want to spawn. Throughout, your *own* task id is shown below; the new task h
 3. **Name it.** `set_slug` on the new id with a short kebab-case slug.
 4. **Estimate its cost.** `set_token_estimate` on the new id with your forecast of the total
    tokens *that* task will consume.
+   *(TODO multi-agent: "tokens" is Claude-specific; generalise when non-Claude agents are supported.)*
 5. **Clear the planning gates.** `resolve_responsibility` on the new id with `key="plan-written"`,
    `status="met"`, then again with `key="token-estimated"`, `status="met"`.
 6. **Hand it to the user.** `set_turn` on the new id with `turn="user"`.
