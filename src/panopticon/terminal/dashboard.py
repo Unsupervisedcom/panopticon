@@ -629,6 +629,7 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     #wf-scroll { height: 1fr; }
     #wf-scroll SpaceCheckbox { margin-bottom: 0; }
     #wf-desc { height: 4; border: tall $panel; padding: 0 1; color: $text-muted; margin-top: 1; }
+    #form-hint { color: $text-muted; text-align: center; margin-top: 1; }
     """
     # Enter saves from any field. Text Inputs consume Enter via their own submit binding (posting
     # Input.Submitted → on_input_submitted), so this screen binding only fires for fields that
@@ -699,6 +700,7 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
                         yield Static("", id="wf-desc")
                     else:
                         yield Label("no workflows available")
+            yield Static("enter: save   esc: cancel", id="form-hint")
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
