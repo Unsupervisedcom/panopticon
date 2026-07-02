@@ -624,7 +624,9 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     #repo-form { width: 72; height: 80%; padding: 1 2; border: round $accent; background: $surface; }
     #repo-form Input { margin-bottom: 1; }
     #repo-form Checkbox { margin-bottom: 1; }
-    #wf-scroll { max-height: 12; }
+    #form-tabs { height: 1fr; }
+    #pane-workflows { height: 1fr; }
+    #wf-scroll { height: 1fr; }
     #wf-scroll SpaceCheckbox { margin-bottom: 0; }
     #wf-desc { height: 4; border: tall $panel; padding: 0 1; color: $text-muted; margin-top: 1; }
     """
