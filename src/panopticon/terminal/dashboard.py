@@ -693,8 +693,7 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
                     if self._workflows:
                         with VerticalScroll(id="wf-scroll"):
                             for wf in self._workflows:
-                                lbl = wf["name"] + ("  [opt-in]" if wf.get("opt_in") else "")
-                                yield SpaceCheckbox(lbl, value=self._wf_checked(wf), id=f"wf-{wf['name']}")
+                                yield SpaceCheckbox(wf["name"], value=self._wf_checked(wf), id=f"wf-{wf['name']}")
                         yield Static("", id="wf-desc")
                     else:
                         yield Label("no workflows available")
