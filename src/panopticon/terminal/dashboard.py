@@ -52,7 +52,9 @@ to Textual workers is a refinement (docs/BACKLOG.md).
 from __future__ import annotations
 
 import functools
+import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -68,7 +70,7 @@ from typing import Any, TypeVar
 import httpx
 from rich.text import Text
 from textual import events, work
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SuspendNotSupported
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
@@ -76,6 +78,7 @@ from textual.widget import Widget
 from textual.css.query import NoMatches
 from textual.widgets import (
     Checkbox, DataTable, Footer, Header, Input, Label, OptionList, Static, TabPane, TabbedContent,
+    TextArea,
 )
 from textual.worker import get_current_worker
 
@@ -154,7 +157,8 @@ def _slug_cell(task: JsonObj, prefix: str = "") -> Text:
     if prefix:
         text.append(prefix, style="dim")
     if memo:
-        text.append(f"{slug}[{memo}]")
+        first_line = memo.splitlines()[0] if memo else memo
+        text.append(f"{slug}[{first_line}]")
     else:
         text.append(slug or "-")
     return text
@@ -363,6 +367,22 @@ def _open_path(path: str) -> None:
     subprocess.Popen([_open_command(), path])
 
 
+def _edit_with_editor(text: str) -> str:
+    """Open ``text`` in ``$EDITOR`` (falling back to ``vi``) and return the saved content.
+
+    Uses ``shlex.split`` on the editor value so multi-word settings like ``"code --wait"``
+    or ``"vim -u NONE"`` work correctly."""
+    editor = os.environ.get("EDITOR", "vi")
+    with tempfile.NamedTemporaryFile(suffix=".md", mode="w", delete=False, encoding="utf-8") as f:
+        f.write(text)
+        path = f.name
+    try:
+        subprocess.run([*shlex.split(editor), path])
+        return Path(path).read_text(encoding="utf-8")
+    finally:
+        os.unlink(path)
+
+
 # Linux clipboard writers, in preference order: Wayland first, then the X11 tools. Each is the
 # full argv that reads the text to copy from stdin. macOS uses `pbcopy` unconditionally (it's
 # always present), so it isn't in this list — see `_clipboard_command`.
@@ -533,22 +553,50 @@ class InputScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+class MemoTextArea(TextArea):
+    """TextArea for memo input where Enter submits the form instead of inserting a newline.
+
+    Starts one row tall and grows up to ``MAX_LINES`` rows as content is loaded (e.g. from
+    ``ctrl+g`` / ``$EDITOR``). The user can't type newlines directly; the editor is the
+    intended path for multi-line memos."""
+
+    MAX_LINES = 10
+
+    async def _on_key(self, event: events.Key) -> None:
+        if event.key == "enter":
+            event.prevent_default()
+            event.stop()  # don't let Enter bubble to the screen's enter binding
+            self.screen.action_submit()  # type: ignore[attr-defined]
+        else:
+            await super()._on_key(event)
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        lines = max(1, len(self.text.splitlines()))
+        self.styles.height = min(lines, self.MAX_LINES)
+
+
 class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
     """Memo + auto-submit checkbox for task creation.
 
-    Dismisses ``(text, auto_submit)`` on submit (Enter from any widget), or ``None`` on cancel
-    (Escape). ``auto_submit_default`` seeds the checkbox; the user can toggle it with Space.
+    Dismisses ``(text, auto_submit)`` on submit (Enter), or ``None`` on cancel (Escape).
+    ``auto_submit_default`` seeds the checkbox; the user can toggle it with Space.
 
-    **Space toggles the checkbox; Enter saves** — same contract as :class:`RepoFormScreen`.
-    The :class:`SpaceCheckbox` drops Enter so it bubbles to the screen's ``submit`` binding."""
+    Uses :class:`MemoTextArea` so Enter submits rather than inserting a newline — same UX
+    as the original single-line ``Input``, but the field can display multi-line content
+    loaded by ``ctrl+g`` (open in ``$EDITOR``).
+
+    **Space toggles the checkbox; Enter saves**."""
 
     CSS = """
     MemoScreen { align: center middle; }
     #memo-box { width: 64; height: auto; padding: 1 2; border: round $accent; background: $surface; }
-    #memo-box Checkbox { margin-top: 1; }
+    #memo-box MemoTextArea { height: 1; margin-bottom: 1; }
+    #memo-box Checkbox { margin-top: 0; }
+    #memo-box .memo-hint { color: $text-muted; margin-top: 1; }
     """
     BINDINGS = [
         ("escape", "cancel", "Cancel"),
+        ("ctrl+g", "edit_in_editor", "Edit"),
         ("enter", "submit", "Create"),
     ]
 
@@ -559,22 +607,31 @@ class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
     def compose(self) -> ComposeResult:
         with Vertical(id="memo-box"):
             yield Label("memo")
-            yield Input()
+            yield MemoTextArea(compact=True)
             yield SpaceCheckbox("Submit as initial prompt", value=self._auto_submit_default)
+            yield Label("ctrl+g: open in $EDITOR", classes="memo-hint")
 
     def on_mount(self) -> None:
-        self.query_one(Input).focus()
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        self.action_submit()
+        self.query_one(MemoTextArea).focus()
 
     def action_submit(self) -> None:
-        text = self.query_one(Input).value
+        text = self.query_one(MemoTextArea).text
         auto_submit = self.query_one(SpaceCheckbox).value
         self.dismiss((text, auto_submit))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+    def action_edit_in_editor(self) -> None:
+        ta = self.query_one(MemoTextArea)
+        try:
+            with self.app.suspend():
+                result = _edit_with_editor(ta.text)
+        except SuspendNotSupported:
+            self.app.notify("Editor not supported in this environment", severity="warning")
+            return
+        ta.load_text(result)
+        ta.focus()
 
 
 def _repo_name_from_git_url(url: str) -> str:
