@@ -17,8 +17,9 @@ from textual.widgets import Checkbox, DataTable, Input, Static
 from panopticon.terminal import dashboard
 from panopticon.terminal.dashboard import (
     Dashboard,
+    SpaceCheckbox,
     _ENSEMBLE_KEY_PREFIX,
-    _SEPARATOR_KEY,
+    _dim,
     _group_by_governor,
     _group_section,
     _matches,
@@ -342,15 +343,11 @@ async def test_tasks_are_sorted_live_then_user_then_slug() -> None:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
         keys = [str(k.value) for k in table.rows]
-        order = [k for k in keys if k != _SEPARATOR_KEY]  # task order, ignoring the divider row
-        assert order == [
+        assert keys == [
             "t-user-a", "t-user-b",    # live, user's turn, slug order
             "t-agent-a", "t-agent-b",  # live, agent's turn, slug order
             "t-drop", "t-done",        # terminal: agent-turn first (just finished), then user-turn
         ]
-        # the divider sits exactly between the last active row and the first terminal one
-        assert keys.index(_SEPARATOR_KEY) == keys.index("t-agent-b") + 1
-        assert keys.index(_SEPARATOR_KEY) == keys.index("t-drop") - 1
 
 
 async def test_sort_uses_recency_within_tier() -> None:
@@ -379,7 +376,7 @@ async def test_sort_breaks_ties_on_slug() -> None:
         assert order == ["t1", "t2"]  # alpha < zebra
 
 
-# -- active/terminal divider --------------------------------------------------------
+# -- active/terminal dim styling ---------------------------------------------------
 
 _ACTIVE_A = {**_TASK, "id": "t-a", "slug": "alpha", "state": "WORKING", "turn": "user"}
 _ACTIVE_B = {**_TASK, "id": "t-b", "slug": "bravo", "state": "ITERATING", "turn": "user"}
@@ -387,76 +384,53 @@ _TERM_A = {**_TASK, "id": "t-done", "slug": "done", "state": "COMPLETE", "turn":
 _TERM_B = {**_TASK, "id": "t-drop", "slug": "dropped", "state": "DROPPED", "turn": "user"}
 
 
-async def test_separator_divides_active_from_terminal() -> None:
-    # With both groups present, a single divider row splices in at the boundary.
+async def test_terminal_tasks_are_faded() -> None:
+    # Terminal tasks come after active ones and all their cells carry dim styling.
     app = Dashboard(_FakeClient([_ACTIVE_A, _TERM_A, _ACTIVE_B, _TERM_B]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        keys = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
-        assert keys == ["t-a", "t-b", _SEPARATOR_KEY, "t-done", "t-drop"]
+        table = app.query_one("#tasks", DataTable)
+        keys = [str(k.value) for k in table.rows]
+        assert keys == ["t-a", "t-b", "t-done", "t-drop"]  # active before terminal, no separator
+        # Active rows: slug cell has no dim span.
+        for task_id in ("t-a", "t-b"):
+            slug_cell = table.get_row(task_id)[4]
+            assert not any(s.style == "dim" for s in slug_cell._spans)
+        # Terminal rows: every cell carries dim styling.
+        for task_id in ("t-done", "t-drop"):
+            row = table.get_row(task_id)
+            for cell in row:
+                assert cell._spans and all(s.style == "dim" for s in cell._spans), (
+                    f"{task_id} cell {cell!r} should be fully dim"
+                )
 
 
-async def test_no_separator_when_all_active() -> None:
+async def test_active_only_rows_not_faded() -> None:
     app = Dashboard(_FakeClient([_ACTIVE_A, _ACTIVE_B]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        keys = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
-        assert _SEPARATOR_KEY not in keys
-
-
-async def test_no_separator_when_all_terminal() -> None:
-    app = Dashboard(_FakeClient([_TERM_A, _TERM_B]))  # type: ignore[arg-type]
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        keys = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
-        assert _SEPARATOR_KEY not in keys
-
-
-async def test_no_separator_when_filtered_to_one_group() -> None:
-    # A search filter that leaves only active tasks shows no divider.
-    app = Dashboard(_FakeClient([_ACTIVE_A, _ACTIVE_B, _TERM_A, _TERM_B]))  # type: ignore[arg-type]
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("slash")
-        await pilot.press("a", "l", "p", "h", "a")  # matches only _ACTIVE_A's slug
-        await pilot.pause()
-        keys = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
-        assert keys == ["t-a"]  # only the match; no divider
-
-
-async def test_highlighting_the_separator_selects_no_task() -> None:
-    # If the cursor is forced onto the divider, it selects nothing and actions no-op.
-    fake = _FakeClient([_ACTIVE_A, _TERM_A])
-    app = Dashboard(fake)  # type: ignore[arg-type]
-    async with app.run_test() as pilot:
-        await pilot.pause()
         table = app.query_one("#tasks", DataTable)
-        sep_index = [str(k.value) for k in table.rows].index(_SEPARATOR_KEY)
-        app._update_detail(_SEPARATOR_KEY)  # as a raw highlight on the sentinel would
-        await pilot.pause()
-        assert app._current is None  # no task selected
-        assert str(app.query_one("#detail", Static).render()) == ""  # blank pane
-        await pilot.press("x")  # drop no-ops with no current task
-        await pilot.pause()
-        assert fake.applied == []
-        assert sep_index == 1  # divider after the one active row
+        keys = [str(k.value) for k in table.rows]
+        assert keys == ["t-a", "t-b"]
+        for task_id in ("t-a", "t-b"):
+            slug_cell = table.get_row(task_id)[4]
+            assert not any(s.style == "dim" for s in slug_cell._spans)
 
 
-async def test_arrow_keys_skip_the_separator() -> None:
-    # Arrowing across the boundary jumps the divider in both directions.
-    app = Dashboard(_FakeClient([_ACTIVE_A, _TERM_A]))  # type: ignore[arg-type]
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        table = app.query_one("#tasks", DataTable)
-        table.move_cursor(row=0)  # the active task
-        await pilot.pause()
-        assert app._current == "t-a"
-        await pilot.press("down")  # would land on the divider → skip to the terminal task
-        await pilot.pause()
-        assert app._current == "t-done"
-        await pilot.press("up")  # back up over the divider → the active task again
-        await pilot.pause()
-        assert app._current == "t-a"
+def test_dim_helper_str_and_text() -> None:
+    # _dim on a plain str or a Rich Text both produce a Text whose sole span is "dim".
+    from rich.text import Text
+    result = _dim("hello")
+    assert result.plain == "hello"
+    assert result._spans and result._spans[0].style == "dim"
+
+    t = Text("world", style="green")
+    dimmed = _dim(t)
+    assert dimmed.plain == "world"
+    assert dimmed._spans and all(s.style == "dim" for s in dimmed._spans)
+    # original is unmodified
+    assert t.plain == "world"
+    assert str(t.style) == "green"
 
 
 async def _settle(pilot: Any, predicate: Any, *, tries: int = 100, step: float = 0.02) -> None:
@@ -804,6 +778,25 @@ def test_status_cell_displays_the_composed_status_color_coded() -> None:
     assert _status_cell({"container_status": "disconnected"}).style == "red"
     assert _status_cell({"container_status": "–"}).plain == "–"  # terminal task
     assert _status_cell({}).plain == "–"  # missing → em-dash, no crash
+
+
+async def test_task_counter_shows_agent_versus_active_counts() -> None:
+    # Counter shows agent-turn active / total active; terminal tasks are excluded.
+    # pause() lets Footer's _bindings_ready recompose fire so #task-counter is mounted;
+    # a second action_refresh() then populates it with the correct counts.
+    tasks = [
+        {**_TASK, "id": "t-agent", "slug": "a1", "state": "WORKING",  "turn": "agent"},
+        {**_TASK, "id": "t-user",  "slug": "u1", "state": "PLANNING", "turn": "user"},
+        {**_TASK, "id": "t-done",  "slug": "d1", "state": "COMPLETE", "turn": "agent"},
+    ]
+    app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_refresh()  # Footer is now ready; refresh to populate the counter
+        await pilot.pause()
+        text = str(app.query_one("#task-counter", Static).render())
+        assert "1/2" in text   # 1 agent-turn, 2 total active (COMPLETE excluded)
+        assert "agent" in text
 
 
 async def test_status_cell_is_used_without_per_task_registration_calls() -> None:
@@ -1198,8 +1191,9 @@ async def test_repos_screen_edits_a_repo_via_patch() -> None:
         app.screen.query_one("#field-name", Input).value = "new"
         await pilot.press("enter")
         await pilot.pause()
-        # Core fields plus the privileged capability are sent; image_layer_file is untouched (PATCH).
-        # The checkbox is unchecked here, so docker_in_docker is False.
+        # Core fields, capabilities, and workflow preferences are all PATCHed together.
+        # image_layer_file is left untouched. The checkbox is unchecked → docker_in_docker=False.
+        # No workflows were passed to the form so enabled/disabled lists are empty.
         assert fake.updated_repos == [
             ("r1", {"name": "new", "git_url": "https://x/r1.git", "default_base": "main",
                     "env_file": None,
@@ -1208,11 +1202,46 @@ async def test_repos_screen_edits_a_repo_via_patch() -> None:
         ]
 
 
-async def test_repo_form_workflow_fields_are_saved_and_reloaded() -> None:
+async def test_repo_form_workflows_tab_pre_populates_from_repo() -> None:
+    """The workflows tab in the repo form pre-populates checkboxes from the repo's stored prefs."""
     existing = {"id": "r1", "name": "old", "git_url": "https://x/r1.git", "default_base": "main",
                 "enabled_workflows": ["github-self-reviewed"],
                 "disabled_workflows": ["orchestrator"]}
-    fake = _FakeClient([], repos=[existing])
+    workflows = [
+        {"name": "spike", "when_to_use": "free-form", "opt_in": False},
+        {"name": "github-self-reviewed", "when_to_use": "self-reviewed", "opt_in": True},
+        {"name": "orchestrator", "when_to_use": "orchestrator workflow", "opt_in": False},
+    ]
+    fake = _FakeClient([], repos=[existing], workflows=workflows)
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")  # open edit form
+        await pilot.pause()
+        # opt-in workflow in enabled_workflows → checked
+        assert app.screen.query_one("#wf-github-self-reviewed", SpaceCheckbox).value is True
+        # opt-out workflow in disabled_workflows → unchecked
+        assert app.screen.query_one("#wf-orchestrator", SpaceCheckbox).value is False
+        # opt-out workflow not in disabled_workflows → checked (on by default)
+        assert app.screen.query_one("#wf-spike", SpaceCheckbox).value is True
+        # Save and confirm workflow prefs round-trip unchanged
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert fake.updated_repos[0][1]["enabled_workflows"] == ["github-self-reviewed"]
+        assert fake.updated_repos[0][1]["disabled_workflows"] == ["orchestrator"]
+
+
+async def test_repo_form_workflows_tab_toggles_save_with_form() -> None:
+    """Toggling workflow checkboxes and saving the form captures them in the update call."""
+    existing = {"id": "r1", "name": "old", "git_url": "https://x/r1.git", "default_base": "main",
+                "enabled_workflows": [], "disabled_workflows": []}
+    workflows = [
+        {"name": "spike", "when_to_use": "free-form", "opt_in": False},
+        {"name": "github-peer-reviewed", "when_to_use": "review workflow", "opt_in": True},
+    ]
+    fake = _FakeClient([], repos=[existing], workflows=workflows)
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -1220,16 +1249,14 @@ async def test_repo_form_workflow_fields_are_saved_and_reloaded() -> None:
         await pilot.pause()
         await pilot.press("e")
         await pilot.pause()
-        # Pre-populated from the stored repo
-        assert app.screen.query_one("#field-enabled_workflows", Input).value == "github-self-reviewed"
-        assert app.screen.query_one("#field-disabled_workflows", Input).value == "orchestrator"
-        # User changes enabled workflows
-        app.screen.query_one("#field-enabled_workflows", Input).value = "github-self-reviewed, github-peer-reviewed"
-        app.screen.query_one("#field-disabled_workflows", Input).value = ""
-        await pilot.press("enter")
+        # Toggle: enable the opt-in workflow and disable the opt-out one
+        app.screen.query_one("#wf-github-peer-reviewed", SpaceCheckbox).value = True
+        app.screen.query_one("#wf-spike", SpaceCheckbox).value = False
+        # Save from the form (ctrl+s works from any focused widget)
+        await pilot.press("ctrl+s")
         await pilot.pause()
-        assert fake.updated_repos[0][1]["enabled_workflows"] == ["github-self-reviewed", "github-peer-reviewed"]
-        assert fake.updated_repos[0][1]["disabled_workflows"] == []
+        assert fake.updated_repos[0][1]["enabled_workflows"] == ["github-peer-reviewed"]
+        assert fake.updated_repos[0][1]["disabled_workflows"] == ["spike"]
 
 
 async def test_repos_screen_creates_a_repo_with_privileged_docker_enabled() -> None:
@@ -1629,10 +1656,9 @@ async def test_governed_task_appears_under_governor_in_dashboard() -> None:
         assert wrk_row[4].plain == "└─ worker"           # last (only) child gets └─
 
 
-async def test_separator_after_group_not_mid_group() -> None:
+async def test_active_governor_keeps_terminal_child_in_active_section() -> None:
     # Regression: a terminal governed task whose governor is still active must stay in the
-    # active section, so the separator appears *after* the whole group — not between the
-    # governor and its child.
+    # active section (above the terminal section), not below it.
     governor = {
         **_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None,
         "state": "WORKING",
@@ -1649,12 +1675,18 @@ async def test_separator_after_group_not_mid_group() -> None:
     app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        keys = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
-        # Governor and its terminal child both appear above the divider; unrelated terminal
-        # task appears below it.
-        assert keys.index("gov") < keys.index(_SEPARATOR_KEY)
-        assert keys.index("wrk") < keys.index(_SEPARATOR_KEY)
-        assert keys.index("done") > keys.index(_SEPARATOR_KEY)
+        table = app.query_one("#tasks", DataTable)
+        keys = [str(k.value) for k in table.rows]
+        # Governor and its terminal child are in the active section (above "done").
+        assert keys.index("gov") < keys.index("done")
+        assert keys.index("wrk") < keys.index("done")
+        # Active governor is not faded; both terminal tasks (standalone and governed) are.
+        assert not any(s.style == "dim" for s in table.get_row("gov")[4]._spans)
+        for task_id in ("wrk", "done"):
+            slug = table.get_row(task_id)[4]
+            assert slug._spans and all(s.style == "dim" for s in slug._spans), (
+                f"{task_id} slug should be dim"
+            )
 
 
 # -- ensemble collapse (_group_section collapsed / Dashboard Enter) ---------------

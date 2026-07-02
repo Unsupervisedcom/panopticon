@@ -4,9 +4,8 @@ A task table on the left, the highlighted task's state/turn/history on the right
 from the task service **on change** — a background worker long-polls the change feed
 (``list_tasks_versioned``), so the table redraws within a round-trip of a state change and stays
 still when nothing changes (no fixed-interval redraw); `r` forces a refresh now. The redraw
-preserves the highlighted row across the rebuild. A dim divider row splits the active tasks from
-the terminal (COMPLETE/DROPPED) ones that sink below them; the arrow keys jump over it (it's not a
-selectable task).
+preserves the highlighted row across the rebuild. Terminal (COMPLETE/DROPPED) tasks sink below
+active ones and are rendered in faded/dim styling so they recede visually without a hard separator.
 
 The footer legend shows only the essential, most-used keys — `t` hands off to the task's
 container tmux, `n` creates a task (pick repo → workflow → describe the work), `x` **drops** it,
@@ -35,8 +34,8 @@ filter is applied in ``action_refresh``, so a change-feed refresh preserves it a
 
 `Enter` on a **governing task** (one with governed children) **collapses** its sub-tasks into a
 single dim ``ensemble`` row; pressing `Enter` again **expands** them. Arrow keys skip the ensemble
-row the same way they skip the active/terminal separator (it is not a real task). Expanding or
-collapsing does not affect the task service — it is pure display state local to the dashboard.
+row (it is not a real task). Expanding or collapsing does not affect the task service — it is pure
+display state local to the dashboard.
 
 The `container` column shows each task's container status: `live` (an active registration), `down`
 (was up, container gone — respawn with `R`), `starting` (claimed, no registration yet — its
@@ -73,10 +72,13 @@ from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult, SuspendNotSupported
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widget import Widget
-from textual.widgets import Checkbox, DataTable, Footer, Header, Input, Label, OptionList, Static
+from textual.css.query import NoMatches
+from textual.widgets import (
+    Checkbox, DataTable, Footer, Header, Input, Label, OptionList, Static, TabPane, TabbedContent,
+)
 from textual.worker import get_current_worker
 
 from panopticon.client import JsonObj, TaskServiceClient
@@ -122,21 +124,17 @@ def _short_tokens(n: int | None) -> str:
     return str(n)
 
 
-# A sentinel row key for the divider drawn between the active and terminal task groups (see
-# action_refresh). It's not a real task id, so it's never in ``self._tasks`` — the highlight
-# handler treats it as "no task selected" and the arrow keys jump over it.
-_SEPARATOR_KEY = "__separator__"
-
 # Row-key prefix for ensemble placeholder rows. When the operator collapses a governing task
 # (Enter on a governor), its governed children are replaced by one dim ``ensemble`` row whose
 # key is ``f"{_ENSEMBLE_KEY_PREFIX}{governor_id}"``. The highlight handler skips these rows
 # (like the separator) and ``on_data_table_row_selected`` ignores them.
 _ENSEMBLE_KEY_PREFIX = "__ensemble__"
 
-def _separator_cells(columns: int) -> list[Text]:
-    """A blank row with a muted background tint — the visual divider between the active tasks
-    and the terminal (COMPLETE/DROPPED) ones that sink below them."""
-    return [Text("", style="on grey7") for _ in range(columns)]
+def _dim(cell: Text | str) -> Text:
+    """Return a dim copy of a cell value (str or Rich Text), fading it without erasing content."""
+    t = Text(cell if isinstance(cell, str) else cell.plain)
+    t.stylize("dim")
+    return t
 
 
 def _slug_cell(task: JsonObj, prefix: str = "") -> Text:
@@ -639,30 +637,34 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     or Ctrl+S), or ``None`` on cancel (Escape). The text fields are strings; the privileged
     toggle is the bool ``docker_in_docker``.
 
-    **Space toggles the checkbox; Enter saves the form** — from any field, including while the
-    privileged-docker checkbox holds focus (it's a :class:`SpaceCheckbox`, so Enter bubbles up
-    to the screen's submit binding rather than toggling). A footer hint spells this out.
+    Two tabs: **general** (git URL, id, name, base branch, env file, privileged docker) and
+    **workflows** (a per-workflow opt-in/opt-out checklist). Both tabs' values are collected
+    on save — submitting from either tab captures everything.
 
-    The **git URL leads** the form. In **create mode** the still-blank ``id`` and ``name``
-    auto-fill from it when the URL field loses focus and again at submit — never clobbering a
-    value the user already typed — and ``default_base`` defaults to ``main``. Edit mode applies
-    neither: a repo's existing values are left exactly as they are.
+    **Space toggles checkboxes; Enter saves the form** from any field. The :class:`SpaceCheckbox`
+    subclass drops the default ``enter`` binding so Enter always bubbles up to the screen's save
+    action rather than toggling.
 
-    Create mode (no ``repo``): every field is an editable :class:`Input`, including ``id``.
-    Edit mode: ``id`` is shown read-only (the primary key can't change) and the rest are
-    pre-populated. The **privileged docker** checkbox maps to the repo's
-    ``capabilities["docker_in_docker"]`` (runs the task container ``--privileged``); ``image_layer_file``
-    and any other capability keys aren't edited in the TUI and a PATCH update leaves them untouched."""
+    The **git URL leads** create mode: blank ``id`` and ``name`` auto-fill from it on blur and
+    at submit; ``default_base`` defaults to ``main``. Edit mode leaves existing values untouched.
+    Edit mode shows ``id`` read-only; ``image_layer_file`` and other capability keys aren't
+    edited in the TUI (a PATCH update leaves them untouched)."""
 
     CSS = """
     RepoFormScreen { align: center middle; }
-    #repo-form { width: 72; height: auto; padding: 1 2; border: round $accent; background: $surface; }
+    #repo-form { width: 72; height: 80%; padding: 1 2; border: round $accent; background: $surface; }
     #repo-form Input { margin-bottom: 1; }
     #repo-form Checkbox { margin-bottom: 1; }
+    #form-tabs { height: 1fr; }
+    #pane-workflows { height: 1fr; }
+    #wf-scroll { height: 1fr; }
+    #wf-scroll SpaceCheckbox { margin-bottom: 0; }
+    #wf-desc { height: 4; border: tall $panel; padding: 0 1; color: $text-muted; margin-top: 1; }
+    #form-hint { color: $text-muted; text-align: center; margin-top: 1; }
     """
     # Enter saves from any field. Text Inputs consume Enter via their own submit binding (posting
     # Input.Submitted → on_input_submitted), so this screen binding only fires for fields that
-    # don't — the SpaceCheckbox and the read-only id Label — and never double-saves.
+    # don't — SpaceCheckboxes and the read-only id Label — and never double-saves.
     BINDINGS = [
         ("escape", "cancel", "Cancel"),
         ("enter", "submit", "Save"),
@@ -679,11 +681,16 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
         "name": lambda repo: repo,
     }
 
-    def __init__(self, title: str, repo: JsonObj | None = None) -> None:
+    def __init__(
+        self, title: str, repo: JsonObj | None = None, workflows: list[dict[str, Any]] | None = None
+    ) -> None:
         super().__init__()
         self._title = title
         self._repo = repo or {}
         self._editing = repo is not None
+        self._workflows = workflows or []
+        self._wf_enabled: set[str] = set(self._repo.get("enabled_workflows") or [])
+        self._wf_disabled: set[str] = set(self._repo.get("disabled_workflows") or [])
 
     def _initial(self, name: str) -> str:
         """A field's pre-populated value: the repo's stored value, else (create mode only)
@@ -693,39 +700,52 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
             return str(stored)
         return "main" if name == "default_base" and not self._editing else ""
 
-    def _initial_list(self, name: str) -> str:
-        """A list field's pre-populated value as a comma-separated string."""
-        stored = self._repo.get(name)
-        return ", ".join(stored) if stored else ""
+    def _wf_checked(self, wf: dict[str, Any]) -> bool:
+        name = wf["name"]
+        if wf.get("opt_in"):
+            return name in self._wf_enabled
+        return name not in self._wf_disabled
 
     def compose(self) -> ComposeResult:
         with Vertical(id="repo-form"):
             yield Label(self._title)
-            yield Input(value=self._initial("git_url"), placeholder="git_url", id="field-git_url")
-            if self._editing:
-                yield Label(f"id: {self._repo['id']}")
-            else:
-                yield Input(placeholder="id", id="field-id")
-            for name in self.FIELDS[1:]:  # git_url already rendered above
-                yield Input(value=self._initial(name), placeholder=name, id=f"field-{name}")
-            yield SpaceCheckbox(
-                "privileged docker (docker-in-docker)",
-                value=bool(self._repo.get("capabilities", {}).get("docker_in_docker")),
-                id="field-docker_in_docker",
-            )
-            yield Input(
-                value=self._initial_list("enabled_workflows"),
-                placeholder="enabled_workflows — opt-in workflows, comma-separated",
-                id="field-enabled_workflows",
-            )
-            yield Input(
-                value=self._initial_list("disabled_workflows"),
-                placeholder="disabled_workflows — opt-out workflows to hide, comma-separated",
-                id="field-disabled_workflows",
-            )
+            with TabbedContent(id="form-tabs"):
+                with TabPane("general", id="pane-general"):
+                    yield Input(value=self._initial("git_url"), placeholder="git_url", id="field-git_url")
+                    if self._editing:
+                        yield Label(f"id: {self._repo['id']}")
+                    else:
+                        yield Input(placeholder="id", id="field-id")
+                    for name in self.FIELDS[1:]:  # git_url already rendered above
+                        yield Input(value=self._initial(name), placeholder=name, id=f"field-{name}")
+                    yield SpaceCheckbox(
+                        "privileged docker (docker-in-docker)",
+                        value=bool(self._repo.get("capabilities", {}).get("docker_in_docker")),
+                        id="field-docker_in_docker",
+                    )
+                with TabPane("workflows", id="pane-workflows"):
+                    if self._workflows:
+                        with VerticalScroll(id="wf-scroll"):
+                            for wf in self._workflows:
+                                yield SpaceCheckbox(wf["name"], value=self._wf_checked(wf), id=f"wf-{wf['name']}")
+                        yield Static("", id="wf-desc")
+                    else:
+                        yield Label("no workflows available")
+            yield Static("enter: save   esc: cancel", id="form-hint")
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
+
+    def on_descendant_focus(self, event: events.DescendantFocus) -> None:
+        widget = event.widget
+        if not isinstance(widget, SpaceCheckbox) or not (widget.id or "").startswith("wf-"):
+            return
+        name = (widget.id or "").removeprefix("wf-")
+        desc = next((w.get("when_to_use", "") for w in self._workflows if w["name"] == name), "")
+        try:
+            self.query_one("#wf-desc", Static).update(desc)
+        except NoMatches:
+            pass
 
     def _autofill_from_git_url(self) -> None:
         """Fill the blank derived fields from the git URL — create mode only (editing an
@@ -756,9 +776,22 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
         for name in self.FIELDS:
             values[name] = self.query_one(f"#field-{name}", Input).value.strip()
         values["docker_in_docker"] = self.query_one("#field-docker_in_docker", Checkbox).value
-        for name in ("enabled_workflows", "disabled_workflows"):
-            raw = self.query_one(f"#field-{name}", Input).value
-            values[name] = [w.strip() for w in raw.split(",") if w.strip()]
+        enabled: list[str] = []
+        disabled: list[str] = []
+        for wf in self._workflows:
+            name = wf["name"]
+            try:
+                checked = self.query_one(f"#wf-{name}", SpaceCheckbox).value
+            except NoMatches:
+                continue
+            if wf.get("opt_in"):
+                if checked:
+                    enabled.append(name)
+            else:
+                if not checked:
+                    disabled.append(name)
+        values["enabled_workflows"] = enabled
+        values["disabled_workflows"] = disabled
         self.dismiss(values)
 
     def action_cancel(self) -> None:
@@ -836,7 +869,8 @@ class ReposScreen(ModalScreen[None]):
                 return
             self._refresh()
 
-        self.app.push_screen(RepoFormScreen("new repo"), create)
+        workflows = self._client.list_workflows()
+        self.app.push_screen(RepoFormScreen("new repo", workflows=workflows), create)
 
     def action_edit_repo(self) -> None:
         if self._current is None:
@@ -866,7 +900,10 @@ class ReposScreen(ModalScreen[None]):
                 return
             self._refresh()
 
-        self.app.push_screen(RepoFormScreen(f"edit {repo_id}", repo=self._repos[repo_id]), save)
+        workflows = self._client.list_workflows()
+        self.app.push_screen(
+            RepoFormScreen(f"edit {repo_id}", repo=self._repos[repo_id], workflows=workflows), save
+        )
 
 
 def _detail(exc: httpx.HTTPStatusError) -> str:
@@ -955,6 +992,18 @@ HOTKEYS: tuple[Hotkey, ...] = (
 )
 
 
+class _StatusFooter(Footer):
+    """Footer extended with a task-counter Static docked to the right.
+
+    Subclassing (rather than passing a child to Footer()) is necessary because Footer
+    calls recompose() when ``_bindings_ready`` toggles, which clears and recreates its
+    children. By yielding the counter inside compose() we ensure it survives rebuilds."""
+
+    def compose(self) -> ComposeResult:
+        yield from super().compose()
+        yield Static("", id="task-counter")
+
+
 class HelpScreen(ModalScreen[None]):
     """A modal listing **every** hotkey — the footer shows only the essential few, so this is
     the full keymap. Escape / `?` / `q` close it."""
@@ -992,7 +1041,8 @@ class Dashboard(App[None]):
 
     CSS = (
         "#tasks { width: 3fr; } #detail { width: 2fr; padding: 0 1; display: none; } "
-        "#search { display: none; }"
+        "#search { display: none; } "
+        "#task-counter { dock: right; width: auto; padding: 0 1; }"
     )
     # The change-feed long-poll's ``wait`` ceiling: the feed worker parks each request up to this
     # many seconds before re-polling, so a quiet feed reconnects this often (no redraw) while a
@@ -1042,7 +1092,7 @@ class Dashboard(App[None]):
             yield DataTable(id="tasks")
             yield Static(id="detail")
         yield Input(id="search", placeholder="search tasks…")  # hidden until `/` (CSS display:none)
-        yield Footer()
+        yield _StatusFooter()
 
     def _load_repo_names(self) -> None:
         """Refresh the repo id→name cache from the task service."""
@@ -1124,6 +1174,10 @@ class Dashboard(App[None]):
         selected = self._current  # keep the operator's highlight across the rebuild (feed refresh)
         table.clear()
         ordered = sorted(self._client.list_tasks(), key=_sort_key)  # terminal last, then slug
+        active = [t for t in ordered if t.get("state") not in TERMINAL_LABELS]
+        agent_on = sum(1 for t in active if t.get("turn") == "agent")
+        for counter in self.query("#task-counter").results(Static):
+            counter.update(f"agent {agent_on}/{len(active)}")
         # Inject repo_name so _matches can search on it without a separate lookup per task.
         for task in ordered:
             task["repo_name"] = self._repo_names.get(str(task.get("repo_id") or ""), "")
@@ -1157,17 +1211,24 @@ class Dashboard(App[None]):
                     key=f"{_ENSEMBLE_KEY_PREFIX}{gov_id}",
                 )
             else:
+                state_cell: Text | str = task["state"]
+                turn_cell = _turn_cell(task)
+                status_cell = _status_cell(task)
+                repo_cell: Text | str = _repo_cell(task, self._repo_names)
+                slug_cell_real = _slug_cell(task, prefix)
+                if task["state"] in TERMINAL_LABELS:
+                    state_cell = _dim(state_cell)
+                    turn_cell = _dim(turn_cell)
+                    status_cell = _dim(status_cell)
+                    repo_cell = _dim(repo_cell)
+                    slug_cell_real = _dim(slug_cell_real)
                 table.add_row(
-                    task["state"], _turn_cell(task), _status_cell(task),
-                    _repo_cell(task, self._repo_names), _slug_cell(task, prefix),
+                    state_cell, turn_cell, status_cell, repo_cell, slug_cell_real,
                     key=task["id"],
                 )
 
         for task, prefix in active_visible:
             _add_row(task, prefix)
-        # Draw the active↔terminal divider — only when both groups are non-empty.
-        if active_visible and terminal_visible:
-            table.add_row(*_separator_cells(len(table.ordered_columns)), key=_SEPARATOR_KEY)
         for task, prefix in terminal_visible:
             _add_row(task, prefix)
         target = selected if selected in self._tasks else next(iter(self._tasks), None)
@@ -1178,13 +1239,11 @@ class Dashboard(App[None]):
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         table = self.query_one("#tasks", DataTable)
         key_val = event.row_key.value
-        if key_val == _SEPARATOR_KEY or (
-            isinstance(key_val, str) and key_val.startswith(_ENSEMBLE_KEY_PREFIX)
-        ):
-            # The arrow keys jump non-task rows (the separator and ensemble placeholders):
-            # step one more row in the direction of travel. Both row types always sit between
-            # real rows, so there's a real row on both sides; move_cursor re-fires this
-            # handler on that real row, so we don't recurse on the sentinel.
+        if isinstance(key_val, str) and key_val.startswith(_ENSEMBLE_KEY_PREFIX):
+            # The arrow keys jump ensemble placeholder rows: step one more row in the direction
+            # of travel. Placeholders always sit between real rows, so there's a real row on
+            # both sides; move_cursor re-fires this handler on that real row, so we don't
+            # recurse on the sentinel.
             step = 1 if table.cursor_row >= self._last_cursor_row else -1
             table.move_cursor(row=table.cursor_row + step)
             return
@@ -1202,7 +1261,7 @@ class Dashboard(App[None]):
         key = event.row_key.value
         if not isinstance(key, str):
             return
-        if key == _SEPARATOR_KEY or key.startswith(_ENSEMBLE_KEY_PREFIX):
+        if key.startswith(_ENSEMBLE_KEY_PREFIX):
             return
         if key not in self._governors:
             return
@@ -1213,10 +1272,6 @@ class Dashboard(App[None]):
         self.action_refresh()
 
     def _update_detail(self, task_id: str | None) -> None:
-        if task_id == _SEPARATOR_KEY:  # the divider isn't a task — select nothing, blank the pane
-            self._current = None
-            self.query_one("#detail", Static).update("")
-            return
         self._current = task_id
         if not self._detail_visible:
             return

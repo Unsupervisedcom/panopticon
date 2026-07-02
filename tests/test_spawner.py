@@ -38,8 +38,8 @@ class _FakeRunner:
         self._running = running
         self._session = session
 
-    def spawn(self, task_id: str, *, env_file: str | None = None, workspace: str | None = None, image: str | None = None, docker_in_docker: bool = False, memo: str | None = None, initial_prompt: str | None = None, turn: str | None = None, progress: Callable[[LifecyclePhase], None] | None = None) -> str:
-        self.spawned.append({"task_id": task_id, "env_file": env_file, "workspace": workspace, "image": image, "docker_in_docker": docker_in_docker, "memo": memo, "initial_prompt": initial_prompt, "turn": turn})
+    def spawn(self, task_id: str, *, env_file: str | None = None, workspace: str | None = None, image: str | None = None, docker_in_docker: bool = False, initial_prompt: str | None = None, turn: str | None = None, progress: Callable[[LifecyclePhase], None] | None = None) -> str:
+        self.spawned.append({"task_id": task_id, "env_file": env_file, "workspace": workspace, "image": image, "docker_in_docker": docker_in_docker, "initial_prompt": initial_prompt, "turn": turn})
         if progress is not None:  # the real runner reports these two sub-steps
             progress(LifecyclePhase.STARTING)
             progress(LifecyclePhase.AWAITING)
@@ -116,18 +116,7 @@ def test_spawn_one_claims_then_spawns_a_fresh_task() -> None:
     assert runner.spawned[0]["docker_in_docker"] is False  # no capability → unprivileged
 
 
-def test_spawn_one_passes_the_task_memo_for_input_prefill() -> None:
-    client, runner = _FakeClient(repo=_REPO), _FakeRunner()
-    _spawner(client, runner).spawn_one(
-        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING",
-         "claimed_by": None, "memo": "build the thing"}
-    )
-    # the runner prefills claude's input box with this on a first spawn (left unsent)
-    assert runner.spawned[0]["memo"] == "build the thing"
-    assert runner.spawned[0]["initial_prompt"] is None
-
-
-def test_spawn_one_passes_initial_prompt_for_input_prefill() -> None:
+def test_spawn_one_passes_initial_prompt_as_env_var() -> None:
     client, runner = _FakeClient(repo=_REPO), _FakeRunner()
     _spawner(client, runner).spawn_one(
         {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING",

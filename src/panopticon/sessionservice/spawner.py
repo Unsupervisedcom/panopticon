@@ -163,8 +163,7 @@ class Spawner:
                 workspace=workspace,
                 image=image,
                 docker_in_docker=bool((repo.get("capabilities") or {}).get("docker_in_docker")),
-                memo=task.get("memo"),
-                initial_prompt=task.get("initial_prompt"),  # passed as a CLI arg to claude; suppresses memo prefill
+                initial_prompt=task.get("initial_prompt"),  # passed as a CLI arg to claude on the first run
                 turn=task.get("turn"),  # agent's turn → INTERRUPT_PROMPT on respawn
                 progress=lambda phase: self._report(task_id, phase),  # STARTING then AWAITING
             )
