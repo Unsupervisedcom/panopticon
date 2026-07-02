@@ -41,11 +41,14 @@ class PlannedWorkflow(Workflow):
 
     #: Shared PLANNING responsibility: record the token forecast with ``set_token_estimate``
     #: so the task service can track cost against the estimate.
+    # TODO(non-claude-agents): the "≈0.1× / ≈5×" framing below is Anthropic-specific; see
+    # container/pricing.py _WEIGHTS for the tech-debt note.
     TOKEN_ESTIMATED: ClassVar[Responsibility] = Responsibility(
         key="token-estimated",
         description=(
-            "Estimate the total tokens this task will consume and record it with the "
-            "`set_token_estimate` tool."
+            "Estimate the total **cost-weighted** tokens this task will consume — i.e., "
+            "input-equivalent tokens where cache-reads count ≈0.1× and output ≈5× — and "
+            "record it with the `set_token_estimate` tool."
         ),
     )
 

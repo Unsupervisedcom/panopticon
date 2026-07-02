@@ -136,19 +136,24 @@ def test_stop_hook_is_silent(
 
 
 def _transcript(tmp_path: Path) -> Path:
-    """A small claude-style JSONL transcript: two assistant lines with usage (totalling 685),
+    """A small claude-style JSONL transcript: two assistant lines with usage (totalling 693),
     plus lines the summer must ignore — a non-assistant line, an assistant line with no usage,
-    a blank line, and malformed JSON."""
+    a blank line, and malformed JSON.
+
+    Weighted totals (input×1 + output×5 + cache_creation×1.25 + cache_read×0.1):
+      line 1: 100 + 250 + 12.5 + 0.5 = 363
+      line 2: 200 + 100 + 0    + 30  = 330  → total 693
+    """
     lines = [
         {"type": "assistant", "message": {"usage": {
             "input_tokens": 100, "output_tokens": 50,
-            "cache_creation_input_tokens": 10, "cache_read_input_tokens": 5}}},  # 165
+            "cache_creation_input_tokens": 10, "cache_read_input_tokens": 5}}},  # 363
         {"type": "user", "message": {"content": "hi"}},  # no usage
         "",
         "not json at all",
         {"type": "assistant", "message": {"role": "assistant"}},  # assistant, no usage
         {"type": "assistant", "message": {"usage": {
-            "input_tokens": 200, "output_tokens": 20, "cache_read_input_tokens": 300}}},  # 520
+            "input_tokens": 200, "output_tokens": 20, "cache_read_input_tokens": 300}}},  # 330
     ]
     path = tmp_path / "transcript.jsonl"
     path.write_text("\n".join(x if isinstance(x, str) else json.dumps(x) for x in lines))
@@ -156,7 +161,7 @@ def _transcript(tmp_path: Path) -> Path:
 
 
 def test_session_tokens_sums_all_tiers_across_assistant_lines(tmp_path: Path) -> None:
-    assert hook.session_tokens(str(_transcript(tmp_path))) == 685  # 165 + 520
+    assert hook.session_tokens(str(_transcript(tmp_path))) == 693  # 363 + 330
 
 
 def test_session_tokens_is_zero_for_missing_or_empty_transcript(tmp_path: Path) -> None:
@@ -175,7 +180,7 @@ def test_stop_hook_reports_session_tokens_from_the_transcript(
     stdin = io.StringIO(json.dumps({"transcript_path": str(_transcript(tmp_path))}))
     assert hook.main(["user", "stop"], client=client, stdin=stdin) == 0  # type: ignore[arg-type]
     assert client.calls == [("t1", "user")]  # turn still flipped
-    assert client.tokens == [("t1", 685)]  # and the session total recorded
+    assert client.tokens == [("t1", 693)]  # and the session total recorded
 
 
 def test_stop_hook_tolerates_stdin_without_a_transcript(

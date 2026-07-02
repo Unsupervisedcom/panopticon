@@ -38,11 +38,8 @@ from typing import Any, TextIO
 import httpx
 
 from panopticon.client import TaskServiceClient
+from panopticon.container.pricing import cost_weighted_tokens
 from panopticon.core.provisioning import PROVISION_NUDGE
-
-#: Per-message usage keys we sum into the session total — every token the model processed
-#: (prompt + completion + both cache tiers).
-_USAGE_KEYS = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
 
 #: A background task's ``status`` value counts as *finished* (no longer in flight) only if it's one
 #: of these. Anything else — including a missing/unknown status — is treated as live, so we err
@@ -90,13 +87,14 @@ def _has_live_background_task(payload: dict[str, Any]) -> bool:
 
 
 def session_tokens(transcript_path: str) -> int:
-    """Total the tokens across a claude session transcript (JSONL).
+    """Total the cost-weighted tokens across a claude session transcript (JSONL).
 
-    Each assistant line carries ``message.usage``; we sum the four token tiers in :data:`_USAGE_KEYS`
-    across every such line — the honest "tokens the model processed" for the whole session. Pure and
-    LLM-free, so it's unit-tested with a fixture transcript. Tolerant of a missing file, blank or
-    malformed lines, and absent usage keys (each counted as 0), so a transcript hiccup yields a
-    best-effort number rather than raising."""
+    Each assistant line carries ``message.usage`` and ``message.model``; we apply per-tier
+    cost weights (cache-reads ≈0.1×, output ≈5×) so the result is in **input-equivalent
+    tokens** — proportional to spend rather than dominated by cheap cache-reads. Pure and
+    LLM-free, so it's unit-tested with a fixture transcript. Tolerant of a missing file, blank
+    or malformed lines, and absent usage keys (each counted as 0), so a transcript hiccup yields
+    a best-effort number rather than raising."""
     total = 0
     try:
         with Path(transcript_path).open() as lines:
@@ -108,15 +106,21 @@ def session_tokens(transcript_path: str) -> int:
 
 
 def _line_tokens(line: str) -> int:
-    """The summed usage on one transcript line, or 0 if it isn't an assistant line with usage."""
+    """The cost-weighted usage on one transcript line, or 0 if it isn't an assistant line with usage."""
     line = line.strip()
     if not line:
         return 0
     try:
-        usage = json.loads(line).get("message", {}).get("usage") or {}
+        obj = json.loads(line)
+        msg = obj.get("message") or {}
+        usage = msg.get("usage") or {}
+        model: str | None = msg.get("model")
     except (ValueError, AttributeError):  # not JSON, or message/usage isn't a dict
         return 0
-    return sum(usage[key] for key in _USAGE_KEYS if isinstance(usage.get(key), int))
+    if not isinstance(usage, dict):
+        return 0
+    int_usage = {k: v for k, v in usage.items() if isinstance(v, int)}
+    return cost_weighted_tokens(int_usage, model)
 
 
 def _report_tokens(client: TaskServiceClient, task_id: str, payload: dict[str, Any]) -> None:

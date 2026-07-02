@@ -253,10 +253,10 @@ async def test_dashboard_detail_survives_a_bracketed_lifecycle_detail() -> None:
 
 
 def test_render_detail_shows_the_tokens_used() -> None:
-    assert "tokens:" not in render_detail(_TASK)  # both absent → no line
-    assert "tokens: 1.2K used / - est" in render_detail({**_TASK, "tokens_used": 1234})
+    assert "tokens (wt):" not in render_detail(_TASK)  # both absent → no line
+    assert "tokens (wt): 1.2K used / - est" in render_detail({**_TASK, "tokens_used": 1234})
     # the estimate alone (no usage yet) still renders the line
-    assert "tokens: - used / 500.0K est" in render_detail({**_TASK, "token_estimate": 500000})
+    assert "tokens (wt): - used / 500.0K est" in render_detail({**_TASK, "token_estimate": 500000})
 
 
 def test_render_detail_marks_blocked() -> None:
