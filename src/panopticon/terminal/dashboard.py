@@ -604,7 +604,7 @@ class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
     def compose(self) -> ComposeResult:
         with Vertical(id="memo-box"):
             yield Label("memo")
-            yield MemoTextArea()
+            yield MemoTextArea(compact=True)
             yield SpaceCheckbox("Submit as initial prompt", value=self._auto_submit_default)
 
     def on_mount(self) -> None:
