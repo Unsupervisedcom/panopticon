@@ -10,6 +10,7 @@ deterministic. No LLM (the determinism invariant).
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
@@ -32,6 +33,9 @@ from panopticon.core.provisioning import PROVISION_SKILL
 from panopticon.core.state import TERMINAL_LABELS, Dropped
 from panopticon.core.store import NotFound, Store
 from panopticon.core.workflow import Workflow
+
+
+_log = logging.getLogger(__name__)
 
 
 def _utc_now_iso() -> str:
@@ -264,6 +268,7 @@ class TaskService:
         task.governor_task_id = governor_task_id
         task.updated_at = now  # creation time = first mutation
         await self._store.create_task(task)
+        _log.info("task %s: created (workflow=%s, repo=%s)", task.id, workflow_name, repo_id)
         for name, content in (artifacts or {}).items():
             await self.put_artifact(task.id, name, content.encode())
         if depends_on_task_ids:
@@ -426,6 +431,7 @@ class TaskService:
         self, task: Task, wf: Workflow, to_state: str, *, force: bool, trigger: str | None, note: str | None
     ) -> Task:
         from_state = task.state
+        _log.info("task %s: %s → %s (trigger=%s)", task.id, from_state, to_state, trigger)
         if force:
             wf.force_transition(task, to_state, at=self._clock(), trigger=trigger, note=note)
         else:
@@ -443,9 +449,13 @@ class TaskService:
 
         Called after a governor lands in DROPPED. Each child's own _commit_transition also
         runs this, so nested governor chains cascade without an explicit outer loop."""
+        count = 0
         for child in await self._store.list_tasks_summary():
             if child.governor_task_id == governor_id and child.state not in TERMINAL_LABELS:
                 await self.request_transition(child.id, Dropped.label, trigger="cascade-drop", note=note)
+                count += 1
+        if count:
+            _log.info("task %s: cascade-dropped %d governed task(s)", governor_id, count)
 
     async def resolve_responsibility(
         self, task_id: str, key: str, *, status: Status, comment: str | None = None
@@ -454,6 +464,7 @@ class TaskService:
         task = await self.get_task(task_id)
         task.resolve_responsibility(key=key, status=status, comment=comment)
         await self._save_task(task)
+        _log.debug("task %s: responsibility %s → %s", task_id, key, status)
         return task
 
     async def set_slug(self, task_id: str, slug: str) -> Task:
@@ -461,6 +472,7 @@ class TaskService:
         previous = task.slug
         task.slug = slug
         await self._save_task(task)
+        _log.info("task %s: slug → %s", task_id, slug)
         # Expose the task's artifacts under the slug alias; drop a stale one on a re-slug so the
         # tasks/ dir keeps a single live alias per task (the symlinks live on the artifact store).
         if previous is not None and previous != slug:
@@ -474,6 +486,7 @@ class TaskService:
         task = await self.get_task(task_id)
         task.url = url
         await self._save_task(task)
+        _log.debug("task %s: url → %s", task_id, url)
         return task
 
     async def set_tokens_used(self, task_id: str, tokens_used: int) -> Task:
@@ -508,6 +521,7 @@ class TaskService:
         task = await self.get_task(task_id)
         task.blocked = blocked
         await self._save_task(task)
+        _log.debug("task %s: blocked=%s", task_id, blocked)
         return task
 
     async def set_governor(self, task_id: str, governor_task_id: str | None) -> Task:
@@ -555,6 +569,7 @@ class TaskService:
         task.claimed_by = runner_id
         self.clear_lifecycle(task_id)  # drop any stale phase from a prior owner; this spawn re-reports
         await self._save_task(task)
+        _log.info("task %s: claimed by runner %s", task_id, runner_id)
         return task
 
     async def release(self, task_id: str) -> Task:
@@ -564,6 +579,7 @@ class TaskService:
         task.claimed_by = None
         self.clear_lifecycle(task_id)
         await self._save_task(task)
+        _log.info("task %s: claim released", task_id)
         return task
 
     # -- provisioning (the session service does the host git; the service only records) ---
@@ -588,6 +604,7 @@ class TaskService:
         task.branch = branch
         task.clone = clone
         await self._save_task(task)
+        _log.info("task %s: provisioned (branch=%s)", task_id, branch)
         return task
 
     # -- artifacts ----------------------------------------------------------------
@@ -595,6 +612,7 @@ class TaskService:
     async def put_artifact(self, task_id: str, name: str, content: bytes) -> None:
         await self.get_task(task_id)  # ensure the task exists
         await self._artifacts.put(task_id, name, content)
+        _log.debug("task %s: artifact %s written", task_id, name)
 
     async def get_artifact(self, task_id: str, name: str) -> bytes | None:
         await self.get_task(task_id)
@@ -625,11 +643,14 @@ class TaskService:
         )
         self._registrations[reg.id] = reg
         self._notify_change()  # a container going live wakes the dashboard's long-poll
+        _log.info("task %s: container registered (reg=%s)", task_id, reg.id)
         return reg
 
     async def deregister(self, registration_id: str) -> None:
-        if self._registrations.pop(registration_id, None) is not None:
+        reg = self._registrations.pop(registration_id, None)
+        if reg is not None:
             self._notify_change()  # a container dropping wakes the long-poll (live → down/awaiting)
+            _log.info("task %s: registration %s released", reg.task_id, registration_id)
 
     def registrations(self, task_id: str | None = None) -> list[Registration]:
         return [
@@ -654,12 +675,14 @@ class TaskService:
         )
         self._lifecycles[task_id] = lifecycle
         self._notify_change()
+        _log.debug("task %s: lifecycle phase=%s", task_id, phase.value)
         return lifecycle
 
     def clear_lifecycle(self, task_id: str) -> None:
         """Drop a task's reported phase (idempotent — only wakes the feed if one was present)."""
         if self._lifecycles.pop(task_id, None) is not None:
             self._notify_change()
+            _log.debug("task %s: lifecycle cleared", task_id)
 
     def lifecycle(self, task_id: str) -> ContainerLifecycle | None:
         """The task's latest reported spawn phase, or ``None`` if none is current."""
@@ -690,11 +713,14 @@ class TaskService:
         reg = RunnerRegistration(id=self._id(), runner_id=runner_id, registered_at=self._clock())
         self._runner_registrations[reg.id] = reg
         self._notify_change()  # a runner (re)connecting can flip its tasks disconnected → …
+        _log.info("runner %s: registered (reg=%s)", runner_id, reg.id)
         return reg
 
     async def deregister_runner(self, registration_id: str) -> None:
-        if self._runner_registrations.pop(registration_id, None) is not None:
+        reg = self._runner_registrations.pop(registration_id, None)
+        if reg is not None:
             self._notify_change()  # a runner dropping flips its claimed tasks → disconnected
+            _log.info("runner %s: deregistered", reg.runner_id)
 
     def live_runners(self) -> set[str]:
         """The set of runner ids currently holding a host-liveness connection (no clock read)."""
@@ -718,4 +744,6 @@ class TaskService:
                 self.clear_lifecycle(task.id)  # the dead runner's phase is stale; start clean
                 await self._save_task(task)
                 reclaimed.append(task)
+        if reclaimed:
+            _log.info("runner %s: reclaim released %d task(s)", runner_id, len(reclaimed))
         return reclaimed

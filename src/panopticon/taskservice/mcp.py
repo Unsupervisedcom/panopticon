@@ -10,6 +10,7 @@ in-container agent launcher points claude at it (`container/agent.py`).
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -19,6 +20,8 @@ from panopticon.core.artifacts import mcp_uri
 from panopticon.core.models import Actor, Status
 from panopticon.taskservice.api import TaskOut
 from panopticon.taskservice.service import TaskService
+
+_log = logging.getLogger(__name__)
 
 #: The artifact resource URI template (the shared id→URI resolver, ADR 0003).
 ARTIFACT_URI = "panopticon://tasks/{task_id}/artifacts/{name}"
@@ -58,10 +61,12 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
 
     @mcp.tool(description="Apply a named core operation (e.g. 'advance', 'drop').")
     async def apply_operation(task_id: str, operation: str) -> dict[str, Any]:
+        _log.debug("mcp apply_operation task=%s operation=%s", task_id, operation)
         return _task(await service.apply_operation(task_id, operation))
 
     @mcp.tool(description="Move the task to any state directly (free move; bypasses the gate).")
     async def set_state(task_id: str, state: str) -> dict[str, Any]:
+        _log.debug("mcp set_state task=%s state=%s", task_id, state)
         return _task(await service.set_state(task_id, state))
 
     @mcp.tool(
@@ -70,6 +75,7 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
     async def resolve_responsibility(
         task_id: str, key: str, status: str, comment: str | None = None
     ) -> dict[str, Any]:
+        _log.debug("mcp resolve_responsibility task=%s key=%s status=%s", task_id, key, status)
         return _task(await service.resolve_responsibility(task_id, key, status=Status(status), comment=comment))
 
     @mcp.tool(description="Flip who holds the turn: 'user' or 'agent'.")
@@ -121,6 +127,7 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
         initial_prompt: str | None = None,
         artifacts: dict[str, str] | None = None,
     ) -> dict[str, Any]:
+        _log.debug("mcp create_task orchestrator=%s workflow=%s", orchestrator_task_id, workflow)
         return _task(
             await service.create_task_as(
                 orchestrator_task_id,
