@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from textual.widgets import Checkbox, DataTable, Input, Static, TabbedContent
+from textual.widgets import Checkbox, DataTable, Input, Static
 
 from panopticon.terminal import dashboard
 from panopticon.terminal.dashboard import (
@@ -1144,17 +1144,19 @@ async def test_repos_screen_edits_a_repo_via_patch() -> None:
         app.screen.query_one("#field-name", Input).value = "new"
         await pilot.press("enter")
         await pilot.pause()
-        # Core fields plus the privileged capability are sent; image_layer_file is untouched (PATCH).
-        # Workflow preferences are managed via the workflows tab, not the edit form.
+        # Core fields, capabilities, and workflow preferences are all PATCHed together.
+        # image_layer_file is left untouched. The checkbox is unchecked → docker_in_docker=False.
+        # No workflows were passed to the form so enabled/disabled lists are empty.
         assert fake.updated_repos == [
             ("r1", {"name": "new", "git_url": "https://x/r1.git", "default_base": "main",
                     "env_file": None,
-                    "capabilities": {"docker_in_docker": False}})
+                    "capabilities": {"docker_in_docker": False},
+                    "enabled_workflows": [], "disabled_workflows": []})
         ]
 
 
-async def test_repos_screen_workflows_tab_shows_repo_config() -> None:
-    """Switching to the workflows tab shows checkboxes reflecting the repo's stored workflow prefs."""
+async def test_repo_form_workflows_tab_pre_populates_from_repo() -> None:
+    """The workflows tab in the repo form pre-populates checkboxes from the repo's stored prefs."""
     existing = {"id": "r1", "name": "old", "git_url": "https://x/r1.git", "default_base": "main",
                 "enabled_workflows": ["github-self-reviewed"],
                 "disabled_workflows": ["orchestrator"]}
@@ -1167,21 +1169,25 @@ async def test_repos_screen_workflows_tab_shows_repo_config() -> None:
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("g")  # open ReposScreen
+        await pilot.press("g")
         await pilot.pause()
-        # Switch to the workflows tab
-        app.screen.query_one(TabbedContent).active = "pane-workflows"
+        await pilot.press("e")  # open edit form
         await pilot.pause()
         # opt-in workflow in enabled_workflows → checked
         assert app.screen.query_one("#wf-github-self-reviewed", SpaceCheckbox).value is True
         # opt-out workflow in disabled_workflows → unchecked
         assert app.screen.query_one("#wf-orchestrator", SpaceCheckbox).value is False
-        # opt-out workflow not in disabled_workflows → checked (default on)
+        # opt-out workflow not in disabled_workflows → checked (on by default)
         assert app.screen.query_one("#wf-spike", SpaceCheckbox).value is True
+        # Save and confirm workflow prefs round-trip unchanged
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert fake.updated_repos[0][1]["enabled_workflows"] == ["github-self-reviewed"]
+        assert fake.updated_repos[0][1]["disabled_workflows"] == ["orchestrator"]
 
 
-async def test_repos_screen_workflows_tab_saves_changes() -> None:
-    """Toggling checkboxes in the workflows tab and Ctrl+S saves the workflow preferences."""
+async def test_repo_form_workflows_tab_toggles_save_with_form() -> None:
+    """Toggling workflow checkboxes and saving the form captures them in the update call."""
     existing = {"id": "r1", "name": "old", "git_url": "https://x/r1.git", "default_base": "main",
                 "enabled_workflows": [], "disabled_workflows": []}
     workflows = [
@@ -1194,11 +1200,12 @@ async def test_repos_screen_workflows_tab_saves_changes() -> None:
         await pilot.pause()
         await pilot.press("g")
         await pilot.pause()
-        # Switch to workflows tab and toggle
-        app.screen.query_one(TabbedContent).active = "pane-workflows"
+        await pilot.press("e")
         await pilot.pause()
+        # Toggle: enable the opt-in workflow and disable the opt-out one
         app.screen.query_one("#wf-github-peer-reviewed", SpaceCheckbox).value = True
         app.screen.query_one("#wf-spike", SpaceCheckbox).value = False
+        # Save from the form (ctrl+s works from any focused widget)
         await pilot.press("ctrl+s")
         await pilot.pause()
         assert fake.updated_repos[0][1]["enabled_workflows"] == ["github-peer-reviewed"]
