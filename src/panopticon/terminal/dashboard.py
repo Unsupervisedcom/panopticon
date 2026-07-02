@@ -899,8 +899,6 @@ class ArtifactScreen(_OptionListModal[tuple[str, str]]):
     ArtifactScreen { align: center middle; }
     #artifact-box { width: 56; height: auto; max-height: 80%; padding: 1 2; border: round $accent; background: $surface; }
     #artifact-hint { color: $text-muted; }
-    #show-hidden-row { align-horizontal: right; height: auto; }
-    #show-hidden { width: auto; }
     """
     BOX_ID = "artifact-box"
     BINDINGS = [("escape", "cancel", "Cancel"), ("e", "open_local", "Open local")]
@@ -913,7 +911,7 @@ class ArtifactScreen(_OptionListModal[tuple[str, str]]):
     def _extra_widgets(self) -> Iterable[Widget]:
         yield Label("enter: open · e: open local file · esc: cancel", id="artifact-hint")
         if any(n.startswith(".") for n in self._all_names):
-            yield Horizontal(SpaceCheckbox("Show hidden", id="show-hidden"), id="show-hidden-row")
+            yield SpaceCheckbox("Show hidden", id="show-hidden")
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         names = self._all_names if event.value else [n for n in self._all_names if not n.startswith(".")]
