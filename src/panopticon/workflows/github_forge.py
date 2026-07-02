@@ -69,10 +69,10 @@ class GithubForgeWorkflow(PlannedWorkflow):
                 "Use `run_in_background` to arm a non-blocking CI watcher, then surrender the "
                 "turn. On re-invocation (when the watcher finishes) pick up from the state "
                 "artifact. This avoids occupying a turn for the full duration of CI.\n\n"
-                "**State artifact: `babysit-ci-state.json`** (task artifact store)\n"
+                "**State artifact: `.babysit-ci-state.json`** (task artifact store)\n"
                 "Read with `ReadMcpResourceTool` (URI "
-                "`panopticon://tasks/<task_id>/artifacts/babysit-ci-state.json`); write/update "
-                "with the `put_artifact` MCP tool (`name=\"babysit-ci-state.json\"`).\n"
+                "`panopticon://tasks/<task_id>/artifacts/.babysit-ci-state.json`); write/update "
+                "with the `put_artifact` MCP tool (`name=\".babysit-ci-state.json\"`).\n"
                 "Fields: `started_at` (ISO timestamp — budget anchor), `head_sha` (PR HEAD SHA "
                 "at start), `watch_bash_id` (background task ID, `null` when none), `retries` "
                 "(`{check_name: count}` map), `completed` (`false` while active; `true` when "
@@ -142,7 +142,7 @@ class GithubForgeWorkflow(PlannedWorkflow):
                 "babysit-merge",
                 "Shepherd the PR through the merge queue.",
                 "## State artifact\n\n"
-                "Persist cross-turn state in the task artifact `babysit-merge-state.json` "
+                "Persist cross-turn state in the task artifact `.babysit-merge-state.json` "
                 "(read via its MCP resource URI; write with `put_artifact`). "
                 "This keeps task metadata with the task — no repo file, no gitignore entry — "
                 "and survives container respawns.\n"
