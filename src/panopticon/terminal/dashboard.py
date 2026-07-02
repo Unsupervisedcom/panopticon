@@ -70,10 +70,13 @@ from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widget import Widget
-from textual.widgets import Checkbox, DataTable, Footer, Header, Input, Label, OptionList, Static
+from textual.css.query import NoMatches
+from textual.widgets import (
+    Checkbox, DataTable, Footer, Header, Input, Label, OptionList, Static, TabPane, TabbedContent,
+)
 from textual.worker import get_current_worker
 
 from panopticon.client import JsonObj, TaskServiceClient
@@ -603,30 +606,34 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     or Ctrl+S), or ``None`` on cancel (Escape). The text fields are strings; the privileged
     toggle is the bool ``docker_in_docker``.
 
-    **Space toggles the checkbox; Enter saves the form** — from any field, including while the
-    privileged-docker checkbox holds focus (it's a :class:`SpaceCheckbox`, so Enter bubbles up
-    to the screen's submit binding rather than toggling). A footer hint spells this out.
+    Two tabs: **general** (git URL, id, name, base branch, env file, privileged docker) and
+    **workflows** (a per-workflow opt-in/opt-out checklist). Both tabs' values are collected
+    on save — submitting from either tab captures everything.
 
-    The **git URL leads** the form. In **create mode** the still-blank ``id`` and ``name``
-    auto-fill from it when the URL field loses focus and again at submit — never clobbering a
-    value the user already typed — and ``default_base`` defaults to ``main``. Edit mode applies
-    neither: a repo's existing values are left exactly as they are.
+    **Space toggles checkboxes; Enter saves the form** from any field. The :class:`SpaceCheckbox`
+    subclass drops the default ``enter`` binding so Enter always bubbles up to the screen's save
+    action rather than toggling.
 
-    Create mode (no ``repo``): every field is an editable :class:`Input`, including ``id``.
-    Edit mode: ``id`` is shown read-only (the primary key can't change) and the rest are
-    pre-populated. The **privileged docker** checkbox maps to the repo's
-    ``capabilities["docker_in_docker"]`` (runs the task container ``--privileged``); ``image_layer_file``
-    and any other capability keys aren't edited in the TUI and a PATCH update leaves them untouched."""
+    The **git URL leads** create mode: blank ``id`` and ``name`` auto-fill from it on blur and
+    at submit; ``default_base`` defaults to ``main``. Edit mode leaves existing values untouched.
+    Edit mode shows ``id`` read-only; ``image_layer_file`` and other capability keys aren't
+    edited in the TUI (a PATCH update leaves them untouched)."""
 
     CSS = """
     RepoFormScreen { align: center middle; }
-    #repo-form { width: 72; height: auto; padding: 1 2; border: round $accent; background: $surface; }
+    #repo-form { width: 72; height: 80%; padding: 1 2; border: round $accent; background: $surface; }
     #repo-form Input { margin-bottom: 1; }
     #repo-form Checkbox { margin-bottom: 1; }
+    #form-tabs { height: 1fr; }
+    #pane-workflows { height: 1fr; }
+    #wf-scroll { height: 1fr; }
+    #wf-scroll SpaceCheckbox { margin-bottom: 0; }
+    #wf-desc { height: 4; border: tall $panel; padding: 0 1; color: $text-muted; margin-top: 1; }
+    #form-hint { color: $text-muted; text-align: center; margin-top: 1; }
     """
     # Enter saves from any field. Text Inputs consume Enter via their own submit binding (posting
     # Input.Submitted → on_input_submitted), so this screen binding only fires for fields that
-    # don't — the SpaceCheckbox and the read-only id Label — and never double-saves.
+    # don't — SpaceCheckboxes and the read-only id Label — and never double-saves.
     BINDINGS = [
         ("escape", "cancel", "Cancel"),
         ("enter", "submit", "Save"),
@@ -643,11 +650,16 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
         "name": lambda repo: repo,
     }
 
-    def __init__(self, title: str, repo: JsonObj | None = None) -> None:
+    def __init__(
+        self, title: str, repo: JsonObj | None = None, workflows: list[dict[str, Any]] | None = None
+    ) -> None:
         super().__init__()
         self._title = title
         self._repo = repo or {}
         self._editing = repo is not None
+        self._workflows = workflows or []
+        self._wf_enabled: set[str] = set(self._repo.get("enabled_workflows") or [])
+        self._wf_disabled: set[str] = set(self._repo.get("disabled_workflows") or [])
 
     def _initial(self, name: str) -> str:
         """A field's pre-populated value: the repo's stored value, else (create mode only)
@@ -657,39 +669,52 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
             return str(stored)
         return "main" if name == "default_base" and not self._editing else ""
 
-    def _initial_list(self, name: str) -> str:
-        """A list field's pre-populated value as a comma-separated string."""
-        stored = self._repo.get(name)
-        return ", ".join(stored) if stored else ""
+    def _wf_checked(self, wf: dict[str, Any]) -> bool:
+        name = wf["name"]
+        if wf.get("opt_in"):
+            return name in self._wf_enabled
+        return name not in self._wf_disabled
 
     def compose(self) -> ComposeResult:
         with Vertical(id="repo-form"):
             yield Label(self._title)
-            yield Input(value=self._initial("git_url"), placeholder="git_url", id="field-git_url")
-            if self._editing:
-                yield Label(f"id: {self._repo['id']}")
-            else:
-                yield Input(placeholder="id", id="field-id")
-            for name in self.FIELDS[1:]:  # git_url already rendered above
-                yield Input(value=self._initial(name), placeholder=name, id=f"field-{name}")
-            yield SpaceCheckbox(
-                "privileged docker (docker-in-docker)",
-                value=bool(self._repo.get("capabilities", {}).get("docker_in_docker")),
-                id="field-docker_in_docker",
-            )
-            yield Input(
-                value=self._initial_list("enabled_workflows"),
-                placeholder="enabled_workflows — opt-in workflows, comma-separated",
-                id="field-enabled_workflows",
-            )
-            yield Input(
-                value=self._initial_list("disabled_workflows"),
-                placeholder="disabled_workflows — opt-out workflows to hide, comma-separated",
-                id="field-disabled_workflows",
-            )
+            with TabbedContent(id="form-tabs"):
+                with TabPane("general", id="pane-general"):
+                    yield Input(value=self._initial("git_url"), placeholder="git_url", id="field-git_url")
+                    if self._editing:
+                        yield Label(f"id: {self._repo['id']}")
+                    else:
+                        yield Input(placeholder="id", id="field-id")
+                    for name in self.FIELDS[1:]:  # git_url already rendered above
+                        yield Input(value=self._initial(name), placeholder=name, id=f"field-{name}")
+                    yield SpaceCheckbox(
+                        "privileged docker (docker-in-docker)",
+                        value=bool(self._repo.get("capabilities", {}).get("docker_in_docker")),
+                        id="field-docker_in_docker",
+                    )
+                with TabPane("workflows", id="pane-workflows"):
+                    if self._workflows:
+                        with VerticalScroll(id="wf-scroll"):
+                            for wf in self._workflows:
+                                yield SpaceCheckbox(wf["name"], value=self._wf_checked(wf), id=f"wf-{wf['name']}")
+                        yield Static("", id="wf-desc")
+                    else:
+                        yield Label("no workflows available")
+            yield Static("enter: save   esc: cancel", id="form-hint")
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
+
+    def on_descendant_focus(self, event: events.DescendantFocus) -> None:
+        widget = event.widget
+        if not isinstance(widget, SpaceCheckbox) or not (widget.id or "").startswith("wf-"):
+            return
+        name = (widget.id or "").removeprefix("wf-")
+        desc = next((w.get("when_to_use", "") for w in self._workflows if w["name"] == name), "")
+        try:
+            self.query_one("#wf-desc", Static).update(desc)
+        except NoMatches:
+            pass
 
     def _autofill_from_git_url(self) -> None:
         """Fill the blank derived fields from the git URL — create mode only (editing an
@@ -720,9 +745,22 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
         for name in self.FIELDS:
             values[name] = self.query_one(f"#field-{name}", Input).value.strip()
         values["docker_in_docker"] = self.query_one("#field-docker_in_docker", Checkbox).value
-        for name in ("enabled_workflows", "disabled_workflows"):
-            raw = self.query_one(f"#field-{name}", Input).value
-            values[name] = [w.strip() for w in raw.split(",") if w.strip()]
+        enabled: list[str] = []
+        disabled: list[str] = []
+        for wf in self._workflows:
+            name = wf["name"]
+            try:
+                checked = self.query_one(f"#wf-{name}", SpaceCheckbox).value
+            except NoMatches:
+                continue
+            if wf.get("opt_in"):
+                if checked:
+                    enabled.append(name)
+            else:
+                if not checked:
+                    disabled.append(name)
+        values["enabled_workflows"] = enabled
+        values["disabled_workflows"] = disabled
         self.dismiss(values)
 
     def action_cancel(self) -> None:
@@ -800,7 +838,8 @@ class ReposScreen(ModalScreen[None]):
                 return
             self._refresh()
 
-        self.app.push_screen(RepoFormScreen("new repo"), create)
+        workflows = self._client.list_workflows()
+        self.app.push_screen(RepoFormScreen("new repo", workflows=workflows), create)
 
     def action_edit_repo(self) -> None:
         if self._current is None:
@@ -830,7 +869,10 @@ class ReposScreen(ModalScreen[None]):
                 return
             self._refresh()
 
-        self.app.push_screen(RepoFormScreen(f"edit {repo_id}", repo=self._repos[repo_id]), save)
+        workflows = self._client.list_workflows()
+        self.app.push_screen(
+            RepoFormScreen(f"edit {repo_id}", repo=self._repos[repo_id], workflows=workflows), save
+        )
 
 
 def _detail(exc: httpx.HTTPStatusError) -> str:

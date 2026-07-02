@@ -30,6 +30,7 @@ class LocalGitSelfReviewed(PlannedWorkflow):
     branch and advances to COMPLETE. No forge dependency."""
 
     name: ClassVar[str] = "local-git-self-reviewed"
+    opt_in: ClassVar[bool] = True
     auto_submit_memo: ClassVar[bool] = True
     when_to_use: ClassVar[str] = (
         "Local commits only, no remote push or PR — use when the work stays in the local repo; "
