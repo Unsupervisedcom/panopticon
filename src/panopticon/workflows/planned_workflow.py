@@ -41,6 +41,8 @@ class PlannedWorkflow(Workflow):
 
     #: Shared PLANNING responsibility: record the token forecast with ``set_token_estimate``
     #: so the task service can track cost against the estimate.
+    # TODO(non-claude-agents): the "≈0.1× / ≈5×" framing below is Anthropic-specific; see
+    # container/pricing.py _WEIGHTS for the tech-debt note.
     TOKEN_ESTIMATED: ClassVar[Responsibility] = Responsibility(
         key="token-estimated",
         description=(

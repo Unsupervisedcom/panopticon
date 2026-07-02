@@ -29,6 +29,8 @@ from panopticon.workflows.github_forge import GithubForgeWorkflow
 #: The per-child recipe the orchestrator's agent follows. Spelled out because it spans several
 #: tools across *another* task's id, and the order matters (the gate clears only once the plan
 #: artifact exists and its responsibility is met).
+# TODO(non-claude-agents): step 4 references Anthropic-specific cache ratios; see
+# container/pricing.py _WEIGHTS for the tech-debt note.
 _SPAWN_TASK_INSTRUCTIONS = f"""\
 Create one new task and leave it **pre-planned, ready for the user to approve**. Repeat per task
 you want to spawn. Throughout, your *own* task id is shown below; the new task has its *own* id.

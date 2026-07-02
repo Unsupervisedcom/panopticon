@@ -44,6 +44,10 @@ _WEIGHTS: dict[str, dict[str, float]] = {
 
 _DEFAULT_WEIGHTS = _WEIGHTS["claude-sonnet"]
 
+# TODO(non-claude-agents): _WEIGHTS is Anthropic-specific. The planning prompts that reference
+# these ratios (PlannedWorkflow.TOKEN_ESTIMATED and orchestrator._SPAWN_TASK_INSTRUCTIONS step 4)
+# will need to be generalised — or made backend-aware — when non-Claude LLM agents are supported.
+
 
 def tier_weights(model: str | None) -> dict[str, float]:
     """Return the cost-weight table for ``model`` (longest prefix match; Sonnet as fallback)."""
