@@ -41,8 +41,11 @@ host: migrate  ## Start task service + session-service host in background tmux s
 start: host  ## Run panopticon: task service + session-service runner (background) + dashboard supervisor
 	uv run panopticon console
 
+SERVICE_URL ?= http://localhost:8000
+
 stop:  ## Stop everything `make start` started: the task containers + the -L panopticon tmux server
-	-docker ps --all --quiet --filter name=^panopticon- | { ids=$$(cat); [ -z "$$ids" ] || docker rm --force $$ids; }
+	-curl --silent --request POST $(SERVICE_URL)/runners/local/reclaim --output /dev/null 2>/dev/null
+	-docker ps --all --quiet --filter label=panopticon.task | { ids=$$(cat); [ -z "$$ids" ] || docker rm --force $$ids; }
 	-tmux -L panopticon kill-server 2>/dev/null
 
 build:  ## Build the base task-container image (override with IMAGE=)
