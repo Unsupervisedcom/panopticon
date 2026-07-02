@@ -64,6 +64,7 @@ class _FakeClient:
         self._held_by: dict[str, str] = {}
         self.phases: list[tuple[str, str, str | None]] = []  # (task_id, phase, detail)
         self.cleared: list[str] = []
+        self.releases: list[str] = []
 
     def workflow_image_layer(self, name: str) -> str:
         return self._image_layer
@@ -92,6 +93,10 @@ class _FakeClient:
 
     def clear_lifecycle(self, task_id: str) -> JsonObj:
         self.cleared.append(task_id)
+        return {"id": task_id}
+
+    def release(self, task_id: str) -> JsonObj:
+        self.releases.append(task_id)
         return {"id": task_id}
 
 
@@ -371,6 +376,60 @@ def test_mark_healing_skips_a_crash_looped_out_orphan() -> None:
     client.phases.clear()
     spawner.mark_healing(_orphan())  # capped out → not flagged
     assert client.phases == []
+
+
+def test_startup_reclaim_releases_our_claimed_tasks_whose_containers_are_gone() -> None:
+    # After a clean stop or reboot, containers are gone — release claims so tasks restart
+    # from `queued` and go through the full visible spawn lifecycle.
+    client = _FakeClient(repo=_REPO)
+    runner = _FakeRunner(running=False, session=False)
+    tasks = [
+        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": "host-1"},
+        {"id": "t2", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": "host-1"},
+    ]
+    _spawner(client, runner).startup_reclaim(tasks)
+    assert client.releases == ["t1", "t2"]
+
+
+def test_startup_reclaim_keeps_claims_when_container_is_still_running() -> None:
+    # Runner-only crash: the container survived → keep the claim so heal() resumes it.
+    client = _FakeClient(repo=_REPO)
+    runner = _FakeRunner(running=True, session=False)
+    tasks = [{"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": "host-1"}]
+    _spawner(client, runner).startup_reclaim(tasks)
+    assert client.releases == []
+
+
+def test_startup_reclaim_skips_tasks_not_claimed_by_us() -> None:
+    client = _FakeClient(repo=_REPO)
+    runner = _FakeRunner(running=False, session=False)
+    tasks = [
+        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": None},
+        {"id": "t2", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": "host-9"},
+    ]
+    _spawner(client, runner).startup_reclaim(tasks)
+    assert client.releases == []
+
+
+def test_startup_reclaim_skips_terminal_tasks() -> None:
+    client = _FakeClient(repo=_REPO)
+    runner = _FakeRunner(running=False, session=False)
+    tasks = [{"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "COMPLETE", "claimed_by": "host-1"}]
+    _spawner(client, runner).startup_reclaim(tasks)
+    assert client.releases == []
+
+
+def test_startup_reclaim_ignores_release_errors() -> None:
+    # Best-effort: a failed release is silently skipped — heal() will pick it up.
+    class _ErrorClient(_FakeClient):
+        def release(self, task_id: str) -> JsonObj:
+            request = httpx.Request("DELETE", f"http://svc/tasks/{task_id}/claim")
+            raise httpx.HTTPStatusError("gone", request=request, response=httpx.Response(500, request=request))
+
+    client = _ErrorClient(repo=_REPO)
+    runner = _FakeRunner(running=False, session=False)
+    tasks = [{"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": "host-1"}]
+    _spawner(client, runner).startup_reclaim(tasks)  # must not raise
 
 
 def test_spawn_one_skips_terminal_and_already_claimed_tasks() -> None:

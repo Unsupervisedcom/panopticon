@@ -142,6 +142,45 @@ def test_tick_flags_every_orphan_healing_before_any_respawn() -> None:
     assert events == ["mark:t1", "mark:t2", "heal:t1", "heal:t2"]  # all marks precede any respawn
 
 
+def test_run_calls_startup_reclaim_once_on_first_successful_tick() -> None:
+    # On the first successful task fetch, startup_reclaim is called exactly once with that
+    # snapshot — so tasks without running containers are released to `queued` before any
+    # heal/spawn runs. Subsequent ticks don't call it again.
+    reclaims: list[list[JsonObj]] = []
+
+    class _Spawner:
+        def startup_reclaim(self, tasks: list[JsonObj]) -> None:
+            reclaims.append(list(tasks))
+
+        def mark_healing(self, task: JsonObj) -> None:
+            return None
+
+        def spawn_one(self, task: JsonObj) -> None:
+            return None
+
+        def reconcile(self, task: JsonObj) -> None:
+            return None
+
+        def heal(self, task: JsonObj) -> None:
+            return None
+
+    class _Provisioner:
+        def provision(self, task: JsonObj) -> None:
+            return None
+
+    passes: list[int] = []
+
+    class _FeedClient:
+        def list_tasks_versioned(self, *, since: int = 0, wait: float | None = None) -> tuple[list[JsonObj], int]:
+            passes.append(len(passes))
+            return [{"id": f"t{len(passes)}"}], len(passes)
+
+    daemon = HostDaemon(_FeedClient(), _Spawner(), _Provisioner())  # type: ignore[arg-type]
+    daemon.run(until=lambda: len(passes) >= 3)
+    assert len(reclaims) == 1  # exactly once — on the first successful fetch
+    assert reclaims[0] == [{"id": "t1"}]  # the snapshot from that first fetch
+
+
 def test_run_blocks_on_the_change_feed_and_feeds_the_version_back() -> None:
     # The loop waits on `list_tasks_versioned(wait=, since=)`, not a fixed-interval re-poll: each
     # call's returned version is fed back as the next `since`, so we wake on the *next* change.
@@ -150,6 +189,9 @@ def test_run_blocks_on_the_change_feed_and_feeds_the_version_back() -> None:
     class _Spawner:
         def __init__(self) -> None:
             self.seen: list[str] = []
+
+        def startup_reclaim(self, tasks: list[JsonObj]) -> None:
+            return None
 
         def mark_healing(self, task: JsonObj) -> None:
             return None
@@ -185,6 +227,9 @@ def test_run_survives_a_whole_pass_failure() -> None:
     passes = {"n": 0}
 
     class _Spawner:
+        def startup_reclaim(self, tasks: list[JsonObj]) -> None:
+            return None
+
         def mark_healing(self, task: JsonObj) -> None:
             return None
 

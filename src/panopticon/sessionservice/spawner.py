@@ -280,6 +280,36 @@ class Spawner:
         _log.warning("self-healing orphaned task %s (no tmux session) — respawn %d", task_id, count + 1)
         return self._spawn(task)
 
+    def startup_reclaim(self, tasks: list[JsonObj]) -> None:
+        """Release claims for our tasks whose containers aren't running — the restart reset.
+
+        On every restart (clean ``make stop`` or unexpected reboot), tasks stay
+        ``claimed_by`` this runner in the DB but their containers are gone. Without this,
+        :meth:`_is_orphan` fires immediately and :meth:`heal` respawns so fast the
+        dashboard sees ``live`` with no visible lifecycle phases.
+
+        :meth:`~panopticon.sessionservice.local_runner.LocalRunner.is_running` distinguishes
+        the two cases: if the container is gone (reboot / clean stop), the claim is released
+        so the task reads ``queued`` and goes through the full visible spawn lifecycle; if it
+        survived (runner-only crash, not a full restart), the claim is kept and :meth:`heal`
+        handles it normally.
+
+        Best-effort per task: a failed release is silently skipped — :meth:`heal` picks it
+        up on the next tick, fast but functional. Called once by
+        :meth:`~panopticon.sessionservice.host.HostDaemon.run` on the first successful task
+        fetch."""
+        for task in tasks:
+            if task.get("claimed_by") != self._runner_id:
+                continue
+            if task["state"] in TERMINAL_LABELS:
+                continue
+            if self._runner.is_running(task["id"]):
+                continue  # container survived (runner-only crash) — keep claim, heal handles it
+            try:
+                self._client.release(task["id"])
+            except httpx.HTTPError:
+                pass  # best-effort — heal() picks up unclaimed tasks that failed to release
+
     def _compose_image(self, workflow: str, repo: JsonObj) -> str | None:
         """Compose the task's image (base → workflow → repo layers, ADR 0005) and return its tag;
         ``None`` when neither tier contributes a layer (the runner falls back to the base image).

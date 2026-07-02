@@ -106,9 +106,13 @@ class HostDaemon:
         daemon (and its tmux session). Per-task errors are already isolated inside :meth:`tick`.
         """
         since = 0
+        startup = True
         while not (until and until()):
             try:
                 tasks, since = self._client.list_tasks_versioned(wait=self._interval, since=since)
+                if startup:
+                    startup = False
+                    self._spawner.startup_reclaim(tasks)
                 self.tick(tasks)
             except Exception:
                 _log.warning("host pass failed; retrying", exc_info=True)
