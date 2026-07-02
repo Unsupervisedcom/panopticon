@@ -751,6 +751,25 @@ def test_status_cell_displays_the_composed_status_color_coded() -> None:
     assert _status_cell({}).plain == "–"  # missing → em-dash, no crash
 
 
+async def test_task_counter_shows_agent_versus_active_counts() -> None:
+    # Counter shows agent-turn active / total active; terminal tasks are excluded.
+    # pause() lets Footer's _bindings_ready recompose fire so #task-counter is mounted;
+    # a second action_refresh() then populates it with the correct counts.
+    tasks = [
+        {**_TASK, "id": "t-agent", "slug": "a1", "state": "WORKING",  "turn": "agent"},
+        {**_TASK, "id": "t-user",  "slug": "u1", "state": "PLANNING", "turn": "user"},
+        {**_TASK, "id": "t-done",  "slug": "d1", "state": "COMPLETE", "turn": "agent"},
+    ]
+    app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_refresh()  # Footer is now ready; refresh to populate the counter
+        await pilot.pause()
+        text = str(app.query_one("#task-counter", Static).render())
+        assert "1/2" in text   # 1 agent-turn, 2 total active (COMPLETE excluded)
+        assert "agent" in text
+
+
 async def test_status_cell_is_used_without_per_task_registration_calls() -> None:
     # Building the table must not fan out a registrations request per row (the old N+1) — the status
     # rides on each task dict from the single list_tasks. A registrations call here would raise.
