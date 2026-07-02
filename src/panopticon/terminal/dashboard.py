@@ -983,11 +983,21 @@ class _StatusFooter(Footer):
 
     Subclassing (rather than passing a child to Footer()) is necessary because Footer
     calls recompose() when ``_bindings_ready`` toggles, which clears and recreates its
-    children. By yielding the counter inside compose() we ensure it survives rebuilds."""
+    children. By yielding the counter inside compose() we ensure it survives rebuilds.
+    ``_counter_text`` is persisted on the instance so each recompose restores the last
+    value rather than resetting to empty (which would let the hint pills expand and cover
+    the counter's space)."""
+
+    _counter_text: str = ""
 
     def compose(self) -> ComposeResult:
         yield from super().compose()
-        yield Static("", id="task-counter")
+        yield Static(self._counter_text, id="task-counter")
+
+    def set_counter(self, text: str) -> None:
+        self._counter_text = text
+        for counter in self.query("#task-counter").results(Static):
+            counter.update(text)
 
 
 class HelpScreen(ModalScreen[None]):
@@ -1162,8 +1172,7 @@ class Dashboard(App[None]):
         ordered = sorted(self._client.list_tasks(), key=_sort_key)  # terminal last, then slug
         active = [t for t in ordered if t.get("state") not in TERMINAL_LABELS]
         agent_on = sum(1 for t in active if t.get("turn") == "agent")
-        for counter in self.query("#task-counter").results(Static):
-            counter.update(f"agent {agent_on}/{len(active)}")
+        self.query_one(_StatusFooter).set_counter(f"active agents {agent_on}/{len(active)}")
         # Inject repo_name so _matches can search on it without a separate lookup per task.
         for task in ordered:
             task["repo_name"] = self._repo_names.get(str(task.get("repo_id") or ""), "")
