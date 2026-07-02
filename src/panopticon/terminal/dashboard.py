@@ -621,7 +621,7 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
 
     CSS = """
     RepoFormScreen { align: center middle; }
-    #repo-form { width: 72; height: auto; max-height: 80%; padding: 1 2; border: round $accent; background: $surface; }
+    #repo-form { width: 72; height: 80%; padding: 1 2; border: round $accent; background: $surface; }
     #repo-form Input { margin-bottom: 1; }
     #repo-form Checkbox { margin-bottom: 1; }
     #wf-scroll { max-height: 12; }

@@ -196,7 +196,7 @@ class TaskService:
                 "name": name,
                 "when_to_use": self._workflows[name].when_to_use,
                 "auto_submit_memo": self._workflows[name].auto_submit_memo,
-                "opt_in": str(self._workflows[name].opt_in).lower(),
+                "opt_in": self._workflows[name].opt_in,
             }
             for name in sorted(self._workflows)
         ]
@@ -209,7 +209,7 @@ class TaskService:
                 "name": name,
                 "when_to_use": self._workflows[name].when_to_use,
                 "auto_submit_memo": self._workflows[name].auto_submit_memo,
-                "opt_in": str(self._workflows[name].opt_in).lower(),
+                "opt_in": self._workflows[name].opt_in,
             }
             for name in sorted(self._workflows)
             if self._workflow_visible(self._workflows[name], repo)
