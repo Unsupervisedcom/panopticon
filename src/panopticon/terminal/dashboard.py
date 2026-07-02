@@ -890,7 +890,10 @@ class ArtifactScreen(_OptionListModal[tuple[str, str]]):
     Dismisses ``(name, mode)`` where ``mode`` is ``"rest"`` (Enter) or ``"local"`` (`e`), or
     ``None`` on cancel. Local-open is bound to `e` (as in "edit in place"), **not** Shift+Enter:
     many terminals can't deliver Shift+Enter distinctly from Enter, so the local mode would be
-    silently unreachable."""
+    silently unreachable.
+
+    Dotfile artifacts (names starting with ``.``) are hidden by default.  A "Show hidden"
+    checkbox appears when hidden artifacts exist; toggling it repopulates the list."""
 
     CSS = """
     ArtifactScreen { align: center middle; }
@@ -900,8 +903,22 @@ class ArtifactScreen(_OptionListModal[tuple[str, str]]):
     BOX_ID = "artifact-box"
     BINDINGS = [("escape", "cancel", "Cancel"), ("e", "open_local", "Open local")]
 
+    def __init__(self, title: str, all_names: list[str]) -> None:
+        self._all_names = all_names
+        visible = [n for n in all_names if not n.startswith(".")]
+        super().__init__(title, visible)
+
     def _extra_widgets(self) -> Iterable[Widget]:
         yield Label("enter: open · e: open local file · esc: cancel", id="artifact-hint")
+        if any(n.startswith(".") for n in self._all_names):
+            yield SpaceCheckbox("Show hidden", id="show-hidden")
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        names = self._all_names if event.value else [n for n in self._all_names if not n.startswith(".")]
+        option_list = self.query_one(OptionList)
+        option_list.clear_options()
+        for name in names:
+            option_list.add_option(name)
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         self.dismiss((str(event.option.prompt), "rest"))

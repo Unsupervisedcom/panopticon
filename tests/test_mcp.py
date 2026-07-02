@@ -88,6 +88,22 @@ async def test_list_artifacts_is_empty_when_none(tmp_path: Path) -> None:
         assert result.structuredContent["result"] == []  # type: ignore[index]
 
 
+async def test_dotfile_artifacts_are_stored_and_listed(tmp_path: Path) -> None:
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        await s.call_tool("put_artifact", {"task_id": task.id, "name": ".hidden", "content": "secret"})
+        result = await s.call_tool("list_artifacts", {"task_id": task.id})
+        assert result.isError is False
+        listed = result.structuredContent["result"]  # type: ignore[index]
+        by_name = {entry["name"]: entry["uri"] for entry in listed}
+        assert ".hidden" in by_name
+        assert by_name[".hidden"] == f"panopticon://tasks/{task.id}/artifacts/.hidden"
+        res = await s.read_resource(by_name[".hidden"])
+        assert res.contents[0].text == "secret"  # type: ignore[union-attr]
+
+
 async def test_set_turn_via_tool(tmp_path: Path) -> None:
     svc = await _service(tmp_path)
     task = await svc.create_task("r1", "spike")

@@ -21,13 +21,15 @@ class InvalidArtifactName(ArtifactError):
 
 
 def validate_segment(segment: str) -> None:
-    """Reject names/ids that contain path separators, dot-segments, or are empty."""
+    """Reject names/ids that contain path separators, are empty, or are the dot-sentinels ``.`` / ``..``.
+
+    Dotfile names (e.g. ``.babysit-ci-state.json``) are valid — only the bare directory
+    sentinels are forbidden."""
     if (
         not segment
         or "/" in segment
         or "\\" in segment
         or segment in (".", "..")
-        or segment.startswith(".")
     ):
         raise InvalidArtifactName(f"invalid artifact segment: {segment!r}")
 

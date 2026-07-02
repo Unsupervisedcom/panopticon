@@ -44,9 +44,20 @@ def test_put_overwrites(tmp_path: Path) -> None:
 
 def test_rejects_traversal_in_name(tmp_path: Path) -> None:
     store = FilesystemArtifactStore(tmp_path)
-    for bad in ("../evil", "a/b", "..", ".hidden", ""):
+    for bad in ("../evil", "a/b", "..", ""):
         with pytest.raises(InvalidArtifactName):
             asyncio.run(store.put("t1", bad, b"x"))
+
+
+def test_allows_dotfile_names(tmp_path: Path) -> None:
+    store = FilesystemArtifactStore(tmp_path)
+    asyncio.run(store.put("t1", ".hidden", b"secret"))
+    assert asyncio.run(store.get("t1", ".hidden")) == b"secret"
+    assert asyncio.run(store.list("t1")) == [".hidden"]
+
+    asyncio.run(store.put("t1", ".babysit-ci-state.json", b"{}"))
+    names = asyncio.run(store.list("t1"))
+    assert ".hidden" in names and ".babysit-ci-state.json" in names
 
 
 def test_rejects_traversal_in_task_id(tmp_path: Path) -> None:
@@ -108,7 +119,7 @@ def test_unlink_slug_ignores_absent(tmp_path: Path) -> None:
 
 def test_link_slug_rejects_traversal(tmp_path: Path) -> None:
     store = FilesystemArtifactStore(tmp_path)
-    for bad in ("../evil", "a/b", "..", ".hidden", ""):
+    for bad in ("../evil", "a/b", "..", ""):
         with pytest.raises(InvalidArtifactName):
             asyncio.run(store.link_slug("t1", bad))
 
@@ -124,5 +135,6 @@ def test_link_slug_refuses_to_clobber_a_real_entry(tmp_path: Path) -> None:
 
 def test_mcp_uri_resolver() -> None:
     assert mcp_uri("t1", "plan.md") == "panopticon://tasks/t1/artifacts/plan.md"
+    assert mcp_uri("t1", ".hidden") == "panopticon://tasks/t1/artifacts/.hidden"
     with pytest.raises(InvalidArtifactName):
         mcp_uri("t1", "../escape")
