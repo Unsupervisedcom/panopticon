@@ -3,8 +3,7 @@
 Orchestrate multiple coding agents across isolated tasks and **configurable workflows**.
 
 A ground-up rewrite of the [cloude-cade](https://github.com/tildesrc/cloude-cade)
-prototype. The design lives on the [`design-docs`](../../tree/design-docs) branch
-(goals, parity analysis, architecture, roadmap, and ADRs).
+prototype.
 
 ## Architecture in one paragraph
 
