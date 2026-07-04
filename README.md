@@ -28,8 +28,6 @@ lands the four contracts plus a walking skeleton:
   entrypoint protocol that drive the end-to-end walking skeleton (no Docker, no LLM yet).
 - `panopticon.workflows.Spike` — the minimal seed workflow.
 
-See [`CLAUDE.md`](CLAUDE.md) for the operating manual and the determinism invariant.
-
 ## Development
 
 ```sh
