@@ -950,7 +950,8 @@ class ArtifactScreen(_OptionListModal[tuple[str, str]]):
     silently unreachable.
 
     Dotfile artifacts (names starting with ``.``) are hidden by default.  A "Show hidden"
-    checkbox appears when hidden artifacts exist; toggling it repopulates the list."""
+    checkbox appears when hidden artifacts exist; press ``h`` (or Space while the checkbox has
+    focus) to toggle it and repopulate the list."""
 
     CSS = """
     ArtifactScreen { align: center middle; }
@@ -958,7 +959,7 @@ class ArtifactScreen(_OptionListModal[tuple[str, str]]):
     #artifact-hint { color: $text-muted; }
     """
     BOX_ID = "artifact-box"
-    BINDINGS = [("escape", "cancel", "Cancel"), ("e", "open_local", "Open local")]
+    BINDINGS = [("escape", "cancel", "Cancel"), ("e", "open_local", "Open local"), ("h", "toggle_hidden", "Show/hide hidden")]
 
     def __init__(self, title: str, all_names: list[str]) -> None:
         self._all_names = all_names
@@ -966,8 +967,12 @@ class ArtifactScreen(_OptionListModal[tuple[str, str]]):
         super().__init__(title, visible)
 
     def _extra_widgets(self) -> Iterable[Widget]:
-        yield Label("enter: open · e: open local file · esc: cancel", id="artifact-hint")
-        if any(n.startswith(".") for n in self._all_names):
+        has_hidden = any(n.startswith(".") for n in self._all_names)
+        hint = "enter: open · e: open local file · esc: cancel"
+        if has_hidden:
+            hint += " · h: show/hide hidden"
+        yield Label(hint, id="artifact-hint")
+        if has_hidden:
             yield SpaceCheckbox("Show hidden", id="show-hidden")
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
@@ -976,6 +981,13 @@ class ArtifactScreen(_OptionListModal[tuple[str, str]]):
         option_list.clear_options()
         for name in names:
             option_list.add_option(name)
+
+    def action_toggle_hidden(self) -> None:
+        try:
+            cb = self.query_one("#show-hidden", Checkbox)
+        except NoMatches:
+            return
+        cb.value = not cb.value
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         self.dismiss((str(event.option.prompt), "rest"))

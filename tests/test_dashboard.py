@@ -1516,6 +1516,67 @@ async def test_pressing_a_with_no_artifacts_warns_and_opens_no_modal(monkeypatch
         assert app.is_running
 
 
+# -- artifacts modal: h key / show-hidden toggle ------------------------------------
+
+
+async def test_h_key_shows_and_hides_dotfile_artifacts(monkeypatch: Any) -> None:
+    # `h` toggles visibility of dotfile artifacts; the list starts with them hidden.
+    calls = _record_popen(monkeypatch)
+    fake = _FakeClient(
+        [_TASK],
+        artifacts={_TASK["id"]: ["plan.md", ".hidden.md"]},
+        artifact_content=b"x",
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")  # open modal
+        await pilot.pause()
+        screen = app.screen
+        from textual.widgets import OptionList
+        option_list = screen.query_one(OptionList)
+        assert [str(o.prompt) for o in option_list._options] == ["plan.md"]  # hidden by default
+        await pilot.press("h")  # reveal hidden
+        await pilot.pause()
+        assert [str(o.prompt) for o in option_list._options] == ["plan.md", ".hidden.md"]
+        await pilot.press("h")  # hide again
+        await pilot.pause()
+        assert [str(o.prompt) for o in option_list._options] == ["plan.md"]
+    assert calls == []  # no opener launched
+
+
+async def test_h_key_is_noop_when_no_dotfiles_exist(monkeypatch: Any) -> None:
+    # `h` must not crash when there are no dotfile artifacts.
+    _record_popen(monkeypatch)
+    fake = _FakeClient([_TASK], artifacts={_TASK["id"]: ["plan.md"]}, artifact_content=b"x")
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("h")  # no-op — no hidden files
+        await pilot.pause()
+        assert app.is_running  # TUI survived
+
+
+async def test_hint_includes_h_shortcut_when_dotfiles_exist(monkeypatch: Any) -> None:
+    # When dotfiles are present the hint label advertises the `h` shortcut.
+    _record_popen(monkeypatch)
+    fake = _FakeClient(
+        [_TASK],
+        artifacts={_TASK["id"]: ["plan.md", ".hidden.md"]},
+        artifact_content=b"x",
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        from textual.widgets import Label
+        hint = app.screen.query_one("#artifact-hint", Label)
+        assert "h:" in str(hint.render())
+
+
 # -- help screen (`?`) --------------------------------------------------------------
 
 
