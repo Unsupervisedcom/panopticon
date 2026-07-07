@@ -24,6 +24,8 @@ This task moves through a fixed sequence of phases. You are always in exactly on
 
 Moving between phases: **`advance`** follows this sequence and is gated on the current phase's responsibilities; **`drop`** abandons the task (→ DROPPED) from anywhere; and if the user redirects you, you can move straight to any phase (a free move — e.g. back to an earlier phase to redo work).
 
+When the user requests a report, analysis, or other non-code deliverable, upload it as a task artifact using the `put_artifact` MCP tool — don't print it inline and don't write it to a file (files in the container are ephemeral and lost on exit). Artifacts persist and are reachable via the task's MCP resource URI.
+
 ## Tools
 
 Beyond the usual shell (git, bash, …), this workflow's container has:
