@@ -1,4 +1,4 @@
-# 0012 — Kubernetes execution backend: elastic environments for long-running tasks
+# 0012 — Delegating to a Kubernetes cluster from a local panopticon
 
 - Status: Proposed
 - Date: 2026-07-08
@@ -6,261 +6,171 @@
 
 ## Context
 
-Today every task runs as a Docker container on a runner's host (ADR 0008), and remote
-execution (ADR 0009) scales by adding *hosts*, each with a fixed shape. That is the wrong
-unit for a class of work we want tasks to take on:
+Tasks run as Docker containers on the operator's machine (ADR 0008), which is the wrong
+place for long-running, resource-hungry stages — training/evaluating AutoML models, sweeps,
+batch jobs — that need more compute than a workstation and shouldn't die with it.
 
-- **Long-running loops** — training/evaluating AutoML models, sweeps, batch data jobs —
-  that run for hours or days and shouldn't occupy an interactive host.
-- **Bursty resource needs** — a task that plans on 2 CPUs but needs 64 CPUs / a GPU for one
-  stage, then nothing.
-- **Scheduled / unattended work** — the M3 press release promises exactly this: "a local
-  agent delegates resource-intensive work to managed compute; self-hosters install the
-  open-source Panopticon Kubernetes Operator."
+This ADR scopes deliberately small: **panopticon stays local** (task service, session
+service, console, and the interactive agent container all unchanged on the workstation);
+the agent gains the ability to **delegate heavy stages to a shared Kubernetes cluster** as
+Jobs. The cluster is shared by **multiple users**, each running their own local panopticon,
+so the design must make one user's workloads invisible to and uncontendable with another's.
 
-Kubernetes gives us the missing primitives: declarative pod specs with resource
-requests/limits, node pools + cluster autoscaling (including scale-from-zero GPU pools),
-Jobs with restart/backoff semantics, and a uniform API reachable through a kubeconfig.
+Out of scope (future ADRs): running the *task container itself* in the cluster (a
+`KubernetesRunner` behind the Runner ABC), deploying the control plane in-cluster (the
+"operator" from the M3 press release), and DevPod-style provider abstractions. The
+delegation model here requires none of them — Jobs don't dial back to the task service, so
+the local-control-plane reachability problem never arises.
 
-This ADR outlines the ways panopticon could create and deploy agents into a cluster, and
-which we should build first. It does not change the control plane: the task service remains
-the sole DB authority (ADR 0006) and makes no LLM calls; everything below is session-service
-territory.
+## Decision outline
 
-### Constraints inherited from prior ADRs
+### 1. The delegation model: agent-launched Jobs via a scoped kubeconfig
 
-Any Kubernetes backend must preserve:
+Modeled on the existing `docker_in_docker` capability (a trust escalation, off by default):
 
-1. **Runners pull; the control plane never reaches out** (ADR 0009 §1). The task service
-   must not hold cluster credentials or dial the Kubernetes API.
-2. **Agent persistence lives where the container runs** (ADR 0009 §3). The agent must
-   survive the operator's connection dropping.
-3. **Detach→attach switching** (ADR 0009 §6). The console reaches a session by prefixing a
-   command (`ssh -t … tmux attach` today); a cluster session must fit the same loop.
-4. **Per-repo secrets are injected at launch, scoped to the task** (ADR 0007).
-5. **Composed images** base→workflow→repo (ADR 0005) must reach the cluster — a registry,
-   already the preferred M5 answer (ADR 0009 §4).
-6. **Provisioning**: a writable per-task clone mounted at `/workspace`, branched on slug
-   (ADR 0010/0011), with the host-side git happening where the container runs.
-7. **New backends implement an interface; they don't change callers** — the `Runner` ABC in
-   `sessionservice` is the seam.
+- A repo opts in via `capabilities: {"kubernetes": {"context": "…"}}`. At spawn, the
+  runner mounts a **kubeconfig** into the task container (read-only, like `/creds`) whose
+  credentials are scoped as §2 describes — the agent can submit and watch Jobs in its own
+  namespace and nothing else.
+- The agent-facing surface is a **skill** (CLI-agnostic `Skill` spec, like `provision`):
+  write a Job manifest with explicit resource requests (GPU included), `kubectl apply` it,
+  poll/stream logs, and record results back as task artifacts. The cluster autoscaler turns
+  requests into nodes; scale-to-zero GPU pools keep idle cost at zero.
+- Jobs outlive the agent: if the task container dies, the Job keeps running and a respawned
+  agent re-attaches by name. Recurring loops use the same manifest as a `CronJob`.
+- Results return through the task service's artifact API for small outputs; large outputs
+  (models, datasets) go to object storage the Job writes directly, with the artifact
+  recording the URI. Jobs never connect to the local task service.
 
-## Options
+### 2. Identity, roles, and auth
 
-Options A–C answer *where the task's agent container runs*. Option D answers *how a running
-agent gets elastic compute for its heavy stages*. They are orthogonal; D composes with any
-of A–C (and with today's Docker backend).
+Two explicit roles, with a bootstrap handshake between them:
 
-### A. `KubernetesRunner` — the Runner ABC realized with `kubectl`
+**Cluster admin** — owns the cluster, installs per-user isolation. Panopticon ships a
+**user-namespace template** (one manifest / kustomization) the admin applies per user:
 
-The smallest step: a second `Runner` implementation beside `LocalRunner`, shelling out to
-`kubectl` (long options, injectable command-runner — the same conventions as the
-docker/tmux runner) against a kubeconfig the *session service host* holds. The runner still
-runs as an ordinary host process wherever the operator starts it; only the containers move
-into the cluster.
+| Object | Purpose |
+|---|---|
+| `Namespace` `panopticon-<user>` | the user's entire blast radius |
+| `ServiceAccount` `panopticon-<user>` | the identity the user's kubeconfig wraps |
+| `Role` + `RoleBinding` | namespaced permissions only (see below) |
+| `ResourceQuota` | the user's compute ceiling (§3) |
+| `LimitRange` | per-pod defaults + maxima (§3) |
+| `NetworkPolicy` | default-deny + explicit egress (§4) |
 
-- Spawn = `kubectl apply` of a per-task **pod** (or a StatefulSet of one, for a stable
-  identity across node evictions): the composed image, resource requests/limits from a new
-  per-task/per-repo resource spec, the task-service URL injected as an env var. The
-  container's entrypoint loop (register → slug → heartbeat) is unchanged — it dials out, so
-  cluster networking only needs egress to the task service.
-- tmux moves **inside the pod**: the pod runs `tmux new-session … python -m
-  panopticon.container.agent` as pid 1 (or under a tiny supervisor), satisfying constraint 2
-  without a host tmux. Attach becomes `kubectl exec --stdin --tty <pod> -- tmux attach` —
-  a one-command prefix, exactly the shape the ADR 0009 supervisor loop expects.
-- Provisioning: an `emptyDir` or per-task PVC at `/workspace`, populated by an **init
-  container** that clones the repo (from the forge directly, or from a clone-cache PVC);
-  the runner performs the slug-branching by `kubectl exec`-ing git in the pod, then records
-  branch + clone path back exactly as today. "Host git happens where the container runs"
-  becomes "git happens in the pod" — same principle, one hop further in.
-- Secrets: `env_file` → a Kubernetes `Secret` mounted as env; `creds_volume` → a `Secret`
-  or small PVC mounted at `/creds`. `panopticon login <repo>` gains a `--context` to
-  populate the cluster-side secret (the ADR 0009 §5 "secrets are per host" rule, where the
-  host is now a cluster).
+**User** — receives a kubeconfig for that ServiceAccount and points their repo's
+`kubernetes` capability at it. Tokens are **short-lived**, minted via the TokenRequest API
+(`kubectl create token panopticon-<user> --duration 24h`); the admin (or a small
+`panopticon cluster grant <user>` helper wrapping the template + token mint) re-issues on
+expiry. No long-lived SA token Secrets.
 
-**Pros:** smallest delta; reuses every existing seam (Runner ABC, entrypoint, provisioning
-record); testable exactly like `LocalRunner` (pin the emitted `kubectl` commands with a fake
-command-runner). **Cons:** the runner process is still a pet on some host; no reconciliation
-if a pod is evicted while the runner is down; imperative `kubectl` rather than declarative
-ownership.
+The user `Role` grants, **in the user's namespace only**:
 
-### B. Panopticon Kubernetes Operator — a runner *in* the cluster
+- `create/get/list/watch/delete` on `jobs`, `cronjobs`, `pods` (delete = the agent can
+  clean up its own work)
+- `get` on `pods/log`, `create` on `pods/portforward` (watching training progress)
+- `create/get/delete` on `configmaps` and `secrets` (job inputs the agent stages)
 
-The M3 press-release shape: the session service itself is deployed **into** the cluster as
-a Deployment (the "operator"), pulling work from the task service over REST like any runner
-(constraint 1 holds — credentials for the cluster never leave it; the operator uses its
-in-cluster ServiceAccount, no kubeconfig shipping at all).
+Explicitly absent: anything cluster-scoped (`nodes`, `namespaces`, `persistentvolumes`),
+`pods/exec` (Jobs are batch, not shells — reduces lateral movement if a token leaks), and
+any verb in another namespace. RBAC makes other users' namespaces not merely inaccessible
+but **invisible** — `kubectl get jobs --all-namespaces` fails; there is no cross-user
+`list`.
 
-Two flavours, in order of ambition:
+Optionally, panopticon can narrow further per task: the agent's kubeconfig wraps a
+**per-task token** with a label-scoped view, so even within one user's namespace two
+concurrent tasks don't touch each other's Jobs. Namespace-per-user is the isolation
+boundary that matters; per-task scoping is defense in depth.
 
-- **B1 — in-cluster runner:** literally `python -m panopticon.sessionservice.host` in a pod,
-  with `KubernetesRunner` (option A) as its backend using the in-cluster API. Installing the
-  "operator" = `kubectl apply` one manifest (or a Helm chart). Everything in A applies; the
-  runner is now supervised by Kubernetes itself (restart policy, no pet host).
-- **B2 — CRD-based operator:** a `PanopticonTask` custom resource per task; the operator
-  reconciles desired state (task claimed, not terminal) against actual (pod exists, healthy),
-  giving crash/eviction recovery, `kubectl get panopticontasks` observability, and a place to
-  hang policies (TTL, priority classes, node selectors). The task service remains the source
-  of truth; the CRD is a *projection* the operator maintains, never a second writer.
+### 3. Resource limits: quota per user, bounds per pod
 
-**Pros:** self-hosted install is one manifest; Kubernetes supervises the runner (closing the
-ADR 0008 "process supervision" open question for this backend); B2 buys real reconciliation.
-**Cons:** B2 is a substantial new artifact (controller loop, CRD versioning) — and a second
-place task state is mirrored, which we must keep visibly subordinate to the task service.
-B1 first; B2 only when eviction-recovery pain is real.
+Two layers, both in the template so no user exists without them:
 
-### C. DevPod provider as the spawn mechanism
+- **`ResourceQuota`** caps the namespace aggregate — the user's total ceiling regardless of
+  how many tasks they run: `requests.cpu`, `requests.memory`, `limits.cpu`,
+  `limits.memory`, `requests.nvidia.com/gpu`, `count/jobs.batch`, `pods`. A user who
+  saturates their quota queues *their own* work; nobody else notices.
+- **`LimitRange`** bounds each pod: default requests/limits (so an agent that omits them
+  doesn't get scheduled unbounded) and `max` per container (so one Job can't consume the
+  entire namespace quota and starve the user's other tasks).
 
-Instead of writing per-backend runners, drive [DevPod](https://devpod.sh/docs/managing-providers/add-provider):
-the runner shells out to `devpod up` and DevPod's **provider** abstraction (`devpod provider
-add kubernetes`) does the provisioning. One integration would buy every DevPod provider —
-Kubernetes, SSH hosts, AWS/GCP/Azure/DigitalOcean VMs — plus devcontainer.json support,
-which overlaps with ADR 0005's repo image layer.
+Contention between users is then the scheduler's job, not a convention: quotas are
+admission-enforced (a Job exceeding quota is rejected at `apply`, which the agent sees and
+reports), and the autoscaler grows the cluster within the node-pool bounds the admin set.
+Optionally a per-user `PriorityClass` lets the admin tier users; not required for
+isolation.
 
-- The runner becomes a thin `DevpodRunner`: `devpod provider add kubernetes && devpod
-  provider set-options kubernetes --option KUBERNETES_CONTEXT=…`, then per task `devpod up
-  <task-clone> --provider kubernetes --id task-<id>` and `devpod ssh task-<id>` for attach
-  (DevPod injects its agent + ssh access into the workspace — a ready-made answer to
-  constraint 3's command prefix).
-- The task container's entrypoint/registration loop would run *inside* the DevPod workspace,
-  launched via its post-create hooks.
+Every object the agent creates carries labels — `panopticon.io/user`,
+`panopticon.io/task-id`, `panopticon.io/slug` — and Job names are prefixed with the task
+slug. Combined with namespace-per-user, two users (or two tasks) can submit `train-model`
+simultaneously with no name collision, and cleanup/cost attribution are label selectors.
+`ttlSecondsAfterFinished` on every Job keeps namespaces from accumulating dead pods.
 
-**Pros:** many backends for one integration; the "give an agent a dev environment on
-arbitrary infra" problem is DevPod's whole job; workspace lifecycle (stop/resume, auto-sleep)
-comes free. **Cons:** a large third-party dependency in the critical path; ADR 0005's
-composed-image pipeline and DevPod's devcontainer build would fight over image ownership;
-secrets and provisioning flows need reshaping around DevPod's model rather than ours; less
-control over pod specs (GPU node selectors, priority classes) than emitting them ourselves.
-Worth a spike as a *provider of hosts*, but not the primary backend.
+### 4. Network restrictions
 
-### D. Agent-requested burst compute: a `kubernetes` capability
+Each user namespace gets a default-deny posture with explicit holes:
 
-Independent of where the agent itself runs: give a task a **scoped kubeconfig** so the agent
-can launch Kubernetes **Jobs** for its heavy, long-running stages (the AutoML training loop)
-while the interactive agent container stays small.
+- **Ingress: deny all.** Nothing in the cluster (including other users' namespaces) may
+  connect to a user's pods. Training jobs are workloads, not services; if a job needs a
+  UI (e.g. a dashboard), the user reaches it via `port-forward`, which rides the API server
+  and their RBAC rather than pod networking.
+- **Egress: deny by default, then allow** (a) DNS, (b) the forge + package registries +
+  object storage (the artifact return path), and — per cluster policy — (c) general
+  internet for dependency fetches. The admin chooses (b)-only for locked-down clusters or
+  (b)+(c) for convenience; the template ships both variants.
+- **No path to the control plane's neighbors**: deny egress to the cluster's pod/service
+  CIDRs (except DNS) and to the cloud metadata endpoint (`169.254.169.254`) — the standard
+  SSRF/credential-theft target. API-server access is governed by RBAC, not the netpol.
 
-- Modeled exactly like `docker_in_docker` (ADR 0005 / the repo glossary): a repo opts in via
-  `capabilities: {"kubernetes": {...}}`; the runner then mounts a kubeconfig at spawn whose
-  credentials are a **per-task (or per-repo) ServiceAccount bound to a single namespace**
-  with quota — the agent can `kubectl apply` Jobs, watch them, and pull results, and nothing
-  else. A trust escalation, off by default, like DinD.
-- The agent-facing surface is a **skill** (`Skill` spec, rendered per-CLI): "launch a
-  training job" = write a Job manifest with resource requests (GPU included), submit, poll,
-  stream logs back into artifacts. The cluster autoscaler turns resource requests into
-  nodes; scale-to-zero GPU pools make idle cost zero.
-- Long-running loops survive the agent: a Job keeps running if the task container dies; the
-  respawned agent re-attaches by name. For scheduled/unattended loops, the same manifest as
-  a `CronJob`.
+Since the delegation model has no Job→task-service callback, the policies never need a
+hole punched back to anyone's workstation — the main simplification bought by keeping this
+ADR's scope to delegation.
 
-**Pros:** delivers the actual goal — dynamically scalable resources for training loops —
-without moving the interactive session at all; smallest security surface (namespace + quota
-+ RBAC); works today with `LocalRunner`. **Cons:** results/artifacts need a path back
-(object storage or the task service's artifact API); credential issuance/rotation for the
-per-task ServiceAccount is new machinery.
+### 5. What panopticon ships
 
-## Where panopticon itself runs: local control plane vs in-cluster
-
-Orthogonal to which option we build is a placement question with real consequences:
-**panopticon running locally and creating agent pods** in a cluster it can reach, vs
-**panopticon running in the cluster itself**. The options above imply defaults (A leans
-local, B is in-cluster), but the placement deserves its own decision because it determines
-network direction, liveness semantics, and what happens when the operator's laptop closes.
-
-### Local panopticon, remote agent pods
-
-The task service, console, and runner all stay on the operator's workstation; only the
-runner holds a kubeconfig and only the *agent containers* live in the cluster.
-
-- **The callback problem is the crux.** Task containers dial *out* to the task service to
-  register, heartbeat, and use MCP (ADR 0008) — trivial when the service is on the same
-  host, but a laptop is not routable from inside a cluster. Every spawn needs a path back:
-  `kubectl port-forward` in reverse doesn't exist, so it's an ingress/LoadBalancer exposing
-  the task service (plus the M5 auth question), a tailnet/VPN putting laptop and pods on one
-  network, or the runner proxying MCP/REST over a `kubectl port-forward`-style tunnel it
-  keeps open per task. All are workable; all make the *laptop* infrastructure.
-- **The control plane inherits the laptop's lifecycle.** Close the lid and the task service,
-  liveness ledger, and provisioning daemon vanish while cluster pods (and option-D training
-  Jobs) keep running — exactly the "claimed but down" ambiguity ADR 0008 flags, now
-  routine rather than exceptional. Fine for a working session; wrong for the multi-day
-  unattended loops this ADR exists to serve.
-- **Where it shines:** development, trying the backend against any cluster a kubeconfig can
-  reach (no install rights needed), and bursting from an otherwise-local setup — especially
-  with option D, where only *Jobs* go to the cluster and results come back through the
-  artifact API, so no callback path is needed at all.
-
-### Panopticon in the cluster
-
-The task service (and runner) are deployed as cluster workloads: Deployment + PVC for the
-SQLite DB and artifacts, a `Service` for REST/MCP.
-
-- **Networking inverts and simplifies.** Agent pods reach the task service by cluster DNS;
-  no tunnel, no exposure of a laptop. The console becomes a pure remote client — the
-  dashboard already talks REST (`PANOPTICON_SERVICE_URL`), and attach is `kubectl exec …
-  tmux attach`, both through one kubeconfig the *human* holds. Nothing dials into the
-  operator's machine, matching the ADR 0009 pull posture end to end.
-- **The control plane outlives any operator session** — the property long-running work
-  actually requires. Kubernetes supervises the service (closing ADR 0008's process
-  supervision question for this deployment), and a multi-day training loop has a live
-  liveness ledger the whole time.
-- **Costs:** the DB and artifacts move onto cluster storage (backup/egress story needed);
-  `panopticon login` and repo configuration now target remote state; local dev requires
-  either a second local install or a dev cluster (kind/k3d keeps this cheap).
-
-### The likely end state is both, and the seams already allow it
-
-The pull model means these aren't exclusive: the task service can live wherever it is
-long-lived (a cluster, a server), while runners — local Docker on a laptop, in-cluster
-operator — each pull from it (ADR 0009 §1). A pragmatic ordering: start with **local
-panopticon + option D** (no callback path needed), and treat **moving the control plane
-in-cluster as the prerequisite for options A/B in production**, not an afterthought —
-retrofitting laptop-reachability tunnels is the alternative, and it builds the wrong thing.
-
-## Recommendation
-
-**D first, then A, then B1; keep C as a spike; defer B2.**
-
-D is the shortest path to "an agent that trains AutoML models on elastic compute" and
-touches no topology. A is the natural second `Runner` and makes the *whole task* elastic.
-B1 is A deployed in-cluster and closes the self-hosting story from the press release. Each
-step reuses the previous one's mechanics (secrets-as-Secrets, registry images, exec-attach).
-Placement follows the same ladder: local panopticon suffices for D; moving the control
-plane in-cluster is the prerequisite for running A/B in production (see the placement
-section above).
+1. The **user-namespace template** (Namespace, ServiceAccount, Role, RoleBinding,
+   ResourceQuota, LimitRange, NetworkPolicies) as versioned manifests in-repo, with the
+   quota/egress values as the admin-tunable surface.
+2. The **`kubernetes` capability** in the repo config + runner: mount the named kubeconfig
+   read-only into the task container at spawn.
+3. The **delegation skill**: manifest conventions (labels, slug-prefixed names, TTL,
+   resource requests mandatory), submit/watch/log, artifact recording.
+4. Optionally `panopticon cluster grant <user>` — admin helper: apply the template for a
+   user, mint the token, emit the kubeconfig.
 
 ## Consequences
 
 **Positive**
-- The Runner ABC proves out: a second real backend with no caller changes (constraint 7).
-- Resource requirements become part of a task/repo's declaration — useful metadata even on
-  the Docker backend.
-- The registry requirement (ADR 0009 §4) gets a forcing function.
+- The goal — elastic, long-running compute for training loops — with zero topology change:
+  local panopticon, unchanged runner, no callback path, no in-cluster panopticon install.
+- Isolation is structural, not behavioral: namespace + RBAC + quota + netpol are enforced
+  by the API server at admission, so a confused (or prompt-injected) agent *cannot* touch
+  another user's work — it can only exhaust its own quota.
+- The template doubles as the trust document: everything a panopticon user can do to the
+  cluster is readable in one manifest.
 
 **Negative / open questions**
-- **Attach ergonomics**: `kubectl exec … tmux attach` needs the operator's kubeconfig on the
-  console host; the supervisor's attach command becomes per-backend data the task service
-  must surface (today it's derived from host + session name).
-- **Artifact reach**: in-cluster tasks can't share the task service's filesystem artifact
-  store — artifacts must flow over REST/MCP (already the ADR 0008 answer for remote) or an
-  object store; large training outputs (models, datasets) likely want the latter.
-- **Liveness semantics**: pod evictions/reschedules look like container death today; the
-  claim/respawn flow (ADR 0008) needs to distinguish "gone" from "moved".
-- **Cost/quota governance**: who bounds what an agent may request (max GPUs, wall-clock TTL,
-  namespace quotas) — per-repo config, like capabilities.
-- **Per-cluster secrets**: `panopticon login` targeting a cluster secret instead of a Docker
-  volume needs design (sealed-secrets / external-secrets integration vs. plain `kubectl
-  create secret`).
+- **Token lifecycle**: short-lived tokens need re-minting; whether the runner refreshes
+  them automatically (needs an admin-ish credential locally — undesirable) or the user
+  re-runs a grant step (friction) is unresolved.
+- **Artifact return for large outputs** presumes object storage the Jobs can reach and
+  credentials for it — a second per-user secret the template doesn't yet cover.
+- **GPU quota shape**: `requests.nvidia.com/gpu` quota is coarse (no distinction between
+  one big and many small); fine if the cluster has one GPU type, revisit otherwise.
+- **Cost visibility**: labels enable attribution but nothing surfaces spend per user yet.
+- **Job image provenance**: the agent picks the Job image; whether to restrict to an
+  allow-listed registry (admission policy) is an admin decision the template should offer.
 
 ## Related
 
-- ADR 0008 — the topology (runner as execution backend; open questions on supervision and
-  artifact reach this ADR inherits).
-- ADR 0009 — remote execution mechanics this extends: pull runners, registry images,
-  detach→attach; the cluster is "a host" with a different attach prefix.
-- ADR 0005 — composed images; the registry becomes mandatory; DevPod's devcontainer overlap.
-- ADR 0007 — per-repo secrets, realized as Kubernetes Secrets per cluster.
-- ADR 0010/0011 — provisioning; the per-task clone moves to an init container + PVC.
-- ADR 0006 — task service stays the sole DB authority; the CRD (B2) is a projection, never
-  a writer.
-- The M3 press release (`docs/milestones/M3-remote-execution-environment/press-release.md`
-  on the `milestones/M3-remote-execution-environments` branch) — the operator +
-  managed-compute promise this serves.
+- ADR 0008/0009 — the local topology and pull posture this leaves untouched; Jobs don't
+  participate in the runner/claim model at all — they are sub-work of a locally-run task.
+- ADR 0005 — `capabilities` (docker_in_docker) is the pattern the `kubernetes` capability
+  copies: per-repo opt-in, trust escalation, off by default.
+- ADR 0007 — the kubeconfig is a per-repo secret reference, injected at launch like
+  `env_file`/`creds_volume`.
+- ADR 0003 — artifacts as the results path for delegated work.
+- Future ADRs — running task containers in-cluster (`KubernetesRunner`) and an in-cluster
+  control plane ("the operator", per the M3 press release on the
+  `milestones/M3-remote-execution-environments` branch) were surveyed in an earlier draft
+  of this document (see this ADR's git history) and deliberately split out.
