@@ -215,9 +215,17 @@ changes. **Resolves:** inter-process auth/transport for a networked client.
 ## Milestone 5 — remote execution
 
 Run a **runner host process per machine** pointed at the central task service (ADR 0008).
-**Resolves:** runner registration/discovery, inter-process auth across networks, failure/
-restart reconciliation, remote secret delivery (ADR 0007), and artifact reach via the task
-service's MCP/REST (ADR 0003).
+The mechanics are decided in **ADR 0013** and built in slices:
+
+- **M5.1 (trusted network, first slice)** — add `host` to runner registration; use
+  `ssh -t <host> tmux attach` in the terminal supervisor for remote tasks. The runner already
+  reaches the task service via `--service-url`; containers reach it via
+  `--container-service-url`; images build locally on each host; secrets are copied at the
+  same path. This slice **resolves** (for the trusted-network case): container → task-service
+  callback, remote tmux attach, runner host tracking, failure/restart reconciliation, and
+  artifact reach (already solved via MCP/REST).
+- **Later M5 slices** — inter-process auth (bearer tokens, per-task MCP scoping), image
+  registry (push/pull), `--secrets-root` path remapping, and at-rest secret protection.
 
 ---
 
@@ -233,8 +241,10 @@ service's MCP/REST (ADR 0003).
 | Image layer order / rebuild triggers (0005) | Slice 2 (base) → M3 (layers) |
 | Wire provisioning into the lifecycle; slug → worktree, observed via pull (0010) | Slice 7 |
 | Workflow skill enumeration per workflow (0004) | Slice 8 |
-| Inter-process auth & transport (0006/0008) | M4 (networked) / M5 (remote) |
-| Runner registration/discovery, full (0008) | M5 |
-| Failure/restart reconciliation (0008) | M5 |
-| At-rest secret protection / remote delivery (0007) | Slice 5 (local) / M5 (remote) |
-| Image matrix & registry storage (0005) | M5 |
+| Inter-process auth & transport (0006/0008) | M4 (networked) / M5 later slice (ADR 0013 §9) |
+| Runner registration/discovery, full (0008) | M5.1 (host field, ADR 0013 §6) |
+| Failure/restart reconciliation (0008) | M5.1 (existing mechanisms sufficient, ADR 0013 §8) |
+| Remote tmux attach (0009) | M5.1 (ssh prefix on attach_command, ADR 0013 §7) |
+| Container → task-service callback, remote (0008) | M5.1 (--container-service-url, ADR 0013 §2) |
+| At-rest secret protection / remote delivery (0007) | Slice 5 (local) / M5 later slice (ADR 0013 §9) |
+| Image matrix & registry storage (0005) | M5 later slice (ADR 0013 §9) |

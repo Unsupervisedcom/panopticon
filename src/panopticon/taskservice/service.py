@@ -106,6 +106,7 @@ class RunnerRegistration:
     id: str
     runner_id: str
     registered_at: str
+    host: str | None = None  # the runner's hostname or operator alias (M5: remote attach)
 
 
 class TaskService:
@@ -709,11 +710,11 @@ class TaskService:
     # to tell "runner dead" from "runner idle"; now a dead runner falls out of ``live_runners`` and
     # an operator (or a future supervisor) can release its claims so a healthy host respawns them.
 
-    async def register_runner(self, runner_id: str) -> RunnerRegistration:
-        reg = RunnerRegistration(id=self._id(), runner_id=runner_id, registered_at=self._clock())
+    async def register_runner(self, runner_id: str, *, host: str | None = None) -> RunnerRegistration:
+        reg = RunnerRegistration(id=self._id(), runner_id=runner_id, registered_at=self._clock(), host=host)
         self._runner_registrations[reg.id] = reg
         self._notify_change()  # a runner (re)connecting can flip its tasks disconnected → …
-        _log.info("runner %s: registered (reg=%s)", runner_id, reg.id)
+        _log.info("runner %s: registered (reg=%s, host=%s)", runner_id, reg.id, host)
         return reg
 
     async def deregister_runner(self, registration_id: str) -> None:
@@ -725,6 +726,20 @@ class TaskService:
     def live_runners(self) -> set[str]:
         """The set of runner ids currently holding a host-liveness connection (no clock read)."""
         return {r.runner_id for r in self._runner_registrations.values()}
+
+    def runner_host(self, runner_id: str) -> str | None:
+        """The hostname the runner registered with, or ``None`` if unknown / not registered."""
+        for reg in self._runner_registrations.values():
+            if reg.runner_id == runner_id:
+                return reg.host
+        return None
+
+    def live_runner_registrations(self) -> list[RunnerRegistration]:
+        """One registration per distinct live runner id (deduplicated; stable order for REST)."""
+        seen: dict[str, RunnerRegistration] = {}
+        for reg in self._runner_registrations.values():
+            seen.setdefault(reg.runner_id, reg)
+        return sorted(seen.values(), key=lambda r: r.runner_id)
 
     async def reclaim(self, runner_id: str) -> list[Task]:
         """Release every non-terminal task claimed by ``runner_id`` so a healthy host can re-claim

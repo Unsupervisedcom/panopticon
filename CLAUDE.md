@@ -119,9 +119,12 @@ runner branches the per-task clone → the agent works; a **down** task (claimed
 respawned from the dashboard with `R`. The supervisor loop is unchanged — on `t` the dashboard
 records the picked task to a switch-file and **detaches** (staying alive); the supervisor attaches
 the terminal to that task's session, then re-attaches the same live dashboard on detach (`C-b d`).
-Crucially the runner spawns task sessions on the **same** `-L panopticon` socket, so `t` reaches
-them. Switching is always detach→attach (never `switch-client`), so the same loop reaches a remote
-task over ssh at M5; `s` jumps to the `service` session. The background sessions persist after `q`
+The switch-file carries `<host>\t<session>` for remote tasks (M5.3) or plain `<session>` for local
+ones; the supervisor parses it and passes `host=` to `attach_command()`, which wraps the tmux attach
+with `ssh -t <host>` when set. Crucially the runner spawns task sessions on the **same**
+`-L panopticon` socket, so `t` reaches them. Switching is always detach→attach (never
+`switch-client`), so the same loop reaches a remote task over ssh at M5; `s` jumps to the
+`service` session. The background sessions persist after `q`
 (stop them with `make stop`, which stops the task containers and kills the `-L panopticon` server).
 Spawning needs the base image — `make build`
 first. `make dashboard` runs the dashboard once without the attach loop (talks to
@@ -287,7 +290,10 @@ commands the Makefile wraps).
   A runner **claims** an unclaimed task (`PUT …/claim`, compare-and-set, 409 if another holds it)
   before spawning its container — the spawn gate so exactly one host runs it (ADR 0008). **Release**
   (`DELETE …/claim`) returns it to unclaimed for hand-off or respawn. Distinct from liveness: a
-  claimed task whose container died is "claimed but down".
+  claimed task whose container died is "claimed but down". `TaskOut.runner_host` (M5.3) is derived
+  at query time from `claimed_by` → the runner's registration `host` field (set via `--host` /
+  `PANOPTICON_RUNNER_HOST` on the session service, passed as a `?host=` query param on
+  `GET /runners/{id}/live`). Used by the terminal supervisor to ssh-attach to remote sessions.
 - **Provisioning** — the writable per-task clone + slug-named branch a task works in (ADR
   0010/0011). Each task gets a self-contained `git clone --local` at spawn, mounted at
   `/workspace`; on slug the session service **branches whatever's there** (`checkout -b

@@ -283,6 +283,17 @@ async def test_register_runner_is_live_until_deregistered(tmp_path: Path) -> Non
     assert svc.live_runners() == set()  # dropped connection => no longer live (no clock read)
 
 
+async def test_register_runner_with_host_is_surfaced_by_runner_host(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    assert svc.runner_host("host-1") is None  # unknown runner
+    await svc.register_runner("host-1", host="box.example.com")
+    assert svc.runner_host("host-1") == "box.example.com"
+    # live_runner_registrations returns one entry per distinct runner id.
+    regs = svc.live_runner_registrations()
+    assert len(regs) == 1
+    assert regs[0].runner_id == "host-1" and regs[0].host == "box.example.com"
+
+
 async def test_register_runner_reconnect_overlap_keeps_the_runner_live(tmp_path: Path) -> None:
     # A reconnect during a blip can briefly hold two connections; the *old* one's disconnect must
     # not drop the runner while the *new* one is up (each connection has its own id, not keyed by

@@ -1113,7 +1113,7 @@ class Dashboard(App[None]):
         self,
         client: TaskServiceClient,
         *,
-        on_switch: Callable[[str], None] | None = None,
+        on_switch: Callable[[str, str | None], None] | None = None,
         on_service: Callable[[], bool] | None = None,
         on_runner: Callable[[], bool] | None = None,
         artifacts_root: str | Path = DEFAULT_ARTIFACTS,
@@ -1425,7 +1425,9 @@ class Dashboard(App[None]):
         if not registrations:
             self.notify("No running container for this task.", severity="warning")
             return
-        self._on_switch(registrations[0]["container_id"])  # session == container id (runner names it)
+        task = self._tasks.get(self._current)
+        runner_host = task.get("runner_host") if task else None
+        self._on_switch(registrations[0]["container_id"], runner_host)  # session == container id
 
     def action_open_url(self) -> None:
         """`p`: open the highlighted task's `url` in the browser (cloude-cade's `p` "open PR").
@@ -1604,7 +1606,7 @@ class Dashboard(App[None]):
 def run(
     client: TaskServiceClient,
     *,
-    on_switch: Callable[[str], None] | None = None,
+    on_switch: Callable[[str, str | None], None] | None = None,
     on_service: Callable[[], bool] | None = None,
     on_runner: Callable[[], bool] | None = None,
     artifacts_root: str | Path = DEFAULT_ARTIFACTS,

@@ -52,7 +52,7 @@ def main(
         on_runner = None
         if args.switch_file:  # run under the supervisor: report `t`/`s`/`u` picks via the switch-file
             switch_file = Path(args.switch_file)
-            on_switch = lambda session: switch_to(session, switch_file=switch_file)  # noqa: E731
+            on_switch = lambda session, host=None: switch_to(session, host=host, switch_file=switch_file)  # noqa: E731
             on_service = make_service_switch(switch_file)
             on_runner = make_runner_switch(switch_file)
         # Same env/default as the task service (shared DEFAULT_ARTIFACTS): when the dashboard shares

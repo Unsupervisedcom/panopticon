@@ -267,7 +267,7 @@ def test_hold_runner_liveness_reconnects_after_a_drop_until_stopped() -> None:
     opens = {"n": 0}
 
     class _DroppingClient:
-        def live_runner(self, runner_id: str) -> Generator[None, None, None]:
+        def live_runner(self, runner_id: str, *, host: str | None = None) -> Generator[None, None, None]:
             opens["n"] += 1
 
             def gen() -> Generator[None, None, None]:
@@ -279,6 +279,29 @@ def test_hold_runner_liveness_reconnects_after_a_drop_until_stopped() -> None:
     daemon_running = lambda: opens["n"] < 3  # flip after a couple of reconnects  # noqa: E731
     hold_runner_liveness(_DroppingClient(), "host-1", running=daemon_running, sleep=lambda _s: None)  # type: ignore[arg-type]
     assert opens["n"] == 3  # reconnected after each drop until `running()` said stop
+
+
+def test_hold_runner_liveness_passes_host_to_client() -> None:
+    # The host= param is forwarded from hold_runner_liveness to client.live_runner every reconnect
+    # so the task service receives and records it (used for remote tmux attach, M5).
+    recorded: list[str | None] = []
+
+    class _RecordingClient:
+        def live_runner(self, runner_id: str, *, host: str | None = None) -> Generator[None, None, None]:
+            recorded.append(host)
+
+            def gen() -> Generator[None, None, None]:
+                yield None
+
+            return gen()
+
+    hold_runner_liveness(
+        _RecordingClient(), "host-1",  # type: ignore[arg-type]
+        running=lambda: len(recorded) < 1,
+        host="box.example.com",
+        sleep=lambda _s: None,
+    )
+    assert recorded == ["box.example.com"]
 
 
 def test_run_host_spawns_then_provisions_end_to_end(tmp_path: Path) -> None:

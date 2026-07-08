@@ -75,7 +75,7 @@ def test_runner_live_connection_registers_on_connect_and_drops_on_disconnect(
     conn = client.live_runner("host-1")
     next(conn)
     assert _wait_until(lambda: service.live_runners() == {"host-1"}), "runner never went live"
-    assert client.live_runners() == ["host-1"]  # surfaced over REST too
+    assert client.live_runners() == [{"id": "host-1", "host": None}]  # surfaced over REST too
 
     # Dropping the connection (a dying daemon) drops the runner immediately — no TTL.
     conn.close()

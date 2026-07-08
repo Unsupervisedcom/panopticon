@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import socket
 import threading
 import time
 from collections.abc import Callable
@@ -130,6 +131,7 @@ def hold_runner_liveness(
     runner_id: str,
     *,
     running: Callable[[], bool],
+    host: str | None = None,
     reconnect_backoff: float = RUNNER_RECONNECT_BACKOFF_SECONDS,
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
@@ -142,9 +144,10 @@ def hold_runner_liveness(
     socket reaps it. If it drops while still running (a transient blip) we reconnect after a short
     backoff, re-asserting the same ``runner_id``, so a dead host stays distinguishable from a flake.
     No heartbeat, no TTL — the connection-drop liveness PR #146 gave containers, now for the host.
+    ``host`` is passed to the task service so the terminal supervisor can ssh-attach to remote tasks.
     """
     while running():
-        live = client.live_runner(runner_id)
+        live = client.live_runner(runner_id, host=host)
         try:
             for _ in live:  # each tick is a server keepalive; recheck whether to stop
                 if not running():
@@ -196,6 +199,11 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
         help="task service URL spawned containers call back to (the in-container view)",
     )
     parser.add_argument("--runner-id", default=os.environ.get("PANOPTICON_RUNNER_ID", "local"))
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("PANOPTICON_RUNNER_HOST", socket.gethostname()),
+        help="hostname or alias reported to the task service",
+    )
     parser.add_argument("--image", default=DEFAULT_IMAGE)
     parser.add_argument("--cache-root", default=os.environ.get("PANOPTICON_CACHE_ROOT", DEFAULT_CACHE_ROOT))
     parser.add_argument("--tasks-root", default=os.environ.get("PANOPTICON_TASKS_ROOT", DEFAULT_TASKS_ROOT))
@@ -213,7 +221,7 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
     liveness = threading.Thread(
         target=hold_runner_liveness,
         args=(client, args.runner_id),
-        kwargs={"running": lambda: True},
+        kwargs={"running": lambda: True, "host": args.host},
         daemon=True,
     )
     liveness.start()
