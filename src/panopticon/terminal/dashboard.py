@@ -1365,11 +1365,36 @@ class Dashboard(App[None]):
                     stripped = memo_text.strip()
                     if _apply_memo_filter(stripped):
                         return
-                    if auto_submit and stripped:
-                        self._client.create_task(repo, workflow, stripped, initial_prompt=stripped)
+
+                    def _submit(runner_id: str | None) -> None:
+                        if auto_submit and stripped:
+                            self._client.create_task(
+                                repo, workflow, stripped,
+                                initial_prompt=stripped, preferred_runner_id=runner_id,
+                            )
+                        else:
+                            self._client.create_task(
+                                repo, workflow, stripped or None, preferred_runner_id=runner_id,
+                            )
+                        self.action_refresh()
+
+                    live_runners = self._client.live_runners()
+                    if len(live_runners) >= 2:
+                        # Sort: "local" first, then alphabetically by id.
+                        sorted_runners = sorted(
+                            live_runners,
+                            key=lambda r: ("" if r["id"] == "local" else r["id"]),
+                        )
+                        runner_ids = [r["id"] for r in sorted_runners]
+
+                        def pick_runner(runner_id: str | None) -> None:
+                            _submit(runner_id)
+
+                        self.push_screen(ChoiceScreen("runner", runner_ids), pick_runner)
                     else:
-                        self._client.create_task(repo, workflow, stripped or None)
-                    self.action_refresh()
+                        # 0 or 1 runners: no selector — use the single live runner, or None (local).
+                        preferred = live_runners[0]["id"] if len(live_runners) == 1 else None
+                        _submit(preferred)
 
                 self.push_screen(MemoScreen(auto_submit_default), create)
 

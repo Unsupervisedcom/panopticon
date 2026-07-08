@@ -259,18 +259,19 @@ def test_set_turn_and_blocked(client: TestClient) -> None:
 
 
 def test_claim_release_over_rest(client: TestClient) -> None:
-    task_id = _new_task(client)
+    resp = client.post("/tasks", json={"repo_id": "r1", "workflow": "spike", "preferred_runner_id": "host-1"})
+    task_id = resp.json()["id"]
     assert client.get(f"/tasks/{task_id}").json()["claimed_by"] is None
 
     claimed = client.put(f"/tasks/{task_id}/claim", json={"runner_id": "host-1"})
     assert claimed.status_code == 200 and claimed.json()["claimed_by"] == "host-1"
 
-    # a different runner is refused with 409 while it's held
+    # a different runner is refused with 409 (already claimed by host-1)
     assert client.put(f"/tasks/{task_id}/claim", json={"runner_id": "host-2"}).status_code == 409
 
-    # release frees it; another runner can then claim
+    # release frees it; the preferred runner can reclaim
     assert client.delete(f"/tasks/{task_id}/claim").json()["claimed_by"] is None
-    assert client.put(f"/tasks/{task_id}/claim", json={"runner_id": "host-2"}).json()["claimed_by"] == "host-2"
+    assert client.put(f"/tasks/{task_id}/claim", json={"runner_id": "host-1"}).json()["claimed_by"] == "host-1"
 
 
 # -- artifacts ----------------------------------------------------------------------

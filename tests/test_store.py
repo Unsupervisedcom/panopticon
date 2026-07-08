@@ -467,6 +467,7 @@ def _fully_populated_task() -> Task:
         branch="panopticon/fix-the-widget",
         clone="/clones/t-full",
         claimed_by="local",
+        preferred_runner_id="local",
         tokens_used=87500,
         token_estimate=500_000,
         governor_task_id="t-governor",

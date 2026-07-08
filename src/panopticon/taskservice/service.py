@@ -255,6 +255,7 @@ class TaskService:
         initial_prompt: str | None = None,
         artifacts: dict[str, str] | None = None,
         depends_on_task_ids: list[str] | None = None,
+        preferred_runner_id: str | None = None,
     ) -> Task:
         repo = await self.get_repo(repo_id)  # ensure exists (raises NotFound)
         if governor_task_id is not None:
@@ -267,6 +268,7 @@ class TaskService:
         now = self._clock()
         task = wf.start_task(self._id(), repo_id, at=now, memo=memo, initial_prompt=initial_prompt)
         task.governor_task_id = governor_task_id
+        task.preferred_runner_id = preferred_runner_id
         task.updated_at = now  # creation time = first mutation
         await self._store.create_task(task)
         _log.info("task %s: created (workflow=%s, repo=%s)", task.id, workflow_name, repo_id)
@@ -563,10 +565,18 @@ class TaskService:
         Compare-and-set: succeeds if the task is unclaimed (idempotent if this runner already holds
         it); raises :class:`AlreadyClaimed` if a different runner does. The store is the single
         writer, so the check-and-set is serialized.
+
+        ``preferred_runner_id`` (``None`` treated as ``"local"``) gates which runner may claim:
+        only the designated runner is allowed, so a remote runner cannot steal a local-only task.
         """
         task = await self.get_task(task_id)
         if task.claimed_by not in (None, runner_id):
             raise AlreadyClaimed(f"task {task_id!r} is already claimed by {task.claimed_by!r}")
+        effective = task.preferred_runner_id or "local"
+        if effective != runner_id:
+            raise AlreadyClaimed(
+                f"task {task_id!r} is reserved for runner {effective!r}; {runner_id!r} may not claim it"
+            )
         task.claimed_by = runner_id
         self.clear_lifecycle(task_id)  # drop any stale phase from a prior owner; this spawn re-reports
         await self._save_task(task)

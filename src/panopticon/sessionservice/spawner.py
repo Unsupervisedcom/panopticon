@@ -124,6 +124,9 @@ class Spawner:
         host daemon's per-task isolation still applies but the failure is visible, not silent."""
         if task["state"] in TERMINAL_LABELS or task.get("claimed_by"):
             return None
+        effective_runner = task.get("preferred_runner_id") or "local"
+        if effective_runner != self._runner_id:
+            return None  # task is reserved for a different runner
         try:
             self._client.claim(task["id"], self._runner_id)
         except httpx.HTTPStatusError as exc:
@@ -325,12 +328,17 @@ class Spawner:
         return self._images.build(workflow, repo["id"], layers, verbose=True)
 
 
-def spawnable_tasks(client: TaskServiceClient) -> Callable[[], list[JsonObj]]:
-    """This host's spawn candidates: unclaimed, non-terminal tasks (the runner claims-then-spawns).
+def spawnable_tasks(client: TaskServiceClient, runner_id: str) -> Callable[[], list[JsonObj]]:
+    """This runner's spawn candidates: unclaimed, non-terminal tasks whose effective preferred
+    runner matches ``runner_id``.
 
-    For M1 (single host) that's every such task the service knows; scoping to this runner's own
-    assignments is an M5 refinement.
+    ``preferred_runner_id=None`` is treated as ``"local"`` — only the local runner claims
+    unaddressed tasks; a remote runner only picks up tasks explicitly assigned to it.
     """
-    return lambda: [
-        t for t in client.list_tasks() if not t["claimed_by"] and t["state"] not in TERMINAL_LABELS
-    ]
+    def _is_spawnable(t: JsonObj) -> bool:
+        if t["claimed_by"] or t["state"] in TERMINAL_LABELS:
+            return False
+        effective = t.get("preferred_runner_id") or "local"
+        return effective == runner_id
+
+    return lambda: [t for t in client.list_tasks() if _is_spawnable(t)]

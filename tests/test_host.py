@@ -310,7 +310,7 @@ def test_run_host_spawns_then_provisions_end_to_end(tmp_path: Path) -> None:
     asyncio.run(service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://forge/r1.git", default_base="trunk")))
     with TestClient(create_app(service)) as http:
         client = TaskServiceClient(http)
-        task_id = client.create_task("r1", "spike")["id"]
+        task_id = client.create_task("r1", "spike", preferred_runner_id="host-1")["id"]
         runner = _FakeRunner()
 
         def one_pass() -> Callable[[], bool]:

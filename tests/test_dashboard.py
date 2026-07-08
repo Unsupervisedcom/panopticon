@@ -174,6 +174,9 @@ class _FakeClient:
     def list_operations(self, task_id: str) -> dict[str, str]:
         return self._operations
 
+    def live_runners(self) -> list[dict[str, Any]]:
+        return []  # 0 live runners by default → no runner selector shown
+
     def create_task(
         self,
         repo_id: str,
@@ -181,6 +184,7 @@ class _FakeClient:
         memo: str | None = None,
         *,
         initial_prompt: str | None = None,
+        preferred_runner_id: str | None = None,
     ) -> dict[str, Any]:
         self.created.append((repo_id, workflow, memo, initial_prompt))
         return {"id": "new"}

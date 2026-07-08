@@ -112,7 +112,7 @@ _REPO: JsonObj = {"id": "r1", "git_url": "https://forge/r1.git", "env_file": "/s
 
 def test_spawn_one_claims_then_spawns_a_fresh_task() -> None:
     client, runner = _FakeClient(repo=_REPO), _FakeRunner()
-    cid = _spawner(client, runner).spawn_one({"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": None})
+    cid = _spawner(client, runner).spawn_one({"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": None, "preferred_runner_id": "host-1"})
     assert cid == "panopticon-t1"
     assert client.claims == [("t1", "host-1")]  # claimed for this host first
     assert runner.spawned[0]["workspace"] == "/tasks/t1"  # per-task clone mounted
@@ -125,7 +125,8 @@ def test_spawn_one_passes_initial_prompt_as_env_var() -> None:
     client, runner = _FakeClient(repo=_REPO), _FakeRunner()
     _spawner(client, runner).spawn_one(
         {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING",
-         "claimed_by": None, "memo": "build the thing", "initial_prompt": "review your plan"}
+         "claimed_by": None, "memo": "build the thing", "initial_prompt": "review your plan",
+         "preferred_runner_id": "host-1"}
     )
     assert runner.spawned[0]["initial_prompt"] == "review your plan"
 
@@ -134,7 +135,7 @@ def test_spawn_one_passes_turn_for_interrupt_prompt_on_respawn() -> None:
     client, runner = _FakeClient(repo=_REPO), _FakeRunner()
     _spawner(client, runner).spawn_one(
         {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING",
-         "claimed_by": None, "turn": "agent"}
+         "claimed_by": None, "turn": "agent", "preferred_runner_id": "host-1"}
     )
     assert runner.spawned[0]["turn"] == "agent"
 
@@ -143,7 +144,7 @@ def test_spawn_one_passes_the_docker_in_docker_capability() -> None:
     repo = {**_REPO, "capabilities": {"docker_in_docker": True}}
     client, runner = _FakeClient(repo=repo), _FakeRunner()
     _spawner(client, runner).spawn_one(
-        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": None}
+        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": None, "preferred_runner_id": "host-1"}
     )
     assert runner.spawned[0]["docker_in_docker"] is True  # repo opted in → privileged DinD
 
@@ -172,7 +173,7 @@ def test_spawn_one_composes_the_workflow_image_when_it_has_a_layer() -> None:
         client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
         git=GitClones(run=_no_op_run), images=images, makedirs=lambda _p: None,  # type: ignore[arg-type]
     )
-    spawner.spawn_one({"id": "t1", "repo_id": "r1", "workflow": "github-peer-reviewed", "state": "PLANNING", "claimed_by": None})
+    spawner.spawn_one({"id": "t1", "repo_id": "r1", "workflow": "github-peer-reviewed", "state": "PLANNING", "claimed_by": None, "preferred_runner_id": "host-1"})
     assert images.built == [("github-peer-reviewed", "r1", ["RUN apt-get install --yes gh"])]  # composed base → layer
     assert runner.spawned[0]["image"] == "panopticon-github-peer-reviewed-r1"  # spawned on the composed image
 
@@ -188,7 +189,7 @@ def test_spawn_one_composes_workflow_then_repo_layers() -> None:
         client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
         git=GitClones(run=_no_op_run), images=images, makedirs=lambda _p: None,  # type: ignore[arg-type]
     )
-    spawner.spawn_one({"id": "t1", "repo_id": "r1", "workflow": "github-peer-reviewed", "state": "PLANNING", "claimed_by": None})
+    spawner.spawn_one({"id": "t1", "repo_id": "r1", "workflow": "github-peer-reviewed", "state": "PLANNING", "claimed_by": None, "preferred_runner_id": "host-1"})
     assert images.built == [("github-peer-reviewed", "r1", ["RUN apt-get install --yes gh", "RUN pip install uv"])]
     assert runner.spawned[0]["image"] == "panopticon-github-peer-reviewed-r1"
 
@@ -197,7 +198,7 @@ def test_spawn_one_probes_base_image_during_building_phase() -> None:
     client, runner = _FakeClient(repo=_REPO), _FakeRunner()
     images = _FakeImageBuilder()
     _spawner(client, runner, images=images).spawn_one(
-        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None}
+        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None, "preferred_runner_id": "host-1"}
     )
     assert images.base_checks == 1  # probed exactly once per spawn
 
@@ -205,7 +206,7 @@ def test_spawn_one_probes_base_image_during_building_phase() -> None:
 def test_spawn_one_reports_the_phase_sequence() -> None:
     client, runner = _FakeClient(repo=_REPO), _FakeRunner()
     _spawner(client, runner).spawn_one(
-        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None}
+        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None, "preferred_runner_id": "host-1"}
     )
     # claiming → preparing → building (in spawn_one), then starting → awaiting (from the runner)
     assert [p for _, p, _ in client.phases] == ["claiming", "preparing", "building", "starting", "awaiting"]
@@ -220,7 +221,7 @@ def test_spawn_one_reports_failed_with_the_error_when_a_step_raises() -> None:
     client = _FakeClient(repo=_REPO)
     with pytest.raises(RuntimeError):
         _spawner(client, _BoomRunner()).spawn_one(
-            {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None}
+            {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None, "preferred_runner_id": "host-1"}
         )
     last_task, last_phase, last_detail = client.phases[-1]
     assert (last_task, last_phase) == ("t1", "failed")
@@ -440,10 +441,20 @@ def test_spawn_one_skips_terminal_and_already_claimed_tasks() -> None:
     assert client.claims == [] and runner.spawned == []
 
 
+def test_spawn_one_skips_tasks_reserved_for_a_different_runner() -> None:
+    # preferred_runner_id="remote-1" but this spawner is "host-1" → no claim attempt.
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner()
+    result = _spawner(client, runner).spawn_one(
+        {"id": "t1", "repo_id": "r1", "state": "ITERATING", "claimed_by": None, "preferred_runner_id": "remote-1"}
+    )
+    assert result is None
+    assert client.claims == []  # never tried to claim
+
+
 def test_spawn_one_skips_when_another_runner_wins_the_claim() -> None:
     client, runner = _FakeClient(repo=_REPO), _FakeRunner()
     client.hold("t1", "host-2")  # another runner grabbed it between our snapshot and claim
-    assert _spawner(client, runner).spawn_one({"id": "t1", "repo_id": "r1", "state": "ITERATING", "claimed_by": None}) is None
+    assert _spawner(client, runner).spawn_one({"id": "t1", "repo_id": "r1", "state": "ITERATING", "claimed_by": None, "preferred_runner_id": "host-1"}) is None
     assert runner.spawned == []  # 409 → no spawn
 
 
@@ -451,12 +462,25 @@ def test_spawnable_tasks_filters_unclaimed_non_terminal() -> None:
     class _Lister:
         def list_tasks(self) -> list[JsonObj]:
             return [
-                {"id": "a", "state": "ITERATING", "claimed_by": None},  # spawnable
-                {"id": "b", "state": "ITERATING", "claimed_by": "host-1"},  # already claimed
+                {"id": "a", "state": "ITERATING", "claimed_by": None, "preferred_runner_id": None},  # spawnable (local)
+                {"id": "b", "state": "ITERATING", "claimed_by": "local"},  # already claimed
                 {"id": "c", "state": "COMPLETE", "claimed_by": None},  # terminal
+                {"id": "d", "state": "ITERATING", "claimed_by": None, "preferred_runner_id": "remote-1"},  # other runner
             ]
 
-    assert [t["id"] for t in spawnable_tasks(_Lister())()] == ["a"]  # type: ignore[arg-type]
+    assert [t["id"] for t in spawnable_tasks(_Lister(), "local")()] == ["a"]  # type: ignore[arg-type]
+
+
+def test_spawnable_tasks_remote_runner_only_sees_its_tasks() -> None:
+    class _Lister:
+        def list_tasks(self) -> list[JsonObj]:
+            return [
+                {"id": "a", "state": "ITERATING", "claimed_by": None, "preferred_runner_id": None},  # local-only
+                {"id": "b", "state": "ITERATING", "claimed_by": None, "preferred_runner_id": "remote-1"},  # this runner
+                {"id": "c", "state": "ITERATING", "claimed_by": None, "preferred_runner_id": "remote-2"},  # other runner
+            ]
+
+    assert [t["id"] for t in spawnable_tasks(_Lister(), "remote-1")()] == ["b"]  # type: ignore[arg-type]
 
 
 def test_spawn_runs_repo_hook_with_correct_args() -> None:
@@ -473,7 +497,7 @@ def test_spawn_runs_repo_hook_with_correct_args() -> None:
         git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
         run_hook=_fake_hook, makedirs=lambda _p: None,
     )
-    spawner.spawn_one({"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None})
+    spawner.spawn_one({"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None, "preferred_runner_id": "host-1"})
     assert calls == [("/hooks/acme.sh", "t1", "acme/widgets", "/tasks/t1")]
     assert runner.spawned  # container still spawned after the hook
 
@@ -491,7 +515,7 @@ def test_spawn_hook_failure_aborts_spawn() -> None:
         run_hook=_boom, makedirs=lambda _p: None,
     )
     with pytest.raises(RuntimeError, match="hook exited 1"):
-        spawner.spawn_one({"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None})
+        spawner.spawn_one({"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None, "preferred_runner_id": "host-1"})
     assert not runner.spawned  # docker run was never called
     assert any(p == "failed" for _, p, _ in client.phases)  # reported as FAILED
 
@@ -506,7 +530,7 @@ def test_spawn_skips_hook_when_repo_has_no_hook_file() -> None:
         git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
         run_hook=lambda *a: calls.append(a), makedirs=lambda _p: None,
     )
-    spawner.spawn_one({"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None})
+    spawner.spawn_one({"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None, "preferred_runner_id": "host-1"})
     assert not calls  # hook never invoked
     assert runner.spawned  # container spawned normally
 
@@ -517,7 +541,8 @@ def test_spawner_against_the_real_service(tmp_path: Path) -> None:
     asyncio.run(service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://forge/r1.git")))
     with TestClient(create_app(service)) as http:
         client = TaskServiceClient(http)
-        task_id = client.create_task("r1", "spike")["id"]
+        # Create with preferred_runner_id="host-1" so the spawner (runner_id="host-1") can claim it.
+        task_id = client.create_task("r1", "spike", preferred_runner_id="host-1")["id"]
         runner = _FakeRunner()
         spawner = Spawner(
             client, runner, runner_id="host-1",  # type: ignore[arg-type]
@@ -525,7 +550,7 @@ def test_spawner_against_the_real_service(tmp_path: Path) -> None:
             git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
             makedirs=lambda _p: None,
         )
-        (task,) = spawnable_tasks(client)()  # the fresh task is spawnable
+        (task,) = spawnable_tasks(client, "host-1")()  # the fresh task is spawnable for host-1
         assert spawner.spawn_one(task) == f"panopticon-{task_id}"
         assert client.get_task(task_id)["claimed_by"] == "host-1"  # claim recorded on the service
-        assert spawnable_tasks(client)() == []  # now claimed → no longer spawnable
+        assert spawnable_tasks(client, "host-1")() == []  # now claimed → no longer spawnable
