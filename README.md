@@ -2,20 +2,24 @@
 
 **Mission control for a fleet of coding agents.**
 
-Panopticon helps you delegate work to many agents while staying in the loop on each of
-them. Agents move back and forth between autonomous work and moments where they need your
-input; without a single place to watch them, a fleet drifts idle and the work in progress
-becomes impossible to track. Panopticon gives you that place.
+Panopticon is for developers who delegate real work to a fleet of agents but stay in the
+loop — reviewing what merges, not shipping unread output. Agents move back and forth
+between working on their own and needing your input; without one place to watch them, the
+fleet stalls waiting on you and you lose track of which agent is on which branch. Panopticon
+gives you that place.
 
-- **A live dashboard** of all your tasks — who's working, who's waiting on you.
-- **Configurable workflows** that set the boundary between what an agent may do alone and
-  what requires your sign-off.
-- **Frictionless task creation** — isolated containers, managed branches, and per-repo
-  secrets and environment, out of the box.
-- **Reflection** — agents that help you plan tasks and recap completed ones.
+- **A live dashboard** of all your tasks — which agents are working, and which are blocked
+  waiting on you — so you stop cycling through terminals to find the one that's stuck.
+- **Configurable workflows** that set the line between what an agent may do alone and what
+  needs your sign-off — so agents run unattended without running unchecked. Other tools show
+  you which agent is blocked; Panopticon decides when it blocks.
+- **Sandboxed by default** — each agent works in its own container on its own branch
+  (secrets and environment handled per repo), so it can work freely and nothing reaches
+  main without your review.
 
-Self-hosted and model/CLI-agnostic — your infrastructure, your secrets, your repos. A
-ground-up rewrite of the [cloude-cade](https://github.com/tildesrc/cloude-cade) prototype.
+Self-hosted, terminal-native, and model/CLI-agnostic — your infrastructure, your secrets,
+your repos. A ground-up rewrite of the [cloude-cade](https://github.com/tildesrc/cloude-cade)
+prototype.
 
 ## Architecture in one paragraph
 
