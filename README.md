@@ -1,12 +1,10 @@
 # panopticon
 
-**Mission control for a fleet of coding agents.**
+**Agents write the code, you own what ships.**
 
-Panopticon is for developers who delegate real work to a fleet of agents but stay in the
-loop — reviewing what merges, not shipping unread output. Agents move back and forth
-between working on their own and needing your input; without one place to watch them, the
-fleet stalls waiting on you and you lose track of which agent is on which branch. Panopticon
-gives you that place.
+That's easy with one agent. Run a fleet of them and it breaks down: the fleet stalls
+waiting on you, and you lose track of which agent is doing what. Panopticon gives you
+one place to watch them all.
 
 - **A live dashboard** of all your tasks — which agents are working, and which are blocked
   waiting on you — so you stop cycling through terminals to find the one that's stuck.
