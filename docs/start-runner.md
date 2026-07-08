@@ -1,20 +1,40 @@
-# `panopticon start-runner` — remote session service over SSH
+# `panopticon start-runner` — start a session-service runner
 
-`panopticon start-runner <host>` SSHes to a remote machine, opens a reverse
-port forward so the remote runner (and its containers) can reach the local task
-service, and starts `panopticon.sessionservice.host` there.  The SSH session IS
-the tunnel — closing it stops the runner.
+`panopticon start-runner` starts a `panopticon.sessionservice.host` runner,
+either locally (`--local`) or on a remote machine via SSH.
+
+```
+panopticon start-runner --local          # start a runner on this machine
+panopticon start-runner <host>           # SSH to <host> and start a runner there
+```
 
 ## Overview
 
-The command solves one problem: the task service runs on the operator's machine
-(or a known host), but compute may be on a remote machine.  A reverse port
-forward means the remote machine never needs an inbound connection to the local
-host — only a normal outbound SSH connection.
+The command gives operators a single entry point for all runner lifecycle.
+`--local` replaces the direct `python -m panopticon.sessionservice.host` call
+(used by `make start`) and ensures the runner registers with no hostname, so
+locally-claimed tasks attach without triggering an unnecessary SSH hop.
+
+The remote form (no `--local`) solves a different problem: compute on another
+machine.  A reverse port forward means the remote machine only needs a normal
+outbound SSH connection — no inbound access to the task service required.
 
 ## Modes
 
-### Tunnel mode (default)
+### Local mode (`--local`)
+
+```
+panopticon start-runner --local
+```
+
+Starts the session service on the current machine.  No SSH is used.  The runner
+registers with no hostname (`--host ""`), so locally-claimed tasks attach
+without SSH.  `make start` uses this form.
+
+`--python` defaults to `sys.executable` (the interpreter running the CLI), so
+the same virtual environment is reused automatically.
+
+### Remote — Tunnel mode (default)
 
 ```
 panopticon start-runner myhost
@@ -57,7 +77,7 @@ ssh \
     --cache-root ~/.panopticon/cache
 ```
 
-### Direct mode (`--no-tunnel`)
+### Remote — Direct mode (`--no-tunnel`)
 
 For deployments where the task service is on a routable LAN address:
 
@@ -75,19 +95,23 @@ direct mode.
 
 | Flag | Default | Description |
 |---|---|---|
-| `--service-url URL` | `$PANOPTICON_SERVICE_URL` or `http://localhost:8000` | Local task service URL to expose to the remote runner |
-| `--remote-port PORT` | same as local port | Port forwarded on the remote host |
-| `--runner-id ID` | `<host>` | Runner id the remote session service registers as |
-| `--container-service-url URL` | derived (tunnel: `host.docker.internal:<port>`, direct: `--service-url`) | URL injected into containers to reach the task service |
-| `--no-tunnel` | off | Skip the reverse port forward |
-| `--image IMAGE` | `panopticon-base` | Task container image on the remote host |
-| `--tasks-root PATH` | `~/.panopticon/tasks` | Remote tasks root directory |
-| `--cache-root PATH` | `~/.panopticon/cache` | Remote cache root directory |
-| `--python CMD` | `python3` | Python interpreter on the remote host; multi-word values are split (e.g. `uv run python`) |
+| `--local` | off | Run on this machine (no SSH) |
+| `--service-url URL` | `$PANOPTICON_SERVICE_URL` or `http://localhost:8000` | Task service URL |
+| `--remote-port PORT` | same as local port | Port forwarded on the remote host (remote only) |
+| `--runner-id ID` | `<host>` or `local` | Runner id to register as |
+| `--container-service-url URL` | derived | URL injected into containers |
+| `--no-tunnel` | off | Skip the reverse port forward (remote only) |
+| `--image IMAGE` | `panopticon-base` | Task container image |
+| `--tasks-root PATH` | `~/.panopticon/tasks` | Tasks root directory |
+| `--cache-root PATH` | `~/.panopticon/cache` | Cache root directory |
+| `--python CMD` | `sys.executable` (local) / `python3` (remote) | Python interpreter; multi-word values are split (e.g. `uv run python`) |
 
 ## Keeping the runner alive
 
-The SSH session is the tunnel.  Run `panopticon start-runner` in a persistent
+For a local runner, `make start` manages the lifecycle automatically via the
+`runner` tmux session on the `panopticon` socket.
+
+For a remote runner, the SSH session IS the tunnel.  Run it in a persistent
 tmux pane alongside `make start`:
 
 ```

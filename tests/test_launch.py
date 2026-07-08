@@ -247,3 +247,74 @@ def test_start_runner_direct_mode_explicit_container_url() -> None:
     cmd = received[0]
     cu_idx = cmd.index("--container-service-url")
     assert cmd[cu_idx + 1] == "http://10.0.1.5:9000"
+
+
+# ---------------------------------------------------------------------------
+# start_runner — local mode
+# ---------------------------------------------------------------------------
+
+
+def test_start_runner_local_mode_no_ssh() -> None:
+    received: list[list[str]] = []
+    start_runner(local=True, local_service_url="http://localhost:8000", run=received.append)
+    cmd = received[0]
+    assert "ssh" not in cmd
+    assert "-R" not in cmd
+
+
+def test_start_runner_local_mode_runner_id_defaults_to_local() -> None:
+    received: list[list[str]] = []
+    start_runner(local=True, local_service_url="http://localhost:8000", run=received.append)
+    cmd = received[0]
+    ri_idx = cmd.index("--runner-id")
+    assert cmd[ri_idx + 1] == "local"
+
+
+def test_start_runner_local_mode_host_is_empty_string() -> None:
+    """Empty --host means runner_host=null so local-task attach never SSH-wraps."""
+    received: list[list[str]] = []
+    start_runner(local=True, local_service_url="http://localhost:8000", run=received.append)
+    cmd = received[0]
+    h_idx = cmd.index("--host")
+    assert cmd[h_idx + 1] == ""
+
+
+def test_start_runner_local_mode_uses_sys_executable_by_default() -> None:
+    import sys
+    received: list[list[str]] = []
+    start_runner(local=True, local_service_url="http://localhost:8000", run=received.append)
+    cmd = received[0]
+    assert cmd[0] == sys.executable
+
+
+def test_start_runner_local_mode_python_override() -> None:
+    received: list[list[str]] = []
+    start_runner(
+        local=True,
+        local_service_url="http://localhost:8000",
+        python="python3",
+        run=received.append,
+    )
+    cmd = received[0]
+    assert cmd[0] == "python3"
+
+
+def test_start_runner_local_mode_container_url_defaults_to_docker_internal() -> None:
+    received: list[list[str]] = []
+    start_runner(local=True, local_service_url="http://localhost:9000", run=received.append)
+    cmd = received[0]
+    cu_idx = cmd.index("--container-service-url")
+    assert cmd[cu_idx + 1] == "http://host.docker.internal:9000"
+
+
+def test_start_runner_local_mode_custom_runner_id() -> None:
+    received: list[list[str]] = []
+    start_runner(
+        local=True,
+        local_service_url="http://localhost:8000",
+        runner_id="my-local",
+        run=received.append,
+    )
+    cmd = received[0]
+    ri_idx = cmd.index("--runner-id")
+    assert cmd[ri_idx + 1] == "my-local"

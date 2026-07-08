@@ -49,13 +49,24 @@ def main(
 
     sr = sub.add_parser(
         "start-runner",
-        help="SSH to a remote host and start the session service there (with reverse tunnel)",
+        help="start a session-service runner locally (--local) or on a remote host via SSH",
     )
-    sr.add_argument("host", help="remote host to SSH to")
+    sr.add_argument(
+        "host",
+        nargs="?",
+        default=None,
+        help="remote host to SSH to (omit when using --local)",
+    )
+    sr.add_argument(
+        "--local",
+        action="store_true",
+        help="run the session service on this machine instead of SSH-ing to a remote host; "
+             "registers with no hostname so locally-claimed tasks attach without SSH",
+    )
     sr.add_argument(
         "--service-url",
         default=os.environ.get("PANOPTICON_SERVICE_URL", DEFAULT_SERVICE_URL),
-        help="local task service URL to expose to the remote runner (default: $PANOPTICON_SERVICE_URL or http://localhost:8000)",
+        help="task service URL (default: $PANOPTICON_SERVICE_URL or http://localhost:8000)",
     )
     sr.add_argument(
         "--remote-port",
@@ -68,7 +79,7 @@ def main(
         "--runner-id",
         default=None,
         metavar="ID",
-        help="runner id to register as (default: <host>)",
+        help="runner id to register as (default: <host>, or 'local' with --local)",
     )
     sr.add_argument(
         "--container-service-url",
@@ -85,32 +96,38 @@ def main(
     sr.add_argument(
         "--image",
         default=DEFAULT_IMAGE,
-        help=f"task container image on the remote host (default: {DEFAULT_IMAGE})",
+        help=f"task container image (default: {DEFAULT_IMAGE})",
     )
     sr.add_argument(
         "--tasks-root",
         default=DEFAULT_TASKS_ROOT,
         metavar="PATH",
-        help=f"remote tasks root directory (default: {DEFAULT_TASKS_ROOT})",
+        help=f"tasks root directory (default: {DEFAULT_TASKS_ROOT})",
     )
     sr.add_argument(
         "--cache-root",
         default=DEFAULT_CACHE_ROOT,
         metavar="PATH",
-        help=f"remote cache root directory (default: {DEFAULT_CACHE_ROOT})",
+        help=f"cache root directory (default: {DEFAULT_CACHE_ROOT})",
     )
     sr.add_argument(
         "--python",
-        default=DEFAULT_PYTHON,
+        default=None,
         metavar="CMD",
-        help=f"Python interpreter on the remote host; multi-word values are split (e.g. 'uv run python') (default: {DEFAULT_PYTHON})",
+        help=f"Python interpreter; multi-word values are split (e.g. 'uv run python') "
+             f"(default: sys.executable with --local, {DEFAULT_PYTHON} for remote)",
     )
 
     args = parser.parse_args(argv)
 
     if args.command == "start-runner":
+        if args.local and args.host:
+            sr.error("--local and host are mutually exclusive")
+        if not args.local and not args.host:
+            sr.error("host is required unless --local is specified")
         start_runner(
             args.host,
+            local=args.local,
             local_service_url=args.service_url,
             remote_port=args.remote_port,
             runner_id=args.runner_id,
