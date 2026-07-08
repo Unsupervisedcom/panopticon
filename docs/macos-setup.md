@@ -42,7 +42,10 @@ make sync
 # 4. Build the base task-container image
 make build
 
-# 5. Bring everything up
+# 5. Run preflight checks to verify the full environment
+make doctor
+
+# 6. Bring everything up
 make start
 ```
 
@@ -63,5 +66,5 @@ make stop   # kills task containers and the -L panopticon tmux server
 - **Docker-in-Docker** (`capabilities.docker_in_docker`) uses `--privileged`, which Docker Desktop
   supports. On Apple Silicon, if the task image is `linux/amd64`-only, disable "Use Rosetta for
   x86/amd64 emulation" in Docker Desktop settings or rebuild for `arm64`.
-- **tmux must be installed** before `make start`. If it is missing, the session launches will
-  silently fail.
+- **tmux must be installed** before `make start`. Run `panopticon doctor` (or `make doctor`) to
+  diagnose a missing tmux and other common setup issues before they cause silent failures.

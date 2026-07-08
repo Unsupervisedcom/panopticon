@@ -37,10 +37,15 @@ def main(
     # the operator picked with `t` by writing it here instead of returning it in-process.
     dash.add_argument("--switch-file", help=argparse.SUPPRESS)
     sub.add_parser("tasks", help="list tasks as plain text")
+    sub.add_parser("doctor", help="preflight: verify Docker, tmux, base image, task service, and repo tokens")
     args = parser.parse_args(argv)
 
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
-    if args.command == "tasks":
+    if args.command == "doctor":
+        from panopticon.terminal.doctor import run_doctor
+
+        return run_doctor(client.list_repos(), service_url=args.service_url)
+    elif args.command == "tasks":
         for t in client.list_tasks():
             print(f"{t['id']}  {t['state']:<10}  {t['turn']:<5}  {t['slug'] or '-'}")
     elif args.command == "dashboard":

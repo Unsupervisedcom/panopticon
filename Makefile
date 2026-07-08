@@ -1,6 +1,6 @@
 # panopticon — dev tasks. Thin wrappers over `uv`/`docker`; see CLAUDE.md for details.
 .DEFAULT_GOAL := help
-.PHONY: help sync test typecheck check serve dashboard host start stop build clean migrate migrate-revision
+.PHONY: help sync test typecheck check serve dashboard host start stop build clean migrate migrate-revision doctor
 
 #: The base task-container image (ADR 0005 base layer); must match DEFAULT_IMAGE.
 IMAGE ?= panopticon-base
@@ -44,6 +44,9 @@ start: host  ## Run panopticon: task service + session-service runner (backgroun
 stop:  ## Stop everything `make start` started: the task containers + the -L panopticon tmux server
 	-docker ps --all --quiet --filter label=panopticon.task | { ids=$$(cat); [ -z "$$ids" ] || docker rm --force $$ids; }
 	-tmux -L panopticon kill-server 2>/dev/null
+
+doctor:  ## Run preflight checks (Docker, tmux, base image, task service, repo tokens)
+	uv run panopticon doctor
 
 build:  ## Build the base task-container image (override with IMAGE=)
 	docker build --tag $(IMAGE) --file docker/Dockerfile .

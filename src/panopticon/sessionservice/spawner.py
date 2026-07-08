@@ -30,6 +30,47 @@ from panopticon.sessionservice.spawn import prepare_workspace
 _log = logging.getLogger(__name__)
 
 
+def _read_text(path: str) -> str:
+    return Path(path).read_text()
+
+
+def _check_env_file_token(
+    env_file: str,
+    *,
+    read_env_file: Callable[[str], str],
+) -> None:
+    """Raise RuntimeError with a legible message if the env_file has no recognisable auth token.
+
+    Called before spawning so a missing token surfaces as FAILED (not a silently idle container).
+    A blank or absent token means the agent inside will get a 401 immediately — catching it here
+    means the dashboard shows the real problem instead of a task that starts and then does nothing.
+    """
+    try:
+        content = read_env_file(env_file)
+    except OSError as exc:
+        raise RuntimeError(
+            f"env_file not found: {env_file} — run 'panopticon doctor' to diagnose"
+        ) from exc
+
+    tokens: dict[str, str] = {}
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "=" in stripped:
+            key, _, value = stripped.partition("=")
+            tokens[key.strip()] = value.strip()
+
+    for key in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"):
+        if tokens.get(key):
+            return  # found a non-blank token — enough to proceed
+
+    raise RuntimeError(
+        f"No CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY found in env_file {env_file} "
+        f"— run 'panopticon doctor' to diagnose"
+    )
+
+
 def _run_repo_hook(hook_file: str, task_id: str, repo_name: str, workspace: str) -> None:
     """Run a repo's pre-launch hook on the host (blocking). Raises on nonzero exit.
 
@@ -94,6 +135,7 @@ class Spawner:
         now: Callable[[], float] = time.monotonic,
         max_respawns: int = MAX_RESPAWNS,
         respawn_reset: float = RESPAWN_RESET_SECONDS,
+        read_env_file: Callable[[str], str] = _read_text,
     ) -> None:
         self._client = client
         self._runner = runner
@@ -105,6 +147,7 @@ class Spawner:
         self._run_hook = run_hook or _run_repo_hook
         self._makedirs = makedirs
         self._now = now
+        self._read_env_file = read_env_file
         self._max_respawns = max_respawns
         self._respawn_reset = respawn_reset
         #: task_id → (respawns in the current burst, monotonic time of the last respawn), the
@@ -153,6 +196,8 @@ class Spawner:
             )
             if hook_file := repo.get("hook_file"):
                 self._run_hook(hook_file, task_id, repo["name"], workspace)
+            if env_file := repo.get("env_file"):
+                _check_env_file_token(env_file, read_env_file=self._read_env_file)
             _log.info("task %s: building image (workflow=%s, repo=%s)", task_id, task["workflow"], repo.get("name", repo["id"]))
             self._report(task_id, LifecyclePhase.BUILDING)
             self._images.build_base_if_missing(verbose=True)
