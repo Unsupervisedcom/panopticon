@@ -1,6 +1,6 @@
 # panopticon — dev tasks. Thin wrappers over `uv`/`docker`; see CLAUDE.md for details.
 .DEFAULT_GOAL := help
-.PHONY: help sync test typecheck check serve dashboard host start stop build clean migrate migrate-revision
+.PHONY: help sync test typecheck check serve dashboard host start bootstrap demo stop build clean migrate migrate-revision
 
 #: The base task-container image (ADR 0005 base layer); must match DEFAULT_IMAGE.
 IMAGE ?= panopticon-base
@@ -32,6 +32,8 @@ dashboard:  ## Launch the dashboard (foreground; no tmux)
 	uv run panopticon dashboard
 
 host: migrate  ## Start task service + session-service host in background tmux sessions (no console; use for CI or headless ops)
+	# Build the base image when it's missing so a spawn never fails silently mid-run.
+	docker image inspect $(IMAGE) > /dev/null 2>&1 || $(MAKE) build
 	# Always kill-and-recreate so a crashed process doesn't leave a stale session that make host silently reuses.
 	tmux -L panopticon kill-session -t service 2>/dev/null || true
 	tmux -L panopticon new-session -d -s service 'uv run python -m panopticon.taskservice 2>&1 | tee /tmp/panopticon-service.log'
@@ -40,6 +42,12 @@ host: migrate  ## Start task service + session-service host in background tmux s
 
 start: host  ## Run panopticon: task service + session-service runner (background) + dashboard supervisor
 	uv run panopticon console
+
+bootstrap: host  ## One-command bootstrap: build base image if missing (streaming), migrate DB, bring up all services
+	uv run panopticon console
+
+demo:  ## Register a throwaway local repo and create two spike tasks (≥ 2 agents working at once; no forge required)
+	uv run panopticon demo
 
 stop:  ## Stop everything `make start` started: the task containers + the -L panopticon tmux server
 	-docker ps --all --quiet --filter label=panopticon.task | { ids=$$(cat); [ -z "$$ids" ] || docker rm --force $$ids; }

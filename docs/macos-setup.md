@@ -1,5 +1,8 @@
 # macOS developer setup
 
+> The cross-OS getting-started guide lives in the [README](../README.md#getting-started).
+> This page covers macOS-specific details and known limitations.
+
 This guide covers what you need to run panopticon on macOS.
 
 ## Prerequisites

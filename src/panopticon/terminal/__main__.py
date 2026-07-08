@@ -3,6 +3,8 @@
 `panopticon` (or `panopticon console`) runs the session supervisor (ADR 0009): the dashboard,
 plus handing the terminal to a task's tmux on `t` and rejoining on detach. `panopticon dashboard`
 runs the dashboard once without the attach loop; `panopticon tasks` lists tasks as plain text.
+`panopticon bootstrap` ensures the base image is built (streaming progress) then opens the console.
+`panopticon demo` registers a throwaway local repo and creates two spike tasks — no forge needed.
 """
 
 from __future__ import annotations
@@ -32,6 +34,8 @@ def main(
     )
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("console", help="session supervisor: dashboard + attach loop (default)")
+    sub.add_parser("bootstrap", help="build base image if missing (streaming), then open console")
+    sub.add_parser("demo", help="register a sample repo + two spike tasks (no forge required)")
     dash = sub.add_parser("dashboard", help="run the dashboard once, without the attach loop")
     # Set by the supervisor (ADR 0009): the dashboard runs inside tmux, so it reports the session
     # the operator picked with `t` by writing it here instead of returning it in-process.
@@ -40,7 +44,18 @@ def main(
     args = parser.parse_args(argv)
 
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
-    if args.command == "tasks":
+    if args.command == "bootstrap":
+        from panopticon.terminal.bootstrap import Bootstrap
+        b = Bootstrap()
+        built = b.ensure_image("panopticon-base")
+        if not built:
+            print("Base image already present — skipping build.")
+        from panopticon.terminal.console import run_console_local
+        run_console_local(args.service_url)
+    elif args.command == "demo":
+        from panopticon.terminal.demo import run_demo
+        run_demo(args.service_url, client=client)
+    elif args.command == "tasks":
         for t in client.list_tasks():
             print(f"{t['id']}  {t['state']:<10}  {t['turn']:<5}  {t['slug'] or '-'}")
     elif args.command == "dashboard":
