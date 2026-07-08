@@ -15,7 +15,7 @@ one place to watch them all.
   (secrets and environment handled per repo), so it can work freely and nothing reaches
   main without your review.
 
-Self-hosted, terminal-native, and model/CLI-agnostic — your infrastructure, your secrets,
+Self-hosted and terminal-native — your infrastructure, your secrets,
 your repos. A ground-up rewrite of the [cloude-cade](https://github.com/tildesrc/cloude-cade)
 prototype.
 
