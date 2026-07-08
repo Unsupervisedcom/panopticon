@@ -15,7 +15,7 @@ from panopticon.core.artifacts import ArtifactStore, InvalidArtifactName, valida
 
 #: Default artifact-store root. Shared so the task service and any co-located reader (e.g. the
 #: dashboard's open-in-place) resolve the same location from one source rather than copied literals.
-DEFAULT_ARTIFACTS = "./artifacts"
+DEFAULT_ARTIFACTS = str(Path.home() / ".panopticon" / "artifacts")
 
 
 class FilesystemArtifactStore(ArtifactStore):

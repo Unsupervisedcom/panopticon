@@ -17,6 +17,7 @@ import argparse
 import logging
 import os
 from collections.abc import Sequence
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
@@ -28,7 +29,7 @@ from panopticon.taskservice.service import TaskService
 from panopticon.taskservice.store_sqlalchemy import SqlAlchemyStore
 from panopticon.workflows.discovery import discover_workflows
 
-DEFAULT_DB = "sqlite:///panopticon.db"
+DEFAULT_DB = "sqlite:///" + str(Path.home() / ".panopticon" / "panopticon.db")
 
 
 def build_app(
@@ -75,6 +76,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         help="extra directory to discover Workflow subclasses in (beyond the built-ins)",
     )
     args = parser.parse_args(argv)
+    (Path.home() / ".panopticon").mkdir(parents=True, exist_ok=True)
     app = build_app(
         db=args.db, artifacts_root=args.artifacts, layers_root=args.layers,
         workflows_path=args.workflows_path,

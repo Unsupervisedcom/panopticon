@@ -15,7 +15,7 @@ from panopticon.core.layers import InvalidLayerName, LayerStore
 
 #: Default layers-store root. Shared so the task service resolves one location from a single
 #: source rather than copied literals.
-DEFAULT_LAYERS = "./layers"
+DEFAULT_LAYERS = str(Path.home() / ".panopticon" / "layers")
 
 
 class FilesystemLayerStore(LayerStore):
