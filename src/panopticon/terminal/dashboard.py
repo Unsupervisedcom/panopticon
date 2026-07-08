@@ -1163,7 +1163,8 @@ class Dashboard(App[None]):
         table.focus()  # the (hidden) search Input would otherwise grab initial focus
         self._load_repo_names()
         self.action_refresh()  # first paint; the feed worker drives every refresh after
-        if not self._has_repos():  # first-run nudge: no repos → drop straight into the repo screen
+        _onboarded = Path.home() / ".panopticon" / ".onboarded"
+        if not self._has_repos() and not _onboarded.exists():  # first-run nudge: no repos → repo screen (suppressed when scripts/onboard ran)
             self.action_repos()
         if self._refresh_interval:
             self._watch_feed()

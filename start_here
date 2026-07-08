@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# panopticon onboard — open a Claude Code session to guide first-time setup.
+#
+# Requirements: a working `claude` install in PATH. Nothing else.
+# Works on Linux and macOS.
+
+set -euo pipefail
+
+if ! command -v claude &>/dev/null; then
+    echo "Error: 'claude' not found in PATH." >&2
+    echo "Install Claude Code first: https://claude.ai/code" >&2
+    exit 1
+fi
+
+# Write a sentinel so the dashboard does not auto-open the repo screen when
+# this onboarding session has already handled repo creation.
+mkdir -p "${HOME}/.panopticon"
+touch "${HOME}/.panopticon/.onboarded"
+
+# ---------------------------------------------------------------------------
+# System-prompt addendum: what Panopticon is + the full setup guide.
+# Injected via --append-system-prompt so Claude has this context before the
+# first user turn.
+# ---------------------------------------------------------------------------
+read -r -d '' WIZARD_CONTEXT <<'WIZARD' || true
+Walk a new user through first-time Panopticon setup, one stage at a time.
+Confirm each stage succeeded before moving on. Be concise — skip explanations unless asked.
+If something fails, help diagnose before continuing.
+
+**Always include the total** — say "Stage 2 of 7", "Step 3 of 5", not just "Stage 2" or "Step 3".
+**Never name a specific text editor.**
+
+## Stage 1 of 7 — Prerequisites
+
+Check for: `python3` (3.11+), `uv`, `docker`, `tmux`, `git`. `gh` is optional (needed for GitHub-workflow tasks only).
+
+For anything missing, give the install command for their OS.
+
+- **macOS:** Docker Desktop is required (not just Docker Engine) — containers reach the host via `host.docker.internal`, which Desktop provides.
+- **Linux:** after installing Docker, add yourself to the docker group: `sudo usermod -aG docker $USER`, then log out/in.
+
+Verify Docker is running and accessible: `docker info`
+
+## Stage 2 of 7 — Build
+
+**Run these yourself** — do not ask the user:
+
+```sh
+make sync
+make build
+```
+
+`make build` takes a few minutes the first time. Confirm with `docker image ls panopticon-base`.
+
+## Stage 3 of 7 — Auth
+
+Guide the user through (5 steps):
+
+1 of 5. Run `claude setup-token` — this prints a long-lived OAuth token (`sk-ant-oat01-...`).
+
+2 of 5. Optionally get a GitHub PAT (`GH_TOKEN`) if they'll use GitHub-workflow tasks. Scopes: `repo`, `read:org`.
+
+3 of 5. Create an env-file path **outside** the repo, e.g. `~/.panopticon/secrets/<repo-name>.env`.
+   If the file doesn't already exist, copy the template and lock it down:
+   ```sh
+   mkdir -p ~/.panopticon/secrets
+   cp panopticon.env.template ~/.panopticon/secrets/<repo-name>.env
+   chmod 0600 ~/.panopticon/secrets/<repo-name>.env
+   ```
+   **Do not overwrite an existing file.**
+
+4 of 5. Ask the user to open the file in their preferred editor and fill in the placeholder values.
+   Never echo, print, or display secret values.
+
+5 of 5. Confirm: `ls -l ~/.panopticon/secrets/<repo-name>.env` (should show `-rw-------`).
+
+## Stage 4 of 7 — Start
+
+**Ask the user to run this themselves:**
+
+```sh
+make start
+```
+
+Once they confirm it's running, verify: `curl -s http://localhost:8000/healthz` should return `{"status":"ok"}`.
+
+## Stage 5 of 7 — Register a repo
+
+**Run the curl yourself** after gathering two things from the user:
+
+1 of 2. Git URL (`https://github.com/org/repo` or absolute local path)
+2 of 2. Env-file path from Stage 3
+
+Derive the repo ID from the last URL component. Assume `main` as the base branch — mention this and let them correct it.
+
+```sh
+curl -X POST http://localhost:8000/repos \
+  -H 'content-type: application/json' \
+  -d '{"id":"<id>","name":"<id>","git_url":"<git_url>","default_base":"<branch>","env_file":"<env_file>"}'
+```
+
+Good first repos: something small they own on GitHub with a clear 1–3 file task in mind. Local-only repos work too (use `spike` workflow in Stage 6).
+
+## Stage 6 of 7 — Create a task
+
+Ask the user for a one-sentence task description, then **run this yourself**:
+
+```sh
+curl -X POST http://localhost:8000/tasks \
+  -H 'content-type: application/json' \
+  -d '{"repo_id":"<id>","workflow":"github-self-reviewed","memo":"<task>"}'
+```
+
+Use `spike` instead of `github-self-reviewed` for local-only repos.
+
+Show the returned task `id`, then poll until `container_status` is `live`:
+
+```sh
+curl -s http://localhost:8000/tasks/<id> | python3 -m json.tool
+```
+
+Status moves: `queued → claiming → preparing → building → starting → live`. `building` is slowest on first run (~2–3 min). If status is `failed`, surface `lifecycle_detail` — most often a bad token in the env-file; fix it and press `R` in the dashboard to respawn.
+
+## Stage 7 of 7 — Attach and plan
+
+In the dashboard, select the task and press `t` to attach. The agent is waiting for a planning prompt — type it and press Enter. Example:
+
+> "Add a --verbose flag to the CLI that prints each step to stderr."
+
+To view the plan afterward: detach (`Ctrl-b d`), select the task, press `a` (artifacts), select `plan.md`, press `e`.
+
+When the agent opens a PR, press `p` in the dashboard to open it. Review and advance to MERGING. Press `x` to drop a task.
+WIZARD
+
+# ---------------------------------------------------------------------------
+# First user-turn message — positions Claude to begin the walkthrough.
+# ---------------------------------------------------------------------------
+INITIAL_PROMPT="Please help me set up Panopticon from scratch. I'm starting fresh — walk me through each step, one at a time."
+
+exec claude --append-system-prompt "$WIZARD_CONTEXT" "$INITIAL_PROMPT"
