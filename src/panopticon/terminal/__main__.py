@@ -3,6 +3,8 @@
 `panopticon` (or `panopticon console`) runs the session supervisor (ADR 0009): the dashboard,
 plus handing the terminal to a task's tmux on `t` and rejoining on detach. `panopticon dashboard`
 runs the dashboard once without the attach loop; `panopticon tasks` lists tasks as plain text.
+`panopticon start-runner <host>` SSHes to a remote host, opens a reverse port forward so the
+remote runner can reach the local task service, and starts the session service there.
 """
 
 from __future__ import annotations
@@ -15,6 +17,12 @@ from pathlib import Path
 import httpx
 
 from panopticon.client import TaskServiceClient
+from panopticon.terminal.launch import (
+    DEFAULT_CACHE_ROOT,
+    DEFAULT_IMAGE,
+    DEFAULT_TASKS_ROOT,
+    start_runner,
+)
 
 DEFAULT_SERVICE_URL = "http://localhost:8000"
 
@@ -37,7 +45,75 @@ def main(
     # the operator picked with `t` by writing it here instead of returning it in-process.
     dash.add_argument("--switch-file", help=argparse.SUPPRESS)
     sub.add_parser("tasks", help="list tasks as plain text")
+
+    sr = sub.add_parser(
+        "start-runner",
+        help="SSH to a remote host and start the session service there (with reverse tunnel)",
+    )
+    sr.add_argument("host", help="remote host to SSH to")
+    sr.add_argument(
+        "--service-url",
+        default=os.environ.get("PANOPTICON_SERVICE_URL", DEFAULT_SERVICE_URL),
+        help="local task service URL to expose to the remote runner (default: $PANOPTICON_SERVICE_URL or http://localhost:8000)",
+    )
+    sr.add_argument(
+        "--remote-port",
+        type=int,
+        default=None,
+        metavar="PORT",
+        help="port forwarded on the remote host (default: same as local service port)",
+    )
+    sr.add_argument(
+        "--runner-id",
+        default=None,
+        metavar="ID",
+        help="runner id to register as (default: <host>)",
+    )
+    sr.add_argument(
+        "--container-service-url",
+        default=None,
+        metavar="URL",
+        help="URL injected into containers to reach the task service (default: derived from tunnel port)",
+    )
+    sr.add_argument(
+        "--no-tunnel",
+        dest="tunnel",
+        action="store_false",
+        help="skip the reverse port forward; use when the task service has a routable address",
+    )
+    sr.add_argument(
+        "--image",
+        default=DEFAULT_IMAGE,
+        help=f"task container image on the remote host (default: {DEFAULT_IMAGE})",
+    )
+    sr.add_argument(
+        "--tasks-root",
+        default=DEFAULT_TASKS_ROOT,
+        metavar="PATH",
+        help=f"remote tasks root directory (default: {DEFAULT_TASKS_ROOT})",
+    )
+    sr.add_argument(
+        "--cache-root",
+        default=DEFAULT_CACHE_ROOT,
+        metavar="PATH",
+        help=f"remote cache root directory (default: {DEFAULT_CACHE_ROOT})",
+    )
+
     args = parser.parse_args(argv)
+
+    if args.command == "start-runner":
+        start_runner(
+            args.host,
+            local_service_url=args.service_url,
+            remote_port=args.remote_port,
+            runner_id=args.runner_id,
+            container_service_url=args.container_service_url,
+            tunnel=args.tunnel,
+            image=args.image,
+            tasks_root=args.tasks_root,
+            cache_root=args.cache_root,
+        )
+        return 0
 
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
     if args.command == "tasks":
