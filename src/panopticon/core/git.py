@@ -15,8 +15,9 @@ The branch and worktree are named from the task **slug** (`panopticon/<slug>`,
 
 from __future__ import annotations
 
+import os
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -25,13 +26,22 @@ BRANCH_PREFIX = "panopticon"
 
 
 class CommandRunner(Protocol):
-    """Runs an external command and returns its stdout; ``check`` raises on non-zero exit."""
+    """Runs an external command and returns its stdout; ``check`` raises on non-zero exit.
 
-    def __call__(self, args: Sequence[str], *, check: bool = True) -> str: ...
+    ``env``, when provided, is merged into ``os.environ`` for that subprocess call — callers
+    that don't need to inject credentials omit it and the behaviour is unchanged.
+    """
+
+    def __call__(
+        self, args: Sequence[str], *, check: bool = True, env: Mapping[str, str] | None = None
+    ) -> str: ...
 
 
-def _subprocess_run(args: Sequence[str], *, check: bool = True) -> str:
-    return subprocess.run(list(args), check=check, capture_output=True, text=True).stdout
+def _subprocess_run(
+    args: Sequence[str], *, check: bool = True, env: Mapping[str, str] | None = None
+) -> str:
+    full_env = {**os.environ, **env} if env else None
+    return subprocess.run(list(args), check=check, capture_output=True, text=True, env=full_env).stdout
 
 
 def branch_name(slug: str) -> str:

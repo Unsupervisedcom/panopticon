@@ -25,7 +25,7 @@ from panopticon.core.state import TERMINAL_LABELS
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.images import ImageBuilder
 from panopticon.sessionservice.local_runner import LocalRunner
-from panopticon.sessionservice.spawn import prepare_workspace
+from panopticon.sessionservice.spawn import _parse_env_file, prepare_workspace
 
 _log = logging.getLogger(__name__)
 
@@ -91,6 +91,7 @@ class Spawner:
         images: ImageBuilder | None = None,
         run_hook: Callable[[str, str, str, str], None] | None = None,
         makedirs: Callable[[str], None] = lambda p: Path(p).mkdir(parents=True, exist_ok=True),
+        parse_env: Callable[[str], dict[str, str]] = _parse_env_file,
         now: Callable[[], float] = time.monotonic,
         max_respawns: int = MAX_RESPAWNS,
         respawn_reset: float = RESPAWN_RESET_SECONDS,
@@ -104,6 +105,7 @@ class Spawner:
         self._images = images or ImageBuilder()
         self._run_hook = run_hook or _run_repo_hook
         self._makedirs = makedirs
+        self._parse_env = parse_env
         self._now = now
         self._max_respawns = max_respawns
         self._respawn_reset = respawn_reset
@@ -149,7 +151,7 @@ class Spawner:
             self._report(task_id, LifecyclePhase.PREPARING)
             workspace = prepare_workspace(
                 task_id, repo, cache=self._cache, tasks_root=self._tasks_root, git=self._git,  # type: ignore[arg-type]
-                makedirs=self._makedirs,
+                makedirs=self._makedirs, parse_env=self._parse_env,
             )
             if hook_file := repo.get("hook_file"):
                 self._run_hook(hook_file, task_id, repo["name"], workspace)

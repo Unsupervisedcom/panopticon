@@ -8,13 +8,13 @@ from pathlib import Path
 
 from panopticon.core.git import GitClones
 from panopticon.sessionservice.clones import CloneCache
-from panopticon.sessionservice.spawn import prepare_workspace
+from panopticon.sessionservice.spawn import _parse_env_file, prepare_workspace
 
 
 def _recording_runner() -> tuple[list[list[str]], Callable[..., str]]:
     calls: list[list[str]] = []
 
-    def run(args: object, *, check: bool = True) -> str:
+    def run(args: object, *, check: bool = True, env: object = None) -> str:
         calls.append(list(args))  # type: ignore[arg-type]
         return ""
 
@@ -90,3 +90,67 @@ def test_prepare_creates_tasks_root_before_cloning(tmp_path: Path) -> None:
 
     assert str(tasks_root) in created
     assert tasks_root.is_dir()
+
+
+# -- env file passthrough -----------------------------------------------------------
+
+
+def test_prepare_passes_env_from_env_file_to_cache_ensure() -> None:
+    """Parsed env from repo's env_file is forwarded to cache.ensure() for private-repo auth."""
+    received_envs: list[dict[str, str] | None] = []
+
+    class _EnvRecorder:
+        def __call__(self, args: object, *, check: bool = True, env: dict[str, str] | None = None) -> str:
+            received_envs.append(env)
+            return ""
+
+    rec = _EnvRecorder()
+    cache = CloneCache("/cache", run=rec, exists=lambda _p: False, makedirs=lambda _p: None)
+    repo = {**_REPO, "env_file": "/secrets/repo.env"}
+
+    prepare_workspace(
+        "t1", repo, cache=cache, tasks_root="/tasks",
+        git=GitClones(run=lambda *_a, **_kw: ""),
+        exists=lambda _p: False, makedirs=lambda _p: None,
+        parse_env=lambda _path: {"GH_TOKEN": "tok", "ANTHROPIC_API_KEY": "sk"},
+    )
+
+    # cache.ensure received the parsed env
+    assert received_envs[0] == {"GH_TOKEN": "tok", "ANTHROPIC_API_KEY": "sk"}
+
+
+def test_prepare_passes_no_env_when_repo_has_no_env_file() -> None:
+    received_envs: list[dict[str, str] | None] = []
+
+    class _EnvRecorder:
+        def __call__(self, args: object, *, check: bool = True, env: dict[str, str] | None = None) -> str:
+            received_envs.append(env)
+            return ""
+
+    rec = _EnvRecorder()
+    cache = CloneCache("/cache", run=rec, exists=lambda _p: False, makedirs=lambda _p: None)
+
+    prepare_workspace(
+        "t1", _REPO, cache=cache, tasks_root="/tasks",
+        git=GitClones(run=lambda *_a, **_kw: ""),
+        exists=lambda _p: False, makedirs=lambda _p: None,
+    )
+
+    assert received_envs[0] is None
+
+
+def test_parse_env_file(tmp_path: Path) -> None:
+    env_file = tmp_path / "repo.env"
+    env_file.write_text(
+        "# comment\n"
+        "\n"
+        "GH_TOKEN=ghp_abc\n"
+        "ANTHROPIC_API_KEY=sk-ant\n"
+        "URL=https://example.com/path?a=1\n"  # value with embedded '='
+    )
+    result = _parse_env_file(str(env_file))
+    assert result == {
+        "GH_TOKEN": "ghp_abc",
+        "ANTHROPIC_API_KEY": "sk-ant",
+        "URL": "https://example.com/path?a=1",
+    }

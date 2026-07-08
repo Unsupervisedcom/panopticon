@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import argparse
 import os
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import httpx
 
@@ -22,7 +22,7 @@ from panopticon.sessionservice.local_runner import (
     LocalRunner,
     _subprocess_run,
 )
-from panopticon.sessionservice.spawn import prepare_workspace
+from panopticon.sessionservice.spawn import _parse_env_file, prepare_workspace
 
 #: Per-host provisioning roots (ADR 0010/0011): the per-repo clone cache and the per-task clones.
 DEFAULT_CACHE_ROOT = os.path.expanduser("~/.panopticon/cache")
@@ -33,6 +33,7 @@ def main(
     argv: Sequence[str] | None = None,
     *,
     run: CommandRunner = _subprocess_run,
+    parse_env: Callable[[str], dict[str, str]] = _parse_env_file,
     client: TaskServiceClient | None = None,
 ) -> str:
     parser = argparse.ArgumentParser(
@@ -57,6 +58,7 @@ def main(
     workspace = prepare_workspace(
         args.task_id, repo,
         cache=CloneCache(args.cache_root, run=run), tasks_root=args.tasks_root, git=GitClones(run=run),
+        parse_env=parse_env,
     )
     container_id = LocalRunner(args.service_url, image=args.image, run=run).spawn(
         args.task_id,

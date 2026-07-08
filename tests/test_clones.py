@@ -16,9 +16,11 @@ from panopticon.sessionservice.clones import CloneCache
 class _Recorder:
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
+        self.envs: list[dict[str, str] | None] = []
 
-    def __call__(self, args: Sequence[str], *, check: bool = True) -> str:
+    def __call__(self, args: Sequence[str], *, check: bool = True, env: dict[str, str] | None = None) -> str:
         self.calls.append(list(args))
+        self.envs.append(env)
         return ""
 
 
@@ -51,6 +53,31 @@ def test_ensure_creates_root_dir_before_cloning(tmp_path: Path) -> None:
     cache = CloneCache(str(root), run=lambda *_a, **_kw: "", exists=lambda _p: False)
     cache.ensure("r1", "https://x/r1.git")
     assert root.is_dir()
+
+
+# -- env passthrough ----------------------------------------------------------------
+
+
+def test_ensure_passes_env_to_clone_on_first_use() -> None:
+    rec = _Recorder()
+    cache = CloneCache("/clones", run=rec, exists=lambda _p: False, makedirs=lambda _p: None)
+    cache.ensure("r1", "https://x/r1.git", env={"GH_TOKEN": "tok"})
+    assert rec.envs == [{"GH_TOKEN": "tok"}]  # clone received env
+
+
+def test_ensure_passes_env_to_fetch_but_not_merge() -> None:
+    rec = _Recorder()
+    cache = CloneCache("/clones", run=rec, exists=lambda _p: True, makedirs=lambda _p: None)
+    cache.ensure("r1", "https://x/r1.git", env={"GH_TOKEN": "tok"})
+    # fetch gets env; merge --ff-only is local and gets none
+    assert rec.envs == [{"GH_TOKEN": "tok"}, None]
+
+
+def test_ensure_without_env_passes_none() -> None:
+    rec = _Recorder()
+    cache = CloneCache("/clones", run=rec, exists=lambda _p: False, makedirs=lambda _p: None)
+    cache.ensure("r1", "https://x/r1.git")
+    assert rec.envs == [None]
 
 
 # -- integration: a real git repo ---------------------------------------------------

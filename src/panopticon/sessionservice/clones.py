@@ -16,7 +16,7 @@ M1 is single-host, one clone reused serially.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from panopticon.core.git import CommandRunner, _subprocess_run
@@ -46,7 +46,7 @@ class CloneCache:
         """Where this repo's clone lives — ``<root>/<repo_id>`` (the worktree base)."""
         return f"{self._root}/{repo_id}"
 
-    def ensure(self, repo_id: str, git_url: str) -> str:
+    def ensure(self, repo_id: str, git_url: str, *, env: Mapping[str, str] | None = None) -> str:
         """Ensure the repo's clone exists and is current, returning its path. Idempotent.
 
         Clones from ``git_url`` on first use; on later calls fetches (``--all --prune``) **and
@@ -54,12 +54,16 @@ class CloneCache:
         is cut from is actually current. (``fetch`` alone only moves ``origin/<base>``; the local
         base branch — which ``git clone --local`` copies into the per-task clone — would stay at the
         commit it was first cloned at, so every task would start behind.)
+
+        ``env`` is forwarded to the network git operations (clone and fetch) so that credentials
+        (e.g. ``GH_TOKEN``) from the repo's env-file are available for private-repo access.
+        The local ``merge --ff-only`` needs no credentials and ignores ``env``.
         """
         path = self.path(repo_id)
         if self._exists(path):
-            self._run(["git", "-C", path, "fetch", "--all", "--prune"])
+            self._run(["git", "-C", path, "fetch", "--all", "--prune"], env=env)
             self._run(["git", "-C", path, "merge", "--ff-only"])  # advance the base branch to upstream
         else:
             self._makedirs(self._root)
-            self._run(["git", "clone", git_url, path])
+            self._run(["git", "clone", git_url, path], env=env)
         return path

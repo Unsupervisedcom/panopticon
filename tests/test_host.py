@@ -23,7 +23,7 @@ from panopticon.taskservice.store_sqlalchemy import SqlAlchemyStore
 from panopticon.workflows import Spike
 
 
-def _no_op_run(args: object, *, check: bool = True) -> str:
+def _no_op_run(args: object, *, check: bool = True, env: object = None) -> str:
     return ""
 
 

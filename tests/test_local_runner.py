@@ -24,7 +24,7 @@ class _Recorder:
         self.calls: list[tuple[list[str], bool]] = []
         self.interactive: list[bool] = []
 
-    def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False, verbose: bool = False) -> str:
+    def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False, verbose: bool = False, env: object = None) -> str:
         self.calls.append((list(args), check))
         self.interactive.append(interactive)
         return ""
@@ -311,7 +311,7 @@ def test_cli_preps_the_workspace_then_spawns_with_secrets_and_mount(tmp_path: Pa
     cid = cli_main(
         ["t1", "--service-url", "http://svc:9", "--image", "img:2",
          "--cache-root", str(cache_root), "--tasks-root", str(tasks_root)],
-        run=rec, client=fake,  # type: ignore[arg-type]
+        run=rec, parse_env=lambda _path: {}, client=fake,  # type: ignore[arg-type]
     )
     assert cid == "panopticon-t1"
     cmds = [c for c, _ in rec.calls]

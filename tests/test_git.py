@@ -17,7 +17,7 @@ class _Recorder:
     def __init__(self) -> None:
         self.calls: list[tuple[list[str], bool]] = []
 
-    def __call__(self, args: Sequence[str], *, check: bool = True) -> str:
+    def __call__(self, args: Sequence[str], *, check: bool = True, env: object = None) -> str:
         self.calls.append((list(args), check))
         return ""
 

@@ -52,16 +52,27 @@ class CommandRunner(Protocol):
     ``interactive`` attaches the caller's terminal (stdin/stdout/stderr) instead of capturing — for
     an interactive ``docker run -it``, where capturing would leave its TTY with no real input and
     hang. ``verbose`` also inherits the caller's streams but is for non-interactive commands whose
-    output should be visible in the runner's tmux session (e.g. ``docker build``)."""
+    output should be visible in the runner's tmux session (e.g. ``docker build``).
 
-    def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False, verbose: bool = False) -> str: ...
+    ``env``, when provided, is merged into ``os.environ`` for that subprocess call — satisfies the
+    ``core.git.CommandRunner`` protocol so a single runner can be used for both git and docker ops.
+    """
+
+    def __call__(
+        self, args: Sequence[str], *, check: bool = True, interactive: bool = False,
+        verbose: bool = False, env: Mapping[str, str] | None = None,
+    ) -> str: ...
 
 
-def _subprocess_run(args: Sequence[str], *, check: bool = True, interactive: bool = False, verbose: bool = False) -> str:
+def _subprocess_run(
+    args: Sequence[str], *, check: bool = True, interactive: bool = False,
+    verbose: bool = False, env: Mapping[str, str] | None = None,
+) -> str:
+    full_env = {**os.environ, **env} if env else None
     if interactive or verbose:  # inherit streams: TTY attachment (interactive) or visible build output (verbose)
-        subprocess.run(list(args), check=check)
+        subprocess.run(list(args), check=check, env=full_env)
         return ""
-    return subprocess.run(list(args), check=check, capture_output=True, text=True).stdout
+    return subprocess.run(list(args), check=check, capture_output=True, text=True, env=full_env).stdout
 
 
 
