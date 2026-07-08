@@ -158,6 +158,63 @@ without moving the interactive session at all; smallest security surface (namesp
 (object storage or the task service's artifact API); credential issuance/rotation for the
 per-task ServiceAccount is new machinery.
 
+## Where panopticon itself runs: local control plane vs in-cluster
+
+Orthogonal to which option we build is a placement question with real consequences:
+**panopticon running locally and creating agent pods** in a cluster it can reach, vs
+**panopticon running in the cluster itself**. The options above imply defaults (A leans
+local, B is in-cluster), but the placement deserves its own decision because it determines
+network direction, liveness semantics, and what happens when the operator's laptop closes.
+
+### Local panopticon, remote agent pods
+
+The task service, console, and runner all stay on the operator's workstation; only the
+runner holds a kubeconfig and only the *agent containers* live in the cluster.
+
+- **The callback problem is the crux.** Task containers dial *out* to the task service to
+  register, heartbeat, and use MCP (ADR 0008) — trivial when the service is on the same
+  host, but a laptop is not routable from inside a cluster. Every spawn needs a path back:
+  `kubectl port-forward` in reverse doesn't exist, so it's an ingress/LoadBalancer exposing
+  the task service (plus the M5 auth question), a tailnet/VPN putting laptop and pods on one
+  network, or the runner proxying MCP/REST over a `kubectl port-forward`-style tunnel it
+  keeps open per task. All are workable; all make the *laptop* infrastructure.
+- **The control plane inherits the laptop's lifecycle.** Close the lid and the task service,
+  liveness ledger, and provisioning daemon vanish while cluster pods (and option-D training
+  Jobs) keep running — exactly the "claimed but down" ambiguity ADR 0008 flags, now
+  routine rather than exceptional. Fine for a working session; wrong for the multi-day
+  unattended loops this ADR exists to serve.
+- **Where it shines:** development, trying the backend against any cluster a kubeconfig can
+  reach (no install rights needed), and bursting from an otherwise-local setup — especially
+  with option D, where only *Jobs* go to the cluster and results come back through the
+  artifact API, so no callback path is needed at all.
+
+### Panopticon in the cluster
+
+The task service (and runner) are deployed as cluster workloads: Deployment + PVC for the
+SQLite DB and artifacts, a `Service` for REST/MCP.
+
+- **Networking inverts and simplifies.** Agent pods reach the task service by cluster DNS;
+  no tunnel, no exposure of a laptop. The console becomes a pure remote client — the
+  dashboard already talks REST (`PANOPTICON_SERVICE_URL`), and attach is `kubectl exec …
+  tmux attach`, both through one kubeconfig the *human* holds. Nothing dials into the
+  operator's machine, matching the ADR 0009 pull posture end to end.
+- **The control plane outlives any operator session** — the property long-running work
+  actually requires. Kubernetes supervises the service (closing ADR 0008's process
+  supervision question for this deployment), and a multi-day training loop has a live
+  liveness ledger the whole time.
+- **Costs:** the DB and artifacts move onto cluster storage (backup/egress story needed);
+  `panopticon login` and repo configuration now target remote state; local dev requires
+  either a second local install or a dev cluster (kind/k3d keeps this cheap).
+
+### The likely end state is both, and the seams already allow it
+
+The pull model means these aren't exclusive: the task service can live wherever it is
+long-lived (a cluster, a server), while runners — local Docker on a laptop, in-cluster
+operator — each pull from it (ADR 0009 §1). A pragmatic ordering: start with **local
+panopticon + option D** (no callback path needed), and treat **moving the control plane
+in-cluster as the prerequisite for options A/B in production**, not an afterthought —
+retrofitting laptop-reachability tunnels is the alternative, and it builds the wrong thing.
+
 ## Recommendation
 
 **D first, then A, then B1; keep C as a spike; defer B2.**
@@ -166,6 +223,9 @@ D is the shortest path to "an agent that trains AutoML models on elastic compute
 touches no topology. A is the natural second `Runner` and makes the *whole task* elastic.
 B1 is A deployed in-cluster and closes the self-hosting story from the press release. Each
 step reuses the previous one's mechanics (secrets-as-Secrets, registry images, exec-attach).
+Placement follows the same ladder: local panopticon suffices for D; moving the control
+plane in-cluster is the prerequisite for running A/B in production (see the placement
+section above).
 
 ## Consequences
 
