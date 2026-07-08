@@ -316,18 +316,25 @@ may invoke an LLM; `core/`, `taskservice/`, `sessionservice/`, `terminal/` may n
 
 ## 13. Cross-cutting open questions (carried from the ADRs)
 
-- **Runner registration/discovery & work assignment** — how runners announce themselves,
-  report capacity/health, and get assigned tasks (runner-initiated/pull, NAT-friendly for M5;
-  ADR 0010 commits the session service to *pull* for observing task state, e.g. the slug). (ADR 0008/0010)
-- **Process supervision** — with Compose gone, how the three host-process daemons are started
-  and kept alive (terminal-controller-on-demand, systemd, or a small supervisor). (ADR 0008)
-- **Container → host-service addressing** — how a task container reaches the host task service
-  (host gateway / injected URL). (ADR 0008)
-- **Inter-process auth & transport** — trivial on one host; real once remote (M5). (ADR 0006/0008)
-- **Failure/restart reconciliation** — task service or runner restart vs. in-flight
-  containers. (ADR 0008)
-- **Image matrix, storage/registry, rebuild triggers, layer order** — (ADR 0005)
+Questions resolved in M1 slices are removed. The table in `docs/ROADMAP.md` maps each
+question to the slice that resolved it.
+
+- **Inter-process auth & transport** — trivial on one host; deferred to a later M5 hardening
+  slice (bearer tokens, per-task MCP scoping). (ADR 0006/0008; ADR 0013 §9)
+- **Image matrix, storage/registry, rebuild triggers, layer order** — registry push/pull
+  deferred to a later M5 slice; local build path used in M5.1. (ADR 0005; ADR 0013 §3/§9)
 - **Declarative/imperative discipline in workflow classes** — keep the state machine in
   declarative members, not buried in methods. (ADR 0004)
-- **At-rest secret protection & remote secret delivery** — (ADR 0007, M5)
+- **At-rest secret protection & remote secret delivery** — same-path convention adopted for
+  M5.1 (trusted network); `--secrets-root` and encryption deferred. (ADR 0007; ADR 0013 §4/§9)
 - **Artifact concurrency** (agent-via-MCP + editor + dashboard) and drift detection. (ADR 0003)
+
+Resolved by ADR 0013 (M5.1, trusted-network slice):
+- ~~Runner registration/discovery & work assignment~~ — pull model scales; `host` field added
+  to registration for remote attach. (ADR 0008/0010; ADR 0013 §6)
+- ~~Container → host-service addressing~~ — `--container-service-url` injected at spawn.
+  (ADR 0008; ADR 0013 §2)
+- ~~Failure/restart reconciliation~~ — `startup_reclaim` + `hold_runner_liveness` +
+  `POST /runners/{id}/reclaim` cover all three failure modes. (ADR 0008; ADR 0013 §8)
+- ~~Remote tmux attach~~ — `ssh -t <host> tmux attach` via the `host` parameter already
+  scaffolded in `attach_command()`. (ADR 0009; ADR 0013 §7)
