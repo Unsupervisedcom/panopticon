@@ -13,6 +13,7 @@ LLM-free, like the rest of the control plane.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
@@ -27,6 +28,13 @@ _db_url = context.get_x_argument(as_dictionary=True).get("db") or os.environ.get
     "PANOPTICON_DB", DEFAULT_DB
 )
 config.set_main_option("sqlalchemy.url", _db_url)
+
+# For SQLite file DBs, ensure the parent directory exists before SQLAlchemy tries to open the file.
+_SQLITE_PREFIX = "sqlite:///"
+if _db_url.startswith(_SQLITE_PREFIX):
+    _db_path = _db_url[len(_SQLITE_PREFIX):]
+    if _db_path and _db_path != ":memory:":
+        Path(_db_path).parent.mkdir(parents=True, exist_ok=True)
 
 # Autogenerate + `upgrade head` on a fresh DB both diff against the ORM's declared schema.
 target_metadata = metadata
