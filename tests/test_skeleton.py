@@ -26,7 +26,7 @@ from panopticon.workflows import Spike
 
 
 @pytest.fixture
-def client(tmp_path: Path) -> Iterator[TaskServiceClient]:
+def service_and_client(tmp_path: Path) -> Iterator[tuple[TaskService, TaskServiceClient]]:
     service = TaskService(
         SqlAlchemyStore(),
         {"spike": Spike()},
@@ -35,7 +35,13 @@ def client(tmp_path: Path) -> Iterator[TaskServiceClient]:
     asyncio.run(service.init())
     asyncio.run(service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git")))
     with TestClient(create_app(service)) as http:
-        yield TaskServiceClient(http)
+        yield service, TaskServiceClient(http)
+
+
+@pytest.fixture
+def client(service_and_client: tuple[TaskService, TaskServiceClient]) -> TaskServiceClient:
+    _, c = service_and_client
+    return c
 
 
 def test_walking_skeleton(client: TaskServiceClient) -> None:
@@ -300,3 +306,54 @@ def test_cascade_drop_via_set_state(client: TaskServiceClient) -> None:
 
     assert client.get_task(gov_id)["state"] == "DROPPED"
     assert client.get_task(child_id)["state"] == "DROPPED"
+
+
+# -- runner host tracking (M5.3) -----------------------------------------------
+
+
+def test_get_runners_returns_id_and_host(
+    service_and_client: tuple[TaskService, TaskServiceClient],
+) -> None:
+    # GET /runners returns [{id, host}] objects; empty when no runner is connected.
+    svc, client = service_and_client
+    assert client.live_runners() == []
+
+    # Register a runner directly on the service (avoiding HTTP streaming in TestClient).
+    reg = asyncio.run(svc.register_runner("host-1", host="box.example.com"))
+    assert client.live_runners() == [{"id": "host-1", "host": "box.example.com"}]
+
+    asyncio.run(svc.deregister_runner(reg.id))
+    assert client.live_runners() == []  # gone after deregistration
+
+
+def test_get_runner_by_id_returns_host(
+    service_and_client: tuple[TaskService, TaskServiceClient],
+) -> None:
+    # GET /runners/{id} returns the single runner's {id, host}; 404 when not connected.
+    svc, client = service_and_client
+    assert client.get_runner("host-1") is None  # not yet connected
+
+    reg = asyncio.run(svc.register_runner("host-1", host="box.example.com"))
+    assert client.get_runner("host-1") == {"id": "host-1", "host": "box.example.com"}
+
+    asyncio.run(svc.deregister_runner(reg.id))
+    assert client.get_runner("host-1") is None  # gone after deregistration
+
+
+def test_task_out_runner_host_reflects_claiming_runner_host(
+    service_and_client: tuple[TaskService, TaskServiceClient],
+) -> None:
+    # TaskOut.runner_host is derived from claimed_by → runner registration host at query time.
+    svc, client = service_and_client
+    task_id = client.create_task("r1", "spike")["id"]
+    assert client.get_task(task_id)["runner_host"] is None  # unclaimed
+
+    reg = asyncio.run(svc.register_runner("host-1", host="myhost.local"))
+    client.claim(task_id, "host-1")
+    assert client.get_task(task_id)["runner_host"] == "myhost.local"
+    # Also surfaced in list summary.
+    summary = next(t for t in client.list_tasks() if t["id"] == task_id)
+    assert summary["runner_host"] == "myhost.local"
+
+    asyncio.run(svc.deregister_runner(reg.id))
+    assert client.get_task(task_id)["runner_host"] is None  # runner gone → host unknown

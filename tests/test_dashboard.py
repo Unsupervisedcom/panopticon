@@ -502,20 +502,21 @@ async def test_dashboard_with_no_tasks() -> None:
 async def test_pressing_t_signals_the_pick_and_keeps_the_dashboard_running() -> None:
     # The dashboard records the pick via on_switch (the supervisor detaches + attaches the task)
     # and stays alive, so returning lands on this same live dashboard (ADR 0009 §6).
-    picked: list[str] = []
+    picked: list[tuple[str, str | None]] = []
     regs = {"task-abcdef0123": [{"container_id": "panopticon-task-abcdef0123"}]}
-    app = Dashboard(_FakeClient([_TASK], regs), on_switch=picked.append)  # type: ignore[arg-type]
+    app = Dashboard(_FakeClient([_TASK], regs), on_switch=lambda s, h=None: picked.append((s, h)))
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("t")
         await pilot.pause()
-        assert picked == ["panopticon-task-abcdef0123"]  # session == container id
+        # (session, runner_host): runner_host is None when the task has no runner_host field
+        assert picked == [("panopticon-task-abcdef0123", None)]
         assert app.is_running  # did NOT exit — the dashboard session persists
 
 
 async def test_pressing_t_with_no_running_container_does_not_signal() -> None:
-    picked: list[str] = []
-    app = Dashboard(_FakeClient([_TASK], {}), on_switch=picked.append)  # type: ignore[arg-type]
+    picked: list[tuple[str, str | None]] = []
+    app = Dashboard(_FakeClient([_TASK], {}), on_switch=lambda s, h=None: picked.append((s, h)))
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("t")
