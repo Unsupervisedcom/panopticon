@@ -1854,3 +1854,103 @@ async def test_enter_on_non_governor_does_nothing() -> None:
         await pilot.pause()
         after = [str(k.value) for k in table.rows]
         assert before == after
+
+
+# -- multi-runner column -----------------------------------------------------------
+
+def _col_labels(table: DataTable) -> list[str]:
+    return [str(c.label) for c in table.columns.values()]
+
+
+async def test_runner_column_absent_for_single_runner() -> None:
+    # All tasks on the same runner_host → no "runner" column.
+    tasks = [
+        {**_TASK, "id": "t-a", "runner_host": "host-a"},
+        {**_TASK, "id": "t-b", "runner_host": "host-a"},
+    ]
+    app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert "runner" not in _col_labels(app.query_one("#tasks", DataTable))
+
+
+async def test_runner_column_absent_when_no_runner_host() -> None:
+    # Tasks with no runner_host (unclaimed) → no "runner" column.
+    tasks = [
+        {**_TASK, "id": "t-a", "runner_host": None},
+        {**_TASK, "id": "t-b"},
+    ]
+    app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert "runner" not in _col_labels(app.query_one("#tasks", DataTable))
+
+
+async def test_runner_column_appears_for_multiple_runners() -> None:
+    # Two distinct runner_host values → "runner" column present with correct cell values.
+    tasks = [
+        {**_TASK, "id": "t-a", "runner_host": "host-a"},
+        {**_TASK, "id": "t-b", "runner_host": "host-b"},
+    ]
+    app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        labels = _col_labels(table)
+        assert "runner" in labels
+        runner_idx = labels.index("runner")
+        assert table.get_row("t-a")[runner_idx].plain == "host-a"
+        assert table.get_row("t-b")[runner_idx].plain == "host-b"
+
+
+async def test_runner_column_appears_dynamically() -> None:
+    # Start with one runner → no column. Feed refresh with a second runner → column appears.
+    fake = _FakeClient([{**_TASK, "id": "t-a", "runner_host": "host-a"}])  # type: ignore[arg-type]
+    app = Dashboard(fake, refresh_interval=0.05)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        assert "runner" not in _col_labels(table)
+        fake._tasks = [
+            {**_TASK, "id": "t-a", "runner_host": "host-a"},
+            {**_TASK, "id": "t-b", "runner_host": "host-b"},
+        ]
+        fake.signal_change()
+        await _settle(pilot, lambda: "runner" in _col_labels(table))
+        assert "runner" in _col_labels(table)
+
+
+async def test_runner_column_disappears_dynamically() -> None:
+    # Start with two runners → column shown. Feed refresh drops to one runner → column gone.
+    fake = _FakeClient([  # type: ignore[arg-type]
+        {**_TASK, "id": "t-a", "runner_host": "host-a"},
+        {**_TASK, "id": "t-b", "runner_host": "host-b"},
+    ])
+    app = Dashboard(fake, refresh_interval=0.05)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        assert "runner" in _col_labels(table)
+        fake._tasks = [{**_TASK, "id": "t-a", "runner_host": "host-a"}]
+        fake.signal_change()
+        await _settle(pilot, lambda: "runner" not in _col_labels(table))
+        assert "runner" not in _col_labels(table)
+
+
+async def test_runner_cell_is_dimmed_for_terminal_tasks() -> None:
+    # Terminal tasks have their runner cell dimmed like all other cells.
+    tasks = [
+        {**_TASK, "id": "t-active", "runner_host": "host-a", "state": "WORKING"},
+        {**_TASK, "id": "t-done", "runner_host": "host-b", "state": "COMPLETE"},
+    ]
+    app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        labels = _col_labels(table)
+        assert "runner" in labels
+        runner_idx = labels.index("runner")
+        active_runner = table.get_row("t-active")[runner_idx]
+        assert not any(s.style == "dim" for s in active_runner._spans)
+        done_runner = table.get_row("t-done")[runner_idx]
+        assert done_runner._spans and all(s.style == "dim" for s in done_runner._spans)
