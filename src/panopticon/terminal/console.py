@@ -74,7 +74,7 @@ def switch_to(
     the supervisor, then detach this client so the supervisor attaches the task. The dashboard
     process keeps running (detached), so returning to it shows the same live view.
 
-    When ``host`` is set (a remote runner, M5) the switch-file carries ``<host>\\t<session>`` so the
+    When ``host`` is set the switch-file carries ``<host>\\t<session>`` so the
     supervisor can ssh-wrap the attach; a plain ``<session>`` (no tab) means local.
     """
     switch_file.write_text(f"{host}\t{session}" if host else session)

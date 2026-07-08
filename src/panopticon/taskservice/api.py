@@ -725,7 +725,7 @@ def create_app(service: TaskService) -> FastAPI:
         ``finally`` removes it from ``live_runners`` **immediately** — no heartbeat, no TTL. A flaky
         drop removes it too, but the daemon re-opens this connection (its reconnect loop), so a
         transient blip self-heals. The optional ``host`` query param records the runner's hostname
-        so the terminal supervisor can ssh-attach to its tasks (M5: remote attach).
+        so the terminal supervisor can ssh-attach to its tasks.
         """
         reg = await service.register_runner(runner_id, host=host)
 

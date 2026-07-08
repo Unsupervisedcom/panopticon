@@ -202,7 +202,7 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
     parser.add_argument(
         "--host",
         default=os.environ.get("PANOPTICON_RUNNER_HOST", socket.gethostname()),
-        help="hostname or alias reported to the task service (used for remote tmux attach, M5)",
+        help="hostname or alias reported to the task service",
     )
     parser.add_argument("--image", default=DEFAULT_IMAGE)
     parser.add_argument("--cache-root", default=os.environ.get("PANOPTICON_CACHE_ROOT", DEFAULT_CACHE_ROOT))
