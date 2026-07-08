@@ -247,28 +247,47 @@ async def test_blocked_marker_survives_turn_flips(tmp_path: Path) -> None:
 
 async def test_claim_is_compare_and_set_and_idempotent_for_the_holder(tmp_path: Path) -> None:
     svc = await make_service(tmp_path)
-    task = await svc.create_task("r1", "spike")
+    task = await svc.create_task("r1", "spike", preferred_runner_id="host-1")
     assert task.claimed_by is None
     assert (await svc.claim(task.id, "host-1")).claimed_by == "host-1"
     assert (await svc.claim(task.id, "host-1")).claimed_by == "host-1"  # idempotent for the same runner
     assert (await svc.get_task(task.id)).claimed_by == "host-1"  # persisted
 
 
-async def test_claim_rejects_a_different_runner(tmp_path: Path) -> None:
+async def test_claim_rejects_wrong_preferred_runner(tmp_path: Path) -> None:
+    # A runner whose id doesn't match preferred_runner_id cannot claim even when the task is unclaimed.
     svc = await make_service(tmp_path)
-    task = await svc.create_task("r1", "spike")
+    task = await svc.create_task("r1", "spike", preferred_runner_id="host-1")
+    with pytest.raises(AlreadyClaimed):
+        await svc.claim(task.id, "host-2")
+    assert (await svc.get_task(task.id)).claimed_by is None  # still unclaimed
+
+
+async def test_claim_rejects_a_different_runner_when_already_claimed(tmp_path: Path) -> None:
+    # A runner already holding the claim: a second runner is rejected (claimed_by mismatch).
+    svc = await make_service(tmp_path)
+    task = await svc.create_task("r1", "spike", preferred_runner_id="host-1")
     await svc.claim(task.id, "host-1")
     with pytest.raises(AlreadyClaimed):
         await svc.claim(task.id, "host-2")
     assert (await svc.get_task(task.id)).claimed_by == "host-1"  # unchanged
 
 
+async def test_claim_none_preferred_means_local_only(tmp_path: Path) -> None:
+    # preferred_runner_id=None (the default) is equivalent to "local" — remote runners are rejected.
+    svc = await make_service(tmp_path)
+    task = await svc.create_task("r1", "spike")  # preferred_runner_id=None → effective "local"
+    with pytest.raises(AlreadyClaimed):
+        await svc.claim(task.id, "remote-1")
+    assert (await svc.claim(task.id, "local")).claimed_by == "local"
+
+
 async def test_release_returns_the_task_to_unclaimed(tmp_path: Path) -> None:
     svc = await make_service(tmp_path)
-    task = await svc.create_task("r1", "spike")
-    await svc.claim(task.id, "host-1")
+    task = await svc.create_task("r1", "spike")  # effective preferred = "local"
+    await svc.claim(task.id, "local")
     assert (await svc.release(task.id)).claimed_by is None
-    assert (await svc.claim(task.id, "host-2")).claimed_by == "host-2"  # now another runner can claim
+    assert (await svc.claim(task.id, "local")).claimed_by == "local"  # preferred runner can reclaim
 
 
 # -- host (runner) liveness + reclaim: connection-scoped, clock-free (mirror of container liveness) --
@@ -307,8 +326,8 @@ async def test_register_runner_reconnect_overlap_keeps_the_runner_live(tmp_path:
 
 async def test_reclaim_releases_the_runners_non_terminal_claims(tmp_path: Path) -> None:
     svc = await make_service(tmp_path)
-    mine = await svc.create_task("r1", "spike")
-    other = await svc.create_task("r1", "spike")
+    mine = await svc.create_task("r1", "spike", preferred_runner_id="host-dead")
+    other = await svc.create_task("r1", "spike", preferred_runner_id="host-live")
     await svc.claim(mine.id, "host-dead")
     await svc.claim(other.id, "host-live")
 
@@ -323,7 +342,7 @@ async def test_reclaim_releases_the_runners_non_terminal_claims(tmp_path: Path) 
 async def test_reclaim_skips_terminal_tasks(tmp_path: Path) -> None:
     # A terminal task has nothing to respawn, so reclaim leaves its claim alone (no churn).
     svc = await make_service(tmp_path)
-    done = await svc.create_task("r1", "spike")
+    done = await svc.create_task("r1", "spike", preferred_runner_id="host-dead")
     await svc.claim(done.id, "host-dead")
     await svc.apply_operation(done.id, "drop")  # -> DROPPED (terminal)
 
@@ -336,7 +355,7 @@ async def test_reclaim_skips_terminal_tasks(tmp_path: Path) -> None:
 
 async def test_container_status_folds_phase_registration_and_runner_liveness(tmp_path: Path) -> None:
     svc = await make_service(tmp_path)
-    task = await svc.create_task("r1", "spike")
+    task = await svc.create_task("r1", "spike", preferred_runner_id="host-1")
 
     async def status() -> str:
         return svc.container_status(await svc.get_task(task.id)).value
@@ -356,7 +375,7 @@ async def test_container_status_folds_phase_registration_and_runner_liveness(tmp
 
 async def test_container_status_is_disconnected_when_the_claiming_runner_is_gone(tmp_path: Path) -> None:
     svc = await make_service(tmp_path)
-    task = await svc.create_task("r1", "spike")
+    task = await svc.create_task("r1", "spike", preferred_runner_id="host-1")
     await svc.claim(task.id, "host-1")
     await svc.report_lifecycle(task.id, "host-1", LifecyclePhase.AWAITING)
     # no runner-liveness connection held → claimed by a runner not connected to the task service
@@ -367,16 +386,17 @@ async def test_container_status_is_disconnected_when_the_claiming_runner_is_gone
 
 async def test_lifecycle_phase_is_cleared_on_release_and_reclaim(tmp_path: Path) -> None:
     svc = await make_service(tmp_path)
-    task = await svc.create_task("r1", "spike")
+    task = await svc.create_task("r1", "spike", preferred_runner_id="host-1")
     await svc.claim(task.id, "host-1")
     await svc.report_lifecycle(task.id, "host-1", LifecyclePhase.AWAITING)
     assert svc.lifecycle(task.id) is not None
     await svc.release(task.id)
     assert svc.lifecycle(task.id) is None  # a respawn starts clean
 
-    await svc.claim(task.id, "host-2")
-    await svc.report_lifecycle(task.id, "host-2", LifecyclePhase.BUILDING)
-    await svc.reclaim("host-2")  # a dead runner's phase is stale
+    # Reclaim also clears the phase (for the same preferred runner reclaiming after a crash).
+    await svc.claim(task.id, "host-1")
+    await svc.report_lifecycle(task.id, "host-1", LifecyclePhase.BUILDING)
+    await svc.reclaim("host-1")  # a dead runner's phase is stale
     assert svc.lifecycle(task.id) is None
 
 

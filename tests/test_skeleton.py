@@ -96,7 +96,7 @@ def test_record_provisioning_over_rest(client: TaskServiceClient) -> None:
 def test_container_lifecycle_endpoints_drive_container_status_over_rest(
     client: TaskServiceClient,
 ) -> None:
-    task = client.create_task("r1", "spike")
+    task = client.create_task("r1", "spike", preferred_runner_id="host-1")
     task_id = task["id"]
     assert task["container_status"] == "queued"  # unclaimed, non-terminal
     assert task["lifecycle_detail"] is None
@@ -345,7 +345,7 @@ def test_task_out_runner_host_reflects_claiming_runner_host(
 ) -> None:
     # TaskOut.runner_host is derived from claimed_by → runner registration host at query time.
     svc, client = service_and_client
-    task_id = client.create_task("r1", "spike")["id"]
+    task_id = client.create_task("r1", "spike", preferred_runner_id="host-1")["id"]
     assert client.get_task(task_id)["runner_host"] is None  # unclaimed
 
     reg = asyncio.run(svc.register_runner("host-1", host="myhost.local"))
@@ -357,3 +357,43 @@ def test_task_out_runner_host_reflects_claiming_runner_host(
 
     asyncio.run(svc.deregister_runner(reg.id))
     assert client.get_task(task_id)["runner_host"] is None  # runner gone → host unknown
+
+
+def test_preferred_runner_id_round_trips_and_gates_claim(client: TaskServiceClient) -> None:
+    # preferred_runner_id is exposed on TaskOut and stored correctly.
+    task = client.create_task("r1", "spike", preferred_runner_id="remote-1")
+    assert task["preferred_runner_id"] == "remote-1"
+    task_id = task["id"]
+
+    # A non-matching runner is rejected.
+    resp = client._http.put(f"/tasks/{task_id}/claim", json={"runner_id": "local"})
+    assert resp.status_code == 409
+
+    # The matching runner succeeds.
+    client.claim(task_id, "remote-1")
+    assert client.get_task(task_id)["claimed_by"] == "remote-1"
+
+
+def test_preferred_runner_id_none_is_local_only(client: TaskServiceClient) -> None:
+    # preferred_runner_id=None means only the "local" runner may claim (not a remote runner).
+    task_id = client.create_task("r1", "spike")["id"]
+    assert client.get_task(task_id)["preferred_runner_id"] is None
+
+    # A remote runner is rejected.
+    resp = client._http.put(f"/tasks/{task_id}/claim", json={"runner_id": "remote-1"})
+    assert resp.status_code == 409
+
+    # "local" is accepted (None and "local" are equivalent).
+    client.claim(task_id, "local")
+    assert client.get_task(task_id)["claimed_by"] == "local"
+
+
+def test_preferred_runner_id_local_explicit_behaves_like_none(client: TaskServiceClient) -> None:
+    # preferred_runner_id="local" is identical to None — only the "local" runner may claim.
+    task_id = client.create_task("r1", "spike", preferred_runner_id="local")["id"]
+
+    resp = client._http.put(f"/tasks/{task_id}/claim", json={"runner_id": "remote-1"})
+    assert resp.status_code == 409
+
+    client.claim(task_id, "local")
+    assert client.get_task(task_id)["claimed_by"] == "local"

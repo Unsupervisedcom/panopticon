@@ -76,6 +76,7 @@ class TaskSummaryOut(BaseModel):
     branch: str | None
     clone: str | None
     claimed_by: str | None
+    preferred_runner_id: str | None = None
     tokens_used: int | None
     token_estimate: int | None
     governor_task_id: str | None = None
@@ -103,6 +104,7 @@ class TaskOut(BaseModel):
     branch: str | None
     clone: str | None
     claimed_by: str | None  # the runner that owns this task (the spawn gate), or None
+    preferred_runner_id: str | None = None  # the runner restricted to claiming this task (None = local)
     tokens_used: int | None  # cost-weighted input-equivalent tokens used (None until reported)
     token_estimate: int | None  # the agent's forecast of total tokens (set in planning; None until then)
     governor_task_id: str | None = None  # the task that oversees this one, or None for ungoverned tasks
@@ -183,6 +185,7 @@ class CreateTaskIn(BaseModel):
     initial_prompt: str | None = None
     artifacts: dict[str, str] | None = None
     depends_on_task_ids: list[str] = []
+    preferred_runner_id: str | None = None
 
 
 class DependenciesIn(BaseModel):
@@ -471,6 +474,7 @@ def create_app(service: TaskService) -> FastAPI:
                 initial_prompt=body.initial_prompt,
                 artifacts=body.artifacts,
                 depends_on_task_ids=body.depends_on_task_ids or None,
+                preferred_runner_id=body.preferred_runner_id,
             )
         )
 

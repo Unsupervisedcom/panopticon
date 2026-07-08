@@ -110,8 +110,8 @@ def test_reclaim_releases_only_the_dead_runners_non_terminal_claims(
 ) -> None:
     service, base = served
     client = TaskServiceClient(httpx.Client(base_url=base, timeout=10.0))
-    mine = client.create_task("r1", "spike")["id"]
-    other = client.create_task("r1", "spike")["id"]
+    mine = client.create_task("r1", "spike", preferred_runner_id="host-dead")["id"]
+    other = client.create_task("r1", "spike", preferred_runner_id="host-live")["id"]
     client.claim(mine, "host-dead")
     client.claim(other, "host-live")
 

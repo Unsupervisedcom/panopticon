@@ -258,6 +258,10 @@ class Task:
     #: or have it respawned. Distinct from liveness — a claimed task whose container died is
     #: "claimed but down".
     claimed_by: str | None = None
+    #: The runner that should claim this task. ``None`` and ``"local"`` are equivalent — only the
+    #: ``"local"`` runner may claim the task. Any other value restricts claiming to that runner id.
+    #: Set at creation time (from the dashboard's runner selector); ``None`` until then.
+    preferred_runner_id: str | None = None
     #: Cumulative **cost-weighted** tokens the ``claude`` agent in this task's container has used,
     #: expressed in input-equivalent units (cache-reads ≈0.1×, output ≈5×). The container's Stop
     #: hook reports it via :meth:`TaskService.set_tokens_used`, recomputing the session total each
