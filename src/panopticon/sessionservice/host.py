@@ -87,6 +87,7 @@ class HostDaemon:
                 self._provisioner.provision(task)
                 self._spawner.reconcile(task)
                 self._spawner.heal(task)
+                self._spawner.cleanup(task)
             except Exception:  # a transient git/REST/FS error on one task must not stall the others
                 _log.warning("host pass failed for task %s", task.get("id"), exc_info=True)
                 continue

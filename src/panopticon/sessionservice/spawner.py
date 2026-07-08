@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
 import time
 from collections.abc import Callable
@@ -25,7 +26,7 @@ from panopticon.core.state import TERMINAL_LABELS
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.images import ImageBuilder
 from panopticon.sessionservice.local_runner import LocalRunner
-from panopticon.sessionservice.spawn import prepare_workspace
+from panopticon.sessionservice.spawn import cleanup_workspace, prepare_workspace
 
 _log = logging.getLogger(__name__)
 
@@ -91,6 +92,8 @@ class Spawner:
         images: ImageBuilder | None = None,
         run_hook: Callable[[str, str, str, str], None] | None = None,
         makedirs: Callable[[str], None] = lambda p: Path(p).mkdir(parents=True, exist_ok=True),
+        exists: Callable[[str], bool] = os.path.isdir,
+        rmtree: Callable[[str], None] = shutil.rmtree,
         now: Callable[[], float] = time.monotonic,
         max_respawns: int = MAX_RESPAWNS,
         respawn_reset: float = RESPAWN_RESET_SECONDS,
@@ -104,6 +107,8 @@ class Spawner:
         self._images = images or ImageBuilder()
         self._run_hook = run_hook or _run_repo_hook
         self._makedirs = makedirs
+        self._exists = exists
+        self._rmtree = rmtree
         self._now = now
         self._max_respawns = max_respawns
         self._respawn_reset = respawn_reset
@@ -309,6 +314,19 @@ class Spawner:
                 self._client.release(task["id"])
             except httpx.HTTPError:
                 pass  # best-effort — heal() picks up unclaimed tasks that failed to release
+
+    def cleanup(self, task: JsonObj) -> None:
+        """Remove the per-task workspace once a terminal task's container has exited.
+
+        Self-gates on two conditions so calling this on every task each pass is safe:
+        the task must be terminal (COMPLETE/DROPPED) **and** the container must no longer
+        be running — so we never delete a workspace while the agent is still active, and
+        we don't need to force-stop anything."""
+        if task["state"] not in TERMINAL_LABELS:
+            return
+        if self._runner.is_running(task["id"]):
+            return  # container still up — wait for it to exit naturally
+        cleanup_workspace(task["id"], self._tasks_root, exists=self._exists, rmtree=self._rmtree)
 
     def _compose_image(self, workflow: str, repo: JsonObj) -> str | None:
         """Compose the task's image (base → workflow → repo layers, ADR 0005) and return its tag;
