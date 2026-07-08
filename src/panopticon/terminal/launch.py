@@ -6,6 +6,7 @@ is unit-testable without SSH, Docker, or a live task service.
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 from collections.abc import Callable
 from urllib.parse import urlparse
@@ -14,6 +15,7 @@ from urllib.parse import urlparse
 DEFAULT_IMAGE = "panopticon-base"
 DEFAULT_TASKS_ROOT = "~/.panopticon/tasks"
 DEFAULT_CACHE_ROOT = "~/.panopticon/cache"
+DEFAULT_PYTHON = "python3"
 
 
 def _port_from_url(url: str) -> int:
@@ -57,10 +59,15 @@ def build_remote_host_command(
     image: str = DEFAULT_IMAGE,
     tasks_root: str = DEFAULT_TASKS_ROOT,
     cache_root: str = DEFAULT_CACHE_ROOT,
+    python: str = DEFAULT_PYTHON,
 ) -> list[str]:
-    """Build the ``python -m panopticon.sessionservice.host …`` argv for the remote host."""
+    """Build the ``<python> -m panopticon.sessionservice.host …`` argv for the remote host.
+
+    ``python`` may be a multi-word string (e.g. ``"uv run python"``); it is split
+    with :func:`shlex.split` before being prepended to the argv.
+    """
     return [
-        "python", "-m", "panopticon.sessionservice.host",
+        *shlex.split(python), "-m", "panopticon.sessionservice.host",
         "--service-url", service_url,
         "--container-service-url", container_service_url,
         "--runner-id", runner_id,
@@ -82,6 +89,7 @@ def start_runner(
     image: str = DEFAULT_IMAGE,
     tasks_root: str = DEFAULT_TASKS_ROOT,
     cache_root: str = DEFAULT_CACHE_ROOT,
+    python: str = DEFAULT_PYTHON,
     run: Callable[[list[str]], None] = subprocess.run,  # type: ignore[assignment]
 ) -> None:
     """Wire and invoke (or run) the SSH command for a remote session-service runner.
@@ -112,6 +120,7 @@ def start_runner(
             image=image,
             tasks_root=tasks_root,
             cache_root=cache_root,
+            python=python,
         )
         cmd = build_ssh_command(
             host,
@@ -129,6 +138,7 @@ def start_runner(
             image=image,
             tasks_root=tasks_root,
             cache_root=cache_root,
+            python=python,
         )
         cmd = build_ssh_command(host, remote_cmd)
 

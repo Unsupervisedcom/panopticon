@@ -83,6 +83,7 @@ direct mode.
 | `--image IMAGE` | `panopticon-base` | Task container image on the remote host |
 | `--tasks-root PATH` | `~/.panopticon/tasks` | Remote tasks root directory |
 | `--cache-root PATH` | `~/.panopticon/cache` | Remote cache root directory |
+| `--python CMD` | `python3` | Python interpreter on the remote host; multi-word values are split (e.g. `uv run python`) |
 
 ## Keeping the runner alive
 

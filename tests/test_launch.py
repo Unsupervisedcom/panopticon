@@ -7,6 +7,7 @@ from panopticon.terminal.launch import (
     build_remote_host_command,
     build_ssh_command,
     start_runner,
+    DEFAULT_PYTHON,
 )
 
 
@@ -78,7 +79,7 @@ def test_build_remote_host_command() -> None:
         tasks_root="~/.panopticon/tasks",
         cache_root="~/.panopticon/cache",
     )
-    assert cmd[:3] == ["python", "-m", "panopticon.sessionservice.host"]
+    assert cmd[:3] == ["python3", "-m", "panopticon.sessionservice.host"]
     assert "--service-url" in cmd
     assert "http://localhost:8000" in cmd
     assert "--container-service-url" in cmd
@@ -90,6 +91,28 @@ def test_build_remote_host_command() -> None:
     assert "~/.panopticon/tasks" in cmd
     assert "--cache-root" in cmd
     assert "~/.panopticon/cache" in cmd
+
+
+def test_build_remote_host_command_default_python_is_python3() -> None:
+    cmd = build_remote_host_command(
+        service_url="http://localhost:8000",
+        container_service_url="http://host.docker.internal:8000",
+        runner_id="myhost",
+        host="myhost",
+    )
+    assert cmd[0] == DEFAULT_PYTHON
+    assert cmd[0] == "python3"
+
+
+def test_build_remote_host_command_custom_python() -> None:
+    cmd = build_remote_host_command(
+        service_url="http://localhost:8000",
+        container_service_url="http://host.docker.internal:8000",
+        runner_id="myhost",
+        host="myhost",
+        python="uv run python",
+    )
+    assert cmd[:4] == ["uv", "run", "python", "-m"]
 
 
 def test_build_remote_host_command_uses_long_flags() -> None:

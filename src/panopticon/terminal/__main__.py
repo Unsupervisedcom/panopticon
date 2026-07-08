@@ -20,6 +20,7 @@ from panopticon.client import TaskServiceClient
 from panopticon.terminal.launch import (
     DEFAULT_CACHE_ROOT,
     DEFAULT_IMAGE,
+    DEFAULT_PYTHON,
     DEFAULT_TASKS_ROOT,
     start_runner,
 )
@@ -98,6 +99,12 @@ def main(
         metavar="PATH",
         help=f"remote cache root directory (default: {DEFAULT_CACHE_ROOT})",
     )
+    sr.add_argument(
+        "--python",
+        default=DEFAULT_PYTHON,
+        metavar="CMD",
+        help=f"Python interpreter on the remote host; multi-word values are split (e.g. 'uv run python') (default: {DEFAULT_PYTHON})",
+    )
 
     args = parser.parse_args(argv)
 
@@ -112,6 +119,7 @@ def main(
             image=args.image,
             tasks_root=args.tasks_root,
             cache_root=args.cache_root,
+            python=args.python,
         )
         return 0
 
