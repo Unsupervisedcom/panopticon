@@ -318,3 +318,19 @@ def test_start_runner_local_mode_custom_runner_id() -> None:
     cmd = received[0]
     ri_idx = cmd.index("--runner-id")
     assert cmd[ri_idx + 1] == "my-local"
+
+
+def test_start_runner_local_mode_expands_tilde_roots() -> None:
+    """Local mode runs the argv with no shell, so ``~`` must be expanded here —
+    otherwise the literal reaches Docker as a stray ``./~`` bind-mount path."""
+    import os
+
+    received: list[list[str]] = []
+    start_runner(local=True, local_service_url="http://localhost:8000", run=received.append)
+    cmd = received[0]
+    tasks_root = cmd[cmd.index("--tasks-root") + 1]
+    cache_root = cmd[cmd.index("--cache-root") + 1]
+    assert "~" not in tasks_root
+    assert "~" not in cache_root
+    assert tasks_root == os.path.expanduser("~/.panopticon/tasks")
+    assert cache_root == os.path.expanduser("~/.panopticon/cache")

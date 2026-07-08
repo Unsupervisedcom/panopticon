@@ -6,6 +6,7 @@ is unit-testable without SSH, Docker, or a live task service.
 
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 import sys
@@ -117,14 +118,18 @@ def start_runner(
             container_service_url
             or f"http://host.docker.internal:{_port_from_url(local_service_url)}"
         )
+        # Local mode runs the argv directly (no shell), so a leading ``~`` in the
+        # roots would reach Docker as a literal path (a stray ``./~`` bind mount).
+        # Expand it here against *this* machine's home; remote modes keep the literal
+        # ``~`` for the remote login shell to expand against the remote user's home.
         cmd = build_remote_host_command(
             service_url=local_service_url,
             container_service_url=effective_container_url,
             runner_id=effective_runner_id,
             host="",  # no host = no SSH on attach
             image=image,
-            tasks_root=tasks_root,
-            cache_root=cache_root,
+            tasks_root=os.path.expanduser(tasks_root),
+            cache_root=os.path.expanduser(cache_root),
             python=effective_python,
         )
         run(cmd)
