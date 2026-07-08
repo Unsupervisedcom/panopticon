@@ -33,7 +33,9 @@ dashboard:  ## Launch the dashboard (foreground; no tmux)
 
 host: migrate  ## Start task service + session-service host in background tmux sessions (no console; use for CI or headless ops)
 	# Build the base image when it's missing so a spawn never fails silently mid-run.
-	docker image inspect $(IMAGE) > /dev/null 2>&1 || $(MAKE) build
+	# The guard is a no-op when Docker is not installed (e.g. CI environments that only test the
+	# control plane): `! command -v docker` short-circuits the build attempt when docker is absent.
+	docker image inspect $(IMAGE) > /dev/null 2>&1 || ! command -v docker > /dev/null 2>&1 || $(MAKE) build
 	# Always kill-and-recreate so a crashed process doesn't leave a stale session that make host silently reuses.
 	tmux -L panopticon kill-session -t service 2>/dev/null || true
 	tmux -L panopticon new-session -d -s service 'uv run python -m panopticon.taskservice 2>&1 | tee /tmp/panopticon-service.log'
