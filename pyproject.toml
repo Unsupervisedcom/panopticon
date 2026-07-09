@@ -1,6 +1,6 @@
 [project]
 name = "panopticon"
-version = "0.0.1"
+version = "0.0.1"  # x-release-please-version
 description = "Orchestrate multiple coding agents across isolated tasks and configurable workflows."
 requires-python = ">=3.11"
 license = "MIT"
