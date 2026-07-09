@@ -81,20 +81,25 @@ def write_workflow_overview(config_dir: Path, overview: str) -> Path | None:
 
 
 def trust_workspace(config_dir: Path, cwd: Path) -> Path:
-    """Pre-accept claude's "Do you trust the files in this folder?" dialog for ``cwd``.
+    """Pre-accept claude's first-run dialogs for ``cwd``.
 
-    The trust dialog is **separate** from the permission prompts ``--dangerously-skip-permissions``
-    skips (cf. claude issue #45298): it blocks on startup until accepted, and there's no operator in
-    the container to accept it. claude records acceptance per-project in ``<config>/.claude.json``
-    under ``projects[<cwd>].hasTrustDialogAccepted``; we seed exactly that (and mark onboarding done,
-    the other first-run blocker). Merge-in-place so we don't clobber config claude writes itself, and
-    idempotent. The path encoding is
-    undocumented internals — a safe degradation if it ever drifts is that the dialog reappears, which
-    only matters in an (already attended) interactive re-attach.
+    Three blockers fire on a fresh container and must be pre-seeded — there is no operator in the
+    container to dismiss them interactively:
+
+    - ``hasCompletedOnboarding`` — the general onboarding screen.
+    - ``projects[<cwd>].hasTrustDialogAccepted`` — "Do you trust the files in this folder?"
+      (cf. claude issue #45298; separate from ``--dangerously-skip-permissions``).
+    - ``hasAcknowledgedCostThreshold`` — cost-acknowledgment dialog shown when authenticating
+      via ``ANTHROPIC_API_KEY`` (not shown for OAuth tokens).
+
+    Merge-in-place so we don't clobber config claude writes itself, and idempotent. The path
+    encoding is undocumented internals — a safe degradation if it ever drifts is that the dialog
+    reappears, which only matters in an (already attended) interactive re-attach.
     """
     config = config_dir / CONFIG_FILE
     with update_json_config(config) as data:
         data["hasCompletedOnboarding"] = True
+        data["hasAcknowledgedCostThreshold"] = True
         projects = data.setdefault("projects", {})
         projects.setdefault(str(cwd), {})["hasTrustDialogAccepted"] = True
     return config
