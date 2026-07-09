@@ -77,7 +77,7 @@ Registry push/pull (`docker push` / `docker pull`) is deferred to a later M5 sli
 
 `env_file` in the repo record is a host-local path. Operators must provision the file on each
 runner host at the same absolute path stored in the DB record. Recommended layout:
-`~/.panopticon/secrets/<repo-id>.env` on every host. The runner already uses whatever path
+`~/.config/panopticon/secrets/<repo-id>.env` on every host. The runner already uses whatever path
 the DB record holds — no code change needed. A `--secrets-root` remapping flag (for operators
 who can't keep identical paths across hosts) is deferred.
 

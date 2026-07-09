@@ -34,6 +34,11 @@ import httpx
 
 from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.git import GitClones
+from panopticon.sessionservice._migration import (
+    DEFAULT_CLONE_CACHE_ROOT,
+    DEFAULT_TASKS_ROOT,
+    migrate_session_dirs,
+)
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.images import ImageBuilder
 from panopticon.sessionservice.local_runner import DEFAULT_IMAGE, LocalRunner
@@ -41,9 +46,6 @@ from panopticon.sessionservice.provisioner import Provisioner
 from panopticon.sessionservice.spawner import Spawner
 
 _log = logging.getLogger(__name__)
-
-DEFAULT_CACHE_ROOT = os.path.expanduser("~/.panopticon/cache")
-DEFAULT_TASKS_ROOT = os.path.expanduser("~/.panopticon/tasks")
 
 
 class HostDaemon:
@@ -86,6 +88,7 @@ class HostDaemon:
                 self._provisioner.provision(task)
                 self._spawner.reconcile(task)
                 self._spawner.heal(task)
+                self._spawner.cleanup(task)
             except Exception:  # a transient git/REST/FS error on one task must not stall the others
                 _log.warning("host pass failed for task %s", task.get("id"), exc_info=True)
                 continue
@@ -204,7 +207,7 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
         help="hostname or alias reported to the task service",
     )
     parser.add_argument("--image", default=DEFAULT_IMAGE)
-    parser.add_argument("--cache-root", default=os.environ.get("PANOPTICON_CACHE_ROOT", DEFAULT_CACHE_ROOT))
+    parser.add_argument("--cache-root", default=os.environ.get("PANOPTICON_CACHE_ROOT", DEFAULT_CLONE_CACHE_ROOT))
     parser.add_argument("--tasks-root", default=os.environ.get("PANOPTICON_TASKS_ROOT", DEFAULT_TASKS_ROOT))
     parser.add_argument(
         "--interval", type=float, default=2.0,
@@ -212,6 +215,7 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
     )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    migrate_session_dirs(args.cache_root, args.tasks_root)
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
     runner = LocalRunner(args.container_service_url, image=args.image, runner_id=args.runner_id)
     # Hold this host's liveness connection for the daemon's whole life, alongside the spawn/provision

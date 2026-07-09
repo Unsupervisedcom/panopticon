@@ -51,6 +51,9 @@ class _FakeRunner:
     def has_session(self, task_id: str) -> bool:
         return self._session
 
+    def stop(self, container_id: str) -> None:
+        pass
+
 
 class _FakeClient:
     """Captures claims + reported lifecycle phases; serves one repo. `claim` 409s when already held
@@ -476,6 +479,61 @@ def test_spawn_runs_repo_hook_with_correct_args() -> None:
     spawner.spawn_one({"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None})
     assert calls == [("/hooks/acme.sh", "t1", "acme/widgets", "/tasks/t1")]
     assert runner.spawned  # container still spawned after the hook
+
+
+def _cleanup_spawner(runner: _FakeRunner, *, workspace_exists: bool) -> Spawner:
+    """Helper: a spawner with injectable exists/rmtree for cleanup tests."""
+    client = _FakeClient(repo=_REPO)
+    cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
+    return Spawner(
+        client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
+        git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        makedirs=lambda _p: None,
+        exists=lambda _p: workspace_exists,
+        rmtree=lambda _p: None,  # swapped out per test when we need to record calls
+    )
+
+
+def test_cleanup_removes_workspace_when_terminal_and_container_gone() -> None:
+    removed: list[str] = []
+    runner = _FakeRunner(running=False)
+    client = _FakeClient(repo=_REPO)
+    cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
+    spawner = Spawner(
+        client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
+        git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        makedirs=lambda _p: None, exists=lambda _p: True, rmtree=removed.append,
+    )
+    spawner.cleanup({"id": "t1", "state": "COMPLETE"})
+    assert removed == ["/tasks/t1"]
+
+
+def test_cleanup_waits_when_container_still_running() -> None:
+    removed: list[str] = []
+    runner = _FakeRunner(running=True)
+    client = _FakeClient(repo=_REPO)
+    cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
+    spawner = Spawner(
+        client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
+        git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        makedirs=lambda _p: None, exists=lambda _p: True, rmtree=removed.append,
+    )
+    spawner.cleanup({"id": "t1", "state": "COMPLETE"})
+    assert removed == []  # container still up — leave workspace alone
+
+
+def test_cleanup_is_a_no_op_for_non_terminal_task() -> None:
+    removed: list[str] = []
+    runner = _FakeRunner(running=False)
+    client = _FakeClient(repo=_REPO)
+    cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
+    spawner = Spawner(
+        client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
+        git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        makedirs=lambda _p: None, exists=lambda _p: True, rmtree=removed.append,
+    )
+    spawner.cleanup({"id": "t1", "state": "ITERATING"})
+    assert removed == []  # live task — never touch its workspace
 
 
 def test_spawn_hook_failure_aborts_spawn() -> None:

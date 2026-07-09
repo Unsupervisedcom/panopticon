@@ -8,7 +8,7 @@ from pathlib import Path
 
 from panopticon.core.git import GitClones
 from panopticon.sessionservice.clones import CloneCache
-from panopticon.sessionservice.spawn import prepare_workspace
+from panopticon.sessionservice.spawn import cleanup_workspace, prepare_workspace
 
 
 def _recording_runner() -> tuple[list[list[str]], Callable[..., str]]:
@@ -90,3 +90,15 @@ def test_prepare_creates_tasks_root_before_cloning(tmp_path: Path) -> None:
 
     assert str(tasks_root) in created
     assert tasks_root.is_dir()
+
+
+def test_cleanup_removes_the_checkout_when_it_exists() -> None:
+    removed: list[str] = []
+    cleanup_workspace("t1", "/tasks", exists=lambda _p: True, rmtree=removed.append)
+    assert removed == ["/tasks/t1"]
+
+
+def test_cleanup_is_a_no_op_when_checkout_is_absent() -> None:
+    removed: list[str] = []
+    cleanup_workspace("t1", "/tasks", exists=lambda _p: False, rmtree=removed.append)
+    assert removed == []

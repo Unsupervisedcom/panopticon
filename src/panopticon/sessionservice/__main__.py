@@ -15,6 +15,11 @@ import httpx
 
 from panopticon.client import TaskServiceClient
 from panopticon.core.git import GitClones
+from panopticon.sessionservice._migration import (
+    DEFAULT_CLONE_CACHE_ROOT,
+    DEFAULT_TASKS_ROOT,
+    migrate_session_dirs,
+)
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.local_runner import (
     DEFAULT_IMAGE,
@@ -23,10 +28,6 @@ from panopticon.sessionservice.local_runner import (
     _subprocess_run,
 )
 from panopticon.sessionservice.spawn import prepare_workspace
-
-#: Per-host provisioning roots (ADR 0010/0011): the per-repo clone cache and the per-task clones.
-DEFAULT_CACHE_ROOT = os.path.expanduser("~/.panopticon/cache")
-DEFAULT_TASKS_ROOT = os.path.expanduser("~/.panopticon/tasks")
 
 
 def main(
@@ -45,9 +46,10 @@ def main(
         help="task service URL the container connects back to",
     )
     parser.add_argument("--image", default=DEFAULT_IMAGE)
-    parser.add_argument("--cache-root", default=os.environ.get("PANOPTICON_CACHE_ROOT", DEFAULT_CACHE_ROOT))
+    parser.add_argument("--cache-root", default=os.environ.get("PANOPTICON_CACHE_ROOT", DEFAULT_CLONE_CACHE_ROOT))
     parser.add_argument("--tasks-root", default=os.environ.get("PANOPTICON_TASKS_ROOT", DEFAULT_TASKS_ROOT))
     args = parser.parse_args(argv)
+    migrate_session_dirs(args.cache_root, args.tasks_root)
 
     # Look up the task's repo to inject that repo's secrets (ADR 0007), scoped to this task.
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))

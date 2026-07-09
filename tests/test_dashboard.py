@@ -66,6 +66,7 @@ class _FakeClient:
         registrations: dict[str, list[dict[str, Any]]] | None = None,
         *,
         repos: list[str] | list[dict[str, Any]] | None = None,
+        runners: list[dict[str, Any]] | None = None,
         workflows: list[dict[str, str]] | None = None,
         operations: dict[str, str] | None = None,
         artifacts: dict[str, list[str]] | None = None,
@@ -73,6 +74,7 @@ class _FakeClient:
     ) -> None:
         self._tasks = tasks
         self._registrations = registrations or {}
+        self._runners: list[dict[str, Any]] = runners or []
         # repos may be bare ids (existing task-creation tests) or full dicts (repo-screen tests).
         # Unspecified (None) defaults to one repo present, so the start-up auto-open of the repo
         # screen (fired when there are *no* repos) doesn't pop over tests that don't care; pass an
@@ -127,6 +129,9 @@ class _FakeClient:
 
     def list_registrations(self, task_id: str) -> list[dict[str, Any]]:
         return self._registrations.get(task_id, [])
+
+    def live_runners(self) -> list[dict[str, Any]]:
+        return self._runners
 
     def list_artifacts(self, task_id: str) -> list[str]:
         return self._artifacts.get(task_id, [])
@@ -1193,10 +1198,10 @@ async def test_repo_form_edit_mode_does_not_autofill_blank_fields() -> None:
         await pilot.press("e")  # edit
         await pilot.pause()
         # Editing an existing repo never derives values: blanks stay blank even on blur.
-        app.screen.query_one("#field-env_file", Input).focus()  # blur git_url
+        app.screen.query_one("#field-default_base", Input).focus()  # blur git_url
         await pilot.pause()
         assert app.screen.query_one("#field-name", Input).value == ""
-        assert app.screen.query_one("#field-env_file", Input).value == ""
+        assert app.screen.query_one("#field-env_file", dashboard.EnvFileField).env_file_value == ""
 
 
 async def test_repos_screen_create_requires_id_name_and_git_url() -> None:
@@ -1389,6 +1394,65 @@ async def test_repo_form_space_toggles_the_checkbox_without_saving() -> None:
         assert checkbox.value is True  # toggled
         assert fake.created_repos == []  # but not saved
         assert isinstance(app.screen, dashboard.RepoFormScreen)  # form still open
+
+
+@pytest.mark.asyncio
+async def test_env_file_field_blank_when_no_known_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """EnvFileField returns '' and shows nothing selected when secrets dir is absent."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    fake = _FakeClient([], repos=[{"id": "r1", "name": "x", "git_url": "https://x/r.git",
+                                   "default_base": "main"}])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        ef = app.screen.query_one("#field-env_file", dashboard.EnvFileField)
+        assert ef.env_file_value == ""
+
+
+@pytest.mark.asyncio
+async def test_env_file_field_pre_selects_known_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """EnvFileField pre-selects an existing env_file that lives in the secrets dir."""
+    cfg = tmp_path / "config" / "panopticon" / "secrets"
+    cfg.mkdir(parents=True)
+    env_path = str(cfg / "r1.env")
+    (cfg / "r1.env").write_text("CLAUDE_CODE_OAUTH_TOKEN=tok")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    fake = _FakeClient([], repos=[{"id": "r1", "name": "x", "git_url": "https://x/r.git",
+                                   "default_base": "main", "env_file": env_path}])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        ef = app.screen.query_one("#field-env_file", dashboard.EnvFileField)
+        assert ef.env_file_value == env_path
+
+
+@pytest.mark.asyncio
+async def test_env_file_field_custom_path_pre_populates_input(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """EnvFileField shows the custom input pre-populated when stored path isn't in secrets dir."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    custom = "/some/other/path/r1.env"
+    fake = _FakeClient([], repos=[{"id": "r1", "name": "x", "git_url": "https://x/r.git",
+                                   "default_base": "main", "env_file": custom}])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        ef = app.screen.query_one("#field-env_file", dashboard.EnvFileField)
+        assert ef.env_file_value == custom
+        # The custom input should be visible
+        inp = ef.query_one("#env-file-input", Input)
+        assert inp.display is True
 
 
 def _record_popen(monkeypatch: Any) -> list[list[str]]:
@@ -1854,6 +1918,105 @@ async def test_enter_on_non_governor_does_nothing() -> None:
         await pilot.pause()
         after = [str(k.value) for k in table.rows]
         assert before == after
+
+
+# -- multi-runner column -----------------------------------------------------------
+
+def _col_labels(table: DataTable) -> list[str]:
+    return [str(c.label) for c in table.columns.values()]
+
+
+async def test_runner_column_absent_for_single_runner() -> None:
+    # One registered runner → no "runner" column.
+    tasks = [{**_TASK, "id": "t-a"}, {**_TASK, "id": "t-b"}]
+    app = Dashboard(_FakeClient(tasks, runners=[{"id": "r1", "host": "host-a"}]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert "runner" not in _col_labels(app.query_one("#tasks", DataTable))
+
+
+async def test_runner_column_absent_with_no_runners() -> None:
+    # No registered runners → no "runner" column.
+    app = Dashboard(_FakeClient([_TASK], runners=[]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert "runner" not in _col_labels(app.query_one("#tasks", DataTable))
+
+
+async def test_runner_column_appears_for_multiple_runners() -> None:
+    # Two registered runners → "runner" column present; cells show task runner_host values.
+    tasks = [
+        {**_TASK, "id": "t-a", "runner_host": "host-a"},
+        {**_TASK, "id": "t-b", "runner_host": "host-b"},
+    ]
+    runners = [{"id": "r1", "host": "host-a"}, {"id": "r2", "host": "host-b"}]
+    app = Dashboard(_FakeClient(tasks, runners=runners))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        labels = _col_labels(table)
+        assert "runner" in labels
+        runner_idx = labels.index("runner")
+        assert table.get_row("t-a")[runner_idx].plain == "host-a"
+        assert table.get_row("t-b")[runner_idx].plain == "host-b"
+
+
+async def test_runner_column_appears_dynamically() -> None:
+    # Start with one runner → no column. Feed refresh adds a second runner → column appears.
+    fake = _FakeClient([{**_TASK, "id": "t-a", "runner_host": "host-a"}],  # type: ignore[arg-type]
+                       runners=[{"id": "r1", "host": "host-a"}])
+    app = Dashboard(fake, refresh_interval=0.05)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        assert "runner" not in _col_labels(table)
+        fake._tasks = [
+            {**_TASK, "id": "t-a", "runner_host": "host-a"},
+            {**_TASK, "id": "t-b", "runner_host": "host-b"},
+        ]
+        fake._runners = [{"id": "r1", "host": "host-a"}, {"id": "r2", "host": "host-b"}]
+        fake.signal_change()
+        await _settle(pilot, lambda: "runner" in _col_labels(table))
+        assert "runner" in _col_labels(table)
+
+
+async def test_runner_column_disappears_dynamically() -> None:
+    # Start with two runners → column shown. Feed refresh drops to one → column gone.
+    fake = _FakeClient(  # type: ignore[arg-type]
+        [{**_TASK, "id": "t-a", "runner_host": "host-a"},
+         {**_TASK, "id": "t-b", "runner_host": "host-b"}],
+        runners=[{"id": "r1", "host": "host-a"}, {"id": "r2", "host": "host-b"}],
+    )
+    app = Dashboard(fake, refresh_interval=0.05)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        assert "runner" in _col_labels(table)
+        fake._tasks = [{**_TASK, "id": "t-a", "runner_host": "host-a"}]
+        fake._runners = [{"id": "r1", "host": "host-a"}]
+        fake.signal_change()
+        await _settle(pilot, lambda: "runner" not in _col_labels(table))
+        assert "runner" not in _col_labels(table)
+
+
+async def test_runner_cell_is_dimmed_for_terminal_tasks() -> None:
+    # Terminal tasks have their runner cell dimmed like all other cells.
+    tasks = [
+        {**_TASK, "id": "t-active", "runner_host": "host-a", "state": "WORKING"},
+        {**_TASK, "id": "t-done", "runner_host": "host-b", "state": "COMPLETE"},
+    ]
+    runners = [{"id": "r1", "host": "host-a"}, {"id": "r2", "host": "host-b"}]
+    app = Dashboard(_FakeClient(tasks, runners=runners))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        labels = _col_labels(table)
+        assert "runner" in labels
+        runner_idx = labels.index("runner")
+        active_runner = table.get_row("t-active")[runner_idx]
+        assert not any(s.style == "dim" for s in active_runner._spans)
+        done_runner = table.get_row("t-done")[runner_idx]
+        assert done_runner._spans and all(s.style == "dim" for s in done_runner._spans)
 
 
 # -- vim-style hjkl navigation ------------------------------------------------------

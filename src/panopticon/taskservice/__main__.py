@@ -6,10 +6,11 @@ uvicorn. This is the LLM-free control plane's process entry point; runners and t
 controller are its clients (they reach it at ``PANOPTICON_SERVICE_URL``).
 
 Workflows are **discovered**, not hardcoded: the built-in :mod:`panopticon.workflows` package,
-``~/.panopticon/workflows/`` (if it exists), and an optional ``--workflows-path`` directory
-(ADR 0004, Slice 8) — so adding a workflow is just dropping a module in ``~/.panopticon/workflows/``
-with no install step. Config comes from flags or ``PANOPTICON_*`` env, with on-disk defaults so a
-bare ``python -m panopticon.taskservice`` persists across restarts.
+``$XDG_CONFIG_HOME/panopticon/workflows/`` (``~/.config/panopticon/workflows/`` when unset,
+if it exists), and an optional ``--workflows-path`` directory (ADR 0004, Slice 8) — so adding a
+workflow is just dropping a module in ``~/.config/panopticon/workflows/`` with no install step.
+Config comes from flags or ``PANOPTICON_*`` env, with on-disk defaults so a bare
+``python -m panopticon.taskservice`` persists across restarts.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI
 
+from panopticon.core.dirs import user_data_dir
 from panopticon.taskservice.api import create_app
 from panopticon.taskservice.artifacts_fs import DEFAULT_ARTIFACTS, FilesystemArtifactStore
 from panopticon.taskservice.layers_fs import DEFAULT_LAYERS, FilesystemLayerStore
@@ -31,50 +33,77 @@ from panopticon.taskservice.service import TaskService
 from panopticon.taskservice.store_sqlalchemy import SqlAlchemyStore
 from panopticon.workflows.discovery import discover_workflows
 
-DEFAULT_DB = "sqlite:///" + str(Path.home() / ".panopticon" / "panopticon.db")
+DEFAULT_DB: str = "sqlite:///" + str(user_data_dir() / "panopticon.db")
 
 _SQLITE_PREFIX = "sqlite:///"
 
 
 def migrate_db_to_home(db_url: str) -> None:
-    """Move ``./panopticon.db`` to ``~/.panopticon/`` on first start after upgrading.
+    """Migrate legacy DB locations to the XDG data dir on first start after upgrading.
 
-    Only acts when *db_url* is the new home-dir default (not a custom override) and the old
-    CWD-relative file exists but the new location doesn't — idempotent, safe to call every start.
-    Called from both ``main()`` and ``migrations/env.py`` so it fires before alembic connects too.
+    Handles two upgrade hops in order:
+    - ``./panopticon.db`` (pre-#251) → XDG
+    - ``~/.panopticon/panopticon.db`` (#251) → XDG
+
+    Only acts when *db_url* is the XDG default (not a custom override) and the destination
+    doesn't exist. Idempotent, safe to call every start. Called from both ``main()`` and
+    ``migrations/env.py`` so it fires before alembic connects too.
     """
     if db_url != DEFAULT_DB:
         return
-    old = Path("panopticon.db")
     new = Path(db_url[len(_SQLITE_PREFIX):])
-    if old.is_file() and not new.exists():
-        logging.info("panopticon: migrating %s → %s", old.resolve(), new)
-        new.parent.mkdir(parents=True, exist_ok=True)
-        old.rename(new)
+    if new.exists():
+        return
+    for old in [Path("panopticon.db"), Path.home() / ".panopticon" / "panopticon.db"]:
+        if old.is_file():
+            logging.info("panopticon: migrating %s → %s", old.resolve(), new)
+            new.parent.mkdir(parents=True, exist_ok=True)
+            old.rename(new)
+            return
 
 
 def _migrate_legacy_to_home(db: str, artifacts: str, layers: str) -> None:
-    """Move all CWD-relative legacy runtime data to ``~/.panopticon/`` on first start after upgrading.
+    """Migrate all legacy runtime data to XDG locations on first start after upgrading.
 
-    Covers the DB (delegated to :func:`migrate_db_to_home`), artifact store, and layer store.
-    Skips each path individually when a custom override is in use, when the old path is absent,
-    or when the new location already exists (no clobbering).
+    Covers the DB (delegated to :func:`migrate_db_to_home`), artifact store, layer store, and
+    the operator-authored config dirs (hooks, secrets). Tries both legacy source locations in
+    order (CWD-relative pre-#251, then ``~/.panopticon/`` post-#251) for each path. Skips each
+    path when a custom override is in use, when no legacy source exists, or when the destination
+    already exists (no clobbering).
+
+    Note: artifacts go to ``$XDG_DATA_HOME/panopticon/`` (runtime-generated data); layers,
+    hooks, and secrets go to ``$XDG_CONFIG_HOME/panopticon/`` (operator-authored config).
     """
+    from panopticon.core.dirs import user_config_dir as _config_dir
+
     migrate_db_to_home(db)
 
     if artifacts == DEFAULT_ARTIFACTS:
-        old = Path("artifacts")
         new = Path(artifacts)
-        if old.is_dir() and not new.exists():
-            logging.info("panopticon: migrating %s → %s", old.resolve(), new)
-            shutil.move(str(old), str(new))
+        if not new.exists():
+            for old in [Path("artifacts"), Path.home() / ".panopticon" / "artifacts"]:
+                if old.is_dir():
+                    logging.info("panopticon: migrating %s → %s", old.resolve(), new)
+                    shutil.move(str(old), str(new))
+                    break
 
     if layers == DEFAULT_LAYERS:
-        old = Path("layers")
         new = Path(layers)
-        if old.is_dir() and not new.exists():
-            logging.info("panopticon: migrating %s → %s", old.resolve(), new)
-            shutil.move(str(old), str(new))
+        if not new.exists():
+            for old in [Path("layers"), Path.home() / ".panopticon" / "layers"]:
+                if old.is_dir():
+                    logging.info("panopticon: migrating %s → %s", old.resolve(), new)
+                    shutil.move(str(old), str(new))
+                    break
+
+    for name in ("hooks", "secrets"):
+        new = _config_dir() / name
+        if not new.exists():
+            old = Path.home() / ".panopticon" / name
+            if old.is_dir():
+                logging.info("panopticon: migrating %s → %s", old.resolve(), new)
+                new.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(old), str(new))
 
 
 def build_app(
@@ -121,7 +150,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         help="extra directory to discover Workflow subclasses in (beyond the built-ins)",
     )
     args = parser.parse_args(argv)
-    (Path.home() / ".panopticon").mkdir(parents=True, exist_ok=True)
+    user_data_dir().mkdir(parents=True, exist_ok=True)
     _migrate_legacy_to_home(args.db, args.artifacts, args.layers)
     app = build_app(
         db=args.db, artifacts_root=args.artifacts, layers_root=args.layers,

@@ -140,7 +140,8 @@ def test_trust_workspace_seeds_acceptance_for_a_fresh_config(tmp_path: Path) -> 
     agent.trust_workspace(config_dir, Path("/workspace"))
     data = json.loads((config_dir / ".claude.json").read_text())
     assert data["projects"]["/workspace"]["hasTrustDialogAccepted"] is True
-    assert data["hasCompletedOnboarding"] is True  # the other first-run blocker
+    assert data["hasCompletedOnboarding"] is True
+    assert data["hasAcknowledgedCostThreshold"] is True  # suppresses the API-key cost dialog
 
 
 def test_trust_workspace_merges_and_is_idempotent(tmp_path: Path) -> None:
