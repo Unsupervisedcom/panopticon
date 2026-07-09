@@ -55,6 +55,36 @@ def _run_repo_hook(hook_file: str, task_id: str, repo_name: str, workspace: str)
         raise RuntimeError(f"repo hook {hook_file!r} exited {result.returncode}")
 
 
+def _validate_env_file(env_file: str) -> None:
+    """Raise RuntimeError with a clear message if env_file is missing or has no auth token.
+
+    Called in PREPARING so a misconfigured repo fails fast — before the image is built or
+    docker is invoked — and the dashboard shows an actionable FAILED detail.
+    """
+    if not os.path.isfile(env_file) or not os.access(env_file, os.R_OK):
+        raise RuntimeError(
+            f"env_file {env_file!r} does not exist or is not readable — "
+            "create it and set CLAUDE_CODE_OAUTH_TOKEN (see docs/container-auth.md)"
+        )
+    tokens = {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"}
+    found = False
+    with open(env_file) as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            key, _, value = line.partition("=")
+            if key.strip() in tokens and value.strip():
+                found = True
+                break
+    if not found:
+        raise RuntimeError(
+            f"env_file {env_file!r} contains no auth token — "
+            "set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY "
+            "(see docs/container-auth.md)"
+        )
+
+
 #: Crash-loop guard for :meth:`Spawner.heal`: at most this many respawns of a task within a burst
 #: before we stop and surface it (log) rather than thrash a container that won't stay up.
 MAX_RESPAWNS = 5
@@ -91,6 +121,7 @@ class Spawner:
         git: object | None = None,
         images: ImageBuilder | None = None,
         run_hook: Callable[[str, str, str, str], None] | None = None,
+        validate_env_file: Callable[[str], None] | None = None,
         makedirs: Callable[[str], None] = lambda p: Path(p).mkdir(parents=True, exist_ok=True),
         exists: Callable[[str], bool] = os.path.isdir,
         rmtree: Callable[[str], None] = shutil.rmtree,
@@ -106,6 +137,7 @@ class Spawner:
         self._git = git
         self._images = images or ImageBuilder()
         self._run_hook = run_hook or _run_repo_hook
+        self._validate_env_file = validate_env_file or _validate_env_file
         self._makedirs = makedirs
         self._exists = exists
         self._rmtree = rmtree
@@ -152,6 +184,8 @@ class Spawner:
             repo = self._client.get_repo(task["repo_id"])
             _log.info("task %s: preparing workspace (repo=%s)", task_id, repo.get("name", repo["id"]))
             self._report(task_id, LifecyclePhase.PREPARING)
+            if env_file := repo.get("env_file"):
+                self._validate_env_file(env_file)
             workspace = prepare_workspace(
                 task_id, repo, cache=self._cache, tasks_root=self._tasks_root, git=self._git,  # type: ignore[arg-type]
                 makedirs=self._makedirs,
