@@ -25,7 +25,6 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import socket
 import threading
 import time
 from collections.abc import Callable
@@ -201,7 +200,7 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
     parser.add_argument("--runner-id", default=os.environ.get("PANOPTICON_RUNNER_ID", "local"))
     parser.add_argument(
         "--host",
-        default=os.environ.get("PANOPTICON_RUNNER_HOST", socket.gethostname()),
+        default=os.environ.get("PANOPTICON_RUNNER_HOST", ""),
         help="hostname or alias reported to the task service",
     )
     parser.add_argument("--image", default=DEFAULT_IMAGE)
