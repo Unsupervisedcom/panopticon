@@ -12,6 +12,7 @@ a re-created container re-mounts the same dir. LLM-free.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 from collections.abc import Callable
@@ -20,6 +21,13 @@ from pathlib import Path
 from panopticon.client import JsonObj
 from panopticon.core.git import GitClones
 from panopticon.sessionservice.clones import CloneCache
+
+_log = logging.getLogger(__name__)
+
+#: Suffix appended to a per-task checkout the daemon cannot fully delete (see
+#: :func:`cleanup_workspace`). Task ids contain no dots, so a quarantined dir can never
+#: collide with another task's checkout path.
+QUARANTINE_SUFFIX = ".stale"
 
 
 def prepare_workspace(
@@ -61,8 +69,37 @@ def cleanup_workspace(
     *,
     exists: Callable[[str], bool] = os.path.isdir,
     rmtree: Callable[[str], None] = shutil.rmtree,
+    rename: Callable[[str, str], None] = os.rename,
 ) -> None:
-    """Remove the per-task checkout if it exists. Idempotent: no-op when already gone."""
+    """Remove the per-task checkout if it exists. Idempotent: no-op when already gone.
+
+    A checkout can hold files the daemon **cannot** delete — e.g. root-owned ``.mypy_cache``/
+    ``.pytest_cache`` written by a container process that ran as root (before the entrypoint's
+    uid remap, or via ``docker_in_docker``). Deleting those needs privileges the daemon doesn't
+    have, and raising would refail the host pass every tick, forever. So on a failed delete the
+    checkout is **quarantined** instead: renamed to ``<checkout>.stale`` (a rename needs only
+    write on ``tasks_root``, which the daemon owns) and logged once for manual removal. Either
+    way the canonical path ends up gone, so the cleanup self-gate (`exists`) makes later passes
+    a no-op. If even the rename fails, the error is logged and swallowed — cleanup is
+    best-effort by design; it must never take down the host pass."""
     checkout = f"{tasks_root.rstrip('/')}/{task_id}"
-    if exists(checkout):
+    if not exists(checkout):
+        return
+    try:
         rmtree(checkout)
+    except OSError:
+        quarantine = f"{checkout}{QUARANTINE_SUFFIX}"
+        try:
+            rename(checkout, quarantine)
+        except OSError:
+            _log.warning(
+                "workspace %s could not be removed or quarantined — remove it manually"
+                " (it likely holds files owned by another user; may need sudo)",
+                checkout, exc_info=True,
+            )
+            return
+        _log.warning(
+            "workspace %s holds files the daemon cannot delete (e.g. root-owned caches);"
+            " quarantined it as %s — remove it manually (may need sudo)",
+            checkout, quarantine,
+        )
