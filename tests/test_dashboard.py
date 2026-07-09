@@ -1958,3 +1958,80 @@ async def test_runner_cell_is_dimmed_for_terminal_tasks() -> None:
         assert not any(s.style == "dim" for s in active_runner._spans)
         done_runner = table.get_row("t-done")[runner_idx]
         assert done_runner._spans and all(s.style == "dim" for s in done_runner._spans)
+
+
+# -- vim-style hjkl navigation ------------------------------------------------------
+
+async def test_pressing_jk_moves_the_task_table_cursor_like_arrow_keys() -> None:
+    other = {**_TASK, "id": "task-second9999", "slug": "other"}
+    app = Dashboard(_FakeClient([_TASK, other]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app._current == _TASK["id"]  # starts on the first row
+        await pilot.press("j")
+        await pilot.pause()
+        assert app._current == "task-second9999"
+        await pilot.press("k")
+        await pilot.pause()
+        assert app._current == _TASK["id"]
+
+
+async def test_pressing_j_skips_the_ensemble_row_like_the_down_arrow() -> None:
+    # A collapsed governor's ensemble row sits between two real rows; `j` must step past it the
+    # same way `down` already does (Dashboard.on_data_table_row_highlighted), not land on it.
+    governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
+    governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov"}
+    extra = {**_TASK, "id": "extra", "slug": "zzz-extra", "governor_task_id": None}
+    app = Dashboard(_FakeClient([governor, governed, extra]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        table.move_cursor(row=table.get_row_index("gov"))
+        await pilot.press("enter")  # collapse: gov, ensemble(gov), extra
+        await pilot.pause()
+        await pilot.press("j")  # from gov, steps over the ensemble row onto extra
+        await pilot.pause()
+        assert app._current == "extra"
+        await pilot.press("k")  # and back up, over the ensemble row, onto gov
+        await pilot.pause()
+        assert app._current == "gov"
+
+
+async def test_pressing_jk_navigates_the_repos_table() -> None:
+    fake = _FakeClient([], repos=[
+        {"id": "r1", "name": "r1", "git_url": "", "default_base": "main"},
+        {"id": "r2", "name": "r2", "git_url": "", "default_base": "main"},
+    ])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        table = app.screen.query_one("#repos", DataTable)
+        assert table.cursor_row == 0
+        await pilot.press("j")
+        await pilot.pause()
+        assert table.cursor_row == 1
+        await pilot.press("k")
+        await pilot.pause()
+        assert table.cursor_row == 0
+
+
+async def test_pressing_j_then_enter_picks_the_second_option_in_a_picker() -> None:
+    # Proves `j` actually moves the OptionList highlight (not just that Enter still works).
+    fake = _FakeClient(
+        [], repos=["r1", "r2"], workflows=[{"name": "spike", "when_to_use": "", "auto_submit_memo": False}]
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")  # opens the repo picker
+        await pilot.pause()
+        await pilot.press("j")  # move off r1 onto r2
+        await pilot.press("enter")  # repo: r2
+        await pilot.pause()
+        await pilot.press("enter")  # workflow: spike (only one)
+        await pilot.pause()
+        await pilot.press("enter")  # submit an empty memo
+        await pilot.pause()
+        assert fake.created == [("r2", "spike", None, None)]
