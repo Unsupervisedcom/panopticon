@@ -66,6 +66,7 @@ class _FakeClient:
         registrations: dict[str, list[dict[str, Any]]] | None = None,
         *,
         repos: list[str] | list[dict[str, Any]] | None = None,
+        runners: list[dict[str, Any]] | None = None,
         workflows: list[dict[str, str]] | None = None,
         operations: dict[str, str] | None = None,
         artifacts: dict[str, list[str]] | None = None,
@@ -73,6 +74,7 @@ class _FakeClient:
     ) -> None:
         self._tasks = tasks
         self._registrations = registrations or {}
+        self._runners: list[dict[str, Any]] = runners or []
         # repos may be bare ids (existing task-creation tests) or full dicts (repo-screen tests).
         # Unspecified (None) defaults to one repo present, so the start-up auto-open of the repo
         # screen (fired when there are *no* repos) doesn't pop over tests that don't care; pass an
@@ -127,6 +129,9 @@ class _FakeClient:
 
     def list_registrations(self, task_id: str) -> list[dict[str, Any]]:
         return self._registrations.get(task_id, [])
+
+    def live_runners(self) -> list[dict[str, Any]]:
+        return self._runners
 
     def list_artifacts(self, task_id: str) -> list[str]:
         return self._artifacts.get(task_id, [])
@@ -1854,3 +1859,179 @@ async def test_enter_on_non_governor_does_nothing() -> None:
         await pilot.pause()
         after = [str(k.value) for k in table.rows]
         assert before == after
+
+
+# -- multi-runner column -----------------------------------------------------------
+
+def _col_labels(table: DataTable) -> list[str]:
+    return [str(c.label) for c in table.columns.values()]
+
+
+async def test_runner_column_absent_for_single_runner() -> None:
+    # One registered runner → no "runner" column.
+    tasks = [{**_TASK, "id": "t-a"}, {**_TASK, "id": "t-b"}]
+    app = Dashboard(_FakeClient(tasks, runners=[{"id": "r1", "host": "host-a"}]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert "runner" not in _col_labels(app.query_one("#tasks", DataTable))
+
+
+async def test_runner_column_absent_with_no_runners() -> None:
+    # No registered runners → no "runner" column.
+    app = Dashboard(_FakeClient([_TASK], runners=[]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert "runner" not in _col_labels(app.query_one("#tasks", DataTable))
+
+
+async def test_runner_column_appears_for_multiple_runners() -> None:
+    # Two registered runners → "runner" column present; cells show task runner_host values.
+    tasks = [
+        {**_TASK, "id": "t-a", "runner_host": "host-a"},
+        {**_TASK, "id": "t-b", "runner_host": "host-b"},
+    ]
+    runners = [{"id": "r1", "host": "host-a"}, {"id": "r2", "host": "host-b"}]
+    app = Dashboard(_FakeClient(tasks, runners=runners))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        labels = _col_labels(table)
+        assert "runner" in labels
+        runner_idx = labels.index("runner")
+        assert table.get_row("t-a")[runner_idx].plain == "host-a"
+        assert table.get_row("t-b")[runner_idx].plain == "host-b"
+
+
+async def test_runner_column_appears_dynamically() -> None:
+    # Start with one runner → no column. Feed refresh adds a second runner → column appears.
+    fake = _FakeClient([{**_TASK, "id": "t-a", "runner_host": "host-a"}],  # type: ignore[arg-type]
+                       runners=[{"id": "r1", "host": "host-a"}])
+    app = Dashboard(fake, refresh_interval=0.05)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        assert "runner" not in _col_labels(table)
+        fake._tasks = [
+            {**_TASK, "id": "t-a", "runner_host": "host-a"},
+            {**_TASK, "id": "t-b", "runner_host": "host-b"},
+        ]
+        fake._runners = [{"id": "r1", "host": "host-a"}, {"id": "r2", "host": "host-b"}]
+        fake.signal_change()
+        await _settle(pilot, lambda: "runner" in _col_labels(table))
+        assert "runner" in _col_labels(table)
+
+
+async def test_runner_column_disappears_dynamically() -> None:
+    # Start with two runners → column shown. Feed refresh drops to one → column gone.
+    fake = _FakeClient(  # type: ignore[arg-type]
+        [{**_TASK, "id": "t-a", "runner_host": "host-a"},
+         {**_TASK, "id": "t-b", "runner_host": "host-b"}],
+        runners=[{"id": "r1", "host": "host-a"}, {"id": "r2", "host": "host-b"}],
+    )
+    app = Dashboard(fake, refresh_interval=0.05)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        assert "runner" in _col_labels(table)
+        fake._tasks = [{**_TASK, "id": "t-a", "runner_host": "host-a"}]
+        fake._runners = [{"id": "r1", "host": "host-a"}]
+        fake.signal_change()
+        await _settle(pilot, lambda: "runner" not in _col_labels(table))
+        assert "runner" not in _col_labels(table)
+
+
+async def test_runner_cell_is_dimmed_for_terminal_tasks() -> None:
+    # Terminal tasks have their runner cell dimmed like all other cells.
+    tasks = [
+        {**_TASK, "id": "t-active", "runner_host": "host-a", "state": "WORKING"},
+        {**_TASK, "id": "t-done", "runner_host": "host-b", "state": "COMPLETE"},
+    ]
+    runners = [{"id": "r1", "host": "host-a"}, {"id": "r2", "host": "host-b"}]
+    app = Dashboard(_FakeClient(tasks, runners=runners))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        labels = _col_labels(table)
+        assert "runner" in labels
+        runner_idx = labels.index("runner")
+        active_runner = table.get_row("t-active")[runner_idx]
+        assert not any(s.style == "dim" for s in active_runner._spans)
+        done_runner = table.get_row("t-done")[runner_idx]
+        assert done_runner._spans and all(s.style == "dim" for s in done_runner._spans)
+
+
+# -- vim-style hjkl navigation ------------------------------------------------------
+
+async def test_pressing_jk_moves_the_task_table_cursor_like_arrow_keys() -> None:
+    other = {**_TASK, "id": "task-second9999", "slug": "other"}
+    app = Dashboard(_FakeClient([_TASK, other]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app._current == _TASK["id"]  # starts on the first row
+        await pilot.press("j")
+        await pilot.pause()
+        assert app._current == "task-second9999"
+        await pilot.press("k")
+        await pilot.pause()
+        assert app._current == _TASK["id"]
+
+
+async def test_pressing_j_skips_the_ensemble_row_like_the_down_arrow() -> None:
+    # A collapsed governor's ensemble row sits between two real rows; `j` must step past it the
+    # same way `down` already does (Dashboard.on_data_table_row_highlighted), not land on it.
+    governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
+    governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov"}
+    extra = {**_TASK, "id": "extra", "slug": "zzz-extra", "governor_task_id": None}
+    app = Dashboard(_FakeClient([governor, governed, extra]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        table.move_cursor(row=table.get_row_index("gov"))
+        await pilot.press("enter")  # collapse: gov, ensemble(gov), extra
+        await pilot.pause()
+        await pilot.press("j")  # from gov, steps over the ensemble row onto extra
+        await pilot.pause()
+        assert app._current == "extra"
+        await pilot.press("k")  # and back up, over the ensemble row, onto gov
+        await pilot.pause()
+        assert app._current == "gov"
+
+
+async def test_pressing_jk_navigates_the_repos_table() -> None:
+    fake = _FakeClient([], repos=[
+        {"id": "r1", "name": "r1", "git_url": "", "default_base": "main"},
+        {"id": "r2", "name": "r2", "git_url": "", "default_base": "main"},
+    ])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        table = app.screen.query_one("#repos", DataTable)
+        assert table.cursor_row == 0
+        await pilot.press("j")
+        await pilot.pause()
+        assert table.cursor_row == 1
+        await pilot.press("k")
+        await pilot.pause()
+        assert table.cursor_row == 0
+
+
+async def test_pressing_j_then_enter_picks_the_second_option_in_a_picker() -> None:
+    # Proves `j` actually moves the OptionList highlight (not just that Enter still works).
+    fake = _FakeClient(
+        [], repos=["r1", "r2"], workflows=[{"name": "spike", "when_to_use": "", "auto_submit_memo": False}]
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")  # opens the repo picker
+        await pilot.pause()
+        await pilot.press("j")  # move off r1 onto r2
+        await pilot.press("enter")  # repo: r2
+        await pilot.pause()
+        await pilot.press("enter")  # workflow: spike (only one)
+        await pilot.pause()
+        await pilot.press("enter")  # submit an empty memo
+        await pilot.pause()
+        assert fake.created == [("r2", "spike", None, None)]

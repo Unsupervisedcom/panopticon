@@ -7,6 +7,9 @@ still when nothing changes (no fixed-interval redraw); `r` forces a refresh now.
 preserves the highlighted row across the rebuild. Terminal (COMPLETE/DROPPED) tasks sink below
 active ones and are rendered in faded/dim styling so they recede visually without a hard separator.
 
+The task table, the repo table (`g`), and the `OptionList` pickers (`n`'s repo/workflow choice,
+`a`'s artifact list) all accept vim-style `h`/`j`/`k`/`l` as well as the arrow keys.
+
 The footer legend shows only the essential, most-used keys — `t` hands off to the task's
 container tmux, `n` creates a task (pick repo → workflow → describe the work), `x` **drops** it,
 `/` searches, `d` **toggles the detail pane** (hidden by default so the table gets the full
@@ -467,7 +470,7 @@ class _OptionListModal(ModalScreen[_ResultT | None]):
     def compose(self) -> ComposeResult:
         with Vertical(id=self.BOX_ID):
             yield Label(self._title)
-            yield OptionList(*self._options)
+            yield _VimOptionList(*self._options)
             yield from self._extra_widgets()
 
     def _extra_widgets(self) -> Iterable[Widget]:
@@ -656,6 +659,28 @@ class SpaceCheckbox(Checkbox, inherit_bindings=False):
     its only source, so re-declaring ``space`` is the whole keymap."""
 
     BINDINGS = [Binding("space", "toggle_button", "Toggle", show=False)]
+
+
+class _VimDataTable(DataTable[Any]):
+    """A :class:`DataTable` with vim-style ``hjkl`` layered onto the default arrow keys (default
+    ``inherit_bindings=True``, so the arrow keys still work — this just adds a second way in)."""
+
+    BINDINGS = [
+        Binding("j", "cursor_down", "Down", show=False),
+        Binding("k", "cursor_up", "Up", show=False),
+        Binding("h", "cursor_left", "Left", show=False),
+        Binding("l", "cursor_right", "Right", show=False),
+    ]
+
+
+class _VimOptionList(OptionList):
+    """An :class:`OptionList` with vim-style ``j``/``k`` layered onto the default arrow keys —
+    it's a single column, so there's no ``h``/``l`` equivalent."""
+
+    BINDINGS = [
+        Binding("j", "cursor_down", "Down", show=False),
+        Binding("k", "cursor_up", "Up", show=False),
+    ]
 
 
 class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
@@ -847,7 +872,7 @@ class ReposScreen(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="repos-box"):
             yield Label("repos — n: new   e: edit   esc: close")
-            yield DataTable(id="repos")
+            yield _VimDataTable(id="repos")
 
     def on_mount(self) -> None:
         table = self.query_one("#repos", DataTable)
@@ -1073,18 +1098,27 @@ class HelpScreen(ModalScreen[None]):
     ]
 
     def compose(self) -> ComposeResult:
-        # Enter is handled via DataTable.RowSelected (not a HOTKEYS binding), so it's listed here
-        # as a literal line rather than derived from the HOTKEYS table.
+        # Enter and hjkl are handled on the list widgets themselves (not HOTKEYS bindings), so
+        # they're listed here as literal lines rather than derived from the HOTKEYS table.
         enter_line = f"  [b]{'Enter':<5}[/b] Collapse/expand the ensemble of governed tasks under the cursor"
+        vim_line = f"  [b]{'hjkl':<5}[/b] Vim-style navigation (task/repo tables, option-list pickers)"
         rows = "\n".join(
             f"  [b]{(h.display or h.key):<5}[/b] {h.description}" for h in HOTKEYS
         )
         with Vertical(id="help-box"):
             yield Label("panopticon — keys")
-            yield Static(enter_line + "\n" + rows, id="help-keys")
+            yield Static(enter_line + "\n" + vim_line + "\n" + rows, id="help-keys")
 
     def action_close(self) -> None:
         self.dismiss(None)
+
+
+def _setup_task_columns(table: DataTable[Any], *, multi_runner: bool) -> None:
+    """Add the task table's columns. Includes a "runner" column when tasks span multiple hosts."""
+    if multi_runner:
+        table.add_columns("state", "turn", "container", "runner", "repo", Text("slug[memo]"))
+    else:
+        table.add_columns("state", "turn", "container", "repo", Text("slug[memo]"))
 
 
 class Dashboard(App[None]):
@@ -1135,6 +1169,7 @@ class Dashboard(App[None]):
         self._last_cursor_row = 0  # previous cursor row index → infer travel direction to skip the divider
         self._collapsed: set[str] = set()  # governor IDs whose ensembles are currently collapsed
         self._governors: set[str] = set()  # governor IDs visible in the current table build
+        self._multi_runner: bool = False  # True when tasks span >1 distinct runner_host
         # one reused scratch dir for `a`'s REST-open (lazily made, cleaned on exit) — so opening
         # many artifacts doesn't leak a temp dir each.
         self._artifact_tmp: tempfile.TemporaryDirectory[str] | None = None
@@ -1142,7 +1177,7 @@ class Dashboard(App[None]):
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal():
-            yield DataTable(id="tasks")
+            yield _VimDataTable(id="tasks")
             yield Static(id="detail")
         yield Input(id="search", placeholder="search tasks…")  # hidden until `/` (CSS display:none)
         yield _StatusFooter()
@@ -1158,8 +1193,7 @@ class Dashboard(App[None]):
     def on_mount(self) -> None:
         table = self.query_one("#tasks", DataTable)
         table.cursor_type = "row"
-        # the slug header carries a literal "[" — pass it as Text so Textual doesn't eat it as markup
-        table.add_columns("state", "turn", "container", "repo", Text("slug[memo]"))
+        _setup_task_columns(table, multi_runner=False)
         table.focus()  # the (hidden) search Input would otherwise grab initial focus
         self._load_repo_names()
         self.action_refresh()  # first paint; the feed worker drives every refresh after
@@ -1227,6 +1261,11 @@ class Dashboard(App[None]):
         selected = self._current  # keep the operator's highlight across the rebuild (feed refresh)
         table.clear()
         ordered = sorted(self._client.list_tasks(), key=_sort_key)  # terminal last, then slug
+        new_multi_runner = len({r.get("host") for r in self._client.live_runners() if r.get("host")}) > 1
+        if new_multi_runner != self._multi_runner:
+            table.clear(columns=True)  # rows already gone; also clears columns for rebuild
+            self._multi_runner = new_multi_runner
+            _setup_task_columns(table, multi_runner=self._multi_runner)
         active = [t for t in ordered if t.get("state") not in TERMINAL_LABELS]
         agent_on = sum(1 for t in active if t.get("turn") == "agent")
         self.query_one(_StatusFooter).set_counter(f"active agents {agent_on}/{len(active)}")
@@ -1258,24 +1297,31 @@ class Dashboard(App[None]):
             if task.get("_ensemble"):
                 gov_id = task["_governor_id"]
                 slug_cell = Text(f"{prefix}...", style="dim")
+                runner_blank = (Text(""),) if self._multi_runner else ()
                 table.add_row(
-                    Text(""), Text(""), Text(""), Text(""), slug_cell,
+                    Text(""), Text(""), Text(""), *runner_blank, Text(""), slug_cell,
                     key=f"{_ENSEMBLE_KEY_PREFIX}{gov_id}",
                 )
             else:
                 state_cell: Text | str = task["state"]
                 turn_cell = _turn_cell(task)
                 status_cell = _status_cell(task)
+                runner_cell: Text | None = (
+                    Text(task.get("runner_host") or "") if self._multi_runner else None
+                )
                 repo_cell: Text | str = _repo_cell(task, self._repo_names)
                 slug_cell_real = _slug_cell(task, prefix)
                 if task["state"] in TERMINAL_LABELS:
                     state_cell = _dim(state_cell)
                     turn_cell = _dim(turn_cell)
                     status_cell = _dim(status_cell)
+                    if runner_cell is not None:
+                        runner_cell = _dim(runner_cell)
                     repo_cell = _dim(repo_cell)
                     slug_cell_real = _dim(slug_cell_real)
+                runner_extra = (runner_cell,) if runner_cell is not None else ()
                 table.add_row(
-                    state_cell, turn_cell, status_cell, repo_cell, slug_cell_real,
+                    state_cell, turn_cell, status_cell, *runner_extra, repo_cell, slug_cell_real,
                     key=task["id"],
                 )
 

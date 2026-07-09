@@ -86,6 +86,7 @@ class HostDaemon:
                 self._provisioner.provision(task)
                 self._spawner.reconcile(task)
                 self._spawner.heal(task)
+                self._spawner.cleanup(task)
             except Exception:  # a transient git/REST/FS error on one task must not stall the others
                 _log.warning("host pass failed for task %s", task.get("id"), exc_info=True)
                 continue
@@ -202,9 +203,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--runner-id", default=os.environ.get("PANOPTICON_RUNNER_ID", "local"))
     parser.add_argument(
         "--host",
-        default=os.environ.get("PANOPTICON_RUNNER_HOST"),
-        help="hostname or alias reported to the task service — leave unset for a local runner; "
-        "set only when this host is genuinely remote (ADR 0013)",
+        default=os.environ.get("PANOPTICON_RUNNER_HOST", ""),
+        help="hostname or alias reported to the task service",
     )
     parser.add_argument("--image", default=DEFAULT_IMAGE)
     parser.add_argument("--cache-root", default=os.environ.get("PANOPTICON_CACHE_ROOT", DEFAULT_CACHE_ROOT))

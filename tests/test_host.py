@@ -42,6 +42,9 @@ class _FakeRunner:
     def has_session(self, task_id: str) -> bool:
         return True  # session present (heal leaves a healthy task untouched)
 
+    def stop(self, container_id: str) -> None:
+        pass
+
 
 class _FakeImageBuilder:
     """Stands in for ImageBuilder (no docker); always reports the base image as present."""
@@ -82,6 +85,9 @@ def test_tick_isolates_a_failing_task_from_the_others() -> None:
         def heal(self, task: JsonObj) -> None:
             return None
 
+        def cleanup(self, task: JsonObj) -> None:
+            return None
+
     class _Provisioner:
         def provision(self, task: JsonObj) -> None:
             return None
@@ -107,6 +113,9 @@ def test_tick_heals_each_task_in_the_snapshot() -> None:
 
         def heal(self, task: JsonObj) -> None:
             healed.append(task["id"])
+
+        def cleanup(self, task: JsonObj) -> None:
+            return None
 
     class _Provisioner:
         def provision(self, task: JsonObj) -> None:
@@ -134,6 +143,9 @@ def test_tick_flags_every_orphan_healing_before_any_respawn() -> None:
 
         def heal(self, task: JsonObj) -> None:
             events.append(f"heal:{task['id']}")
+
+        def cleanup(self, task: JsonObj) -> None:
+            return None
 
     class _Provisioner:
         def provision(self, task: JsonObj) -> None:
@@ -163,6 +175,9 @@ def test_run_calls_startup_reclaim_once_on_first_successful_tick() -> None:
             return None
 
         def heal(self, task: JsonObj) -> None:
+            return None
+
+        def cleanup(self, task: JsonObj) -> None:
             return None
 
     class _Provisioner:
@@ -206,6 +221,9 @@ def test_run_blocks_on_the_change_feed_and_feeds_the_version_back() -> None:
         def heal(self, task: JsonObj) -> None:
             return None
 
+        def cleanup(self, task: JsonObj) -> None:
+            return None
+
     class _Provisioner:
         def provision(self, task: JsonObj) -> None:
             return None
@@ -241,6 +259,9 @@ def test_run_survives_a_whole_pass_failure() -> None:
             return None
 
         def heal(self, task: JsonObj) -> None:
+            return None
+
+        def cleanup(self, task: JsonObj) -> None:
             return None
 
     class _Provisioner:
@@ -305,12 +326,12 @@ def test_hold_runner_liveness_passes_host_to_client() -> None:
     assert recorded == ["box.example.com"]
 
 
-def test_build_arg_parser_host_defaults_to_none_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_arg_parser_host_defaults_to_empty_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     # A local runner must not report a host at all — any truthy value makes the terminal
     # supervisor wrap tmux attach in `ssh -t <host>`, which breaks a purely local session.
     monkeypatch.delenv("PANOPTICON_RUNNER_HOST", raising=False)
     args = build_arg_parser().parse_args([])
-    assert args.host is None
+    assert args.host == ""
 
 
 def test_build_arg_parser_host_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -363,3 +384,32 @@ def test_run_host_spawns_then_provisions_end_to_end(tmp_path: Path) -> None:
         got = client.get_task(task_id)
         assert runner.spawned == [task_id]  # not spawned again
         assert got["branch"] == "panopticon/fix-widget" and got["clone"] == f"/clones/{task_id}"
+
+
+def test_tick_cleans_up_each_task() -> None:
+    # Each pass, cleanup is called on every task in the snapshot — so a terminal task whose
+    # container has exited gets its workspace removed once the spawner's self-gate fires.
+    cleaned: list[str] = []
+
+    class _Spawner:
+        def mark_healing(self, task: JsonObj) -> None:
+            return None
+
+        def spawn_one(self, task: JsonObj) -> None:
+            return None
+
+        def reconcile(self, task: JsonObj) -> None:
+            return None
+
+        def heal(self, task: JsonObj) -> None:
+            return None
+
+        def cleanup(self, task: JsonObj) -> None:
+            cleaned.append(task["id"])
+
+    class _Provisioner:
+        def provision(self, task: JsonObj) -> None:
+            return None
+
+    HostDaemon(_FakeClient([]), _Spawner(), _Provisioner()).tick([{"id": "t1"}, {"id": "t2"}])  # type: ignore[arg-type]
+    assert cleaned == ["t1", "t2"]

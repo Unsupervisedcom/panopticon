@@ -13,6 +13,7 @@ a re-created container re-mounts the same dir. LLM-free.
 from __future__ import annotations
 
 import os
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 
@@ -52,3 +53,16 @@ def prepare_workspace(
         git.clone_local(cache_path=cache_path, dest=clone)
     git.set_origin(repo_path=clone, url=repo["git_url"])
     return clone
+
+
+def cleanup_workspace(
+    task_id: str,
+    tasks_root: str,
+    *,
+    exists: Callable[[str], bool] = os.path.isdir,
+    rmtree: Callable[[str], None] = shutil.rmtree,
+) -> None:
+    """Remove the per-task checkout if it exists. Idempotent: no-op when already gone."""
+    checkout = f"{tasks_root.rstrip('/')}/{task_id}"
+    if exists(checkout):
+        rmtree(checkout)
