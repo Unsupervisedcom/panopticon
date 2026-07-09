@@ -15,8 +15,6 @@ import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
-import panopticon
-import panopticon.docker as _docker_pkg
 from panopticon.sessionservice.local_runner import DEFAULT_IMAGE, CommandRunner, _subprocess_run
 
 _log = logging.getLogger(__name__)
@@ -64,6 +62,8 @@ class ImageBuilder:
         )
         if result.strip() in ("", "[]"):
             _log.warning("base image %r not found — building automatically", self._base)
+            import panopticon
+            import panopticon.docker as _docker_pkg
             dockerfile_ref = importlib.resources.files(_docker_pkg) / "Dockerfile"
             with importlib.resources.as_file(dockerfile_ref) as dockerfile_path:
                 self._run(

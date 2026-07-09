@@ -77,7 +77,7 @@ def test_build_base_if_missing_builds_when_inspect_returns_empty_string() -> Non
     assert "--file" in build_cmd
     file_arg = build_cmd[build_cmd.index("--file") + 1]
     assert file_arg.endswith("Dockerfile")
-    assert build_cmd[-1].endswith("docker")  # context = parent dir of Dockerfile
+    assert Path(build_cmd[-1]).name == "docker"  # context = parent dir of Dockerfile
     assert rec.calls[1][1] is True  # check=True so a build failure propagates
 
 
