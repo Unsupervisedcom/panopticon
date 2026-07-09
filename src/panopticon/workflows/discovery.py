@@ -1,11 +1,11 @@
 """Discover ``Workflow`` subclasses on a package/path — the registry the task service runs on (Slice 8).
 
 Scans the built-in :mod:`panopticon.workflows` package, then
-``$XDG_DATA_HOME/panopticon/workflows/`` (``~/.local/share/panopticon/workflows/`` when unset,
+``$XDG_CONFIG_HOME/panopticon/workflows/`` (``~/.config/panopticon/workflows/`` when unset,
 if it exists), then an optional extra directory for concrete ``Workflow`` subclasses, instantiates
 each (instantiation **validates** it — states, transitions, the required terminal state), and keys
 them by ``name``. Adding a user workflow is then just dropping a module in
-``~/.local/share/panopticon/workflows/``: no change to ``core`` or ``taskservice``. Duplicate names
+``~/.config/panopticon/workflows/``: no change to ``core`` or ``taskservice``. Duplicate names
 are rejected so a stray copy can't silently shadow a built-in. LLM-free.
 """
 
@@ -19,7 +19,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 
-from panopticon.core.dirs import user_data_dir
+from panopticon.core.dirs import user_config_dir
 from panopticon.core.workflow import Workflow
 
 #: Module namespace for directory-discovered workflows (kept distinct from the package's).
@@ -60,13 +60,13 @@ def discover_workflows(
     path: str | None = None,
     _home_workflows: Path | None = None,
 ) -> dict[str, Workflow]:
-    """Build the ``{name: workflow}`` registry: built-in ``package`` → XDG workflows dir → ``path``.
+    """Build the ``{name: workflow}`` registry: built-in ``package`` → ``$XDG_CONFIG_HOME/panopticon/workflows/`` → ``path``.
 
     Each discovered class is instantiated (validating it); a duplicate ``name`` raises ``ValueError``.
-    ``_home_workflows`` overrides the default XDG workflows scan target (tests only).
+    ``_home_workflows`` overrides the default config-dir workflows scan target (tests only).
     """
     modules = list(_package_modules(importlib.import_module(package)))
-    home_wf = _home_workflows if _home_workflows is not None else (user_data_dir() / "workflows")
+    home_wf = _home_workflows if _home_workflows is not None else (user_config_dir() / "workflows")
     if home_wf.is_dir():
         modules += list(_directory_modules(home_wf))
     if path:

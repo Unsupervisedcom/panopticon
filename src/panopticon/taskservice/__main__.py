@@ -6,9 +6,9 @@ uvicorn. This is the LLM-free control plane's process entry point; runners and t
 controller are its clients (they reach it at ``PANOPTICON_SERVICE_URL``).
 
 Workflows are **discovered**, not hardcoded: the built-in :mod:`panopticon.workflows` package,
-``$XDG_DATA_HOME/panopticon/workflows/`` (``~/.local/share/panopticon/workflows/`` when unset,
+``$XDG_CONFIG_HOME/panopticon/workflows/`` (``~/.config/panopticon/workflows/`` when unset,
 if it exists), and an optional ``--workflows-path`` directory (ADR 0004, Slice 8) — so adding a
-workflow is just dropping a module in ``~/.local/share/panopticon/workflows/`` with no install step.
+workflow is just dropping a module in ``~/.config/panopticon/workflows/`` with no install step.
 Config comes from flags or ``PANOPTICON_*`` env, with on-disk defaults so a bare
 ``python -m panopticon.taskservice`` persists across restarts.
 """
@@ -63,16 +63,19 @@ def migrate_db_to_home(db_url: str) -> None:
 
 
 def _migrate_legacy_to_home(db: str, artifacts: str, layers: str) -> None:
-    """Migrate all legacy runtime data to the XDG data dir on first start after upgrading.
+    """Migrate all legacy runtime data to XDG locations on first start after upgrading.
 
-    Covers the DB (delegated to :func:`migrate_db_to_home`), artifact store, and layer store.
-    Tries both legacy source locations in order (CWD-relative pre-#251, then ``~/.panopticon/``
-    post-#251) for each path. Skips each path when a custom override is in use, when no legacy
-    source exists, or when the destination already exists (no clobbering).
+    Covers the DB (delegated to :func:`migrate_db_to_home`), artifact store, layer store, and
+    the operator-authored config dirs (hooks, secrets). Tries both legacy source locations in
+    order (CWD-relative pre-#251, then ``~/.panopticon/`` post-#251) for each path. Skips each
+    path when a custom override is in use, when no legacy source exists, or when the destination
+    already exists (no clobbering).
 
-    Note: artifacts go to ``$XDG_DATA_HOME/panopticon/`` (runtime-generated data); layers go
-    to ``$XDG_CONFIG_HOME/panopticon/`` (operator-authored Dockerfile fragments = config).
+    Note: artifacts go to ``$XDG_DATA_HOME/panopticon/`` (runtime-generated data); layers,
+    hooks, and secrets go to ``$XDG_CONFIG_HOME/panopticon/`` (operator-authored config).
     """
+    from panopticon.core.dirs import user_config_dir as _config_dir
+
     migrate_db_to_home(db)
 
     if artifacts == DEFAULT_ARTIFACTS:
@@ -92,6 +95,15 @@ def _migrate_legacy_to_home(db: str, artifacts: str, layers: str) -> None:
                     logging.info("panopticon: migrating %s → %s", old.resolve(), new)
                     shutil.move(str(old), str(new))
                     break
+
+    for name in ("hooks", "secrets"):
+        new = _config_dir() / name
+        if not new.exists():
+            old = Path.home() / ".panopticon" / name
+            if old.is_dir():
+                logging.info("panopticon: migrating %s → %s", old.resolve(), new)
+                new.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(old), str(new))
 
 
 def build_app(

@@ -286,3 +286,184 @@ def test_migrate_layers_moves_dot_panopticon_dir(tmp_path: Path, monkeypatch: py
     assert new.is_dir()
     assert (new / "repo.dockerfile").read_text() == "FROM base-251"
     assert not old_layers.exists()
+
+
+# ---------------------------------------------------------------------------
+# hooks and secrets: ~/.panopticon/ → XDG config dir
+# ---------------------------------------------------------------------------
+
+def _run_migrate_with_fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run _migrate_legacy_to_home with patched home and XDG env vars."""
+    fake_home = tmp_path / "home"
+    xdg_config = tmp_path / "config"
+    xdg_db = "sqlite:///" + str(tmp_path / "xdg-data" / "panopticon" / "panopticon.db")
+    xdg_artifacts = str(tmp_path / "xdg-data" / "panopticon" / "artifacts")
+    xdg_layers = str(tmp_path / "xdg-data" / "panopticon" / "layers")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_config))
+    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_DB", xdg_db)
+    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_ARTIFACTS", xdg_artifacts)
+    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_LAYERS", xdg_layers)
+
+    import panopticon.taskservice.__main__ as m
+    original = Path.home
+    try:
+        Path.home = staticmethod(lambda: fake_home)  # type: ignore[method-assign]
+        m._migrate_legacy_to_home(xdg_db, xdg_artifacts, xdg_layers)
+    finally:
+        Path.home = staticmethod(original)  # type: ignore[method-assign]
+
+    return fake_home, xdg_config  # type: ignore[return-value]
+
+
+def test_migrate_hooks_moves_dot_panopticon_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """hooks/ in ~/.panopticon/ is migrated to $XDG_CONFIG_HOME/panopticon/hooks/."""
+    fake_home = tmp_path / "home"
+    old_hooks = fake_home / ".panopticon" / "hooks"
+    old_hooks.mkdir(parents=True)
+    (old_hooks / "post-commit").write_text("#!/bin/sh")
+
+    xdg_config = tmp_path / "config"
+    xdg_db = "sqlite:///" + str(tmp_path / "xdg-data" / "panopticon" / "panopticon.db")
+    xdg_artifacts = str(tmp_path / "xdg-data" / "panopticon" / "artifacts")
+    xdg_layers = str(tmp_path / "xdg-data" / "panopticon" / "layers")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_config))
+    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_DB", xdg_db)
+    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_ARTIFACTS", xdg_artifacts)
+    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_LAYERS", xdg_layers)
+
+    import panopticon.taskservice.__main__ as m
+    original = Path.home
+    try:
+        Path.home = staticmethod(lambda: fake_home)  # type: ignore[method-assign]
+        m._migrate_legacy_to_home(xdg_db, xdg_artifacts, xdg_layers)
+    finally:
+        Path.home = staticmethod(original)  # type: ignore[method-assign]
+
+    new = xdg_config / "panopticon" / "hooks"
+    assert new.is_dir()
+    assert (new / "post-commit").read_text() == "#!/bin/sh"
+    assert not old_hooks.exists()
+
+
+def test_migrate_secrets_moves_dot_panopticon_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """secrets/ in ~/.panopticon/ is migrated to $XDG_CONFIG_HOME/panopticon/secrets/."""
+    fake_home = tmp_path / "home"
+    old_secrets = fake_home / ".panopticon" / "secrets"
+    old_secrets.mkdir(parents=True)
+    (old_secrets / "myrepo.env").write_text("SECRET=hunter2")
+
+    xdg_config = tmp_path / "config"
+    xdg_db = "sqlite:///" + str(tmp_path / "xdg-data" / "panopticon" / "panopticon.db")
+    xdg_artifacts = str(tmp_path / "xdg-data" / "panopticon" / "artifacts")
+    xdg_layers = str(tmp_path / "xdg-data" / "panopticon" / "layers")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_config))
+    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_DB", xdg_db)
+    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_ARTIFACTS", xdg_artifacts)
+    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_LAYERS", xdg_layers)
+
+    import panopticon.taskservice.__main__ as m
+    original = Path.home
+    try:
+        Path.home = staticmethod(lambda: fake_home)  # type: ignore[method-assign]
+        m._migrate_legacy_to_home(xdg_db, xdg_artifacts, xdg_layers)
+    finally:
+        Path.home = staticmethod(original)  # type: ignore[method-assign]
+
+    new = xdg_config / "panopticon" / "secrets"
+    assert new.is_dir()
+    assert (new / "myrepo.env").read_text() == "SECRET=hunter2"
+    assert not old_secrets.exists()
+
+
+def test_migrate_hooks_skips_when_new_exists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """hooks/ migration is skipped when the XDG target already exists."""
+    fake_home = tmp_path / "home"
+    old_hooks = fake_home / ".panopticon" / "hooks"
+    old_hooks.mkdir(parents=True)
+    (old_hooks / "post-commit").write_text("old")
+
+    xdg_config = tmp_path / "config"
+    new_hooks = xdg_config / "panopticon" / "hooks"
+    new_hooks.mkdir(parents=True)
+    (new_hooks / "existing").write_text("keep")
+
+    xdg_db = "sqlite:///" + str(tmp_path / "xdg-data" / "panopticon" / "panopticon.db")
+    xdg_artifacts = str(tmp_path / "xdg-data" / "panopticon" / "artifacts")
+    xdg_layers = str(tmp_path / "xdg-data" / "panopticon" / "layers")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_config))
+    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_DB", xdg_db)
+    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_ARTIFACTS", xdg_artifacts)
+    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_LAYERS", xdg_layers)
+
+    import panopticon.taskservice.__main__ as m
+    original = Path.home
+    try:
+        Path.home = staticmethod(lambda: fake_home)  # type: ignore[method-assign]
+        m._migrate_legacy_to_home(xdg_db, xdg_artifacts, xdg_layers)
+    finally:
+        Path.home = staticmethod(original)  # type: ignore[method-assign]
+
+    assert old_hooks.exists()          # not moved
+    assert (new_hooks / "existing").read_text() == "keep"  # not overwritten
+
+
+# ---------------------------------------------------------------------------
+# Session service: CWD-relative → XDG (pre-#251 sources)
+# ---------------------------------------------------------------------------
+
+def test_migrate_session_cache_from_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """clone cache in CWD (pre-#251) is migrated to the XDG cache dir."""
+    monkeypatch.chdir(tmp_path)
+    old_cache = tmp_path / "cache"
+    old_cache.mkdir()
+    (old_cache / "repo1").mkdir()
+
+    fake_home = tmp_path / "home"
+    xdg_cache = tmp_path / "xcache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(xdg_cache))
+
+    import panopticon.sessionservice.__main__ as sm
+    fake_clone_cache = str(xdg_cache / "panopticon" / "repos")
+    fake_tasks = str(xdg_cache / "panopticon" / "tasks")
+    monkeypatch.setattr(sm, "DEFAULT_CLONE_CACHE_ROOT", fake_clone_cache)
+    monkeypatch.setattr(sm, "DEFAULT_TASKS_ROOT", fake_tasks)
+
+    original = Path.home
+    try:
+        Path.home = staticmethod(lambda: fake_home)  # type: ignore[method-assign]
+        sm._migrate_session_dirs(fake_clone_cache, fake_tasks)
+    finally:
+        Path.home = staticmethod(original)  # type: ignore[method-assign]
+
+    new = Path(fake_clone_cache)
+    assert new.is_dir()
+    assert (new / "repo1").is_dir()
+    assert not old_cache.exists()
+
+
+def test_migrate_session_cache_from_dot_panopticon(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """clone cache in ~/.panopticon/cache (#251) is migrated to the XDG cache dir."""
+    monkeypatch.chdir(tmp_path)
+    fake_home = tmp_path / "home"
+    old_cache = fake_home / ".panopticon" / "cache"
+    old_cache.mkdir(parents=True)
+    (old_cache / "repo2").mkdir()
+
+    xdg_cache = tmp_path / "xcache"
+    import panopticon.sessionservice.__main__ as sm
+    fake_clone_cache = str(xdg_cache / "panopticon" / "repos")
+    fake_tasks = str(xdg_cache / "panopticon" / "tasks")
+    monkeypatch.setattr(sm, "DEFAULT_CLONE_CACHE_ROOT", fake_clone_cache)
+    monkeypatch.setattr(sm, "DEFAULT_TASKS_ROOT", fake_tasks)
+
+    original = Path.home
+    try:
+        Path.home = staticmethod(lambda: fake_home)  # type: ignore[method-assign]
+        sm._migrate_session_dirs(fake_clone_cache, fake_tasks)
+    finally:
+        Path.home = staticmethod(original)  # type: ignore[method-assign]
+
+    new = Path(fake_clone_cache)
+    assert new.is_dir()
+    assert (new / "repo2").is_dir()
+    assert not old_cache.exists()

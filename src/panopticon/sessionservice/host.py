@@ -43,7 +43,7 @@ from panopticon.sessionservice.spawner import Spawner
 
 _log = logging.getLogger(__name__)
 
-DEFAULT_CACHE_ROOT: str = str(user_cache_dir())
+DEFAULT_CLONE_CACHE_ROOT: str = str(user_cache_dir() / "repos")
 DEFAULT_TASKS_ROOT: str = str(user_data_dir() / "tasks")
 
 
@@ -184,25 +184,33 @@ def run_host(
     HostDaemon(client, spawner, provisioner, interval=interval, sleep=sleep).run(until=until)
 
 
-def _migrate_session_dirs(cache_root: str, tasks_root: str) -> None:
-    """Migrate legacy ``~/.panopticon/cache`` and ``~/.panopticon/tasks`` to XDG locations."""
+def _migrate_session_dirs(clone_cache_root: str, tasks_root: str) -> None:
+    """Migrate legacy cache/tasks dirs to XDG locations.
+
+    Tries CWD-relative paths (pre-#251) then ``~/.panopticon/`` (#251) as sources.
+    Skips when a custom override is in use or the destination already exists.
+    """
     import shutil
 
-    if cache_root == DEFAULT_CACHE_ROOT:
-        new = Path(cache_root)
+    if clone_cache_root == DEFAULT_CLONE_CACHE_ROOT:
+        new = Path(clone_cache_root)
         if not new.exists():
-            old = Path.home() / ".panopticon" / "cache"
-            if old.is_dir():
-                _log.info("panopticon: migrating %s → %s", old, new)
-                shutil.move(str(old), str(new))
+            for old in [Path("cache"), Path.home() / ".panopticon" / "cache"]:
+                if old.is_dir():
+                    _log.info("panopticon: migrating %s → %s", old.resolve(), new)
+                    new.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(old), str(new))
+                    break
 
     if tasks_root == DEFAULT_TASKS_ROOT:
         new = Path(tasks_root)
         if not new.exists():
-            old = Path.home() / ".panopticon" / "tasks"
-            if old.is_dir():
-                _log.info("panopticon: migrating %s → %s", old, new)
-                shutil.move(str(old), str(new))
+            for old in [Path("tasks"), Path.home() / ".panopticon" / "tasks"]:
+                if old.is_dir():
+                    _log.info("panopticon: migrating %s → %s", old.resolve(), new)
+                    new.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(old), str(new))
+                    break
 
 
 def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = None) -> None:  # pragma: no cover - thin wiring + endless loop
@@ -227,7 +235,7 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
         help="hostname or alias reported to the task service",
     )
     parser.add_argument("--image", default=DEFAULT_IMAGE)
-    parser.add_argument("--cache-root", default=os.environ.get("PANOPTICON_CACHE_ROOT", DEFAULT_CACHE_ROOT))
+    parser.add_argument("--cache-root", default=os.environ.get("PANOPTICON_CACHE_ROOT", DEFAULT_CLONE_CACHE_ROOT))
     parser.add_argument("--tasks-root", default=os.environ.get("PANOPTICON_TASKS_ROOT", DEFAULT_TASKS_ROOT))
     parser.add_argument(
         "--interval", type=float, default=2.0,
