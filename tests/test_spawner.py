@@ -30,13 +30,14 @@ def _no_op_run(args: object, *, check: bool = True) -> str:
 
 class _FakeRunner:
     """Records spawn calls; stands in for LocalRunner. Mimics its ``progress`` callbacks (STARTING
-    then AWAITING), ``is_running`` (for reconcile/down-detection) and ``has_session`` (for heal/
-    self-heal) — both configurable."""
+    then AWAITING), ``is_running`` (for reconcile/down-detection), ``has_session`` (for heal/
+    self-heal), and ``get_container_failure`` (for reconcile failure surfacing) — all configurable."""
 
-    def __init__(self, *, running: bool = True, session: bool = True) -> None:
+    def __init__(self, *, running: bool = True, session: bool = True, failure: str | None = None) -> None:
         self.spawned: list[dict[str, object]] = []
         self._running = running
         self._session = session
+        self._failure = failure
 
     def spawn(self, task_id: str, *, env_file: str | None = None, workspace: str | None = None, image: str | None = None, docker_in_docker: bool = False, initial_prompt: str | None = None, turn: str | None = None, progress: Callable[[LifecyclePhase], None] | None = None) -> str:
         self.spawned.append({"task_id": task_id, "env_file": env_file, "workspace": workspace, "image": image, "docker_in_docker": docker_in_docker, "initial_prompt": initial_prompt, "turn": turn})
@@ -50,6 +51,9 @@ class _FakeRunner:
 
     def has_session(self, task_id: str) -> bool:
         return self._session
+
+    def get_container_failure(self, task_id: str) -> str | None:
+        return self._failure
 
     def stop(self, container_id: str) -> None:
         pass
@@ -245,6 +249,27 @@ def test_reconcile_leaves_a_still_running_container_alone() -> None:
         {"id": "t1", "claimed_by": "host-1", "container_status": "awaiting", "state": "ITERATING"}
     )
     assert client.cleared == []  # container present, just not registered yet — keep coming up
+
+
+def test_reconcile_reports_failed_when_container_exited_nonzero() -> None:
+    # Container stopped with a non-zero exit code → surface FAILED with the detail instead of `down`.
+    detail = "container exited 1\nentrypoint: gosu not found"
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner(running=False, failure=detail)
+    _spawner(client, runner).reconcile(
+        {"id": "t1", "claimed_by": "host-1", "container_status": "awaiting", "state": "ITERATING"}
+    )
+    assert client.cleared == []  # clear_lifecycle was NOT called
+    assert any(phase == "failed" and det == detail for _, phase, det in client.phases)
+
+
+def test_reconcile_clears_lifecycle_when_container_has_no_failure_detail() -> None:
+    # Container gone but get_container_failure returns None (clean exit or already removed) → `down`.
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner(running=False, failure=None)
+    _spawner(client, runner).reconcile(
+        {"id": "t1", "claimed_by": "host-1", "container_status": "awaiting", "state": "ITERATING"}
+    )
+    assert client.cleared == ["t1"]  # existing behaviour preserved
+    assert not any(phase == "failed" for _, phase, _ in client.phases)
 
 
 def test_reconcile_ignores_tasks_not_in_flight_or_not_ours() -> None:

@@ -212,6 +212,40 @@ class LocalRunner(Runner):
         )
         return bool(names.strip())
 
+    def get_container_failure(self, task_id: str) -> str | None:
+        """Return a failure detail string if the task's container exited non-zero, else None.
+
+        Uses ``docker inspect`` to check exit code; if non-zero, appends the last 20 lines
+        of ``docker logs`` so the dashboard can show *why* the container died rather than
+        just surfacing ``down``. Returns ``None`` when the container is running, clean-exited
+        (code 0), or already gone (inspect returns nothing)."""
+        container = f"panopticon-{task_id}"
+        raw = self._run(
+            ["docker", "inspect",
+             "--format", "{{.State.ExitCode}}\t{{.State.Error}}",
+             container],
+            check=False,
+        ).strip()
+        if not raw:
+            return None  # container is gone entirely — nothing to inspect
+        exit_code_str, _, state_error = raw.partition("\t")
+        try:
+            exit_code = int(exit_code_str)
+        except ValueError:
+            return None
+        if exit_code == 0:
+            return None  # clean exit — let normal down handling proceed
+        logs = self._run(
+            ["docker", "logs", "--tail", "20", container],
+            check=False,
+        ).strip()
+        detail = f"container exited {exit_code}"
+        if state_error:
+            detail += f" ({state_error})"
+        if logs:
+            detail += f"\n{logs}"
+        return detail
+
     def has_session(self, task_id: str) -> bool:
         """Whether the task's host tmux session exists on this runner's tmux server.
 
