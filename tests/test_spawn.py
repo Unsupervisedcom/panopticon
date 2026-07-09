@@ -102,3 +102,35 @@ def test_cleanup_is_a_no_op_when_checkout_is_absent() -> None:
     removed: list[str] = []
     cleanup_workspace("t1", "/tasks", exists=lambda _p: False, rmtree=removed.append)
     assert removed == []
+
+
+def _raise_permission_denied(_path: str) -> None:
+    raise PermissionError(13, "Permission denied", "/tasks/t1/.mypy_cache")
+
+
+def test_cleanup_quarantines_a_checkout_it_cannot_delete() -> None:
+    # A container process that ran as root leaves files the daemon can't delete (e.g. a
+    # root-owned .mypy_cache) — rmtree raises. The checkout is renamed aside instead of the
+    # error propagating, so the host pass doesn't refail on it every tick.
+    renamed: list[tuple[str, str]] = []
+    cleanup_workspace(
+        "t1", "/tasks",
+        exists=lambda _p: True,
+        rmtree=_raise_permission_denied,
+        rename=lambda src, dst: renamed.append((src, dst)),
+    )
+    assert renamed == [("/tasks/t1", "/tasks/t1.stale")]
+
+
+def test_cleanup_swallows_a_failed_quarantine() -> None:
+    # Even the rename failing (e.g. the quarantine path already exists) must not raise —
+    # cleanup is best-effort; it never takes down the host pass.
+    def rename_fails(_src: str, _dst: str) -> None:
+        raise OSError("target exists")
+
+    cleanup_workspace(
+        "t1", "/tasks",
+        exists=lambda _p: True,
+        rmtree=_raise_permission_denied,
+        rename=rename_fails,
+    )  # no exception is the assertion
