@@ -67,8 +67,11 @@ def _migrate_legacy_to_home(db: str, artifacts: str, layers: str) -> None:
 
     Covers the DB (delegated to :func:`migrate_db_to_home`), artifact store, and layer store.
     Tries both legacy source locations in order (CWD-relative pre-#251, then ``~/.panopticon/``
-    post-#251). Skips each path when a custom override is in use, when no legacy source exists,
-    or when the destination already exists (no clobbering).
+    post-#251) for each path. Skips each path when a custom override is in use, when no legacy
+    source exists, or when the destination already exists (no clobbering).
+
+    Note: artifacts go to ``$XDG_DATA_HOME/panopticon/`` (runtime-generated data); layers go
+    to ``$XDG_CONFIG_HOME/panopticon/`` (operator-authored Dockerfile fragments = config).
     """
     migrate_db_to_home(db)
 
