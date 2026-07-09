@@ -12,7 +12,7 @@ and this test will hold the line. No LLM, no network.
 
 from __future__ import annotations
 
-from pathlib import Path
+import importlib.resources
 from typing import Any
 
 import pytest
@@ -22,14 +22,12 @@ from sqlalchemy import create_engine, inspect
 
 from panopticon.taskservice.store_sqlalchemy import metadata
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-
 
 def _alembic_config(db_url: str) -> Config:
-    """An Alembic config pinned to this repo's migrations and a specific database URL."""
-    cfg = Config(str(_REPO_ROOT / "alembic.ini"))
-    # Absolute paths so the test is independent of the working directory pytest runs from.
-    cfg.set_main_option("script_location", str(_REPO_ROOT / "migrations"))
+    """An Alembic config pinned to the bundled migrations and a specific database URL."""
+    ini_ref = importlib.resources.files("panopticon") / "alembic.ini"
+    with importlib.resources.as_file(ini_ref) as ini_path:
+        cfg = Config(str(ini_path))
     # env.py resolves the URL from `-x db=...` first; this is how we point it at the temp DB.
     cfg.cmd_opts = type("opts", (), {"x": [f"db={db_url}"]})()  # mimic `alembic -x db=<url>`
     return cfg

@@ -20,10 +20,10 @@ typecheck:  ## Type-check (mypy, strict)
 check: typecheck test  ## Type-check + tests (what CI runs)
 
 migrate:  ## Apply DB migrations up to head (uses $PANOPTICON_DB; override with DB=<url>)
-	uv run alembic $(if $(DB),-x db=$(DB),) upgrade head
+	uv run alembic --config src/panopticon/alembic.ini $(if $(DB),-x db=$(DB),) upgrade head
 
 migrate-revision:  ## Autogenerate a migration from ORM changes (MSG="describe the change")
-	uv run alembic revision --autogenerate -m "$(MSG)"
+	uv run alembic --config src/panopticon/alembic.ini revision --autogenerate -m "$(MSG)"
 
 serve:  ## Run the task service over HTTP (the control plane)
 	uv run python -m panopticon.taskservice

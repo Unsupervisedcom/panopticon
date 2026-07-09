@@ -100,10 +100,10 @@ make migrate     # alembic upgrade head (uses $PANOPTICON_DB; override DB=<url>)
 make migrate-revision MSG="…"  # autogenerate a migration from ORM schema changes
 ```
 
-Schema is managed by **Alembic** (`migrations/`, `alembic.ini`; ADR 0001 §3). The SQLAlchemy
+Schema is managed by **Alembic** (`src/panopticon/migrations/`, `src/panopticon/alembic.ini`; ADR 0001 §3). The SQLAlchemy
 adapter still `create_all`s a fresh/in-memory DB for zero-config dev + tests; Alembic owns
 versioned evolution of any persistent DB (`make migrate` to apply, `make migrate-revision` after
-changing the ORM rows — then commit the generated `migrations/versions/*.py`). The two are guarded
+changing the ORM rows — then commit the generated `src/panopticon/migrations/versions/*.py`). The two are guarded
 against drift by `tests/test_migrations.py`; `alembic stamp head` aligns a dev DB that `create_all`
 already bootstrapped.
 
