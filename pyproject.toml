@@ -1,7 +1,7 @@
 [project]
 name = "panopticon"
 version = "0.0.1"
-description = "Orchestrate multiple coding agents across isolated tasks and configurable workflows."
+description = "Self-hosted control plane for running a fleet of coding agents in isolated containers, governed by configurable workflows."
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
