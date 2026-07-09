@@ -2,7 +2,8 @@
 
 `panopticon` (or `panopticon console`) runs the session supervisor (ADR 0009): the dashboard,
 plus handing the terminal to a task's tmux on `t` and rejoining on detach. `panopticon dashboard`
-runs the dashboard once without the attach loop; `panopticon tasks` lists tasks as plain text.
+runs the dashboard once without the attach loop; `panopticon tasks` lists tasks as plain text;
+`panopticon migrate` applies DB migrations to head via the bundled Alembic config.
 """
 
 from __future__ import annotations
@@ -37,7 +38,19 @@ def main(
     # the operator picked with `t` by writing it here instead of returning it in-process.
     dash.add_argument("--switch-file", help=argparse.SUPPRESS)
     sub.add_parser("tasks", help="list tasks as plain text")
+    mig = sub.add_parser("migrate", help="apply DB migrations to head (or pass alembic args)")
+    mig.add_argument("alembic_args", nargs="*", default=["upgrade", "head"])
     args = parser.parse_args(argv)
+
+    if args.command == "migrate":
+        import importlib.resources
+
+        import alembic.config
+
+        ini_ref = importlib.resources.files("panopticon") / "alembic.ini"
+        with importlib.resources.as_file(ini_ref) as ini_path:
+            alembic.config.main(argv=["--config", str(ini_path)] + list(args.alembic_args))
+        return 0
 
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
     if args.command == "tasks":
