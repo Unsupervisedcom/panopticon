@@ -204,7 +204,11 @@ class Spawner:
             return  # live / down / failed / queued / disconnected — nothing to reconcile
         if self._runner.is_running(task["id"]):
             return  # container present, just not registered yet — still coming up
-        self._client.clear_lifecycle(task["id"])  # container gone → composes `down`
+        failure = self._runner.get_container_failure(task["id"])
+        if failure:
+            self._report(task["id"], LifecyclePhase.FAILED, detail=failure)
+        else:
+            self._client.clear_lifecycle(task["id"])  # container gone → composes `down`
 
     def _is_orphan(self, task: JsonObj) -> bool:
         """Whether ``task`` is an orphan **this** runner should self-heal: claimed by us,

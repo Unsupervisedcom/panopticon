@@ -222,6 +222,45 @@ def test_spawn_uses_the_composed_image_when_given_else_the_base() -> None:
     assert rec.calls[6][0][-1] == "panopticon-github-peer-reviewed-r1"
 
 
+class _SequenceRecorder(_Recorder):
+    """Returns successive canned stdout values for each call in order; empty string thereafter."""
+
+    def __init__(self, outputs: list[str]) -> None:
+        super().__init__()
+        self._outputs = iter(outputs)
+
+    def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False, verbose: bool = False) -> str:
+        super().__call__(args, check=check, interactive=interactive)
+        return next(self._outputs, "")
+
+
+def test_get_container_failure_nonzero_exit() -> None:
+    # Container exited 1 with no state error but log lines → detail contains exit code + logs.
+    rec = _SequenceRecorder(["1\t", "entrypoint: docker daemon timed out"])
+    runner = LocalRunner("http://svc:8000", run=rec)
+    result = runner.get_container_failure("t1")
+    inspect_cmd, logs_cmd = rec.calls[0][0], rec.calls[1][0]
+    assert inspect_cmd == ["docker", "inspect", "--format", "{{.State.ExitCode}}\t{{.State.Error}}", "panopticon-t1"]
+    assert rec.calls[0][1] is False  # check=False — tolerate a missing container
+    assert logs_cmd == ["docker", "logs", "--tail", "20", "panopticon-t1"]
+    assert rec.calls[1][1] is False
+    assert result is not None
+    assert "1" in result
+    assert "entrypoint: docker daemon timed out" in result
+
+
+def test_get_container_failure_zero_exit() -> None:
+    # Container exited cleanly (exit code 0) → None; down handling proceeds normally.
+    rec = _SequenceRecorder(["0\t"])
+    assert LocalRunner("http://svc:8000", run=rec).get_container_failure("t1") is None
+
+
+def test_get_container_failure_container_gone() -> None:
+    # Container already removed (inspect returns nothing) → None; treat as clean gone.
+    rec = _SequenceRecorder([""])
+    assert LocalRunner("http://svc:8000", run=rec).get_container_failure("t1") is None
+
+
 def test_stop_kills_session_and_force_removes_container_idempotently() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", run=rec).stop("panopticon-t1")

@@ -30,3 +30,7 @@ class Runner(ABC):
     @abstractmethod
     def stop(self, container_id: str) -> None:
         """Stop the container and tear down its tmux session. Idempotent."""
+
+    def get_container_failure(self, task_id: str) -> str | None:
+        """Return a failure detail string if the container exited non-zero, else None."""
+        return None  # default: backends that don't support this return None
