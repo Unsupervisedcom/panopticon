@@ -12,10 +12,11 @@ __pycache__/
 dist/
 build/
 
-# Local dev runtime state — the task service's default on-disk SQLite (+ SQLite WAL
-# sidecars) and artifacts dir (see taskservice/__main__.py DEFAULT_DB / DEFAULT_ARTIFACTS).
-# Real deployments point PANOPTICON_DB / PANOPTICON_ARTIFACTS elsewhere.
+# Legacy CWD-relative runtime state — these were the old defaults before ~/.panopticon/.
+# Kept here so any remaining files (pre-migration) or custom PANOPTICON_* overrides
+# pointing back to CWD don't get accidentally committed.
 panopticon.db
 panopticon.db-shm
 panopticon.db-wal
 /artifacts/
+/layers/
