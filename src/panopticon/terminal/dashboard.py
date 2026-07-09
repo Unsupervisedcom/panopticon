@@ -80,9 +80,10 @@ from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.css.query import NoMatches
 from textual.widgets import (
-    Checkbox, DataTable, Footer, Header, Input, Label, OptionList, Static, TabPane, TabbedContent,
-    TextArea,
+    Checkbox, DataTable, Footer, Header, Input, Label, OptionList, Select, Static, TabPane,
+    TabbedContent, TextArea,
 )
+from textual.widgets._select import NoSelection as _SelectNoSelection
 from textual.worker import get_current_worker
 
 from panopticon.client import JsonObj, TaskServiceClient
@@ -683,6 +684,81 @@ class _VimOptionList(OptionList):
     ]
 
 
+def _list_secrets_files() -> list[str]:
+    """Return sorted absolute paths of files in the XDG config secrets dir."""
+    from panopticon.core.dirs import user_config_dir
+    secrets_dir = user_config_dir() / "secrets"
+    if not secrets_dir.is_dir():
+        return []
+    return sorted(str(p) for p in secrets_dir.iterdir() if p.is_file())
+
+
+class EnvFileField(Widget):
+    """Secrets env-file picker for the repo form.
+
+    Shows a ``Select`` dropdown listing files found in the XDG config secrets directory
+    (``~/.config/panopticon/secrets/``), with a ``enter custom path…`` option at the bottom
+    that reveals a free-form ``Input`` for any other host path.
+    """
+
+    DEFAULT_CSS = """
+    EnvFileField { margin-bottom: 1; }
+    EnvFileField #env-file-input { margin-top: 1; }
+    """
+
+    _CUSTOM = "__custom__"
+
+    def __init__(self, initial: str = "", id: str | None = None) -> None:
+        super().__init__(id=id)
+        self._initial = initial
+        self._known = _list_secrets_files()
+
+    def compose(self) -> ComposeResult:
+        known_set = set(self._known)
+        options: list[tuple[str, str]] = [(p, p) for p in self._known]
+        options.append(("enter custom path…", self._CUSTOM))
+        is_custom = bool(self._initial and self._initial not in known_set)
+        yield Select(
+            options,
+            prompt="env_file (secrets dir or custom path)",
+            allow_blank=True,
+            value=self._initial if (self._initial and not is_custom) else Select.NULL,
+            id="env-file-select",
+        )
+        inp = Input(
+            value=self._initial if is_custom else "",
+            placeholder="/path/to/repo.env",
+            id="env-file-input",
+        )
+        inp.display = is_custom
+        yield inp
+
+    @property
+    def env_file_value(self) -> str:
+        """The resolved env_file path, or an empty string when unset."""
+        try:
+            sel = self.query_one("#env-file-select", Select)
+        except NoMatches:
+            return ""
+        v = sel.value
+        if isinstance(v, _SelectNoSelection) or v == self._CUSTOM:
+            try:
+                return self.query_one("#env-file-input", Input).value.strip()
+            except NoMatches:
+                return ""
+        return str(v)
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id != "env-file-select":
+            return
+        inp = self.query_one("#env-file-input", Input)
+        if event.value == self._CUSTOM:
+            inp.display = True
+            inp.focus()
+        else:
+            inp.display = False
+
+
 class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     """A modal form for a repo's fields. Submits a ``{field: value}`` dict on save (Enter
     or Ctrl+S), or ``None`` on cancel (Escape). The text fields are strings; the privileged
@@ -712,6 +788,7 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     #wf-scroll SpaceCheckbox { margin-bottom: 0; }
     #wf-desc { height: 4; border: tall $panel; padding: 0 1; color: $text-muted; margin-top: 1; }
     #form-hint { color: $text-muted; text-align: center; margin-top: 1; }
+    #pane-general EnvFileField #env-file-input { margin-bottom: 0; }
     """
     # Enter saves from any field. Text Inputs consume Enter via their own submit binding (posting
     # Input.Submitted → on_input_submitted), so this screen binding only fires for fields that
@@ -723,8 +800,9 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     ]
 
     # git_url leads (the auto-fill source); the rest follow. ``id`` is rendered between git_url
-    # and these, separately, since it's editable only in create mode.
-    FIELDS = ("git_url", "name", "default_base", "env_file")
+    # and these, separately, since it's editable only in create mode. ``env_file`` is rendered
+    # as an EnvFileField (dropdown + custom-path input) rather than a plain Input.
+    FIELDS = ("git_url", "name", "default_base")
     # Fields auto-derived from git_url → how to derive each (create mode only; see
     # _autofill_from_git_url). id and name are the bare repo name.
     _DERIVED: dict[str, Callable[[str], str]] = {
@@ -769,6 +847,7 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
                         yield Input(placeholder="id", id="field-id")
                     for name in self.FIELDS[1:]:  # git_url already rendered above
                         yield Input(value=self._initial(name), placeholder=name, id=f"field-{name}")
+                    yield EnvFileField(initial=self._initial("env_file"), id="field-env_file")
                     yield SpaceCheckbox(
                         "privileged docker (docker-in-docker)",
                         value=bool(self._repo.get("capabilities", {}).get("docker_in_docker")),
@@ -826,6 +905,7 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
             values["id"] = self.query_one("#field-id", Input).value.strip()
         for name in self.FIELDS:
             values[name] = self.query_one(f"#field-{name}", Input).value.strip()
+        values["env_file"] = self.query_one("#field-env_file", EnvFileField).env_file_value or None
         values["docker_in_docker"] = self.query_one("#field-docker_in_docker", Checkbox).value
         enabled: list[str] = []
         disabled: list[str] = []

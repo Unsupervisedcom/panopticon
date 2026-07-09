@@ -1198,10 +1198,10 @@ async def test_repo_form_edit_mode_does_not_autofill_blank_fields() -> None:
         await pilot.press("e")  # edit
         await pilot.pause()
         # Editing an existing repo never derives values: blanks stay blank even on blur.
-        app.screen.query_one("#field-env_file", Input).focus()  # blur git_url
+        app.screen.query_one("#field-default_base", Input).focus()  # blur git_url
         await pilot.pause()
         assert app.screen.query_one("#field-name", Input).value == ""
-        assert app.screen.query_one("#field-env_file", Input).value == ""
+        assert app.screen.query_one("#field-env_file", dashboard.EnvFileField).env_file_value == ""
 
 
 async def test_repos_screen_create_requires_id_name_and_git_url() -> None:
@@ -1394,6 +1394,65 @@ async def test_repo_form_space_toggles_the_checkbox_without_saving() -> None:
         assert checkbox.value is True  # toggled
         assert fake.created_repos == []  # but not saved
         assert isinstance(app.screen, dashboard.RepoFormScreen)  # form still open
+
+
+@pytest.mark.asyncio
+async def test_env_file_field_blank_when_no_known_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """EnvFileField returns '' and shows nothing selected when secrets dir is absent."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    fake = _FakeClient([], repos=[{"id": "r1", "name": "x", "git_url": "https://x/r.git",
+                                   "default_base": "main"}])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        ef = app.screen.query_one("#field-env_file", dashboard.EnvFileField)
+        assert ef.env_file_value == ""
+
+
+@pytest.mark.asyncio
+async def test_env_file_field_pre_selects_known_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """EnvFileField pre-selects an existing env_file that lives in the secrets dir."""
+    cfg = tmp_path / "config" / "panopticon" / "secrets"
+    cfg.mkdir(parents=True)
+    env_path = str(cfg / "r1.env")
+    (cfg / "r1.env").write_text("CLAUDE_CODE_OAUTH_TOKEN=tok")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    fake = _FakeClient([], repos=[{"id": "r1", "name": "x", "git_url": "https://x/r.git",
+                                   "default_base": "main", "env_file": env_path}])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        ef = app.screen.query_one("#field-env_file", dashboard.EnvFileField)
+        assert ef.env_file_value == env_path
+
+
+@pytest.mark.asyncio
+async def test_env_file_field_custom_path_pre_populates_input(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """EnvFileField shows the custom input pre-populated when stored path isn't in secrets dir."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    custom = "/some/other/path/r1.env"
+    fake = _FakeClient([], repos=[{"id": "r1", "name": "x", "git_url": "https://x/r.git",
+                                   "default_base": "main", "env_file": custom}])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        ef = app.screen.query_one("#field-env_file", dashboard.EnvFileField)
+        assert ef.env_file_value == custom
+        # The custom input should be visible
+        inp = ef.query_one("#env-file-input", Input)
+        assert inp.display is True
 
 
 def _record_popen(monkeypatch: Any) -> list[list[str]]:

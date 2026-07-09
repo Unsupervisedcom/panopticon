@@ -23,3 +23,13 @@ def user_cache_dir() -> Path:
     xdg = os.environ.get("XDG_CACHE_HOME")
     base = Path(xdg) if xdg else Path.home() / ".cache"
     return base / "panopticon"
+
+
+def user_config_dir() -> Path:
+    """Return ``$XDG_CONFIG_HOME/panopticon`` (``~/.config/panopticon`` when unset).
+
+    Does **not** create the directory — callers that write to it must mkdir themselves.
+    """
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".config"
+    return base / "panopticon"
