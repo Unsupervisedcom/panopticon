@@ -11,11 +11,12 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from panopticon.core.dirs import user_data_dir
 from panopticon.core.layers import InvalidLayerName, LayerStore
 
 #: Default layers-store root. Shared so the task service resolves one location from a single
 #: source rather than copied literals.
-DEFAULT_LAYERS = str(Path.home() / ".panopticon" / "layers")
+DEFAULT_LAYERS: str = str(user_data_dir() / "layers")
 
 
 class FilesystemLayerStore(LayerStore):

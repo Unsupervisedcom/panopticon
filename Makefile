@@ -19,7 +19,7 @@ typecheck:  ## Type-check (mypy, strict)
 
 check: typecheck test  ## Type-check + tests (what CI runs)
 
-migrate:  ## Apply DB migrations up to head (uses $PANOPTICON_DB; override with DB=<url>)
+migrate:  ## Apply DB migrations up to head (uses $PANOPTICON_DB; default ~/.local/share/panopticon/panopticon.db)
 	uv run alembic $(if $(DB),-x db=$(DB),) upgrade head
 
 migrate-revision:  ## Autogenerate a migration from ORM changes (MSG="describe the change")
