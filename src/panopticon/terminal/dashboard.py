@@ -1235,7 +1235,7 @@ class Dashboard(App[None]):
         selected = self._current  # keep the operator's highlight across the rebuild (feed refresh)
         table.clear()
         ordered = sorted(self._client.list_tasks(), key=_sort_key)  # terminal last, then slug
-        new_multi_runner = len({t.get("runner_host") for t in ordered if t.get("runner_host")}) > 1
+        new_multi_runner = len({r.get("host") for r in self._client.live_runners() if r.get("host")}) > 1
         if new_multi_runner != self._multi_runner:
             table.clear(columns=True)  # rows already gone; also clears columns for rebuild
             self._multi_runner = new_multi_runner
