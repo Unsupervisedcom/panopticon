@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from panopticon.core.models import LifecyclePhase
-from panopticon.sessionservice.local_runner import LocalRunner
+from panopticon.sessionservice.local_runner import LocalRunner, _subprocess_run
 from panopticon.sessionservice.runner import Runner
 
 
@@ -233,6 +233,33 @@ def test_tmux_socket_can_be_overridden() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", tmux_socket="panopt", run=rec).spawn("t1")
     assert rec.calls[3][0][:4] == ["tmux", "-L", "panopt", "new-session"]  # kill-session, rm, run, tmux
+
+
+# -- _subprocess_run error surfacing -------------------------------------------------
+
+
+def test_subprocess_run_includes_stderr_in_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CalledProcessError.stderr is surfaced in the RuntimeError message."""
+    err = subprocess.CalledProcessError(125, ["docker", "run"], stderr="no such image: panopticon-foo")
+
+    def _failing_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise err
+
+    monkeypatch.setattr(subprocess, "run", _failing_run)
+    with pytest.raises(RuntimeError, match="no such image: panopticon-foo"):
+        _subprocess_run(["docker", "run", "panopticon-foo"])
+
+
+def test_subprocess_run_error_without_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CalledProcessError with no stderr still raises RuntimeError with exit code."""
+    err = subprocess.CalledProcessError(1, ["docker", "build"], stderr="")
+
+    def _failing_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise err
+
+    monkeypatch.setattr(subprocess, "run", _failing_run)
+    with pytest.raises(RuntimeError, match=r"Command 'docker' exited 1$"):
+        _subprocess_run(["docker", "build", "."])
 
 
 # -- integration: real docker + tmux ------------------------------------------------

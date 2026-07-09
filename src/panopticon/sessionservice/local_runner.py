@@ -61,7 +61,14 @@ def _subprocess_run(args: Sequence[str], *, check: bool = True, interactive: boo
     if interactive or verbose:  # inherit streams: TTY attachment (interactive) or visible build output (verbose)
         subprocess.run(list(args), check=check)
         return ""
-    return subprocess.run(list(args), check=check, capture_output=True, text=True).stdout
+    try:
+        return subprocess.run(list(args), check=check, capture_output=True, text=True).stdout
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        msg = f"Command '{exc.cmd[0]}' exited {exc.returncode}"
+        if stderr:
+            msg += f": {stderr}"
+        raise RuntimeError(msg) from exc
 
 
 
