@@ -11,12 +11,3 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-
-# Legacy CWD-relative runtime state — these were the old defaults before ~/.panopticon/.
-# Kept here so any remaining files (pre-migration) or custom PANOPTICON_* overrides
-# pointing back to CWD don't get accidentally committed.
-panopticon.db
-panopticon.db-shm
-panopticon.db-wal
-/artifacts/
-/layers/
