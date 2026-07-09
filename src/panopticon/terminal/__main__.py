@@ -32,10 +32,12 @@ def _run_migrate() -> None:
 
 def _start_sessions() -> None:
     import subprocess
+    import sys
 
+    python = sys.executable
     for name, cmd in [
-        ("service", "python -m panopticon.taskservice 2>&1 | tee /tmp/panopticon-service.log"),
-        ("runner", "python -m panopticon.sessionservice.host 2>&1 | tee /tmp/panopticon-runner.log"),
+        ("service", f"{python} -m panopticon.taskservice 2>&1 | tee /tmp/panopticon-service.log"),
+        ("runner", f"{python} -m panopticon.sessionservice.host 2>&1 | tee /tmp/panopticon-runner.log"),
     ]:
         subprocess.run(
             ["tmux", "-L", "panopticon", "kill-session", "-t", name],
