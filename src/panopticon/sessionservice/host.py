@@ -33,8 +33,12 @@ from pathlib import Path
 import httpx
 
 from panopticon.client import JsonObj, TaskServiceClient
-from panopticon.core.dirs import user_cache_dir, user_data_dir
 from panopticon.core.git import GitClones
+from panopticon.sessionservice._migration import (
+    DEFAULT_CLONE_CACHE_ROOT,
+    DEFAULT_TASKS_ROOT,
+    migrate_session_dirs,
+)
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.images import ImageBuilder
 from panopticon.sessionservice.local_runner import DEFAULT_IMAGE, LocalRunner
@@ -42,9 +46,6 @@ from panopticon.sessionservice.provisioner import Provisioner
 from panopticon.sessionservice.spawner import Spawner
 
 _log = logging.getLogger(__name__)
-
-DEFAULT_CLONE_CACHE_ROOT: str = str(user_cache_dir() / "repos")
-DEFAULT_TASKS_ROOT: str = str(user_data_dir() / "tasks")
 
 
 class HostDaemon:
@@ -184,35 +185,6 @@ def run_host(
     HostDaemon(client, spawner, provisioner, interval=interval, sleep=sleep).run(until=until)
 
 
-def _migrate_session_dirs(clone_cache_root: str, tasks_root: str) -> None:
-    """Migrate legacy cache/tasks dirs to XDG locations.
-
-    Tries CWD-relative paths (pre-#251) then ``~/.panopticon/`` (#251) as sources.
-    Skips when a custom override is in use or the destination already exists.
-    """
-    import shutil
-
-    if clone_cache_root == DEFAULT_CLONE_CACHE_ROOT:
-        new = Path(clone_cache_root)
-        if not new.exists():
-            for old in [Path("cache"), Path.home() / ".panopticon" / "cache"]:
-                if old.is_dir():
-                    _log.info("panopticon: migrating %s → %s", old.resolve(), new)
-                    new.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(old), str(new))
-                    break
-
-    if tasks_root == DEFAULT_TASKS_ROOT:
-        new = Path(tasks_root)
-        if not new.exists():
-            for old in [Path("tasks"), Path.home() / ".panopticon" / "tasks"]:
-                if old.is_dir():
-                    _log.info("panopticon: migrating %s → %s", old.resolve(), new)
-                    new.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(old), str(new))
-                    break
-
-
 def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = None) -> None:  # pragma: no cover - thin wiring + endless loop
     parser = argparse.ArgumentParser(
         prog="python -m panopticon.sessionservice.host",
@@ -243,7 +215,7 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
     )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    _migrate_session_dirs(args.cache_root, args.tasks_root)
+    migrate_session_dirs(args.cache_root, args.tasks_root)
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
     runner = LocalRunner(args.container_service_url, image=args.image, runner_id=args.runner_id)
     # Hold this host's liveness connection for the daemon's whole life, alongside the spawn/provision

@@ -420,18 +420,17 @@ def test_migrate_session_cache_from_cwd(tmp_path: Path, monkeypatch: pytest.Monk
 
     fake_home = tmp_path / "home"
     xdg_cache = tmp_path / "xcache"
-    monkeypatch.setenv("XDG_CACHE_HOME", str(xdg_cache))
 
-    import panopticon.sessionservice.__main__ as sm
+    import panopticon.sessionservice._migration as mig
     fake_clone_cache = str(xdg_cache / "panopticon" / "repos")
     fake_tasks = str(xdg_cache / "panopticon" / "tasks")
-    monkeypatch.setattr(sm, "DEFAULT_CLONE_CACHE_ROOT", fake_clone_cache)
-    monkeypatch.setattr(sm, "DEFAULT_TASKS_ROOT", fake_tasks)
+    monkeypatch.setattr(mig, "DEFAULT_CLONE_CACHE_ROOT", fake_clone_cache)
+    monkeypatch.setattr(mig, "DEFAULT_TASKS_ROOT", fake_tasks)
 
     original = Path.home
     try:
         Path.home = staticmethod(lambda: fake_home)  # type: ignore[method-assign]
-        sm._migrate_session_dirs(fake_clone_cache, fake_tasks)
+        mig.migrate_session_dirs(fake_clone_cache, fake_tasks)
     finally:
         Path.home = staticmethod(original)  # type: ignore[method-assign]
 
@@ -450,16 +449,16 @@ def test_migrate_session_cache_from_dot_panopticon(tmp_path: Path, monkeypatch: 
     (old_cache / "repo2").mkdir()
 
     xdg_cache = tmp_path / "xcache"
-    import panopticon.sessionservice.__main__ as sm
+    import panopticon.sessionservice._migration as mig
     fake_clone_cache = str(xdg_cache / "panopticon" / "repos")
     fake_tasks = str(xdg_cache / "panopticon" / "tasks")
-    monkeypatch.setattr(sm, "DEFAULT_CLONE_CACHE_ROOT", fake_clone_cache)
-    monkeypatch.setattr(sm, "DEFAULT_TASKS_ROOT", fake_tasks)
+    monkeypatch.setattr(mig, "DEFAULT_CLONE_CACHE_ROOT", fake_clone_cache)
+    monkeypatch.setattr(mig, "DEFAULT_TASKS_ROOT", fake_tasks)
 
     original = Path.home
     try:
         Path.home = staticmethod(lambda: fake_home)  # type: ignore[method-assign]
-        sm._migrate_session_dirs(fake_clone_cache, fake_tasks)
+        mig.migrate_session_dirs(fake_clone_cache, fake_tasks)
     finally:
         Path.home = staticmethod(original)  # type: ignore[method-assign]
 
