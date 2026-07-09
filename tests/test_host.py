@@ -51,7 +51,7 @@ class _FakeImageBuilder:
     def build(self, workflow: str, repo_id: str, layers: list[str], *, verbose: bool = False) -> str:
         return f"panopticon-{workflow}-{repo_id}"
 
-    def build_base_if_missing(self, *, context: str = ".", verbose: bool = False) -> bool:
+    def build_base_if_missing(self, *, verbose: bool = False) -> bool:
         return False
 
 

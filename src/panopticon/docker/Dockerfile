@@ -27,12 +27,18 @@ USER panopticon
 RUN curl --fail --silent --show-error --location https://claude.ai/install.sh | bash
 USER root
 
-WORKDIR /app
-COPY pyproject.toml README.md ./
-COPY src ./src
-RUN pip install --no-cache-dir .
+ARG PANOPTICON_VERSION=""
+ARG PANOPTICON_WHEEL=""
+# Conditional install: supply PANOPTICON_WHEEL (filename in the build context) for dev/CI builds
+# where the package isn't yet on PyPI; supply PANOPTICON_VERSION for production pip installs.
+RUN --mount=type=bind,source=.,target=/ctx \
+    if [ -n "${PANOPTICON_WHEEL}" ]; then \
+      pip install --no-cache-dir "/ctx/${PANOPTICON_WHEEL}"; \
+    else \
+      pip install --no-cache-dir "panopticon-app==${PANOPTICON_VERSION}"; \
+    fi
 
-COPY docker/entrypoint.sh /usr/local/bin/panopticon-entrypoint
+COPY entrypoint.sh /usr/local/bin/panopticon-entrypoint
 RUN chmod 0755 /usr/local/bin/panopticon-entrypoint
 
 # Start as root so the entrypoint can adopt the invoking uid/gid; it then drops to `panopticon` and

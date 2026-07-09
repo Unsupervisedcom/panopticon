@@ -162,7 +162,7 @@ class _FakeImageBuilder:
         self.built.append((workflow, repo_id, layers))
         return f"panopticon-{workflow}-{repo_id}"
 
-    def build_base_if_missing(self, *, context: str = ".", verbose: bool = False) -> bool:
+    def build_base_if_missing(self, *, verbose: bool = False) -> bool:
         self.base_checks += 1
         return False  # image is always "present" in tests — no build triggered
 

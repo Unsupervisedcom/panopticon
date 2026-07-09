@@ -32,6 +32,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/panopticon"]
+include = [
+  "src/panopticon/docker/Dockerfile",
+  "src/panopticon/docker/entrypoint.sh",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
