@@ -5,10 +5,11 @@ filesystem artifact store + the built-in workflows — into :func:`create_app` a
 uvicorn. This is the LLM-free control plane's process entry point; runners and the terminal
 controller are its clients (they reach it at ``PANOPTICON_SERVICE_URL``).
 
-Workflows are **discovered**, not hardcoded: the built-in :mod:`panopticon.workflows` package plus
-an optional ``--workflows-path`` directory (ADR 0004, Slice 8) — so adding a workflow is just
-dropping a module on a scanned path. Config comes from flags or ``PANOPTICON_*`` env, with on-disk
-defaults so a bare ``python -m panopticon.taskservice`` persists across restarts.
+Workflows are **discovered**, not hardcoded: the built-in :mod:`panopticon.workflows` package,
+``~/.panopticon/workflows/`` (if it exists), and an optional ``--workflows-path`` directory
+(ADR 0004, Slice 8) — so adding a workflow is just dropping a module in ``~/.panopticon/workflows/``
+with no install step. Config comes from flags or ``PANOPTICON_*`` env, with on-disk defaults so a
+bare ``python -m panopticon.taskservice`` persists across restarts.
 """
 
 from __future__ import annotations

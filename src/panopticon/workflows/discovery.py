@@ -1,10 +1,11 @@
 """Discover ``Workflow`` subclasses on a package/path — the registry the task service runs on (Slice 8).
 
-Scans the built-in :mod:`panopticon.workflows` package and an optional extra directory for concrete
-``Workflow`` subclasses, instantiates each (instantiation **validates** it — states, transitions,
-the required terminal state), and keys them by ``name``. Adding a workflow is then just dropping a
-module on a scanned path: no change to ``core`` or ``taskservice``. Duplicate names are rejected so
-a stray copy can't silently shadow a built-in. LLM-free.
+Scans the built-in :mod:`panopticon.workflows` package, then ``~/.panopticon/workflows/`` (if it
+exists), then an optional extra directory for concrete ``Workflow`` subclasses, instantiates each
+(instantiation **validates** it — states, transitions, the required terminal state), and keys them
+by ``name``. Adding a user workflow is then just dropping a module in ``~/.panopticon/workflows/``:
+no change to ``core`` or ``taskservice``. Duplicate names are rejected so a stray copy can't
+silently shadow a built-in. LLM-free.
 """
 
 from __future__ import annotations
@@ -51,12 +52,21 @@ def _directory_modules(path: Path) -> Iterator[ModuleType]:
         yield module
 
 
-def discover_workflows(*, package: str = "panopticon.workflows", path: str | None = None) -> dict[str, Workflow]:
-    """Build the ``{name: workflow}`` registry from the built-in ``package`` plus an optional ``path``.
+def discover_workflows(
+    *,
+    package: str = "panopticon.workflows",
+    path: str | None = None,
+    _home_workflows: Path | None = None,
+) -> dict[str, Workflow]:
+    """Build the ``{name: workflow}`` registry: built-in ``package`` → ``~/.panopticon/workflows/`` → ``path``.
 
     Each discovered class is instantiated (validating it); a duplicate ``name`` raises ``ValueError``.
+    ``_home_workflows`` overrides the default ``~/.panopticon/workflows`` scan target (tests only).
     """
     modules = list(_package_modules(importlib.import_module(package)))
+    home_wf = _home_workflows if _home_workflows is not None else (Path.home() / ".panopticon" / "workflows")
+    if home_wf.is_dir():
+        modules += list(_directory_modules(home_wf))
     if path:
         modules += list(_directory_modules(Path(path)))
     registry: dict[str, Workflow] = {}
