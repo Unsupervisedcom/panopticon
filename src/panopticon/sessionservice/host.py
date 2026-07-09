@@ -25,7 +25,6 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import socket
 import threading
 import time
 from collections.abc import Callable
@@ -183,7 +182,9 @@ def run_host(
     HostDaemon(client, spawner, provisioner, interval=interval, sleep=sleep).run(until=until)
 
 
-def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = None) -> None:  # pragma: no cover - thin wiring + endless loop
+def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the ``host`` daemon's CLI parser — split out from :func:`main` so tests can inspect
+    argument defaults (e.g. ``--host``) without running the endless daemon loop."""
     parser = argparse.ArgumentParser(
         prog="python -m panopticon.sessionservice.host",
         description="Per-host session service: spawn tasks + provision them (ADR 0008/0011).",
@@ -201,8 +202,9 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
     parser.add_argument("--runner-id", default=os.environ.get("PANOPTICON_RUNNER_ID", "local"))
     parser.add_argument(
         "--host",
-        default=os.environ.get("PANOPTICON_RUNNER_HOST", socket.gethostname()),
-        help="hostname or alias reported to the task service",
+        default=os.environ.get("PANOPTICON_RUNNER_HOST"),
+        help="hostname or alias reported to the task service — leave unset for a local runner; "
+        "set only when this host is genuinely remote (ADR 0013)",
     )
     parser.add_argument("--image", default=DEFAULT_IMAGE)
     parser.add_argument("--cache-root", default=os.environ.get("PANOPTICON_CACHE_ROOT", DEFAULT_CACHE_ROOT))
@@ -211,7 +213,11 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
         "--interval", type=float, default=2.0,
         help="change-feed long-poll wait, seconds (the keepalive ceiling between blocking calls)",
     )
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = None) -> None:  # pragma: no cover - thin wiring + endless loop
+    args = build_arg_parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
     runner = LocalRunner(args.container_service_url, image=args.image, runner_id=args.runner_id)
