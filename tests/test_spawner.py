@@ -107,6 +107,14 @@ def _spawner(client: object, runner: object, images: object = None) -> Spawner:
     cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
     return Spawner(client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
                    git=GitClones(run=_no_op_run), images=images or _FakeImageBuilder(),  # type: ignore[arg-type]
+                   makedirs=lambda _p: None, validate_env_file=lambda _: None)
+
+
+def _real_spawner(client: object, runner: object) -> Spawner:
+    """Like _spawner() but uses the real _validate_env_file (filesystem checks)."""
+    cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
+    return Spawner(client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
+                   git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
                    makedirs=lambda _p: None)
 
 
@@ -174,6 +182,7 @@ def test_spawn_one_composes_the_workflow_image_when_it_has_a_layer() -> None:
     spawner = Spawner(
         client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
         git=GitClones(run=_no_op_run), images=images, makedirs=lambda _p: None,  # type: ignore[arg-type]
+        validate_env_file=lambda _: None,
     )
     spawner.spawn_one({"id": "t1", "repo_id": "r1", "workflow": "github-peer-reviewed", "state": "PLANNING", "claimed_by": None})
     assert images.built == [("github-peer-reviewed", "r1", ["RUN apt-get install --yes gh"])]  # composed base → layer
@@ -190,6 +199,7 @@ def test_spawn_one_composes_workflow_then_repo_layers() -> None:
     spawner = Spawner(
         client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
         git=GitClones(run=_no_op_run), images=images, makedirs=lambda _p: None,  # type: ignore[arg-type]
+        validate_env_file=lambda _: None,
     )
     spawner.spawn_one({"id": "t1", "repo_id": "r1", "workflow": "github-peer-reviewed", "state": "PLANNING", "claimed_by": None})
     assert images.built == [("github-peer-reviewed", "r1", ["RUN apt-get install --yes gh", "RUN pip install uv"])]
@@ -307,6 +317,7 @@ def test_heal_caps_respawns_then_surfaces_a_crash_looping_task() -> None:
         cache=CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None), tasks_root="/tasks",
         git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
         makedirs=lambda _p: None, now=lambda: clock["t"], max_respawns=3, respawn_reset=60.0,
+        validate_env_file=lambda _: None,
     )
     for _ in range(6):
         spawner.heal(_orphan())
@@ -324,6 +335,7 @@ def test_heal_resets_the_respawn_budget_after_a_survivor_window() -> None:
         cache=CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None), tasks_root="/tasks",
         git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
         makedirs=lambda _p: None, now=lambda: clock["t"], max_respawns=2, respawn_reset=60.0,
+        validate_env_file=lambda _: None,
     )
     spawner.heal(_orphan())  # respawn 1
     spawner.heal(_orphan())  # respawn 2 → budget now exhausted
@@ -374,6 +386,7 @@ def test_mark_healing_skips_a_crash_looped_out_orphan() -> None:
         cache=CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None), tasks_root="/tasks",
         git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
         makedirs=lambda _p: None, now=lambda: clock["t"], max_respawns=2, respawn_reset=60.0,
+        validate_env_file=lambda _: None,
     )
     spawner.heal(_orphan()); spawner.heal(_orphan())  # exhaust the respawn budget
     client.phases.clear()
@@ -474,7 +487,7 @@ def test_spawn_runs_repo_hook_with_correct_args() -> None:
     spawner = Spawner(
         client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
         git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
-        run_hook=_fake_hook, makedirs=lambda _p: None,
+        run_hook=_fake_hook, makedirs=lambda _p: None, validate_env_file=lambda _: None,
     )
     spawner.spawn_one({"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None})
     assert calls == [("/hooks/acme.sh", "t1", "acme/widgets", "/tasks/t1")]
@@ -546,7 +559,7 @@ def test_spawn_hook_failure_aborts_spawn() -> None:
     spawner = Spawner(
         client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
         git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
-        run_hook=_boom, makedirs=lambda _p: None,
+        run_hook=_boom, makedirs=lambda _p: None, validate_env_file=lambda _: None,
     )
     with pytest.raises(RuntimeError, match="hook exited 1"):
         spawner.spawn_one({"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None})
@@ -562,7 +575,7 @@ def test_spawn_skips_hook_when_repo_has_no_hook_file() -> None:
     spawner = Spawner(
         client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
         git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
-        run_hook=lambda *a: calls.append(a), makedirs=lambda _p: None,
+        run_hook=lambda *a: calls.append(a), makedirs=lambda _p: None, validate_env_file=lambda _: None,
     )
     spawner.spawn_one({"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None})
     assert not calls  # hook never invoked
@@ -587,3 +600,59 @@ def test_spawner_against_the_real_service(tmp_path: Path) -> None:
         assert spawner.spawn_one(task) == f"panopticon-{task_id}"
         assert client.get_task(task_id)["claimed_by"] == "host-1"  # claim recorded on the service
         assert spawnable_tasks(client)() == []  # now claimed → no longer spawnable
+
+
+# --- env_file pre-flight validation tests ---
+
+_TASK = {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None}
+
+
+def test_spawn_fails_missing_env_file(tmp_path: Path) -> None:
+    # env_file path doesn't exist → FAILED with "does not exist" before any image build.
+    repo = {**_REPO, "env_file": str(tmp_path / "nonexistent.env")}
+    client, runner = _FakeClient(repo=repo), _FakeRunner()
+    with pytest.raises(RuntimeError):
+        _real_spawner(client, runner).spawn_one(_TASK)
+    last_task, last_phase, last_detail = client.phases[-1]
+    assert (last_task, last_phase) == ("t1", "failed")
+    assert "does not exist" in (last_detail or "")
+    assert not runner.spawned  # image build never reached
+
+
+def test_spawn_fails_no_auth_token(tmp_path: Path) -> None:
+    # env_file exists but has no CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY → FAILED.
+    env_file = tmp_path / "no_token.env"
+    env_file.write_text("FOO=bar\nBAZ=qux\n")
+    repo = {**_REPO, "env_file": str(env_file)}
+    client, runner = _FakeClient(repo=repo), _FakeRunner()
+    with pytest.raises(RuntimeError):
+        _real_spawner(client, runner).spawn_one(_TASK)
+    last_task, last_phase, last_detail = client.phases[-1]
+    assert (last_task, last_phase) == ("t1", "failed")
+    assert "no auth token" in (last_detail or "")
+    assert not runner.spawned
+
+
+def test_spawn_fails_blank_auth_token(tmp_path: Path) -> None:
+    # Key present but value is empty — must not count as a valid token.
+    env_file = tmp_path / "blank_token.env"
+    env_file.write_text("CLAUDE_CODE_OAUTH_TOKEN=\nANTHROPIC_API_KEY=\n")
+    repo = {**_REPO, "env_file": str(env_file)}
+    client, runner = _FakeClient(repo=repo), _FakeRunner()
+    with pytest.raises(RuntimeError):
+        _real_spawner(client, runner).spawn_one(_TASK)
+    last_task, last_phase, last_detail = client.phases[-1]
+    assert (last_task, last_phase) == ("t1", "failed")
+    assert "no auth token" in (last_detail or "")
+    assert not runner.spawned
+
+
+def test_spawn_ok_with_valid_env_file(tmp_path: Path) -> None:
+    # env_file with a real token value → validation passes, spawn proceeds normally.
+    env_file = tmp_path / "valid.env"
+    env_file.write_text("CLAUDE_CODE_OAUTH_TOKEN=tok-abc123\n")
+    repo = {**_REPO, "env_file": str(env_file)}
+    client, runner = _FakeClient(repo=repo), _FakeRunner()
+    cid = _real_spawner(client, runner).spawn_one(_TASK)
+    assert cid == "panopticon-t1"
+    assert not any(p == "failed" for _, p, _ in client.phases)
