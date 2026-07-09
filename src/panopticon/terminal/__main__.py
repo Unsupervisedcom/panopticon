@@ -103,18 +103,24 @@ def main(
     elif args.command == "stop":
         import subprocess
 
-        result = subprocess.run(
-            ["docker", "ps", "--all", "--quiet", "--filter", "label=panopticon.task"],
-            capture_output=True,
-            text=True,
-        )
-        ids = result.stdout.split() if result.stdout.strip() else []
-        if ids:
-            subprocess.run(["docker", "rm", "--force"] + ids, check=True)
-        subprocess.run(
-            ["tmux", "-L", "panopticon", "kill-server"],
-            capture_output=True,
-        )
+        try:
+            result = subprocess.run(
+                ["docker", "ps", "--all", "--quiet", "--filter", "label=panopticon.task"],
+                capture_output=True,
+                text=True,
+            )
+            ids = result.stdout.split() if result.stdout.strip() else []
+            if ids:
+                subprocess.run(["docker", "rm", "--force"] + ids, check=True)
+        except FileNotFoundError:
+            pass
+        try:
+            subprocess.run(
+                ["tmux", "-L", "panopticon", "kill-server"],
+                capture_output=True,
+            )
+        except FileNotFoundError:
+            pass
         return 0
 
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))

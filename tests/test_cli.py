@@ -30,6 +30,11 @@ def test_stop_skips_docker_rm_when_no_containers() -> None:
     assert not any(c[0] == "docker" and "rm" in c for c in calls)
 
 
+def test_stop_tolerates_missing_docker_or_tmux() -> None:
+    with patch("subprocess.run", side_effect=FileNotFoundError):
+        assert main(["stop"]) == 0
+
+
 def test_build_dispatches_to_image_builder() -> None:
     with patch("panopticon.sessionservice.images.ImageBuilder") as mock_cls:
         assert main(["build"]) == 0
