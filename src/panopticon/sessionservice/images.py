@@ -9,11 +9,14 @@ daemon). LLM-free. The runner builds the composed image, then spawns the task on
 
 from __future__ import annotations
 
+import importlib.resources
 import logging
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
+import panopticon
+import panopticon.docker as _docker_pkg
 from panopticon.sessionservice.local_runner import DEFAULT_IMAGE, CommandRunner, _subprocess_run
 
 _log = logging.getLogger(__name__)
@@ -49,22 +52,27 @@ class ImageBuilder:
             self._run(["docker", "build", "--tag", tag, context], verbose=verbose)
         return tag
 
-    def build_base_if_missing(self, *, context: str = ".", verbose: bool = False) -> bool:
-        """Probe for the base image; build it from docker/Dockerfile if absent.
+    def build_base_if_missing(self, *, verbose: bool = False) -> bool:
+        """Probe for the base image; build it from the bundled Dockerfile if absent.
 
         Uses ``docker image inspect`` (fast, ~100 ms) to check presence. If the image is missing
-        (inspect returns an empty result), builds it with ``docker build``. Returns ``True`` if a
-        build was triggered, ``False`` if the image was already present. ``verbose`` streams the
-        build output to the caller's stdout/stderr when a build is triggered."""
+        builds it using the Dockerfile bundled with the installed package
+        (``panopticon.docker``). Returns ``True`` if a build was triggered, ``False`` if
+        the image was already present."""
         result = self._run(
             ["docker", "image", "inspect", self._base], check=False
         )
         if result.strip() in ("", "[]"):
             _log.warning("base image %r not found — building automatically", self._base)
-            self._run(
-                ["docker", "build", "--tag", self._base,
-                 "--file", "docker/Dockerfile", context],
-                verbose=verbose,
-            )
+            dockerfile_ref = importlib.resources.files(_docker_pkg) / "Dockerfile"
+            with importlib.resources.as_file(dockerfile_ref) as dockerfile_path:
+                self._run(
+                    ["docker", "build",
+                     "--tag", self._base,
+                     "--build-arg", f"PANOPTICON_VERSION={panopticon.__version__}",
+                     "--file", str(dockerfile_path),
+                     str(dockerfile_path.parent)],
+                    verbose=verbose,
+                )
             return True
         return False

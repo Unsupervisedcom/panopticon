@@ -27,12 +27,10 @@ USER panopticon
 RUN curl --fail --silent --show-error --location https://claude.ai/install.sh | bash
 USER root
 
-WORKDIR /app
-COPY pyproject.toml README.md ./
-COPY src ./src
-RUN pip install --no-cache-dir .
+ARG PANOPTICON_VERSION
+RUN pip install --no-cache-dir panopticon-app==${PANOPTICON_VERSION}
 
-COPY docker/entrypoint.sh /usr/local/bin/panopticon-entrypoint
+COPY entrypoint.sh /usr/local/bin/panopticon-entrypoint
 RUN chmod 0755 /usr/local/bin/panopticon-entrypoint
 
 # Start as root so the entrypoint can adopt the invoking uid/gid; it then drops to `panopticon` and

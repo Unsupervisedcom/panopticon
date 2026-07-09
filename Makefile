@@ -46,7 +46,11 @@ stop:  ## Stop everything `make start` started: the task containers + the -L pan
 	-tmux -L panopticon kill-server 2>/dev/null
 
 build:  ## Build the base task-container image (override with IMAGE=)
-	docker build --tag $(IMAGE) --file docker/Dockerfile .
+	docker build \
+	  --tag $(IMAGE) \
+	  --build-arg PANOPTICON_VERSION=$(shell uv run python -c 'import panopticon; print(panopticon.__version__)') \
+	  --file src/panopticon/docker/Dockerfile \
+	  src/panopticon/docker/
 
 clean:  ## Remove the base image and any composed panopticon-* images
 	-docker rmi --force $(IMAGE)
