@@ -79,9 +79,26 @@ def test_switch_to_with_remote_host_encodes_host_and_session(tmp_path: Path) -> 
     # parse it and pass host= to attach_command for the ssh-wrapped attach.
     switch = tmp_path / "switch"
 
-    switch_to("panopticon-t1", host="box.example.com", switch_file=switch, detach=lambda: None)
+    switch_to(
+        "panopticon-t1", host="box.example.com", switch_file=switch, detach=lambda: None,
+        local_host=lambda: "this-machine",
+    )
 
     assert switch.read_text() == "box.example.com\tpanopticon-t1"
+
+
+def test_switch_to_with_own_hostname_is_treated_as_local(tmp_path: Path) -> None:
+    # The ordinary local runner registers its own hostname too (ADR 0013 §6), but that must not
+    # ssh-wrap a same-machine attach: when host == local_host() it's dropped, so the switch-file
+    # carries a plain session (no tab) just like the no-host case.
+    switch = tmp_path / "switch"
+
+    switch_to(
+        "panopticon-t1", host="this-machine", switch_file=switch, detach=lambda: None,
+        local_host=lambda: "this-machine",
+    )
+
+    assert switch.read_text() == "panopticon-t1"
 
 
 def test_supervisor_parses_remote_host_from_switch_file(tmp_path: Path) -> None:

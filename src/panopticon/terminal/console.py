@@ -21,6 +21,7 @@ prefix. LLM-free.
 
 from __future__ import annotations
 
+import socket as socket_module
 import subprocess
 import sys
 import tempfile
@@ -69,14 +70,21 @@ def switch_to(
     host: str | None = None,
     switch_file: Path,
     detach: Callable[[], None] = _tmux_detach,
+    local_host: Callable[[], str] = socket_module.gethostname,
 ) -> None:
     """The dashboard's `t` hook, run inside its tmux session: record the picked ``session`` for
     the supervisor, then detach this client so the supervisor attaches the task. The dashboard
     process keeps running (detached), so returning to it shows the same live view.
 
-    When ``host`` is set the switch-file carries ``<host>\\t<session>`` so the
-    supervisor can ssh-wrap the attach; a plain ``<session>`` (no tab) means local.
+    ``host`` is the claiming runner's registered hostname (ADR 0013 §6) — populated even for the
+    ordinary local runner. It only means "remote" when it differs from this machine's own
+    hostname (``local_host``, injectable for tests); otherwise it's treated as local so `t` never
+    ssh-wraps a same-machine attach. When genuinely remote, the switch-file carries
+    ``<host>\\t<session>`` so the supervisor can ssh-wrap the attach; a plain ``<session>`` (no
+    tab) means local.
     """
+    if host == local_host():
+        host = None
     switch_file.write_text(f"{host}\t{session}" if host else session)
     detach()
 
