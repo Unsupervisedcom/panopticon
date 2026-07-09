@@ -28,6 +28,7 @@ from collections.abc import Callable, Iterable
 import httpx
 
 from panopticon.client import JsonObj, TaskServiceClient
+from panopticon.core.dirs import user_data_dir
 from panopticon.core.git import GitClones
 from panopticon.sessionservice.provisioner import Provisioner
 
@@ -35,7 +36,7 @@ _log = logging.getLogger(__name__)
 
 #: Per-task clones root (matches the spawn entrypoint's ``--tasks-root``); each task's clone is
 #: ``<tasks_root>/<task_id>`` (ADR 0011).
-DEFAULT_TASKS_ROOT = os.path.expanduser("~/.panopticon/tasks")
+DEFAULT_TASKS_ROOT: str = str(user_data_dir() / "tasks")
 
 
 class ProvisionDaemon:

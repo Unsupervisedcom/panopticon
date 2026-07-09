@@ -33,6 +33,7 @@ from pathlib import Path
 import httpx
 
 from panopticon.client import JsonObj, TaskServiceClient
+from panopticon.core.dirs import user_cache_dir, user_data_dir
 from panopticon.core.git import GitClones
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.images import ImageBuilder
@@ -42,8 +43,8 @@ from panopticon.sessionservice.spawner import Spawner
 
 _log = logging.getLogger(__name__)
 
-DEFAULT_CACHE_ROOT = os.path.expanduser("~/.panopticon/cache")
-DEFAULT_TASKS_ROOT = os.path.expanduser("~/.panopticon/tasks")
+DEFAULT_CACHE_ROOT: str = str(user_cache_dir())
+DEFAULT_TASKS_ROOT: str = str(user_data_dir() / "tasks")
 
 
 class HostDaemon:
@@ -183,6 +184,27 @@ def run_host(
     HostDaemon(client, spawner, provisioner, interval=interval, sleep=sleep).run(until=until)
 
 
+def _migrate_session_dirs(cache_root: str, tasks_root: str) -> None:
+    """Migrate legacy ``~/.panopticon/cache`` and ``~/.panopticon/tasks`` to XDG locations."""
+    import shutil
+
+    if cache_root == DEFAULT_CACHE_ROOT:
+        new = Path(cache_root)
+        if not new.exists():
+            old = Path.home() / ".panopticon" / "cache"
+            if old.is_dir():
+                _log.info("panopticon: migrating %s → %s", old, new)
+                shutil.move(str(old), str(new))
+
+    if tasks_root == DEFAULT_TASKS_ROOT:
+        new = Path(tasks_root)
+        if not new.exists():
+            old = Path.home() / ".panopticon" / "tasks"
+            if old.is_dir():
+                _log.info("panopticon: migrating %s → %s", old, new)
+                shutil.move(str(old), str(new))
+
+
 def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = None) -> None:  # pragma: no cover - thin wiring + endless loop
     parser = argparse.ArgumentParser(
         prog="python -m panopticon.sessionservice.host",
@@ -213,6 +235,7 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
     )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    _migrate_session_dirs(args.cache_root, args.tasks_root)
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
     runner = LocalRunner(args.container_service_url, image=args.image, runner_id=args.runner_id)
     # Hold this host's liveness connection for the daemon's whole life, alongside the spawn/provision

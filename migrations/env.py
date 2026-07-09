@@ -3,7 +3,8 @@
 Wired to the SQLAlchemy adapter's :data:`~panopticon.taskservice.store_sqlalchemy.metadata` so
 ``alembic revision --autogenerate`` diffs migrations against the live ORM schema (the single
 source of truth). The database URL is resolved the same way the task service resolves it — from
-``$PANOPTICON_DB`` (default ``~/.panopticon/panopticon.db``) — or overridden per-invocation with
+``$PANOPTICON_DB`` (default ``$XDG_DATA_HOME/panopticon/panopticon.db``,
+i.e. ``~/.local/share/panopticon/panopticon.db``) — or overridden per-invocation with
 ``alembic -x db=<url>``, so the migration tooling and the running service never disagree on the
 target database.
 
@@ -29,8 +30,8 @@ _db_url = context.get_x_argument(as_dictionary=True).get("db") or os.environ.get
 )
 config.set_main_option("sqlalchemy.url", _db_url)
 
-# Migrate legacy ./panopticon.db to ~/.panopticon/ before alembic opens the file — `make host`
-# runs `make migrate` before starting the service, so migration must fire here too.
+# Migrate legacy DB locations (./panopticon.db, ~/.panopticon/panopticon.db) to the XDG data dir
+# before alembic opens the file — `make host` runs `make migrate` first, so migration fires here too.
 migrate_db_to_home(_db_url)
 
 # For SQLite file DBs, ensure the parent directory exists before SQLAlchemy tries to open the file.

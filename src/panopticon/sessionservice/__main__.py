@@ -10,10 +10,12 @@ from __future__ import annotations
 import argparse
 import os
 from collections.abc import Sequence
+from pathlib import Path
 
 import httpx
 
 from panopticon.client import TaskServiceClient
+from panopticon.core.dirs import user_cache_dir, user_data_dir
 from panopticon.core.git import GitClones
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.local_runner import (
@@ -25,8 +27,30 @@ from panopticon.sessionservice.local_runner import (
 from panopticon.sessionservice.spawn import prepare_workspace
 
 #: Per-host provisioning roots (ADR 0010/0011): the per-repo clone cache and the per-task clones.
-DEFAULT_CACHE_ROOT = os.path.expanduser("~/.panopticon/cache")
-DEFAULT_TASKS_ROOT = os.path.expanduser("~/.panopticon/tasks")
+DEFAULT_CACHE_ROOT: str = str(user_cache_dir())
+DEFAULT_TASKS_ROOT: str = str(user_data_dir() / "tasks")
+
+
+def _migrate_session_dirs(cache_root: str, tasks_root: str) -> None:
+    """Migrate legacy ``~/.panopticon/cache`` and ``~/.panopticon/tasks`` to XDG locations."""
+    import logging
+    import shutil
+
+    if cache_root == DEFAULT_CACHE_ROOT:
+        new = Path(cache_root)
+        if not new.exists():
+            old = Path.home() / ".panopticon" / "cache"
+            if old.is_dir():
+                logging.info("panopticon: migrating %s → %s", old, new)
+                shutil.move(str(old), str(new))
+
+    if tasks_root == DEFAULT_TASKS_ROOT:
+        new = Path(tasks_root)
+        if not new.exists():
+            old = Path.home() / ".panopticon" / "tasks"
+            if old.is_dir():
+                logging.info("panopticon: migrating %s → %s", old, new)
+                shutil.move(str(old), str(new))
 
 
 def main(
@@ -48,6 +72,7 @@ def main(
     parser.add_argument("--cache-root", default=os.environ.get("PANOPTICON_CACHE_ROOT", DEFAULT_CACHE_ROOT))
     parser.add_argument("--tasks-root", default=os.environ.get("PANOPTICON_TASKS_ROOT", DEFAULT_TASKS_ROOT))
     args = parser.parse_args(argv)
+    _migrate_session_dirs(args.cache_root, args.tasks_root)
 
     # Look up the task's repo to inject that repo's secrets (ADR 0007), scoped to this task.
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
