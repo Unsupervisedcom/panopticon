@@ -6,7 +6,7 @@ import logging
 import shutil
 from pathlib import Path
 
-from panopticon.core.env import DEFAULT_CLONE_CACHE_ROOT, DEFAULT_TASKS_ROOT
+from panopticon.core.env import DEFAULT_CLONE_CACHE, DEFAULT_TASKS
 
 _log = logging.getLogger(__name__)
 
@@ -17,7 +17,7 @@ def migrate_session_dirs(clone_cache_root: str, tasks_root: str) -> None:
     Tries CWD-relative paths (pre-#251) then ``~/.panopticon/`` (#251) as sources.
     Skips when a custom override is in use or the destination already exists.
     """
-    if clone_cache_root == DEFAULT_CLONE_CACHE_ROOT:
+    if clone_cache_root == DEFAULT_CLONE_CACHE:
         new = Path(clone_cache_root)
         if not new.exists():
             for old in [Path("cache"), Path.home() / ".panopticon" / "cache"]:
@@ -27,7 +27,7 @@ def migrate_session_dirs(clone_cache_root: str, tasks_root: str) -> None:
                     shutil.move(str(old), str(new))
                     break
 
-    if tasks_root == DEFAULT_TASKS_ROOT:
+    if tasks_root == DEFAULT_TASKS:
         new = Path(tasks_root)
         if not new.exists():
             for old in [Path("tasks"), Path.home() / ".panopticon" / "tasks"]:

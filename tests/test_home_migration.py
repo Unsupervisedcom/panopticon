@@ -424,8 +424,8 @@ def test_migrate_session_cache_from_cwd(tmp_path: Path, monkeypatch: pytest.Monk
     import panopticon.sessionservice._migration as mig
     fake_clone_cache = str(xdg_cache / "panopticon" / "repos")
     fake_tasks = str(xdg_cache / "panopticon" / "tasks")
-    monkeypatch.setattr(mig, "DEFAULT_CLONE_CACHE_ROOT", fake_clone_cache)
-    monkeypatch.setattr(mig, "DEFAULT_TASKS_ROOT", fake_tasks)
+    monkeypatch.setattr(mig, "DEFAULT_CLONE_CACHE", fake_clone_cache)
+    monkeypatch.setattr(mig, "DEFAULT_TASKS", fake_tasks)
 
     original = Path.home
     try:
@@ -452,8 +452,8 @@ def test_migrate_session_cache_from_dot_panopticon(tmp_path: Path, monkeypatch: 
     import panopticon.sessionservice._migration as mig
     fake_clone_cache = str(xdg_cache / "panopticon" / "repos")
     fake_tasks = str(xdg_cache / "panopticon" / "tasks")
-    monkeypatch.setattr(mig, "DEFAULT_CLONE_CACHE_ROOT", fake_clone_cache)
-    monkeypatch.setattr(mig, "DEFAULT_TASKS_ROOT", fake_tasks)
+    monkeypatch.setattr(mig, "DEFAULT_CLONE_CACHE", fake_clone_cache)
+    monkeypatch.setattr(mig, "DEFAULT_TASKS", fake_tasks)
 
     original = Path.home
     try:

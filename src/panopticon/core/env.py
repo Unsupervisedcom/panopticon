@@ -18,10 +18,10 @@ DEFAULT_DB: str = "sqlite:///" + str(user_data_dir() / "panopticon.db")
 DEFAULT_ARTIFACTS: str = str(user_data_dir() / "artifacts")
 
 #: Per-task workspace clones — $PANOPTICON_DATA/tasks
-DEFAULT_TASKS_ROOT: str = str(user_data_dir() / "tasks")
+DEFAULT_TASKS: str = str(user_data_dir() / "tasks")
 
 #: Per-repo clone cache — $PANOPTICON_CACHE/repos
-DEFAULT_CLONE_CACHE_ROOT: str = str(user_cache_dir() / "repos")
+DEFAULT_CLONE_CACHE: str = str(user_cache_dir() / "repos")
 
 #: Operator-authored Dockerfile layer files — $PANOPTICON_CONFIG/layers
 DEFAULT_LAYERS: str = str(user_config_dir() / "layers")

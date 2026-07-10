@@ -28,7 +28,7 @@ from collections.abc import Callable, Iterable
 import httpx
 
 from panopticon.client import JsonObj, TaskServiceClient
-from panopticon.core.env import DEFAULT_TASKS_ROOT
+from panopticon.core.env import DEFAULT_TASKS
 from panopticon.core.git import GitClones
 from panopticon.sessionservice.provisioner import Provisioner
 
@@ -130,7 +130,7 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
         default=os.environ.get("PANOPTICON_SERVICE_URL", "http://localhost:8000"),
         help="task service URL to pull task state from",
     )
-    parser.add_argument("--tasks-root", default=DEFAULT_TASKS_ROOT)
+    parser.add_argument("--tasks-root", default=DEFAULT_TASKS)
     parser.add_argument("--interval", type=float, default=2.0, help="poll interval, seconds")
     args = parser.parse_args(argv)
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))

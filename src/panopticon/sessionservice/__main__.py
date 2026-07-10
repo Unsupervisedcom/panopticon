@@ -14,8 +14,8 @@ from collections.abc import Sequence
 import httpx
 
 from panopticon.client import TaskServiceClient
+from panopticon.core.env import DEFAULT_CLONE_CACHE, DEFAULT_TASKS
 from panopticon.core.git import GitClones
-from panopticon.core.env import DEFAULT_CLONE_CACHE_ROOT, DEFAULT_TASKS_ROOT
 from panopticon.sessionservice._migration import migrate_session_dirs
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.local_runner import (
@@ -43,8 +43,8 @@ def main(
         help="task service URL the container connects back to",
     )
     parser.add_argument("--image", default=DEFAULT_IMAGE)
-    parser.add_argument("--cache-root", default=DEFAULT_CLONE_CACHE_ROOT)
-    parser.add_argument("--tasks-root", default=DEFAULT_TASKS_ROOT)
+    parser.add_argument("--cache-root", default=DEFAULT_CLONE_CACHE)
+    parser.add_argument("--tasks-root", default=DEFAULT_TASKS)
     args = parser.parse_args(argv)
     migrate_session_dirs(args.cache_root, args.tasks_root)
 
