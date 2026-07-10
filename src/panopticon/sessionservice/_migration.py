@@ -6,13 +6,9 @@ import logging
 import shutil
 from pathlib import Path
 
-from panopticon.core.dirs import user_cache_dir, user_data_dir
+from panopticon.core.env import DEFAULT_CLONE_CACHE_ROOT, DEFAULT_TASKS_ROOT
 
 _log = logging.getLogger(__name__)
-
-#: Per-host provisioning roots (ADR 0010/0011): the per-repo clone cache and the per-task clones.
-DEFAULT_CLONE_CACHE_ROOT: str = str(user_cache_dir() / "repos")
-DEFAULT_TASKS_ROOT: str = str(user_data_dir() / "tasks")
 
 
 def migrate_session_dirs(clone_cache_root: str, tasks_root: str) -> None:

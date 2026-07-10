@@ -26,14 +26,13 @@ import uvicorn
 from fastapi import FastAPI
 
 from panopticon.core.dirs import user_data_dir
+from panopticon.core.env import DEFAULT_ARTIFACTS, DEFAULT_DB, DEFAULT_LAYERS
 from panopticon.taskservice.api import create_app
-from panopticon.taskservice.artifacts_fs import DEFAULT_ARTIFACTS, FilesystemArtifactStore
-from panopticon.taskservice.layers_fs import DEFAULT_LAYERS, FilesystemLayerStore
+from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
+from panopticon.taskservice.layers_fs import FilesystemLayerStore
 from panopticon.taskservice.service import TaskService
 from panopticon.taskservice.store_sqlalchemy import SqlAlchemyStore
 from panopticon.workflows.discovery import discover_workflows
-
-DEFAULT_DB: str = "sqlite:///" + str(user_data_dir() / "panopticon.db")
 
 _SQLITE_PREFIX = "sqlite:///"
 
@@ -137,11 +136,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         "--port", type=int, default=int(os.environ.get("PANOPTICON_PORT", "8000"))
     )
     parser.add_argument("--db", default=os.environ.get("PANOPTICON_DB", DEFAULT_DB))
+    parser.add_argument("--artifacts", default=DEFAULT_ARTIFACTS)
     parser.add_argument(
-        "--artifacts", default=os.environ.get("PANOPTICON_ARTIFACTS", DEFAULT_ARTIFACTS)
-    )
-    parser.add_argument(
-        "--layers", default=os.environ.get("PANOPTICON_LAYERS", DEFAULT_LAYERS),
+        "--layers", default=DEFAULT_LAYERS,
         help="directory of repo Dockerfile layer files (referenced by Repo.image_layer_file)",
     )
     parser.add_argument(

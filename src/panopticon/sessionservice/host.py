@@ -34,11 +34,8 @@ import httpx
 
 from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.git import GitClones
-from panopticon.sessionservice._migration import (
-    DEFAULT_CLONE_CACHE_ROOT,
-    DEFAULT_TASKS_ROOT,
-    migrate_session_dirs,
-)
+from panopticon.core.env import DEFAULT_CLONE_CACHE_ROOT, DEFAULT_TASKS_ROOT
+from panopticon.sessionservice._migration import migrate_session_dirs
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.images import ImageBuilder
 from panopticon.sessionservice.local_runner import DEFAULT_IMAGE, LocalRunner
@@ -207,8 +204,8 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
         help="hostname or alias reported to the task service",
     )
     parser.add_argument("--image", default=DEFAULT_IMAGE)
-    parser.add_argument("--cache-root", default=os.environ.get("PANOPTICON_CACHE_ROOT", DEFAULT_CLONE_CACHE_ROOT))
-    parser.add_argument("--tasks-root", default=os.environ.get("PANOPTICON_TASKS_ROOT", DEFAULT_TASKS_ROOT))
+    parser.add_argument("--cache-root", default=DEFAULT_CLONE_CACHE_ROOT)
+    parser.add_argument("--tasks-root", default=DEFAULT_TASKS_ROOT)
     parser.add_argument(
         "--interval", type=float, default=2.0,
         help="change-feed long-poll wait, seconds (the keepalive ceiling between blocking calls)",

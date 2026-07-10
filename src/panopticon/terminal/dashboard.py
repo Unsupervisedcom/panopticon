@@ -88,7 +88,8 @@ from textual.worker import get_current_worker
 
 from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.state import TERMINAL_LABELS
-from panopticon.taskservice.artifacts_fs import DEFAULT_ARTIFACTS, FilesystemArtifactStore
+from panopticon.core.env import DEFAULT_ARTIFACTS
+from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 
 
 def _sort_key(task: JsonObj) -> tuple[bool, bool, float, str]:
