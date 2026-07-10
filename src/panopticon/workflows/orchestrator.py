@@ -24,7 +24,6 @@ from typing import ClassVar
 from panopticon.core.models import Skill
 from panopticon.core.state import Complete, InitialState
 from panopticon.core.workflow import Workflow
-from panopticon.workflows.github_forge import GithubForgeWorkflow
 
 #: The per-child recipe the orchestrator's agent follows. Spelled out because it spans several
 #: tools across *another* task's id, and the order matters (the gate clears only once the plan
