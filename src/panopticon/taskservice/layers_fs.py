@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from panopticon.core.env import LAYERS_DIR
+from panopticon.core.dirs import LAYERS_DIR
 from panopticon.core.layers import InvalidLayerName, LayerStore
 
 

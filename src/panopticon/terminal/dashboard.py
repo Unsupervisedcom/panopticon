@@ -88,7 +88,7 @@ from textual.worker import get_current_worker
 
 from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.state import TERMINAL_LABELS
-from panopticon.core.env import ARTIFACTS_DIR
+from panopticon.core.dirs import ARTIFACTS_DIR
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 
 

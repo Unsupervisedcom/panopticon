@@ -1,9 +1,16 @@
-"""Per-user data, cache, and config directories for panopticon (XDG Base Directory spec).
+"""Per-user directories for panopticon (XDG Base Directory spec) and the paths derived from them.
 
-Resolution order for each directory:
+Two layers live here. The ``user_*_dir()`` functions **resolve the three base directories** by
+walking the override chain:
+
   ``PANOPTICON_DATA/CACHE/CONFIG`` (top-level override) →
   ``XDG_DATA_HOME/XDG_CACHE_HOME/XDG_CONFIG_HOME`` →
   ``~/.local/share`` / ``~/.cache`` / ``~/.config``
+
+The module-level constants below then **compose panopticon's well-known sub-paths** onto those
+bases (artifacts, tasks, the clone cache, layer files, the DB). Setting one base-dir variable moves
+its entire subtree — there are no per-path overrides. Code that needs a base for an ad-hoc subpath
+not listed here (e.g. ``workflows/``, ``hooks/``) calls the ``user_*_dir()`` functions directly.
 """
 from __future__ import annotations
 
@@ -51,3 +58,19 @@ def user_config_dir() -> Path:
     xdg = os.environ.get("XDG_CONFIG_HOME")
     base = Path(xdg) if xdg else Path.home() / ".config"
     return base / "panopticon"
+
+
+#: SQLite DB URL. PANOPTICON_DB overrides to any SQLAlchemy URL (e.g. postgresql://).
+DB_URL: str = "sqlite:///" + str(user_data_dir() / "panopticon.db")
+
+#: Task artifact store — $PANOPTICON_DATA/artifacts
+ARTIFACTS_DIR: str = str(user_data_dir() / "artifacts")
+
+#: Per-task workspace clones — $PANOPTICON_DATA/tasks
+TASKS_DIR: str = str(user_data_dir() / "tasks")
+
+#: Per-repo clone cache — $PANOPTICON_CACHE/repos
+CLONE_CACHE_DIR: str = str(user_cache_dir() / "repos")
+
+#: Operator-authored Dockerfile layer files — $PANOPTICON_CONFIG/layers
+LAYERS_DIR: str = str(user_config_dir() / "layers")

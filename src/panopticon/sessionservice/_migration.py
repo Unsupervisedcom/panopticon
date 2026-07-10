@@ -6,7 +6,7 @@ import logging
 import shutil
 from pathlib import Path
 
-from panopticon.core.env import CLONE_CACHE_DIR, TASKS_DIR
+from panopticon.core.dirs import CLONE_CACHE_DIR, TASKS_DIR
 
 _log = logging.getLogger(__name__)
 

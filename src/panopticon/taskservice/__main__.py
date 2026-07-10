@@ -25,8 +25,7 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI
 
-from panopticon.core.dirs import user_data_dir
-from panopticon.core.env import ARTIFACTS_DIR, DB_URL, LAYERS_DIR
+from panopticon.core.dirs import ARTIFACTS_DIR, DB_URL, LAYERS_DIR, user_data_dir
 from panopticon.taskservice.api import create_app
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 from panopticon.taskservice.layers_fs import FilesystemLayerStore

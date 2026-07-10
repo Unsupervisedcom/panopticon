@@ -70,7 +70,7 @@ def main(
             on_runner = make_runner_switch(switch_file)
         # Same default as the task service (shared ARTIFACTS_DIR): when the dashboard shares
         # the store's filesystem, `a`'s `e` opens the on-disk artifact in place.
-        from panopticon.core.env import ARTIFACTS_DIR
+        from panopticon.core.dirs import ARTIFACTS_DIR
 
         artifacts_root = ARTIFACTS_DIR
         run(

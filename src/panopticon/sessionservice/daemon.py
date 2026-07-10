@@ -28,7 +28,7 @@ from collections.abc import Callable, Iterable
 import httpx
 
 from panopticon.client import JsonObj, TaskServiceClient
-from panopticon.core.env import TASKS_DIR
+from panopticon.core.dirs import TASKS_DIR
 from panopticon.core.git import GitClones
 from panopticon.sessionservice.provisioner import Provisioner
 
