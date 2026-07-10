@@ -54,6 +54,9 @@ class _FakeRunner:
     def stop(self, container_id: str) -> None:
         pass
 
+    def delete_workspace_contents(self, path: str) -> None:
+        pass
+
 
 class _FakeClient:
     """Captures claims + reported lifecycle phases; serves one repo. `claim` 409s when already held
@@ -534,6 +537,31 @@ def test_cleanup_is_a_no_op_for_non_terminal_task() -> None:
     )
     spawner.cleanup({"id": "t1", "state": "ITERATING"})
     assert removed == []  # live task — never touch its workspace
+
+
+def test_cleanup_invokes_docker_cleanup_when_rmtree_fails() -> None:
+    # Spawner wires docker_cleanup through to cleanup_workspace; verify the path end-to-end.
+    docker_called: list[str] = []
+    rmtree_calls = 0
+
+    def rmtree_first_fails(path: str) -> None:
+        nonlocal rmtree_calls
+        rmtree_calls += 1
+        if rmtree_calls == 1:
+            raise PermissionError(13, "Permission denied", "/tasks/t1/.mypy_cache")
+
+    runner = _FakeRunner(running=False)
+    client = _FakeClient(repo=_REPO)
+    cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
+    spawner = Spawner(
+        client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
+        git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        makedirs=lambda _p: None, exists=lambda _p: True,
+        rmtree=rmtree_first_fails, docker_cleanup=docker_called.append,
+    )
+    spawner.cleanup({"id": "t1", "state": "COMPLETE"})
+    assert docker_called == ["/tasks/t1"]
+    assert rmtree_calls == 2
 
 
 def test_spawn_hook_failure_aborts_spawn() -> None:

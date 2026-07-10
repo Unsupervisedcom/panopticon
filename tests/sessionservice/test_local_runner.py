@@ -229,6 +229,21 @@ def test_stop_kills_session_and_force_removes_container_idempotently() -> None:
     assert (["docker", "rm", "--force", "panopticon-t1"], False) in rec.calls
 
 
+def test_delete_workspace_contents_runs_root_container_to_empty_directory() -> None:
+    rec = _Recorder()
+    LocalRunner("http://svc", image="panopticon-base", run=rec).delete_workspace_contents("/tasks/t1")
+    assert rec.calls == [(
+        [
+            "docker", "run", "--rm",
+            "--entrypoint", "/bin/sh",
+            "--volume", "/tasks/t1:/cleanup",
+            "panopticon-base",
+            "-c", "find /cleanup -mindepth 1 -delete",
+        ],
+        True,
+    )]
+
+
 def test_tmux_socket_can_be_overridden() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", tmux_socket="panopt", run=rec).spawn("t1")

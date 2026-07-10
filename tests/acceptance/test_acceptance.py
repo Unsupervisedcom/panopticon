@@ -79,7 +79,7 @@ def test_runner_spawns_real_container_that_registers_and_loses_liveness(
 
     # Build a local wheel of the current source so the container image doesn't need a
     # published PyPI release (PANOPTICON_WHEEL triggers the dev-install path in the Dockerfile).
-    repo_root = Path(__file__).parent.parent
+    repo_root = Path(__file__).parent.parent.parent
     wheel_out = tmp_path / "wheels"
     wheel_out.mkdir()
     subprocess.run(
