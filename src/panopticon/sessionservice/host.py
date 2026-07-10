@@ -204,15 +204,13 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
         help="hostname or alias reported to the task service",
     )
     parser.add_argument("--image", default=DEFAULT_IMAGE)
-    parser.add_argument("--cache-root", default=DEFAULT_CLONE_CACHE)
-    parser.add_argument("--tasks-root", default=DEFAULT_TASKS)
     parser.add_argument(
         "--interval", type=float, default=2.0,
         help="change-feed long-poll wait, seconds (the keepalive ceiling between blocking calls)",
     )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    migrate_session_dirs(args.cache_root, args.tasks_root)
+    migrate_session_dirs(DEFAULT_CLONE_CACHE, DEFAULT_TASKS)
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
     runner = LocalRunner(args.container_service_url, image=args.image, runner_id=args.runner_id)
     # Hold this host's liveness connection for the daemon's whole life, alongside the spawn/provision
@@ -227,8 +225,8 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
     liveness.start()
     run_host(
         client, runner,
-        runner_id=args.runner_id, tasks_root=args.tasks_root,
-        cache=CloneCache(args.cache_root), git=GitClones(),
+        runner_id=args.runner_id, tasks_root=DEFAULT_TASKS,
+        cache=CloneCache(DEFAULT_CLONE_CACHE), git=GitClones(),
         images=ImageBuilder(base=args.image),  # compose workflow layers onto the same base (ADR 0005)
         interval=args.interval,
     )

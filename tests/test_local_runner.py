@@ -315,17 +315,23 @@ class _FakeClient:
         return self._repo
 
 
-def test_cli_preps_the_workspace_then_spawns_with_secrets_and_mount(tmp_path: Path) -> None:
+def test_cli_preps_the_workspace_then_spawns_with_secrets_and_mount(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from panopticon.sessionservice import __main__ as cli
     from panopticon.sessionservice.__main__ import main as cli_main
 
     rec = _Recorder()
     fake = _FakeClient(
         {"id": "r1", "git_url": "https://forge/r1.git", "env_file": "/secrets/r1.env"}
     )
+    # The clone cache and per-task clones roots are the base-dir defaults (no per-path flags); the
+    # defaults are import-time constants, so point them at tmp dirs by patching them in place.
     cache_root, tasks_root = tmp_path / "cache", tmp_path / "tasks"
+    monkeypatch.setattr(cli, "DEFAULT_CLONE_CACHE", str(cache_root))
+    monkeypatch.setattr(cli, "DEFAULT_TASKS", str(tasks_root))
     cid = cli_main(
-        ["t1", "--service-url", "http://svc:9", "--image", "img:2",
-         "--cache-root", str(cache_root), "--tasks-root", str(tasks_root)],
+        ["t1", "--service-url", "http://svc:9", "--image", "img:2"],
         run=rec, client=fake,  # type: ignore[arg-type]
     )
     assert cid == "panopticon-t1"

@@ -136,11 +136,6 @@ def main(argv: Sequence[str] | None = None) -> None:
         "--port", type=int, default=int(os.environ.get("PANOPTICON_PORT", "8000"))
     )
     parser.add_argument("--db", default=os.environ.get("PANOPTICON_DB", DEFAULT_DB))
-    parser.add_argument("--artifacts", default=DEFAULT_ARTIFACTS)
-    parser.add_argument(
-        "--layers", default=DEFAULT_LAYERS,
-        help="directory of repo Dockerfile layer files (referenced by Repo.image_layer_file)",
-    )
     parser.add_argument(
         "--workflows-path",
         default=os.environ.get("PANOPTICON_WORKFLOWS_PATH"),
@@ -148,9 +143,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
     user_data_dir().mkdir(parents=True, exist_ok=True)
-    _migrate_legacy_to_home(args.db, args.artifacts, args.layers)
+    _migrate_legacy_to_home(args.db, DEFAULT_ARTIFACTS, DEFAULT_LAYERS)
     app = build_app(
-        db=args.db, artifacts_root=args.artifacts, layers_root=args.layers,
+        db=args.db, artifacts_root=DEFAULT_ARTIFACTS, layers_root=DEFAULT_LAYERS,
         workflows_path=args.workflows_path,
     )
     uvicorn.run(app, host=args.host, port=args.port)
