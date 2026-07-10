@@ -44,6 +44,9 @@ class _FakeRunner:
     def stop(self, container_id: str) -> None:
         pass
 
+    def delete_workspace_contents(self, path: str) -> None:
+        pass
+
 
 class _FakeImageBuilder:
     """Stands in for ImageBuilder (no docker); always reports the base image as present."""
