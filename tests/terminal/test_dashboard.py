@@ -1920,6 +1920,54 @@ async def test_enter_on_non_governor_does_nothing() -> None:
         assert before == after
 
 
+async def test_search_expands_collapsed_ensembles_to_reach_their_children() -> None:
+    # A collapsed governor hides its children behind a "..." placeholder. A search must
+    # still reach those children — the ensemble expands for the query, then the operator's
+    # collapse state is restored once the query is cleared.
+    governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
+    governed = {**_TASK, "id": "wrk", "slug": "worker-bee", "governor_task_id": "gov"}
+    app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        # Collapse the governor: the child is now behind a "..." placeholder.
+        table.move_cursor(row=table.get_row_index("gov"))
+        await pilot.press("enter")
+        await pilot.pause()
+        assert f"{_ENSEMBLE_KEY_PREFIX}gov" in [str(k.value) for k in table.rows]
+        assert "wrk" not in [str(k.value) for k in table.rows]
+        # Search for the collapsed child: it surfaces as a real row, no placeholder.
+        app._query = "worker-bee"
+        app.action_refresh()
+        await pilot.pause()
+        keys = [str(k.value) for k in table.rows]
+        assert "wrk" in keys
+        assert f"{_ENSEMBLE_KEY_PREFIX}gov" not in keys
+        # Clear the query: the collapse state is restored (placeholder is back).
+        app._query = ""
+        app.action_refresh()
+        await pilot.pause()
+        keys = [str(k.value) for k in table.rows]
+        assert f"{_ENSEMBLE_KEY_PREFIX}gov" in keys
+        assert "wrk" not in keys
+
+
+async def test_search_with_no_collapse_is_unaffected() -> None:
+    # A query with nothing collapsed filters exactly as before — regression guard.
+    governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
+    governed = {**_TASK, "id": "wrk", "slug": "worker-bee", "governor_task_id": "gov"}
+    app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        app._query = "worker"
+        app.action_refresh()
+        keys = [str(k.value) for k in table.rows]
+        # Per-row filter: the non-matching governor drops out, the child stays (unchanged
+        # behaviour — the fix only affects collapsed ensembles).
+        assert keys == ["wrk"]
+
+
 # -- multi-runner column -----------------------------------------------------------
 
 def _col_labels(table: DataTable) -> list[str]:

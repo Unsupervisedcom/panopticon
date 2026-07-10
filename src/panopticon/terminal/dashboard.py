@@ -1356,7 +1356,12 @@ class Dashboard(App[None]):
         # The two sections come back separately so the divider sits at the structural
         # boundary — not based on individual task state (a terminal governed task can live
         # in the active section when its governor is still active).
-        active_group, terminal_group = _group_by_governor(ordered, self._collapsed)
+        # While a search is active, expand every ensemble so collapsed children are
+        # searchable — otherwise a `└─ ...` placeholder hides them from the filter. We
+        # pass an empty collapsed set (not mutating self._collapsed), so the operator's
+        # collapse state is restored as soon as the query is cleared.
+        collapsed_for_display = set() if self._query else self._collapsed
+        active_group, terminal_group = _group_by_governor(ordered, collapsed_for_display)
         active_visible = [(t, p) for t, p in active_group if _matches(t, self._query)]
         terminal_visible = [(t, p) for t, p in terminal_group if _matches(t, self._query)]
         visible = active_visible + terminal_visible
