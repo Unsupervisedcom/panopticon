@@ -526,37 +526,6 @@ class WorkflowScreen(_OptionListModal[str]):
         self.dismiss(str(event.option.prompt))
 
 
-class InputScreen(ModalScreen[str | None]):
-    """A modal free-text prompt: submit the text (Enter) or cancel (Escape).
-
-    Dismisses the entered string (empty string if blank) on submit, or ``None`` on cancel — so
-    a caller can tell "left it empty" apart from "backed out"."""
-
-    CSS = """
-    InputScreen { align: center middle; }
-    #input-box { width: 64; height: auto; padding: 1 2; border: round $accent; background: $surface; }
-    """
-    BINDINGS = [("escape", "cancel", "Cancel")]
-
-    def __init__(self, title: str) -> None:
-        super().__init__()
-        self._title = title
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="input-box"):
-            yield Label(self._title)
-            yield Input()
-
-    def on_mount(self) -> None:
-        self.query_one(Input).focus()
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        self.dismiss(event.value)
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-
 class MemoTextArea(TextArea):
     """TextArea for memo input where Enter submits the form instead of inserting a newline.
 
@@ -1722,8 +1691,7 @@ class Dashboard(App[None]):
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """`Enter` in the search box **locks** the filter: hide the box, keep the query, restore
-        navigation. The `n`-flow's modal `InputScreen` handles its own submit, so this only fires
-        for the dashboard's own search box."""
+        navigation."""
         if event.input.id != "search":
             return
         self._hide_search()
