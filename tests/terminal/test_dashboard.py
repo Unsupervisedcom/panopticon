@@ -1952,8 +1952,9 @@ async def test_search_expands_collapsed_ensembles_to_reach_their_children() -> N
         assert "wrk" not in keys
 
 
-async def test_search_with_no_collapse_is_unaffected() -> None:
-    # A query with nothing collapsed filters exactly as before — regression guard.
+async def test_search_with_no_collapse_shows_matching_child_under_its_governor() -> None:
+    # A matching child keeps its governor visible so the tree stays intact — even though the
+    # governor's own text doesn't match the query.
     governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
     governed = {**_TASK, "id": "wrk", "slug": "worker-bee", "governor_task_id": "gov"}
     app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
@@ -1963,9 +1964,38 @@ async def test_search_with_no_collapse_is_unaffected() -> None:
         app._query = "worker"
         app.action_refresh()
         keys = [str(k.value) for k in table.rows]
-        # Per-row filter: the non-matching governor drops out, the child stays (unchanged
-        # behaviour — the fix only affects collapsed ensembles).
-        assert keys == ["wrk"]
+        # The governor is pulled up alongside its matching child (governor first, then child).
+        assert keys == ["gov", "wrk"]
+
+
+async def test_search_shows_governing_task_when_child_matches() -> None:
+    # The user's request: a task visible in a search must show its governing task too.
+    governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
+    governed = {**_TASK, "id": "wrk", "slug": "worker-bee", "governor_task_id": "gov"}
+    app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        app._query = "worker-bee"  # matches only the child
+        app.action_refresh()
+        keys = [str(k.value) for k in table.rows]
+        assert "wrk" in keys
+        assert "gov" in keys  # governor pulled up even though it doesn't match
+
+
+async def test_search_shows_all_ancestors_when_deep_child_matches() -> None:
+    # A multi-level chain: only the leaf matches, but every ancestor must stay visible.
+    root = {**_TASK, "id": "root", "slug": "root-orch", "governor_task_id": None}
+    mid = {**_TASK, "id": "mid", "slug": "mid-orch", "governor_task_id": "root"}
+    leaf = {**_TASK, "id": "leaf", "slug": "leaf-worker", "governor_task_id": "mid"}
+    app = Dashboard(_FakeClient([root, mid, leaf]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        app._query = "leaf-worker"  # matches only the deepest task
+        app.action_refresh()
+        keys = [str(k.value) for k in table.rows]
+        assert set(keys) == {"root", "mid", "leaf"}  # whole chain visible
 
 
 # -- multi-runner column -----------------------------------------------------------

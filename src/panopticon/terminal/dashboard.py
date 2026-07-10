@@ -1361,9 +1361,26 @@ class Dashboard(App[None]):
         # pass an empty collapsed set (not mutating self._collapsed), so the operator's
         # collapse state is restored as soon as the query is cleared.
         collapsed_for_display = set() if self._query else self._collapsed
-        active_group, terminal_group = _group_by_governor(ordered, collapsed_for_display)
-        active_visible = [(t, p) for t, p in active_group if _matches(t, self._query)]
-        terminal_visible = [(t, p) for t, p in terminal_group if _matches(t, self._query)]
+        # When a query is active, filter *before* grouping and pull each matching task's
+        # governor chain up with it: a visible child must keep its ancestors visible, or the
+        # tree breaks (a child rendered under a governor that got filtered out is orphaned).
+        # This is one-directional — a matching governor does not pull its children down.
+        if self._query:
+            task_by_id_all: dict[str, JsonObj] = {t["id"]: t for t in ordered}
+            visible_ids: set[str] = set()
+            for t in ordered:
+                if _matches(t, self._query):
+                    tid: str | None = str(t["id"])
+                    while tid is not None and tid not in visible_ids:
+                        visible_ids.add(tid)
+                        parent = task_by_id_all.get(tid)
+                        tid = parent.get("governor_task_id") if parent else None
+            search_filtered = [t for t in ordered if t["id"] in visible_ids]
+        else:
+            search_filtered = ordered
+        active_group, terminal_group = _group_by_governor(search_filtered, collapsed_for_display)
+        active_visible = list(active_group)
+        terminal_visible = list(terminal_group)
         visible = active_visible + terminal_visible
         # Build the task index (real tasks only; ensemble placeholders are synthetic).
         self._tasks = {t["id"]: t for t, _ in visible if not t.get("_ensemble")}
