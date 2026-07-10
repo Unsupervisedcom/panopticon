@@ -68,11 +68,11 @@ def main(
             on_switch = lambda session, host=None: switch_to(session, host=host, switch_file=switch_file)  # noqa: E731
             on_service = make_service_switch(switch_file)
             on_runner = make_runner_switch(switch_file)
-        # Same default as the task service (shared DEFAULT_ARTIFACTS): when the dashboard shares
+        # Same default as the task service (shared ARTIFACTS_DIR): when the dashboard shares
         # the store's filesystem, `a`'s `e` opens the on-disk artifact in place.
-        from panopticon.core.env import DEFAULT_ARTIFACTS
+        from panopticon.core.env import ARTIFACTS_DIR
 
-        artifacts_root = DEFAULT_ARTIFACTS
+        artifacts_root = ARTIFACTS_DIR
         run(
             client, on_switch=on_switch, on_service=on_service, on_runner=on_runner,
             artifacts_root=artifacts_root,

@@ -328,8 +328,8 @@ def test_cli_preps_the_workspace_then_spawns_with_secrets_and_mount(
     # The clone cache and per-task clones roots are the base-dir defaults (no per-path flags); the
     # defaults are import-time constants, so point them at tmp dirs by patching them in place.
     cache_root, tasks_root = tmp_path / "cache", tmp_path / "tasks"
-    monkeypatch.setattr(cli, "DEFAULT_CLONE_CACHE", str(cache_root))
-    monkeypatch.setattr(cli, "DEFAULT_TASKS", str(tasks_root))
+    monkeypatch.setattr(cli, "CLONE_CACHE_DIR", str(cache_root))
+    monkeypatch.setattr(cli, "TASKS_DIR", str(tasks_root))
     cid = cli_main(
         ["t1", "--service-url", "http://svc:9", "--image", "img:2"],
         run=rec, client=fake,  # type: ignore[arg-type]

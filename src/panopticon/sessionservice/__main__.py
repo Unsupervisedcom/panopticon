@@ -14,7 +14,7 @@ from collections.abc import Sequence
 import httpx
 
 from panopticon.client import TaskServiceClient
-from panopticon.core.env import DEFAULT_CLONE_CACHE, DEFAULT_TASKS
+from panopticon.core.env import CLONE_CACHE_DIR, TASKS_DIR
 from panopticon.core.git import GitClones
 from panopticon.sessionservice._migration import migrate_session_dirs
 from panopticon.sessionservice.clones import CloneCache
@@ -44,7 +44,7 @@ def main(
     )
     parser.add_argument("--image", default=DEFAULT_IMAGE)
     args = parser.parse_args(argv)
-    migrate_session_dirs(DEFAULT_CLONE_CACHE, DEFAULT_TASKS)
+    migrate_session_dirs(CLONE_CACHE_DIR, TASKS_DIR)
 
     # Look up the task's repo to inject that repo's secrets (ADR 0007), scoped to this task.
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
@@ -53,7 +53,7 @@ def main(
     # Spawn-prep (ADR 0011): give the task a writable per-task clone, mounted at /workspace.
     workspace = prepare_workspace(
         args.task_id, repo,
-        cache=CloneCache(DEFAULT_CLONE_CACHE, run=run), tasks_root=DEFAULT_TASKS, git=GitClones(run=run),
+        cache=CloneCache(CLONE_CACHE_DIR, run=run), tasks_root=TASKS_DIR, git=GitClones(run=run),
     )
     container_id = LocalRunner(args.service_url, image=args.image, run=run).spawn(
         args.task_id,

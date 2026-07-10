@@ -26,7 +26,7 @@ import uvicorn
 from fastapi import FastAPI
 
 from panopticon.core.dirs import user_data_dir
-from panopticon.core.env import DEFAULT_ARTIFACTS, DEFAULT_DB, DEFAULT_LAYERS
+from panopticon.core.env import ARTIFACTS_DIR, DB_URL, LAYERS_DIR
 from panopticon.taskservice.api import create_app
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 from panopticon.taskservice.layers_fs import FilesystemLayerStore
@@ -48,7 +48,7 @@ def migrate_db_to_home(db_url: str) -> None:
     doesn't exist. Idempotent, safe to call every start. Called from both ``main()`` and
     ``migrations/env.py`` so it fires before alembic connects too.
     """
-    if db_url != DEFAULT_DB:
+    if db_url != DB_URL:
         return
     new = Path(db_url[len(_SQLITE_PREFIX):])
     if new.exists():
@@ -77,7 +77,7 @@ def _migrate_legacy_to_home(db: str, artifacts: str, layers: str) -> None:
 
     migrate_db_to_home(db)
 
-    if artifacts == DEFAULT_ARTIFACTS:
+    if artifacts == ARTIFACTS_DIR:
         new = Path(artifacts)
         if not new.exists():
             for old in [Path("artifacts"), Path.home() / ".panopticon" / "artifacts"]:
@@ -86,7 +86,7 @@ def _migrate_legacy_to_home(db: str, artifacts: str, layers: str) -> None:
                     shutil.move(str(old), str(new))
                     break
 
-    if layers == DEFAULT_LAYERS:
+    if layers == LAYERS_DIR:
         new = Path(layers)
         if not new.exists():
             for old in [Path("layers"), Path.home() / ".panopticon" / "layers"]:
@@ -107,9 +107,9 @@ def _migrate_legacy_to_home(db: str, artifacts: str, layers: str) -> None:
 
 def build_app(
     *,
-    db: str = DEFAULT_DB,
-    artifacts_root: str = DEFAULT_ARTIFACTS,
-    layers_root: str = DEFAULT_LAYERS,
+    db: str = DB_URL,
+    artifacts_root: str = ARTIFACTS_DIR,
+    layers_root: str = LAYERS_DIR,
     workflows_path: str | None = None,
 ) -> FastAPI:
     """Build the task-service app around the default control-plane wiring (no LLM).
@@ -135,7 +135,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument(
         "--port", type=int, default=int(os.environ.get("PANOPTICON_PORT", "8000"))
     )
-    parser.add_argument("--db", default=os.environ.get("PANOPTICON_DB", DEFAULT_DB))
+    parser.add_argument("--db", default=os.environ.get("PANOPTICON_DB", DB_URL))
     parser.add_argument(
         "--workflows-path",
         default=os.environ.get("PANOPTICON_WORKFLOWS_PATH"),
@@ -143,9 +143,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
     user_data_dir().mkdir(parents=True, exist_ok=True)
-    _migrate_legacy_to_home(args.db, DEFAULT_ARTIFACTS, DEFAULT_LAYERS)
+    _migrate_legacy_to_home(args.db, ARTIFACTS_DIR, LAYERS_DIR)
     app = build_app(
-        db=args.db, artifacts_root=DEFAULT_ARTIFACTS, layers_root=DEFAULT_LAYERS,
+        db=args.db, artifacts_root=ARTIFACTS_DIR, layers_root=LAYERS_DIR,
         workflows_path=args.workflows_path,
     )
     uvicorn.run(app, host=args.host, port=args.port)

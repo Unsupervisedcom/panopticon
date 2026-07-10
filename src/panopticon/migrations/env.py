@@ -19,7 +19,7 @@ from pathlib import Path
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from panopticon.core.env import DEFAULT_DB
+from panopticon.core.env import DB_URL
 from panopticon.taskservice.__main__ import migrate_db_to_home
 from panopticon.taskservice.store_sqlalchemy import metadata
 
@@ -27,7 +27,7 @@ config = context.config
 
 # Resolve the target database: `-x db=<url>` wins, then $PANOPTICON_DB, then the service default.
 _db_url = context.get_x_argument(as_dictionary=True).get("db") or os.environ.get(
-    "PANOPTICON_DB", DEFAULT_DB
+    "PANOPTICON_DB", DB_URL
 )
 config.set_main_option("sqlalchemy.url", _db_url)
 

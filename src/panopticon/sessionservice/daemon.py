@@ -28,7 +28,7 @@ from collections.abc import Callable, Iterable
 import httpx
 
 from panopticon.client import JsonObj, TaskServiceClient
-from panopticon.core.env import DEFAULT_TASKS
+from panopticon.core.env import TASKS_DIR
 from panopticon.core.git import GitClones
 from panopticon.sessionservice.provisioner import Provisioner
 
@@ -133,7 +133,7 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
     parser.add_argument("--interval", type=float, default=2.0, help="poll interval, seconds")
     args = parser.parse_args(argv)
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
-    run_daemon(client, tasks_root=DEFAULT_TASKS, interval=args.interval)
+    run_daemon(client, tasks_root=TASKS_DIR, interval=args.interval)
 
 
 if __name__ == "__main__":  # pragma: no cover

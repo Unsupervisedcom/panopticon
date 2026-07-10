@@ -12,7 +12,7 @@ import asyncio
 from pathlib import Path
 
 from panopticon.core.artifacts import ArtifactStore, InvalidArtifactName, validate_segment
-from panopticon.core.env import DEFAULT_ARTIFACTS
+from panopticon.core.env import ARTIFACTS_DIR
 
 
 class FilesystemArtifactStore(ArtifactStore):

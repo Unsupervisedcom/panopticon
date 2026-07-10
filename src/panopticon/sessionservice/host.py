@@ -33,7 +33,7 @@ from pathlib import Path
 import httpx
 
 from panopticon.client import JsonObj, TaskServiceClient
-from panopticon.core.env import DEFAULT_CLONE_CACHE, DEFAULT_TASKS
+from panopticon.core.env import CLONE_CACHE_DIR, TASKS_DIR
 from panopticon.core.git import GitClones
 from panopticon.sessionservice._migration import migrate_session_dirs
 from panopticon.sessionservice.clones import CloneCache
@@ -210,7 +210,7 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
     )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    migrate_session_dirs(DEFAULT_CLONE_CACHE, DEFAULT_TASKS)
+    migrate_session_dirs(CLONE_CACHE_DIR, TASKS_DIR)
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
     runner = LocalRunner(args.container_service_url, image=args.image, runner_id=args.runner_id)
     # Hold this host's liveness connection for the daemon's whole life, alongside the spawn/provision
@@ -225,8 +225,8 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
     liveness.start()
     run_host(
         client, runner,
-        runner_id=args.runner_id, tasks_root=DEFAULT_TASKS,
-        cache=CloneCache(DEFAULT_CLONE_CACHE), git=GitClones(),
+        runner_id=args.runner_id, tasks_root=TASKS_DIR,
+        cache=CloneCache(CLONE_CACHE_DIR), git=GitClones(),
         images=ImageBuilder(base=args.image),  # compose workflow layers onto the same base (ADR 0005)
         interval=args.interval,
     )
