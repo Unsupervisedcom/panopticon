@@ -86,3 +86,18 @@ def test_build_base_if_missing_builds_when_inspect_returns_empty_array() -> None
     result = ImageBuilder(base="panopticon-base", run=rec).build_base_if_missing()
     assert result is True
     assert len(rec.calls) == 2  # inspect + build
+
+
+def test_build_base_unconditional() -> None:
+    rec = _MultiRecorder("")
+    ImageBuilder(base="panopticon-base", run=rec).build_base(verbose=True)
+    assert len(rec.calls) == 1  # no inspect probe — just the build
+    build_cmd = rec.calls[0][0]
+    assert build_cmd[:4] == ["docker", "build", "--tag", "panopticon-base"]
+    assert "--build-arg" in build_cmd
+    version_arg = build_cmd[build_cmd.index("--build-arg") + 1]
+    assert version_arg.startswith("PANOPTICON_VERSION=")
+    assert "--file" in build_cmd
+    file_arg = build_cmd[build_cmd.index("--file") + 1]
+    assert file_arg.endswith("Dockerfile")
+    assert Path(build_cmd[-1]).name == "docker"  # context = parent dir of Dockerfile

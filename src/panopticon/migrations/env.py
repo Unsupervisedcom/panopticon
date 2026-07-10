@@ -14,6 +14,7 @@ LLM-free, like the rest of the control plane.
 from __future__ import annotations
 
 import os
+from logging.config import fileConfig
 from pathlib import Path
 
 from alembic import context
@@ -23,6 +24,11 @@ from panopticon.taskservice.__main__ import DEFAULT_DB, migrate_db_to_home
 from panopticon.taskservice.store_sqlalchemy import metadata
 
 config = context.config
+
+# Wire the ini's [loggers]/[handlers] sections into Python logging — without this, alembic's
+# "Running upgrade …" INFO records have no handler and are dropped silently.
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
 
 # Resolve the target database: `-x db=<url>` wins, then $PANOPTICON_DB, then the service default.
 _db_url = context.get_x_argument(as_dictionary=True).get("db") or os.environ.get(

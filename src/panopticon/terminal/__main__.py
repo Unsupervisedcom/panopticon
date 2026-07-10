@@ -20,6 +20,35 @@ from panopticon.client import TaskServiceClient
 DEFAULT_SERVICE_URL = "http://localhost:8000"
 
 
+def _run_migrate() -> None:
+    import importlib.resources
+
+    import alembic.config
+
+    ini_ref = importlib.resources.files("panopticon") / "alembic.ini"
+    with importlib.resources.as_file(ini_ref) as ini_path:
+        alembic.config.main(argv=["--config", str(ini_path), "upgrade", "head"])
+
+
+def _start_sessions() -> None:
+    import subprocess
+    import sys
+
+    python = sys.executable
+    for name, cmd in [
+        ("service", f"{python} -m panopticon.taskservice 2>&1 | tee /tmp/panopticon-service.log"),
+        ("runner", f"{python} -m panopticon.sessionservice.host 2>&1 | tee /tmp/panopticon-runner.log"),
+    ]:
+        subprocess.run(
+            ["tmux", "-L", "panopticon", "kill-session", "-t", name],
+            capture_output=True,
+        )
+        subprocess.run(
+            ["tmux", "-L", "panopticon", "new-session", "-d", "-s", name, cmd],
+            check=True,
+        )
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -40,6 +69,10 @@ def main(
     sub.add_parser("tasks", help="list tasks as plain text")
     mig = sub.add_parser("migrate", help="apply DB migrations to head (or pass alembic args)")
     mig.add_argument("alembic_args", nargs="*", default=["upgrade", "head"])
+    sub.add_parser("build", help="build the base task-container image (panopticon-base)")
+    sub.add_parser("host", help="start task service + runner in background tmux sessions (no console)")
+    sub.add_parser("start", help="start everything and open the dashboard supervisor")
+    sub.add_parser("stop", help="stop task containers and the panopticon tmux server")
     args = parser.parse_args(argv)
 
     if args.command == "migrate":
@@ -50,6 +83,44 @@ def main(
         ini_ref = importlib.resources.files("panopticon") / "alembic.ini"
         with importlib.resources.as_file(ini_ref) as ini_path:
             alembic.config.main(argv=["--config", str(ini_path)] + list(args.alembic_args))
+        return 0
+    elif args.command == "build":
+        from panopticon.sessionservice.images import ImageBuilder
+
+        ImageBuilder().build_base(verbose=True)
+        return 0
+    elif args.command == "host":
+        _run_migrate()
+        _start_sessions()
+        return 0
+    elif args.command == "start":
+        _run_migrate()
+        _start_sessions()
+        from panopticon.terminal.console import run_console_local
+
+        run_console_local(args.service_url)
+        return 0
+    elif args.command == "stop":
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                ["docker", "ps", "--all", "--quiet", "--filter", "label=panopticon.task"],
+                capture_output=True,
+                text=True,
+            )
+            ids = result.stdout.split() if result.stdout.strip() else []
+            if ids:
+                subprocess.run(["docker", "rm", "--force"] + ids, check=True)
+        except FileNotFoundError:
+            pass
+        try:
+            subprocess.run(
+                ["tmux", "-L", "panopticon", "kill-server"],
+                capture_output=True,
+            )
+        except FileNotFoundError:
+            pass
         return 0
 
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
