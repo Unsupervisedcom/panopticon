@@ -22,8 +22,8 @@ from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 from panopticon.workflows import GithubPeerReviewed, Spike
 
 #: Golden fixtures: the exact prompts the github-peer-reviewed workflow generates. Regenerate after an
-#: intentional wording change with ``UPDATE_FIXTURES=1 uv run pytest tests/test_briefing.py`` and commit the diff.
-FIXTURES = Path(__file__).parent / "fixtures" / "briefing"
+#: intentional wording change with ``UPDATE_FIXTURES=1 uv run pytest tests/core/test_briefing.py`` and commit the diff.
+FIXTURES = Path(__file__).parent.parent / "fixtures" / "briefing"
 
 
 def _artifacts(tmp_path: Path) -> ArtifactStore:
