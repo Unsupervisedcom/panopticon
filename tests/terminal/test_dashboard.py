@@ -328,9 +328,9 @@ async def test_pressing_d_toggles_the_detail_pane() -> None:
 
 
 async def test_tasks_are_sorted_active_then_terminal_in_creation_order() -> None:
-    # Active tasks: creation order ascending (oldest first), turn irrelevant.
-    # Terminal tasks: always updated_at descending (most recently completed first),
-    # regardless of sort mode — their order is stable once completed.
+    # Active tasks: user turn first (operator action needed), then by created_at ascending.
+    # Terminal tasks: agent turn first (task just finished), then by updated_at descending.
+    # In this fixture t-active-1 is user-turn, so it leads even though creation times agree.
     tasks = [
         {**_TASK, "id": "t-term-2", "slug": "done", "state": "COMPLETE", "turn": "user",
          "created_at": "2026-06-01T01:00:00", "updated_at": "2026-06-01T02:00:00"},
@@ -355,17 +355,17 @@ async def test_tasks_are_sorted_active_then_terminal_in_creation_order() -> None
 
 
 async def test_sort_uses_creation_order_within_section() -> None:
-    # Within the active section, created_at ascending is the primary sort (oldest first).
+    # Within the same turn-priority tier, created_at ascending is the primary sort (oldest first).
     # Falls back to updated_at when created_at is absent (pre-migration rows).
     tasks = [
-        {**_TASK, "id": "t-old", "slug": "zebra", "turn": "agent", "created_at": "2026-06-01T00:00:00"},
-        {**_TASK, "id": "t-new", "slug": "alpha", "turn": "user",  "created_at": "2026-06-25T00:00:00"},
+        {**_TASK, "id": "t-old", "slug": "zebra", "turn": "user", "created_at": "2026-06-01T00:00:00"},
+        {**_TASK, "id": "t-new", "slug": "alpha", "turn": "user", "created_at": "2026-06-25T00:00:00"},
     ]
     app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
         order = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
-        assert order == ["t-old", "t-new"]  # older first, despite "zebra" > "alpha" and different turns
+        assert order == ["t-old", "t-new"]  # older first, despite "zebra" > "alpha"
 
 
 async def test_sort_breaks_ties_on_id() -> None:

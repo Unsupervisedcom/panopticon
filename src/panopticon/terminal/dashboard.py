@@ -94,21 +94,22 @@ from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 
 def _make_sort_key(
     recency: bool = False,
-) -> Callable[[JsonObj], tuple[bool, float, str]]:
+) -> Callable[[JsonObj], tuple[bool, bool, float, str]]:
     """Return a sort key function for the task table.
 
-    Active tasks:
-    - ``recency=False`` (default): sort by ``created_at`` ascending — stable creation order.
-    - ``recency=True``: sort by ``updated_at`` descending — most recently active tasks rise
-      to the top as work happens.
-
-    Terminal tasks always sort by ``updated_at`` descending (most recently completed first),
-    regardless of the sort mode.
-
-    Both modes keep non-terminal tasks above terminal ones and use ``id`` as a tiebreaker.
+    1. non-terminal before terminal — COMPLETE/DROPPED sink to the bottom.
+    2. turn priority: for active tasks the user's turn comes first (operator action needed);
+       for terminal tasks the agent's turn comes first (task just finished).
+    3. timestamp:
+       - Active, ``recency=False`` (default): ``created_at`` ascending — stable creation order.
+       - Active, ``recency=True``: ``updated_at`` descending — most recently active rises first.
+       - Terminal (always): ``updated_at`` descending — most recently completed rises first.
+    4. id as a stable tiebreaker.
     """
-    def key(task: JsonObj) -> tuple[bool, float, str]:
+    def key(task: JsonObj) -> tuple[bool, bool, float, str]:
         is_terminal = task["state"] in TERMINAL_LABELS
+        turn_first = "agent" if is_terminal else "user"
+        turn_after_priority = task["turn"] != turn_first  # False (priority) sorts before True
         if is_terminal or recency:
             # Terminal tasks always use updated_at descending; recency mode does too.
             raw = task.get("updated_at") or ""
@@ -123,9 +124,10 @@ def _make_sort_key(
             except ValueError:
                 ts = 0.0
         return (
-            is_terminal,  # False (active) before True (terminal)
+            is_terminal,         # False (active) before True (terminal)
+            turn_after_priority, # priority turn sorts first within each section
             ts,
-            task["id"],   # stable tiebreaker
+            task["id"],          # stable tiebreaker
         )
     return key
 
