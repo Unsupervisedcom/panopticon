@@ -96,13 +96,6 @@ def main(
         _run_migrate()
         _start_sessions()
         return 0
-    elif args.command == "start":
-        _run_migrate()
-        _start_sessions()
-        from panopticon.terminal.console import run_console_local
-
-        run_console_local(args.service_url)
-        return 0
     elif args.command == "stop":
         import subprocess
 
@@ -151,8 +144,8 @@ def main(
             client, on_switch=on_switch, on_service=on_service, on_runner=on_runner,
             artifacts_root=artifacts_root,
         )
-    else:  # "console" or no subcommand (no subcommand → alias for start)
-        if args.command is None:
+    else:  # "start", "console", or no subcommand (no subcommand → alias for "start")
+        if args.command in (None, "start"):  # "console" assumes services are already running
             _run_migrate()
             _start_sessions()
         from panopticon.terminal.console import run_console_local
