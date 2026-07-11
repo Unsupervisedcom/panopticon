@@ -1138,7 +1138,7 @@ HOTKEYS: tuple[Hotkey, ...] = (
     Hotkey("x", "drop", "Drop", "Drop the highlighted task"),
     Hotkey("/", "search", "Search", "Search tasks as you type"),
     Hotkey("d", "toggle_detail", "Detail", "Show/hide the detail pane"),
-    Hotkey("o", "toggle_sort", "Sort order", "Toggle sort: created (stable) ↔ updated (recent first)", show=False),
+    Hotkey("o", "toggle_sort", "Sort order", "Toggle sort: created ↔ updated", show=False),
     Hotkey("r", "refresh", "Refresh", "Refresh from the task service now", show=False),
     Hotkey("R", "respawn", "Respawn", "Respawn a down task (release its claim)", show=False),
     Hotkey("p", "open_url", "Open URL", "Open the task's URL in the browser", show=False),
@@ -1643,7 +1643,7 @@ class Dashboard(App[None]):
         self.notify(f"copied id: {self._current}")
 
     def action_toggle_sort(self) -> None:
-        """`o`: toggle between creation-order sort (stable) and updated-at sort (newest first)."""
+        """`o`: toggle between sorting by creation time or update time."""
         self._sort_by_updated = not self._sort_by_updated
         self.action_refresh()
 
