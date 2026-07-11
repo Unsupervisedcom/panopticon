@@ -1,7 +1,7 @@
 """add created_at to task
 
 Revision ID: faf3403c8b56
-Revises: 596be4c1bf2a
+Revises: c5d5138649f4
 Create Date: 2026-07-11 20:55:41.232553
 """
 
@@ -15,7 +15,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = 'faf3403c8b56'
-down_revision: str | None = '596be4c1bf2a'
+down_revision: str | None = 'c5d5138649f4'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
