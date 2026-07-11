@@ -92,28 +92,23 @@ from panopticon.core.dirs import ARTIFACTS_DIR
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 
 
-def _sort_key(task: JsonObj) -> tuple[bool, bool, float, str]:
-    """Order rows for the operator: live work first, then by whose turn it is, then recency.
+def _sort_key(task: JsonObj) -> tuple[bool, float, str]:
+    """Order rows: active tasks before terminal, each group sorted by creation order (oldest first).
 
     1. non-terminal before terminal — COMPLETE/DROPPED sink to the bottom;
-    2. turn priority differs by group: for active tasks the user's turn comes first (tasks waiting
-       on the operator surface early); for terminal tasks the agent's turn comes first (tasks the
-       agent just finished surface at the top of the completed section);
-    3. most recently updated first (negative timestamp);
-    4. slug (then id) for a stable, readable order within each tier.
+    2. creation time ascending (oldest first) — stable, never changes after creation;
+    3. id as tiebreaker for tasks with identical timestamps.
     """
     is_terminal = task["state"] in TERMINAL_LABELS
-    raw = task.get("updated_at") or ""
+    raw = task.get("created_at") or task.get("updated_at") or ""
     try:
-        ts = -datetime.fromisoformat(raw).timestamp()
+        ts = datetime.fromisoformat(raw).timestamp()
     except ValueError:
         ts = 0.0
-    turn_first = "agent" if is_terminal else "user"
     return (
-        is_terminal,  # False (live) before True (terminal)
-        task["turn"] != turn_first,  # False (priority turn) before True (other turn)
-        ts,  # negative so newest sorts first
-        task["slug"] or task["id"],
+        is_terminal,  # False (active) before True (terminal)
+        ts,           # ascending: oldest first = creation order
+        task["id"],   # stable tiebreaker
     )
 
 
@@ -1341,7 +1336,7 @@ class Dashboard(App[None]):
         table = self.query_one("#tasks", DataTable)
         selected = self._current  # keep the operator's highlight across the rebuild (feed refresh)
         table.clear()
-        ordered = sorted(self._client.list_tasks(), key=_sort_key)  # terminal last, then slug
+        ordered = sorted(self._client.list_tasks(), key=_sort_key)  # terminal last, each group by creation order
         new_multi_runner = len({r.get("host") for r in self._client.live_runners() if r.get("host")}) > 1
         if new_multi_runner != self._multi_runner:
             table.clear(columns=True)  # rows already gone; also clears columns for rebuild

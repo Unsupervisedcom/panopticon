@@ -327,21 +327,20 @@ async def test_pressing_d_toggles_the_detail_pane() -> None:
         assert not app._detail_visible and detail.styles.display == "none"
 
 
-async def test_tasks_are_sorted_live_then_user_then_slug() -> None:
-    # The order: (1) non-terminal above terminal, (2) turn priority differs by group — active tasks
-    # surface the user's turn first (operator action needed), terminal tasks surface the agent's turn
-    # first (just finished); (3) most recently updated first, (4) slug (then id) as the stable tiebreaker.
-    # Here all tasks share the same updated_at (None → 0.0), so slug is the effective tiebreaker.
+async def test_tasks_are_sorted_active_then_terminal_in_creation_order() -> None:
+    # The order: (1) non-terminal above terminal, (2) creation time ascending (oldest first) within
+    # each section — stable, never changes after a task is created regardless of turn or updates.
     tasks = [
-        # terminal tasks — sink below all live work; agent-turn rises to top of this section.
-        {**_TASK, "id": "t-done", "slug": "done", "state": "COMPLETE", "turn": "user"},
-        {**_TASK, "id": "t-drop", "slug": "drop", "state": "DROPPED", "turn": "agent"},
-        # live agent-turn tasks — below the user-turn ones, sorted by slug.
-        {**_TASK, "id": "t-agent-b", "slug": "bravo", "turn": "agent"},
-        {**_TASK, "id": "t-agent-a", "slug": "alpha", "turn": "agent"},
-        # live user-turn tasks — at the very top, sorted by slug.
-        {**_TASK, "id": "t-user-b", "slug": "zebra", "turn": "user"},
-        {**_TASK, "id": "t-user-a", "slug": "mango", "turn": "user"},
+        {**_TASK, "id": "t-term-2", "slug": "done", "state": "COMPLETE", "turn": "user",
+         "created_at": "2026-06-01T02:00:00"},
+        {**_TASK, "id": "t-term-1", "slug": "drop", "state": "DROPPED", "turn": "agent",
+         "created_at": "2026-06-01T01:00:00"},
+        {**_TASK, "id": "t-active-3", "slug": "charlie", "turn": "agent",
+         "created_at": "2026-06-01T03:00:00"},
+        {**_TASK, "id": "t-active-1", "slug": "alpha", "turn": "user",
+         "created_at": "2026-06-01T01:00:00"},
+        {**_TASK, "id": "t-active-2", "slug": "bravo", "turn": "agent",
+         "created_at": "2026-06-01T02:00:00"},
     ]
     app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
@@ -349,27 +348,27 @@ async def test_tasks_are_sorted_live_then_user_then_slug() -> None:
         table = app.query_one("#tasks", DataTable)
         keys = [str(k.value) for k in table.rows]
         assert keys == [
-            "t-user-a", "t-user-b",    # live, user's turn, slug order
-            "t-agent-a", "t-agent-b",  # live, agent's turn, slug order
-            "t-drop", "t-done",        # terminal: agent-turn first (just finished), then user-turn
+            "t-active-1", "t-active-2", "t-active-3",  # active: oldest-first, turn irrelevant
+            "t-term-1", "t-term-2",                    # terminal: oldest-first
         ]
 
 
-async def test_sort_uses_recency_within_tier() -> None:
-    # Within the same (terminal, turn) tier, more recently updated tasks sort first.
+async def test_sort_uses_creation_order_within_section() -> None:
+    # Within the active section, created_at ascending is the primary sort (oldest first).
+    # Falls back to updated_at when created_at is absent (pre-migration rows).
     tasks = [
-        {**_TASK, "id": "t-old", "slug": "alpha", "turn": "user", "updated_at": "2026-06-01T00:00:00"},
-        {**_TASK, "id": "t-new", "slug": "zebra", "turn": "user", "updated_at": "2026-06-25T00:00:00"},
+        {**_TASK, "id": "t-old", "slug": "zebra", "turn": "agent", "created_at": "2026-06-01T00:00:00"},
+        {**_TASK, "id": "t-new", "slug": "alpha", "turn": "user",  "created_at": "2026-06-25T00:00:00"},
     ]
     app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
         order = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
-        assert order == ["t-new", "t-old"]  # newer first, despite "zebra" > "alpha"
+        assert order == ["t-old", "t-new"]  # older first, despite "zebra" > "alpha" and different turns
 
 
-async def test_sort_breaks_ties_on_slug() -> None:
-    # Same terminal-ness, turn, and updated_at → fall back to slug (then id) for a stable order.
+async def test_sort_breaks_ties_on_id() -> None:
+    # Same terminal-ness and created_at → fall back to id for a stable order.
     tasks = [
         {**_TASK, "id": "t2", "slug": "zebra", "turn": "user"},
         {**_TASK, "id": "t1", "slug": "alpha", "turn": "user"},
@@ -378,7 +377,7 @@ async def test_sort_breaks_ties_on_slug() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         order = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
-        assert order == ["t1", "t2"]  # alpha < zebra
+        assert order == ["t1", "t2"]  # t1 < t2 by id
 
 
 # -- active/terminal dim styling ---------------------------------------------------
@@ -1664,13 +1663,16 @@ def test_group_by_governor_governed_task_appears_after_governor() -> None:
 
 
 def test_group_by_governor_governed_before_governor_in_sort_still_groups() -> None:
-    # Governed slug sorts before the governor, but it must still appear AFTER the governor.
-    governor = {**_TASK, "id": "gov", "slug": "zoo", "governor_task_id": None}
-    governed = {**_TASK, "id": "wrk", "slug": "alpha", "governor_task_id": "gov"}
+    # When the governed task has an earlier created_at than its governor, it sorts first by
+    # creation order — but _group_by_governor must still place it AFTER the governor.
+    governor = {**_TASK, "id": "gov", "slug": "zoo", "governor_task_id": None,
+                "created_at": "2026-06-01T02:00:00"}
+    governed = {**_TASK, "id": "aaa", "slug": "alpha", "governor_task_id": "gov",
+                "created_at": "2026-06-01T01:00:00"}
     sorted_tasks = sorted([governor, governed], key=_sort_key)
-    assert sorted_tasks[0]["id"] == "wrk"  # governed sorts first alphabetically
+    assert sorted_tasks[0]["id"] == "aaa"  # governed created earlier → sorts first
     active, terminal = _group_by_governor(sorted_tasks)
-    assert [(t["id"], p) for t, p in active] == [("gov", ""), ("wrk", "└─ ")]
+    assert [(t["id"], p) for t, p in active] == [("gov", ""), ("aaa", "└─ ")]
     assert terminal == []
 
 
@@ -2116,19 +2118,23 @@ async def test_pressing_jk_moves_the_task_table_cursor_like_arrow_keys() -> None
 async def test_pressing_j_skips_the_ensemble_row_like_the_down_arrow() -> None:
     # A collapsed governor's ensemble row sits between two real rows; `j` must step past it the
     # same way `down` already does (Dashboard.on_data_table_row_highlighted), not land on it.
-    governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
-    governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov"}
-    extra = {**_TASK, "id": "extra", "slug": "zzz-extra", "governor_task_id": None}
+    # created_at controls order: gov (01:00) < wrk (02:00) < zzz-extra (03:00).
+    governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None,
+                "created_at": "2026-06-01T01:00:00"}
+    governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov",
+                "created_at": "2026-06-01T02:00:00"}
+    extra = {**_TASK, "id": "zzz-extra", "slug": "zzz-extra", "governor_task_id": None,
+             "created_at": "2026-06-01T03:00:00"}
     app = Dashboard(_FakeClient([governor, governed, extra]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
         table.move_cursor(row=table.get_row_index("gov"))
-        await pilot.press("enter")  # collapse: gov, ensemble(gov), extra
+        await pilot.press("enter")  # collapse: gov, ensemble(gov), zzz-extra
         await pilot.pause()
-        await pilot.press("j")  # from gov, steps over the ensemble row onto extra
+        await pilot.press("j")  # from gov, steps over the ensemble row onto zzz-extra
         await pilot.pause()
-        assert app._current == "extra"
+        assert app._current == "zzz-extra"
         await pilot.press("k")  # and back up, over the ensemble row, onto gov
         await pilot.pause()
         assert app._current == "gov"

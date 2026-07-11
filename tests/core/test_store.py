@@ -471,6 +471,7 @@ def _fully_populated_task() -> Task:
         token_estimate=500_000,
         starting_model="opus",
         governor_task_id="t-governor",
+        created_at="t1",
         updated_at="t2",
         depends_on_task_ids=["t-dep"],
         history=[

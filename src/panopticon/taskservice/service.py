@@ -267,6 +267,7 @@ class TaskService:
         now = self._clock()
         task = wf.start_task(self._id(), repo_id, at=now, memo=memo, initial_prompt=initial_prompt)
         task.governor_task_id = governor_task_id
+        task.created_at = now
         task.updated_at = now  # creation time = first mutation
         await self._store.create_task(task)
         _log.info("task %s: created (workflow=%s, repo=%s)", task.id, workflow_name, repo_id)

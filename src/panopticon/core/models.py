@@ -278,6 +278,9 @@ class Task:
     #: tasks it creates so the relationship is recorded; also settable manually via
     #: :meth:`TaskService.set_governor`. ``None`` for ungoverned tasks.
     governor_task_id: str | None = None
+    #: ISO-8601 timestamp when the task was created, stamped once at creation and never changed.
+    #: ``None`` only for tasks created before this field was introduced.
+    created_at: str | None = None
     #: ISO-8601 timestamp of the last mutation (any field change or history update), stamped by
     #: the task service. ``None`` only for tasks created before this field was introduced.
     updated_at: str | None = None

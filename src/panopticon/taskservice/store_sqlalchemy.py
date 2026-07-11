@@ -128,6 +128,7 @@ class _TaskRow(_Base):
     token_estimate: Mapped[int | None] = mapped_column(default=None)
     starting_model: Mapped[str | None] = mapped_column(default=None)
     governor_task_id: Mapped[str | None] = mapped_column(ForeignKey("task.id"), default=None)
+    created_at: Mapped[str | None] = mapped_column(default=None)
     updated_at: Mapped[str | None] = mapped_column(default=None)
     depends_on_task_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
     history: Mapped[list[_HistoryRow]] = relationship(
@@ -156,6 +157,7 @@ class _TaskRow(_Base):
             token_estimate=self.token_estimate,
             starting_model=self.starting_model,
             governor_task_id=self.governor_task_id,
+            created_at=self.created_at,
             updated_at=self.updated_at,
             depends_on_task_ids=list(self.depends_on_task_ids or []),
             history=[h.to_domain() for h in self.history],
@@ -181,6 +183,7 @@ class _TaskRow(_Base):
             token_estimate=task.token_estimate,
             starting_model=task.starting_model,
             governor_task_id=task.governor_task_id,
+            created_at=task.created_at,
             updated_at=task.updated_at,
             depends_on_task_ids=list(task.depends_on_task_ids),
             history=[_HistoryRow.from_domain(e, seq) for seq, e in enumerate(task.history)],
