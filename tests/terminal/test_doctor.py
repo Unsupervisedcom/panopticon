@@ -10,13 +10,12 @@ from collections.abc import Sequence
 import pytest
 
 from panopticon.terminal.doctor import (
-    CheckResult,
     check_base_image,
     check_docker,
+    check_git,
     check_repo_env_file,
     check_task_service,
     check_tmux,
-    check_uv,
     run_doctor,
 )
 
@@ -40,6 +39,15 @@ class _FakeRunner:
         if key in self._failures:
             raise FileNotFoundError(f"{key}: not found")
         return self._outputs.get(key, "")
+
+
+#: A runner where every host tool (docker/git/tmux) is present — the all-green baseline.
+def _healthy_runner() -> _FakeRunner:
+    return _FakeRunner(outputs={
+        "docker": "Server: Docker Desktop",
+        "git": "git version 2.43.0",
+        "tmux": "tmux 3.3a",
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +99,26 @@ def test_check_docker_linux_ok_without_desktop_in_output() -> None:
 
 
 # ---------------------------------------------------------------------------
+# check_git
+# ---------------------------------------------------------------------------
+
+def test_check_git_ok() -> None:
+    runner = _FakeRunner(outputs={"git": "git version 2.43.0"})
+    result = check_git(run=runner)
+    assert result.status == "OK"
+    assert "2.43.0" in result.message
+    assert runner.calls[0] == ["git", "--version"]
+
+
+def test_check_git_fail_not_installed() -> None:
+    runner = _FakeRunner(failures={"git"})
+    result = check_git(run=runner)
+    assert result.status == "FAIL"
+    assert "git" in result.message
+    assert result.remediation is not None
+
+
+# ---------------------------------------------------------------------------
 # check_tmux
 # ---------------------------------------------------------------------------
 
@@ -111,25 +139,6 @@ def test_check_tmux_fail_not_installed() -> None:
 
 
 # ---------------------------------------------------------------------------
-# check_uv
-# ---------------------------------------------------------------------------
-
-def test_check_uv_ok() -> None:
-    runner = _FakeRunner(outputs={"uv": "uv 0.5.1"})
-    result = check_uv(run=runner)
-    assert result.status == "OK"
-    assert "uv" in result.message
-    assert runner.calls[0] == ["uv", "--version"]
-
-
-def test_check_uv_fail_not_installed() -> None:
-    runner = _FakeRunner(failures={"uv"})
-    result = check_uv(run=runner)
-    assert result.status == "FAIL"
-    assert result.remediation is not None
-
-
-# ---------------------------------------------------------------------------
 # check_base_image
 # ---------------------------------------------------------------------------
 
@@ -145,7 +154,8 @@ def test_check_base_image_fail_not_built() -> None:
     result = check_base_image(run=runner)
     assert result.status == "FAIL"
     assert "panopticon-base" in result.message
-    assert "make build" in (result.remediation or "")
+    # Remediation targets the pip-install command, not a Makefile target.
+    assert "panopticon build" in (result.remediation or "")
 
 
 def test_check_base_image_fail_called_process_error() -> None:
@@ -171,6 +181,7 @@ def test_check_task_service_fail_unreachable() -> None:
     result = check_task_service(service_url="http://svc:8000", http_get=lambda _: 0)
     assert result.status == "FAIL"
     assert result.remediation is not None
+    assert "panopticon start" in (result.remediation or "")
 
 
 def test_check_task_service_warn_unexpected_status() -> None:
@@ -241,7 +252,7 @@ def test_check_repo_env_file_fail_missing_file() -> None:
     assert "not found" in results[0].message
 
 
-def test_check_repo_env_file_fail_wrong_mode() -> None:
+def test_check_repo_env_file_fail_group_or_other_access() -> None:
     content = f"CLAUDE_CODE_OAUTH_TOKEN={_GOOD_OAUTH_TOKEN}\n"
     results = check_repo_env_file(
         _make_repo(),
@@ -249,9 +260,21 @@ def test_check_repo_env_file_fail_wrong_mode() -> None:
         file_mode=lambda _: 0o644,
     )
     mode_fails = [r for r in results if r.status == "FAIL"]
-    assert mode_fails, "expected a FAIL for wrong mode"
+    assert mode_fails, "expected a FAIL for group/other-readable env_file"
     assert "644" in mode_fails[0].message
     assert "chmod" in (mode_fails[0].remediation or "")
+
+
+def test_check_repo_env_file_ok_stricter_owner_only_mode() -> None:
+    # A stricter-than-0600 file (e.g. 0400, owner-read-only) has no group/other bits → not a FAIL.
+    content = f"CLAUDE_CODE_OAUTH_TOKEN={_GOOD_OAUTH_TOKEN}\n"
+    results = check_repo_env_file(
+        _make_repo(),
+        read_file=lambda _: content,
+        file_mode=lambda _: 0o400,
+    )
+    assert [r for r in results if r.status == "FAIL"] == []
+    assert results[-1].status == "OK"
 
 
 def test_check_repo_env_file_fail_no_token() -> None:
@@ -304,114 +327,105 @@ def test_check_repo_env_file_comments_and_blanks_ignored() -> None:
 
 
 # ---------------------------------------------------------------------------
-# run_doctor — exit codes
+# run_doctor — exit codes and repo-listing
 # ---------------------------------------------------------------------------
 
-def test_run_doctor_returns_0_when_all_ok(capsys: pytest.CaptureFixture[str]) -> None:
-    runner = _FakeRunner(outputs={"docker": "Server: Docker Desktop", "tmux": "tmux 3.3a", "uv": "uv 0.5"})
-    code = run_doctor(
-        [],
+def _run_doctor(
+    *,
+    runner: _FakeRunner,
+    list_repos: object = None,
+    read_file: object = None,
+    file_mode: object = None,
+    platform: str = "linux",
+    http_get: object = None,
+) -> int:
+    return run_doctor(
         service_url="http://svc:8000",
+        list_repos=list_repos or (lambda: []),  # type: ignore[arg-type]
         run=runner,
-        read_file=lambda _: "",
-        file_mode=lambda _: 0o600,
-        platform="linux",
-        http_get=lambda _: 200,
+        read_file=read_file or (lambda _: ""),  # type: ignore[arg-type]
+        file_mode=file_mode or (lambda _: 0o600),  # type: ignore[arg-type]
+        platform=platform,
+        http_get=http_get or (lambda _: 200),  # type: ignore[arg-type]
     )
+
+
+def test_run_doctor_returns_0_when_all_ok(capsys: pytest.CaptureFixture[str]) -> None:
+    code = _run_doctor(runner=_healthy_runner())
     assert code == 0
 
 
 def test_run_doctor_returns_1_when_any_fail(capsys: pytest.CaptureFixture[str]) -> None:
-    runner = _FakeRunner(failures={"docker"})
-    code = run_doctor(
-        [],
-        service_url="http://svc:8000",
-        run=runner,
-        read_file=lambda _: "",
-        file_mode=lambda _: 0o600,
-        platform="linux",
-        http_get=lambda _: 200,
-    )
+    code = _run_doctor(runner=_FakeRunner(failures={"docker"}))
     assert code == 1
 
 
 def test_run_doctor_returns_0_with_only_warns(capsys: pytest.CaptureFixture[str]) -> None:
     runner = _FakeRunner(outputs={
         "docker": "Server: Docker Engine",  # no "Desktop" on darwin → WARN
+        "git": "git version 2.43.0",
         "tmux": "tmux 3.3a",
-        "uv": "uv 0.5",
     })
-    code = run_doctor(
-        [],
-        service_url="http://svc:8000",
-        run=runner,
-        read_file=lambda _: "",
-        file_mode=lambda _: 0o600,
-        platform="darwin",
-        http_get=lambda _: 200,
-    )
+    code = _run_doctor(runner=runner, platform="darwin")
     assert code == 0
 
 
 def test_run_doctor_prints_fail_label(capsys: pytest.CaptureFixture[str]) -> None:
-    runner = _FakeRunner(failures={"tmux"})
-    run_doctor(
-        [],
-        service_url="http://svc:8000",
-        run=runner,
-        read_file=lambda _: "",
-        file_mode=lambda _: 0o600,
-        platform="linux",
-        http_get=lambda _: 200,
-    )
+    _run_doctor(runner=_FakeRunner(failures={"tmux"}))
     out = capsys.readouterr().out
     assert "[FAIL]" in out
 
 
 def test_run_doctor_prints_remediation(capsys: pytest.CaptureFixture[str]) -> None:
-    runner = _FakeRunner(failures={"tmux"})
-    run_doctor(
-        [],
-        service_url="http://svc:8000",
-        run=runner,
-        read_file=lambda _: "",
-        file_mode=lambda _: 0o600,
-        platform="linux",
-        http_get=lambda _: 200,
-    )
+    _run_doctor(runner=_FakeRunner(failures={"tmux"}))
     out = capsys.readouterr().out
     assert "→" in out
 
 
 def test_run_doctor_checks_repos(capsys: pytest.CaptureFixture[str]) -> None:
-    runner = _FakeRunner(outputs={"docker": "Server: Docker Desktop", "tmux": "tmux 3.3a", "uv": "uv 0.5"})
     repos = [{"id": "r1", "name": "myrepo", "env_file": "/sec/r1.env"}]
-    code = run_doctor(
-        repos,
-        service_url="http://svc:8000",
-        run=runner,
+    code = _run_doctor(
+        runner=_healthy_runner(),
+        list_repos=lambda: repos,
         read_file=lambda _: f"CLAUDE_CODE_OAUTH_TOKEN={_GOOD_OAUTH_TOKEN}\n",
-        file_mode=lambda _: 0o600,
-        platform="linux",
-        http_get=lambda _: 200,
     )
     assert code == 0
     out = capsys.readouterr().out
     assert "myrepo" in out
 
 
-def test_run_doctor_emits_correct_docker_info_command() -> None:
-    runner = _FakeRunner(outputs={"docker": "Server: Docker Desktop"})
-    run_doctor(
-        [],
-        service_url="http://svc:8000",
-        run=runner,
-        read_file=lambda _: "",
-        file_mode=lambda _: 0o600,
-        platform="linux",
-        http_get=lambda _: 200,
-    )
+def test_run_doctor_does_not_list_repos_when_service_down(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The must-fix: doctor's headline case is a downed service. list_repos must NOT be called
+    # (an eager call raised ConnectError and crashed with a traceback).
+    def _boom() -> list[dict[str, object]]:
+        raise AssertionError("list_repos must not be called when the service is unreachable")
+
+    code = _run_doctor(runner=_healthy_runner(), list_repos=_boom, http_get=lambda _: 0)
+    assert code == 1  # service FAIL
+    out = capsys.readouterr().out
+    assert "Skipped per-repo token checks" in out
+    assert "panopticon start" in out
+
+
+def test_run_doctor_survives_list_repos_error_when_service_up(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Service says OK but the repos call still errors (race, transient) → WARN, no crash.
+    def _boom() -> list[dict[str, object]]:
+        raise RuntimeError("connection reset")
+
+    code = _run_doctor(runner=_healthy_runner(), list_repos=_boom, http_get=lambda _: 200)
+    assert code == 0  # only a WARN, no FAIL
+    out = capsys.readouterr().out
+    assert "Could not list repos" in out
+
+
+def test_run_doctor_emits_expected_host_tool_commands() -> None:
+    runner = _healthy_runner()
+    _run_doctor(runner=runner)
     assert ["docker", "info"] in runner.calls
+    assert ["git", "--version"] in runner.calls
     assert ["tmux", "-V"] in runner.calls
-    assert ["uv", "--version"] in runner.calls
     assert ["docker", "image", "inspect", "panopticon-base"] in runner.calls

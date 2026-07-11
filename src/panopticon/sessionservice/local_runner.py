@@ -145,7 +145,7 @@ class LocalRunner(Runner):
             self._run(["docker", "image", "inspect", _image_to_run], check=True)
         except (subprocess.CalledProcessError, FileNotFoundError):
             raise RuntimeError(
-                f"Image {_image_to_run!r} not found — run 'make build' or 'panopticon doctor'"
+                f"Image {_image_to_run!r} not found — run 'panopticon build' or 'panopticon doctor'"
             )
         try:
             self._run(["tmux", "-V"], check=True)
@@ -245,6 +245,23 @@ class LocalRunner(Runner):
         session = f"panopticon-{task_id}"
         sessions = self._run(self._tmux("list-sessions", "-F", "#{session_name}"), check=False)
         return session in sessions.splitlines()
+
+    def delete_workspace_contents(self, path: str) -> None:
+        """Delete all files inside ``path`` by running a throwaway root Docker container.
+
+        A task container may write root-owned files (e.g. ``.mypy_cache`` before the
+        entrypoint's uid remap, or via ``docker_in_docker``). This spawns a short-lived
+        ``--rm`` container as root with ``path`` bind-mounted and deletes everything inside
+        it, so the daemon can then ``rmtree`` the now-empty directory. Overrides the
+        panopticon entrypoint (which would remap uid) so the container runs as root and can
+        reach files it created. Raises on nonzero docker exit."""
+        self._run([
+            "docker", "run", "--rm",
+            "--entrypoint", "/bin/sh",
+            "--volume", f"{path}:/cleanup",
+            self._image,
+            "-c", "find /cleanup -mindepth 1 -delete",
+        ])
 
     def stop(self, container_id: str) -> None:
         # Idempotent: tolerate an already-gone session/container.

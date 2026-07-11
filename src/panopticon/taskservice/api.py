@@ -84,6 +84,7 @@ class TaskSummaryOut(BaseModel):
     provisioned: bool
     container_status: str = "–"
     lifecycle_detail: str | None = None
+    runner_host: str | None = None  # hostname the claiming runner registered with (M5: remote attach)
 
 
 class TaskOut(BaseModel):
@@ -113,7 +114,13 @@ class TaskOut(BaseModel):
     #: field — attached on serialization (see ``_task_out``), defaulted for the bare-validate path.
     container_status: str = "–"
     lifecycle_detail: str | None = None  # the reported phase's detail, e.g. the build layers / failure
+    runner_host: str | None = None  # hostname the claiming runner registered with (M5: remote attach)
     history: list[HistoryOut]
+
+
+class RunnerOut(BaseModel):
+    id: str  # runner_id (the runner's own identifier, e.g. "local" or a hostname alias)
+    host: str | None  # hostname the runner registered with; None if not provided
 
 
 class RepoIn(BaseModel):
@@ -346,6 +353,8 @@ def create_app(service: TaskService) -> FastAPI:
         out.container_status = service.container_status(task).value
         lifecycle = service.lifecycle(task.id)
         out.lifecycle_detail = lifecycle.detail if lifecycle is not None else None
+        if task.claimed_by is not None:
+            out.runner_host = service.runner_host(task.claimed_by)
         return out
 
     def _task_summary_out(task: Task) -> TaskSummaryOut:
@@ -354,6 +363,8 @@ def create_app(service: TaskService) -> FastAPI:
         out.container_status = service.container_status(task).value
         lifecycle = service.lifecycle(task.id)
         out.lifecycle_detail = lifecycle.detail if lifecycle is not None else None
+        if task.claimed_by is not None:
+            out.runner_host = service.runner_host(task.claimed_by)
         return out
 
     # -- error mapping: domain exceptions -> HTTP status --------------------------
@@ -701,7 +712,11 @@ def create_app(service: TaskService) -> FastAPI:
     # claims (so a healthy host respawns them) — see :meth:`TaskService.reclaim`.
 
     @app.get("/runners/{runner_id}/live")
-    async def runner_live(runner_id: str, request: Request) -> StreamingResponse:
+    async def runner_live(
+        runner_id: str,
+        request: Request,
+        host: str | None = Query(default=None),
+    ) -> StreamingResponse:
         """The host-liveness connection: a runner holds this stream open for its whole lifetime.
 
         Mirrors ``/tasks/{id}/live`` one layer up. Registering happens on connect and is removed on
@@ -709,9 +724,10 @@ def create_app(service: TaskService) -> FastAPI:
         (clean stop or crash) the stream drops and Starlette cancels the body generator, so the
         ``finally`` removes it from ``live_runners`` **immediately** — no heartbeat, no TTL. A flaky
         drop removes it too, but the daemon re-opens this connection (its reconnect loop), so a
-        transient blip self-heals.
+        transient blip self-heals. The optional ``host`` query param records the runner's hostname
+        so the terminal supervisor can ssh-attach to its tasks.
         """
-        reg = await service.register_runner(runner_id)
+        reg = await service.register_runner(runner_id, host=host)
 
         async def hold() -> AsyncIterator[bytes]:
             try:
@@ -725,9 +741,16 @@ def create_app(service: TaskService) -> FastAPI:
         return StreamingResponse(hold(), media_type="text/event-stream")
 
     @app.get("/runners")
-    async def list_runners() -> list[str]:
-        """The runner ids currently holding a host-liveness connection (sorted, for stable reads)."""
-        return sorted(service.live_runners())
+    async def list_runners() -> list[RunnerOut]:
+        """The runners currently holding a host-liveness connection (sorted by id, for stable reads)."""
+        return [RunnerOut(id=r.runner_id, host=r.host) for r in service.live_runner_registrations()]
+
+    @app.get("/runners/{runner_id}")
+    async def get_runner(runner_id: str) -> RunnerOut:
+        """The registration details for a single live runner, or 404 if not connected."""
+        if runner_id not in service.live_runners():
+            raise HTTPException(status_code=404, detail=f"runner {runner_id!r} is not connected")
+        return RunnerOut(id=runner_id, host=service.runner_host(runner_id))
 
     @app.post("/runners/{runner_id}/reclaim")
     async def reclaim(runner_id: str) -> list[TaskOut]:

@@ -3,7 +3,8 @@
 Wired to the SQLAlchemy adapter's :data:`~panopticon.taskservice.store_sqlalchemy.metadata` so
 ``alembic revision --autogenerate`` diffs migrations against the live ORM schema (the single
 source of truth). The database URL is resolved the same way the task service resolves it — from
-``$PANOPTICON_DB`` (default ``sqlite:///panopticon.db``) — or overridden per-invocation with
+``$PANOPTICON_DB`` (default ``$PANOPTICON_DATA/panopticon.db``,
+i.e. ``~/.local/share/panopticon/panopticon.db``) — or overridden per-invocation with
 ``alembic -x db=<url>``, so the migration tooling and the running service never disagree on the
 target database.
 
@@ -13,20 +14,38 @@ LLM-free, like the rest of the control plane.
 from __future__ import annotations
 
 import os
+from logging.config import fileConfig
+from pathlib import Path
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from panopticon.taskservice.__main__ import DEFAULT_DB
+from panopticon.taskservice.__main__ import DB_URL, migrate_db_to_home
 from panopticon.taskservice.store_sqlalchemy import metadata
 
 config = context.config
 
+# Wire the ini's [loggers]/[handlers] sections into Python logging — without this, alembic's
+# "Running upgrade …" INFO records have no handler and are dropped silently.
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
 # Resolve the target database: `-x db=<url>` wins, then $PANOPTICON_DB, then the service default.
 _db_url = context.get_x_argument(as_dictionary=True).get("db") or os.environ.get(
-    "PANOPTICON_DB", DEFAULT_DB
+    "PANOPTICON_DB", DB_URL
 )
 config.set_main_option("sqlalchemy.url", _db_url)
+
+# Migrate legacy DB locations (./panopticon.db, ~/.panopticon/panopticon.db) to the XDG data dir
+# before alembic opens the file — `make host` runs `make migrate` first, so migration fires here too.
+migrate_db_to_home(_db_url)
+
+# For SQLite file DBs, ensure the parent directory exists before SQLAlchemy tries to open the file.
+_SQLITE_PREFIX = "sqlite:///"
+if _db_url.startswith(_SQLITE_PREFIX):
+    _db_path = _db_url[len(_SQLITE_PREFIX):]
+    if _db_path and _db_path != ":memory:":
+        Path(_db_path).parent.mkdir(parents=True, exist_ok=True)
 
 # Autogenerate + `upgrade head` on a fresh DB both diff against the ORM's declared schema.
 target_metadata = metadata

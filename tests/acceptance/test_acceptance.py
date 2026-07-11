@@ -9,6 +9,8 @@ stay-alive liveness connection)."""
 from __future__ import annotations
 
 import asyncio
+import importlib.resources
+import shutil
 import socket
 import subprocess
 import threading
@@ -18,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+import panopticon.docker as _docker_pkg
 from panopticon.core.models import Repo
 from panopticon.sessionservice.local_runner import LocalRunner
 from panopticon.taskservice.api import create_app
@@ -70,12 +73,35 @@ def served(tmp_path: Path) -> Iterator[tuple[TaskService, int]]:
 @pytest.mark.skipif(not _docker_running(), reason="needs a working docker daemon + tmux")
 def test_runner_spawns_real_container_that_registers_and_loses_liveness(
     served: tuple[TaskService, int],
+    tmp_path: Path,
 ) -> None:
     service, port = served
+
+    # Build a local wheel of the current source so the container image doesn't need a
+    # published PyPI release (PANOPTICON_WHEEL triggers the dev-install path in the Dockerfile).
+    repo_root = Path(__file__).parent.parent.parent
+    wheel_out = tmp_path / "wheels"
+    wheel_out.mkdir()
     subprocess.run(
-        ["docker", "build", "--tag", _IMAGE, "--file", "docker/Dockerfile", "."],
-        check=True, capture_output=True,
+        ["uv", "build", "--wheel", f"--out-dir={wheel_out}"],
+        check=True, capture_output=True, cwd=repo_root,
     )
+    (whl,) = list(wheel_out.glob("*.whl"))
+
+    dockerfile_ref = importlib.resources.files(_docker_pkg) / "Dockerfile"
+    with importlib.resources.as_file(dockerfile_ref) as dockerfile_path:
+        ctx_whl = dockerfile_path.parent / whl.name
+        shutil.copy(whl, ctx_whl)
+        try:
+            subprocess.run(
+                ["docker", "build", "--tag", _IMAGE,
+                 "--build-arg", f"PANOPTICON_WHEEL={whl.name}",
+                 "--file", str(dockerfile_path),
+                 str(dockerfile_path.parent)],
+                check=True, capture_output=True,
+            )
+        finally:
+            ctx_whl.unlink(missing_ok=True)
     asyncio.run(service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git")))
     task_id = asyncio.run(service.create_task("r1", "spike")).id
 

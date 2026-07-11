@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
 import time
 from collections.abc import Callable
@@ -25,7 +26,7 @@ from panopticon.core.state import TERMINAL_LABELS
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.images import ImageBuilder
 from panopticon.sessionservice.local_runner import LocalRunner
-from panopticon.sessionservice.spawn import prepare_workspace
+from panopticon.sessionservice.spawn import cleanup_workspace, prepare_workspace
 
 _log = logging.getLogger(__name__)
 
@@ -44,6 +45,11 @@ def _check_env_file_token(
     Called before spawning so a missing token surfaces as FAILED (not a silently idle container).
     A blank or absent token means the agent inside will get a 401 immediately — catching it here
     means the dashboard shows the real problem instead of a task that starts and then does nothing.
+
+    This is a **presence** check only, deliberately not a **shape** check (unlike
+    ``doctor._TOKEN_PATTERNS``): the spawner is a last-resort guard where a false positive fails
+    the whole task, so it must not reject a valid-but-new token prefix. Shape validation lives in
+    ``panopticon doctor``, where a wrong prefix is a non-fatal WARN the operator sees pre-flight.
     """
     try:
         content = read_env_file(env_file)
@@ -132,6 +138,9 @@ class Spawner:
         images: ImageBuilder | None = None,
         run_hook: Callable[[str, str, str, str], None] | None = None,
         makedirs: Callable[[str], None] = lambda p: Path(p).mkdir(parents=True, exist_ok=True),
+        exists: Callable[[str], bool] = os.path.isdir,
+        rmtree: Callable[[str], None] = shutil.rmtree,
+        docker_cleanup: Callable[[str], None] | None = None,
         now: Callable[[], float] = time.monotonic,
         max_respawns: int = MAX_RESPAWNS,
         respawn_reset: float = RESPAWN_RESET_SECONDS,
@@ -146,6 +155,9 @@ class Spawner:
         self._images = images or ImageBuilder()
         self._run_hook = run_hook or _run_repo_hook
         self._makedirs = makedirs
+        self._exists = exists
+        self._rmtree = rmtree
+        self._docker_cleanup = docker_cleanup if docker_cleanup is not None else runner.delete_workspace_contents
         self._now = now
         self._read_env_file = read_env_file
         self._max_respawns = max_respawns
@@ -354,6 +366,22 @@ class Spawner:
                 self._client.release(task["id"])
             except httpx.HTTPError:
                 pass  # best-effort — heal() picks up unclaimed tasks that failed to release
+
+    def cleanup(self, task: JsonObj) -> None:
+        """Remove the per-task workspace once a terminal task's container has exited.
+
+        Self-gates on two conditions so calling this on every task each pass is safe:
+        the task must be terminal (COMPLETE/DROPPED) **and** the container must no longer
+        be running — so we never delete a workspace while the agent is still active, and
+        we don't need to force-stop anything."""
+        if task["state"] not in TERMINAL_LABELS:
+            return
+        if self._runner.is_running(task["id"]):
+            return  # container still up — wait for it to exit naturally
+        cleanup_workspace(
+            task["id"], self._tasks_root,
+            exists=self._exists, rmtree=self._rmtree, docker_cleanup=self._docker_cleanup,
+        )
 
     def _compose_image(self, workflow: str, repo: JsonObj) -> str | None:
         """Compose the task's image (base → workflow → repo layers, ADR 0005) and return its tag;

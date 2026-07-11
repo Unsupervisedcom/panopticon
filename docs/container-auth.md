@@ -31,13 +31,13 @@ with the `claude` CLI and place it in the repo's env-file yourself.
    ```
 
    Keep the file `0600` and out of version control. If the repo has no `env_file` yet, create one
-   (e.g. `~/.panopticon/secrets/<repo>.env`) and set the repo's `env_file` to that path — in the
-   dashboard's repo form, or via the API:
+   (e.g. `~/.config/panopticon/secrets/<repo>.env`) and set the repo's `env_file` to that path — in
+   the dashboard's repo form, or via the API:
 
    ```sh
    curl -X PATCH "$PANOPTICON_SERVICE_URL/repos/<repo-id>" \
      -H 'content-type: application/json' \
-     -d '{"env_file": "/home/you/.panopticon/secrets/<repo>.env"}'
+     -d '{"env_file": "/home/you/.config/panopticon/secrets/<repo>.env"}'
    ```
 
 That's it — new task containers for that repo now authenticate from the token.

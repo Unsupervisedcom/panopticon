@@ -41,6 +41,12 @@ class _FakeRunner:
     def has_session(self, task_id: str) -> bool:
         return True  # session present (heal leaves a healthy task untouched)
 
+    def stop(self, container_id: str) -> None:
+        pass
+
+    def delete_workspace_contents(self, path: str) -> None:
+        pass
+
 
 class _FakeImageBuilder:
     """Stands in for ImageBuilder (no docker); always reports the base image as present."""
@@ -48,7 +54,7 @@ class _FakeImageBuilder:
     def build(self, workflow: str, repo_id: str, layers: list[str], *, verbose: bool = False) -> str:
         return f"panopticon-{workflow}-{repo_id}"
 
-    def build_base_if_missing(self, *, context: str = ".", verbose: bool = False) -> bool:
+    def build_base_if_missing(self, *, verbose: bool = False) -> bool:
         return False
 
 
@@ -81,6 +87,9 @@ def test_tick_isolates_a_failing_task_from_the_others() -> None:
         def heal(self, task: JsonObj) -> None:
             return None
 
+        def cleanup(self, task: JsonObj) -> None:
+            return None
+
     class _Provisioner:
         def provision(self, task: JsonObj) -> None:
             return None
@@ -106,6 +115,9 @@ def test_tick_heals_each_task_in_the_snapshot() -> None:
 
         def heal(self, task: JsonObj) -> None:
             healed.append(task["id"])
+
+        def cleanup(self, task: JsonObj) -> None:
+            return None
 
     class _Provisioner:
         def provision(self, task: JsonObj) -> None:
@@ -133,6 +145,9 @@ def test_tick_flags_every_orphan_healing_before_any_respawn() -> None:
 
         def heal(self, task: JsonObj) -> None:
             events.append(f"heal:{task['id']}")
+
+        def cleanup(self, task: JsonObj) -> None:
+            return None
 
     class _Provisioner:
         def provision(self, task: JsonObj) -> None:
@@ -162,6 +177,9 @@ def test_run_calls_startup_reclaim_once_on_first_successful_tick() -> None:
             return None
 
         def heal(self, task: JsonObj) -> None:
+            return None
+
+        def cleanup(self, task: JsonObj) -> None:
             return None
 
     class _Provisioner:
@@ -205,6 +223,9 @@ def test_run_blocks_on_the_change_feed_and_feeds_the_version_back() -> None:
         def heal(self, task: JsonObj) -> None:
             return None
 
+        def cleanup(self, task: JsonObj) -> None:
+            return None
+
     class _Provisioner:
         def provision(self, task: JsonObj) -> None:
             return None
@@ -242,6 +263,9 @@ def test_run_survives_a_whole_pass_failure() -> None:
         def heal(self, task: JsonObj) -> None:
             return None
 
+        def cleanup(self, task: JsonObj) -> None:
+            return None
+
     class _Provisioner:
         def provision(self, task: JsonObj) -> None:
             return None
@@ -267,7 +291,7 @@ def test_hold_runner_liveness_reconnects_after_a_drop_until_stopped() -> None:
     opens = {"n": 0}
 
     class _DroppingClient:
-        def live_runner(self, runner_id: str) -> Generator[None, None, None]:
+        def live_runner(self, runner_id: str, *, host: str | None = None) -> Generator[None, None, None]:
             opens["n"] += 1
 
             def gen() -> Generator[None, None, None]:
@@ -279,6 +303,29 @@ def test_hold_runner_liveness_reconnects_after_a_drop_until_stopped() -> None:
     daemon_running = lambda: opens["n"] < 3  # flip after a couple of reconnects  # noqa: E731
     hold_runner_liveness(_DroppingClient(), "host-1", running=daemon_running, sleep=lambda _s: None)  # type: ignore[arg-type]
     assert opens["n"] == 3  # reconnected after each drop until `running()` said stop
+
+
+def test_hold_runner_liveness_passes_host_to_client() -> None:
+    # The host= param is forwarded from hold_runner_liveness to client.live_runner every reconnect
+    # so the task service receives and records it (used for remote tmux attach, M5).
+    recorded: list[str | None] = []
+
+    class _RecordingClient:
+        def live_runner(self, runner_id: str, *, host: str | None = None) -> Generator[None, None, None]:
+            recorded.append(host)
+
+            def gen() -> Generator[None, None, None]:
+                yield None
+
+            return gen()
+
+    hold_runner_liveness(
+        _RecordingClient(), "host-1",  # type: ignore[arg-type]
+        running=lambda: len(recorded) < 1,
+        host="box.example.com",
+        sleep=lambda _s: None,
+    )
+    assert recorded == ["box.example.com"]
 
 
 def test_run_host_spawns_then_provisions_end_to_end(tmp_path: Path) -> None:
@@ -319,3 +366,32 @@ def test_run_host_spawns_then_provisions_end_to_end(tmp_path: Path) -> None:
         got = client.get_task(task_id)
         assert runner.spawned == [task_id]  # not spawned again
         assert got["branch"] == "panopticon/fix-widget" and got["clone"] == f"/clones/{task_id}"
+
+
+def test_tick_cleans_up_each_task() -> None:
+    # Each pass, cleanup is called on every task in the snapshot — so a terminal task whose
+    # container has exited gets its workspace removed once the spawner's self-gate fires.
+    cleaned: list[str] = []
+
+    class _Spawner:
+        def mark_healing(self, task: JsonObj) -> None:
+            return None
+
+        def spawn_one(self, task: JsonObj) -> None:
+            return None
+
+        def reconcile(self, task: JsonObj) -> None:
+            return None
+
+        def heal(self, task: JsonObj) -> None:
+            return None
+
+        def cleanup(self, task: JsonObj) -> None:
+            cleaned.append(task["id"])
+
+    class _Provisioner:
+        def provision(self, task: JsonObj) -> None:
+            return None
+
+    HostDaemon(_FakeClient([]), _Spawner(), _Provisioner()).tick([{"id": "t1"}, {"id": "t2"}])  # type: ignore[arg-type]
+    assert cleaned == ["t1", "t2"]

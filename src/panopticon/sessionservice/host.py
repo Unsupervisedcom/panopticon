@@ -33,7 +33,9 @@ from pathlib import Path
 import httpx
 
 from panopticon.client import JsonObj, TaskServiceClient
+from panopticon.core.dirs import CLONE_CACHE_DIR, TASKS_DIR
 from panopticon.core.git import GitClones
+from panopticon.sessionservice._migration import migrate_session_dirs
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.images import ImageBuilder
 from panopticon.sessionservice.local_runner import DEFAULT_IMAGE, LocalRunner
@@ -41,9 +43,6 @@ from panopticon.sessionservice.provisioner import Provisioner
 from panopticon.sessionservice.spawner import Spawner
 
 _log = logging.getLogger(__name__)
-
-DEFAULT_CACHE_ROOT = os.path.expanduser("~/.panopticon/cache")
-DEFAULT_TASKS_ROOT = os.path.expanduser("~/.panopticon/tasks")
 
 
 class HostDaemon:
@@ -86,6 +85,7 @@ class HostDaemon:
                 self._provisioner.provision(task)
                 self._spawner.reconcile(task)
                 self._spawner.heal(task)
+                self._spawner.cleanup(task)
             except Exception:  # a transient git/REST/FS error on one task must not stall the others
                 _log.warning("host pass failed for task %s", task.get("id"), exc_info=True)
                 continue
@@ -130,6 +130,7 @@ def hold_runner_liveness(
     runner_id: str,
     *,
     running: Callable[[], bool],
+    host: str | None = None,
     reconnect_backoff: float = RUNNER_RECONNECT_BACKOFF_SECONDS,
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
@@ -142,9 +143,10 @@ def hold_runner_liveness(
     socket reaps it. If it drops while still running (a transient blip) we reconnect after a short
     backoff, re-asserting the same ``runner_id``, so a dead host stays distinguishable from a flake.
     No heartbeat, no TTL — the connection-drop liveness PR #146 gave containers, now for the host.
+    ``host`` is passed to the task service so the terminal supervisor can ssh-attach to remote tasks.
     """
     while running():
-        live = client.live_runner(runner_id)
+        live = client.live_runner(runner_id, host=host)
         try:
             for _ in live:  # each tick is a server keepalive; recheck whether to stop
                 if not running():
@@ -196,15 +198,19 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
         help="task service URL spawned containers call back to (the in-container view)",
     )
     parser.add_argument("--runner-id", default=os.environ.get("PANOPTICON_RUNNER_ID", "local"))
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("PANOPTICON_RUNNER_HOST", ""),
+        help="hostname or alias reported to the task service",
+    )
     parser.add_argument("--image", default=DEFAULT_IMAGE)
-    parser.add_argument("--cache-root", default=os.environ.get("PANOPTICON_CACHE_ROOT", DEFAULT_CACHE_ROOT))
-    parser.add_argument("--tasks-root", default=os.environ.get("PANOPTICON_TASKS_ROOT", DEFAULT_TASKS_ROOT))
     parser.add_argument(
         "--interval", type=float, default=2.0,
         help="change-feed long-poll wait, seconds (the keepalive ceiling between blocking calls)",
     )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    migrate_session_dirs(CLONE_CACHE_DIR, TASKS_DIR)
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
     runner = LocalRunner(args.container_service_url, image=args.image, runner_id=args.runner_id)
     # Hold this host's liveness connection for the daemon's whole life, alongside the spawn/provision
@@ -213,14 +219,14 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
     liveness = threading.Thread(
         target=hold_runner_liveness,
         args=(client, args.runner_id),
-        kwargs={"running": lambda: True},
+        kwargs={"running": lambda: True, "host": args.host},
         daemon=True,
     )
     liveness.start()
     run_host(
         client, runner,
-        runner_id=args.runner_id, tasks_root=args.tasks_root,
-        cache=CloneCache(args.cache_root), git=GitClones(),
+        runner_id=args.runner_id, tasks_root=TASKS_DIR,
+        cache=CloneCache(CLONE_CACHE_DIR), git=GitClones(),
         images=ImageBuilder(base=args.image),  # compose workflow layers onto the same base (ADR 0005)
         interval=args.interval,
     )

@@ -74,6 +74,46 @@ def test_switch_to_records_the_pick_then_detaches(tmp_path: Path) -> None:
     assert detached == [True]
 
 
+def test_switch_to_with_remote_host_encodes_host_and_session(tmp_path: Path) -> None:
+    # A remote runner (M5): the switch-file carries "<host>\t<session>" so the supervisor can
+    # parse it and pass host= to attach_command for the ssh-wrapped attach.
+    switch = tmp_path / "switch"
+
+    switch_to("panopticon-t1", host="box.example.com", switch_file=switch, detach=lambda: None)
+
+    assert switch.read_text() == "box.example.com\tpanopticon-t1"
+
+
+def test_supervisor_parses_remote_host_from_switch_file(tmp_path: Path) -> None:
+    # run_console_local's attach() closure parses "<host>\t<session>" from the switch-file and
+    # passes host= to attach_command; a plain session (no tab) means local (host=None).
+    from panopticon.terminal.attach import attach_command
+
+    parsed: list[tuple[str, str | None]] = []
+
+    def _fake_attach(pick: str) -> None:
+        parts = pick.split("\t", 1)
+        host = parts[0] if len(parts) == 2 else None
+        session = parts[-1]
+        parsed.append((session, host or None))
+
+    # Remote pick: "host\tsession"
+    _fake_attach("box.example.com\tpanopticon-t1")
+    assert parsed[-1] == ("panopticon-t1", "box.example.com")
+
+    # Local pick: plain "session"
+    _fake_attach("panopticon-t2")
+    assert parsed[-1] == ("panopticon-t2", None)
+
+    # Confirm attach_command receives the host correctly
+    assert attach_command("panopticon-t1", socket="panopticon", host="box.example.com") == [
+        "ssh", "-t", "box.example.com", "tmux", "-L", "panopticon", "attach", "-t", "panopticon-t1"
+    ]
+    assert attach_command("panopticon-t2", socket="panopticon", host=None) == [
+        "tmux", "-L", "panopticon", "attach", "-t", "panopticon-t2"
+    ]
+
+
 def test_make_service_switch_only_switches_when_a_service_session_exists(tmp_path: Path) -> None:
     from panopticon.terminal.console import SERVICE_SESSION, make_service_switch
 

@@ -64,12 +64,20 @@ def _tmux_detach() -> None:
 
 
 def switch_to(
-    session: str, *, switch_file: Path, detach: Callable[[], None] = _tmux_detach
+    session: str,
+    *,
+    host: str | None = None,
+    switch_file: Path,
+    detach: Callable[[], None] = _tmux_detach,
 ) -> None:
     """The dashboard's `t` hook, run inside its tmux session: record the picked ``session`` for
     the supervisor, then detach this client so the supervisor attaches the task. The dashboard
-    process keeps running (detached), so returning to it shows the same live view."""
-    switch_file.write_text(session)
+    process keeps running (detached), so returning to it shows the same live view.
+
+    When ``host`` is set the switch-file carries ``<host>\\t<session>`` so the
+    supervisor can ssh-wrap the attach; a plain ``<session>`` (no tab) means local.
+    """
+    switch_file.write_text(f"{host}\t{session}" if host else session)
     detach()
 
 
@@ -197,7 +205,11 @@ def run_console_local(service_url: str, *, socket: str = TMUX_SOCKET) -> None:
         _tmux("attach", "-t", DASHBOARD_SESSION)  # blocks until `t` detaches (or `q` ends it)
         return switch_file.read_text().strip() or None
 
-    def attach(session: str) -> None:
-        subprocess.run(attach_command(session, socket=socket), check=False)
+    def attach(pick: str) -> None:
+        # Parse the switch-file format: "<host>\t<session>" (remote) or "<session>" (local).
+        parts = pick.split("\t", 1)
+        host = parts[0] if len(parts) == 2 else None
+        session = parts[-1]
+        subprocess.run(attach_command(session, socket=socket, host=host or None), check=False)
 
     run_console(show_dashboard=show_dashboard, attach=attach)

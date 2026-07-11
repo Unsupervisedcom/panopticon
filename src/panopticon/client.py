@@ -287,27 +287,37 @@ class TaskServiceClient:
 
     # -- host (runner) liveness + reclaim -----------------------------------------
 
-    def live_runner(self, runner_id: str) -> Generator[None, None, None]:
+    def live_runner(self, runner_id: str, *, host: str | None = None) -> Generator[None, None, None]:
         """Hold this host's liveness connection open, yielding once per server keepalive.
 
         The host-liveness mirror of :meth:`live` one layer up: the open ``/runners/{id}/live`` stream
         is the signal that this session-service daemon is alive. The task service marks the runner
         live on connect and drops it from ``live_runners`` the instant this stream closes (a clean
         ``close()`` or the daemon dying). The caller (the daemon) holds it for its whole life,
-        reconnecting if it drops underneath.
+        reconnecting if it drops underneath. ``host`` is the runner's hostname, passed as a query
+        param so the task service can surface it for the terminal supervisor's remote attach (M5).
         """
+        params = {"host": host} if host is not None else {}
         with self._http.stream(
             "GET",
             f"/runners/{runner_id}/live",
+            params=params,
             timeout=None,  # the connection is meant to stay open for the daemon's lifetime
         ) as resp:
             resp.raise_for_status()
             for _ in resp.iter_lines():
                 yield None
 
-    def live_runners(self) -> list[str]:
-        """The runner ids currently holding a host-liveness connection."""
-        return cast(list[str], self._json(self._http.get("/runners")))
+    def live_runners(self) -> list[JsonObj]:
+        """The runners currently holding a host-liveness connection, each as ``{id, host}``."""
+        return cast(list[JsonObj], self._json(self._http.get("/runners")))
+
+    def get_runner(self, runner_id: str) -> JsonObj | None:
+        """The registration details for a single live runner, or ``None`` if not connected."""
+        resp = self._http.get(f"/runners/{runner_id}")
+        if resp.status_code == 404:
+            return None
+        return cast(JsonObj, self._json(resp))
 
     def reclaim_runner(self, runner_id: str) -> list[JsonObj]:
         """Release a (dead) runner's non-terminal claims so a healthy host respawns them."""

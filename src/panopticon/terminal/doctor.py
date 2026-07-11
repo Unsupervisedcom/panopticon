@@ -1,7 +1,9 @@
-"""``panopticon doctor`` — preflight self-check for a panopticon operator environment.
+"""``panopticon doctor`` — preflight self-check for a panopticon operator host.
 
-Verifies Docker, tmux, uv, the base task-container image, the task service, and per-repo
-token configuration. Prints OK / WARN / FAIL with a one-line remediation per check; exits
+Verifies the host prerequisites a pip-installed ``panopticon`` needs to spawn and run task
+containers: Docker, git, tmux, the base task-container image, the task service, and per-repo
+token configuration. Prints OK / WARN / FAIL with a one-line remediation per check, phrased
+for a pip install (``panopticon build`` / ``panopticon start``, not ``make`` targets); exits
 non-zero if any check FAILs. Injectable command-runner and filesystem callables for
 testability. LLM-free.
 """
@@ -89,8 +91,22 @@ def check_docker(*, run: CommandRunner, platform: str = sys.platform) -> CheckRe
     return CheckResult(status="OK", name="Docker daemon", message="Docker daemon reachable")
 
 
+def check_git(*, run: CommandRunner) -> CheckResult:
+    """Verify git is installed — the session service clones each task's checkout on the host."""
+    try:
+        version = run(["git", "--version"]).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return CheckResult(
+            status="FAIL",
+            name="git",
+            message="git not found",
+            remediation="Install git: brew install git (macOS) or apt-get install --yes git (Linux)",
+        )
+    return CheckResult(status="OK", name="git", message=version or "git present")
+
+
 def check_tmux(*, run: CommandRunner) -> CheckResult:
-    """Verify tmux is installed."""
+    """Verify tmux is installed — ``panopticon start`` runs services and task panes under tmux."""
     try:
         version = run(["tmux", "-V"]).strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -103,20 +119,6 @@ def check_tmux(*, run: CommandRunner) -> CheckResult:
     return CheckResult(status="OK", name="tmux", message=version or "tmux present")
 
 
-def check_uv(*, run: CommandRunner) -> CheckResult:
-    """Verify uv is installed."""
-    try:
-        version = run(["uv", "--version"]).strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return CheckResult(
-            status="FAIL",
-            name="uv",
-            message="uv not found",
-            remediation="Install uv: brew install uv (macOS) or pip install uv, then run: make sync",
-        )
-    return CheckResult(status="OK", name="uv", message=version or "uv present")
-
-
 def check_base_image(*, run: CommandRunner) -> CheckResult:
     """Verify the panopticon-base Docker image is present."""
     try:
@@ -126,7 +128,7 @@ def check_base_image(*, run: CommandRunner) -> CheckResult:
             status="FAIL",
             name="Base image",
             message="Base image panopticon-base not found",
-            remediation="Run: make build",
+            remediation="Run: panopticon build",
         )
     return CheckResult(status="OK", name="Base image", message="panopticon-base present")
 
@@ -140,7 +142,7 @@ def check_task_service(*, service_url: str, http_get: Callable[[str], int]) -> C
             status="FAIL",
             name="Task service",
             message=f"Task service not reachable at {service_url}",
-            remediation="Run: make serve (or make start)",
+            remediation="Run: panopticon start (or panopticon host)",
         )
     if status_code != 200:
         return CheckResult(
@@ -161,7 +163,7 @@ def check_repo_env_file(
     read_file: Callable[[str], str],
     file_mode: Callable[[str], int],
 ) -> list[CheckResult]:
-    """Check a repo's env_file: present, mode 0600, contains a recognisable auth token."""
+    """Check a repo's env_file: present, owner-only mode, contains a recognisable auth token."""
     env_file: str | None = repo.get("env_file")
     if not env_file:
         return []  # no env_file configured — skip
@@ -182,11 +184,11 @@ def check_repo_env_file(
 
     try:
         mode = file_mode(env_file)
-        if mode != 0o600:
+        if mode & 0o077:  # any group/other access — the file carries secrets
             results.append(CheckResult(
                 status="FAIL",
                 name=check_name,
-                message=f"env_file mode is {oct(mode)}, expected 0o600: {env_file}",
+                message=f"env_file mode is {oct(mode)}, expected owner-only (no group/other access): {env_file}",
                 remediation=f"Run: chmod 600 {env_file}",
             ))
     except OSError:
@@ -237,25 +239,48 @@ def check_repo_env_file(
 
 
 def run_doctor(
-    repos: list[JsonObj],
     *,
     service_url: str,
+    list_repos: Callable[[], list[JsonObj]],
     run: CommandRunner = _subprocess_run,
     read_file: Callable[[str], str] = _default_read_file,
     file_mode: Callable[[str], int] = _default_file_mode,
     platform: str = sys.platform,
     http_get: Callable[[str], int] = _default_http_get,
 ) -> int:
-    """Run all preflight checks, print results, return 0 (all OK/WARN) or 1 (any FAIL)."""
+    """Run all preflight checks, print results, return 0 (all OK/WARN) or 1 (any FAIL).
+
+    ``list_repos`` is called **lazily** — only after the task service is confirmed reachable —
+    so ``doctor`` still runs (and reports the service as down) when the service is offline,
+    rather than crashing on an eager fetch. That offline case is doctor's headline use.
+    """
     results: list[CheckResult] = [
         check_docker(run=run, platform=platform),
+        check_git(run=run),
         check_tmux(run=run),
-        check_uv(run=run),
         check_base_image(run=run),
-        check_task_service(service_url=service_url, http_get=http_get),
     ]
-    for repo in repos:
-        results.extend(check_repo_env_file(repo, read_file=read_file, file_mode=file_mode))
+    service_result = check_task_service(service_url=service_url, http_get=http_get)
+    results.append(service_result)
+
+    if service_result.status == "OK":
+        try:
+            repos = list_repos()
+        except Exception as exc:
+            results.append(CheckResult(
+                status="WARN",
+                name="Repos",
+                message=f"Could not list repos: {exc}",
+            ))
+            repos = []
+        for repo in repos:
+            results.extend(check_repo_env_file(repo, read_file=read_file, file_mode=file_mode))
+    else:
+        results.append(CheckResult(
+            status="WARN",
+            name="Repos",
+            message="Skipped per-repo token checks — task service unreachable",
+        ))
 
     _STATUS_LABEL: dict[CheckStatus, str] = {"OK": "[OK]  ", "WARN": "[WARN]", "FAIL": "[FAIL]"}
     for r in results:

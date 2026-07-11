@@ -7,6 +7,9 @@ still when nothing changes (no fixed-interval redraw); `r` forces a refresh now.
 preserves the highlighted row across the rebuild. Terminal (COMPLETE/DROPPED) tasks sink below
 active ones and are rendered in faded/dim styling so they recede visually without a hard separator.
 
+The task table, the repo table (`g`), and the `OptionList` pickers (`n`'s repo/workflow choice,
+`a`'s artifact list) all accept vim-style `h`/`j`/`k`/`l` as well as the arrow keys.
+
 The footer legend shows only the essential, most-used keys — `t` hands off to the task's
 container tmux, `n` creates a task (pick repo → workflow → describe the work), `x` **drops** it,
 `/` searches, `d` **toggles the detail pane** (hidden by default so the table gets the full
@@ -77,14 +80,16 @@ from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.css.query import NoMatches
 from textual.widgets import (
-    Checkbox, DataTable, Footer, Header, Input, Label, OptionList, Static, TabPane, TabbedContent,
-    TextArea,
+    Checkbox, DataTable, Footer, Header, Input, Label, OptionList, Select, Static, TabPane,
+    TabbedContent, TextArea,
 )
+from textual.widgets._select import NoSelection as _SelectNoSelection
 from textual.worker import get_current_worker
 
 from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.state import TERMINAL_LABELS
-from panopticon.taskservice.artifacts_fs import DEFAULT_ARTIFACTS, FilesystemArtifactStore
+from panopticon.core.dirs import ARTIFACTS_DIR
+from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 
 
 def _sort_key(task: JsonObj) -> tuple[bool, bool, float, str]:
@@ -467,7 +472,7 @@ class _OptionListModal(ModalScreen[_ResultT | None]):
     def compose(self) -> ComposeResult:
         with Vertical(id=self.BOX_ID):
             yield Label(self._title)
-            yield OptionList(*self._options)
+            yield _VimOptionList(*self._options)
             yield from self._extra_widgets()
 
     def _extra_widgets(self) -> Iterable[Widget]:
@@ -658,6 +663,103 @@ class SpaceCheckbox(Checkbox, inherit_bindings=False):
     BINDINGS = [Binding("space", "toggle_button", "Toggle", show=False)]
 
 
+class _VimDataTable(DataTable[Any]):
+    """A :class:`DataTable` with vim-style ``hjkl`` layered onto the default arrow keys (default
+    ``inherit_bindings=True``, so the arrow keys still work — this just adds a second way in)."""
+
+    BINDINGS = [
+        Binding("j", "cursor_down", "Down", show=False),
+        Binding("k", "cursor_up", "Up", show=False),
+        Binding("h", "cursor_left", "Left", show=False),
+        Binding("l", "cursor_right", "Right", show=False),
+    ]
+
+
+class _VimOptionList(OptionList):
+    """An :class:`OptionList` with vim-style ``j``/``k`` layered onto the default arrow keys —
+    it's a single column, so there's no ``h``/``l`` equivalent."""
+
+    BINDINGS = [
+        Binding("j", "cursor_down", "Down", show=False),
+        Binding("k", "cursor_up", "Up", show=False),
+    ]
+
+
+def _list_secrets_files() -> list[str]:
+    """Return sorted absolute paths of files in the XDG config secrets dir."""
+    from panopticon.core.dirs import user_config_dir
+    secrets_dir = user_config_dir() / "secrets"
+    if not secrets_dir.is_dir():
+        return []
+    return sorted(str(p) for p in secrets_dir.iterdir() if p.is_file())
+
+
+class EnvFileField(Widget):
+    """Secrets env-file picker for the repo form.
+
+    Shows a ``Select`` dropdown listing files found in the XDG config secrets directory
+    (``~/.config/panopticon/secrets/``), with a ``enter custom path…`` option at the bottom
+    that reveals a free-form ``Input`` for any other host path.
+    """
+
+    DEFAULT_CSS = """
+    EnvFileField { margin-bottom: 1; }
+    EnvFileField #env-file-input { margin-top: 1; }
+    """
+
+    _CUSTOM = "__custom__"
+
+    def __init__(self, initial: str = "", id: str | None = None) -> None:
+        super().__init__(id=id)
+        self._initial = initial
+        self._known = _list_secrets_files()
+
+    def compose(self) -> ComposeResult:
+        known_set = set(self._known)
+        options: list[tuple[str, str]] = [(p, p) for p in self._known]
+        options.append(("enter custom path…", self._CUSTOM))
+        is_custom = bool(self._initial and self._initial not in known_set)
+        yield Select(
+            options,
+            prompt="env_file (secrets dir or custom path)",
+            allow_blank=True,
+            value=self._initial if (self._initial and not is_custom) else Select.NULL,
+            id="env-file-select",
+        )
+        inp = Input(
+            value=self._initial if is_custom else "",
+            placeholder="/path/to/repo.env",
+            id="env-file-input",
+        )
+        inp.display = is_custom
+        yield inp
+
+    @property
+    def env_file_value(self) -> str:
+        """The resolved env_file path, or an empty string when unset."""
+        try:
+            sel = self.query_one("#env-file-select", Select)
+        except NoMatches:
+            return ""
+        v = sel.value
+        if isinstance(v, _SelectNoSelection) or v == self._CUSTOM:
+            try:
+                return self.query_one("#env-file-input", Input).value.strip()
+            except NoMatches:
+                return ""
+        return str(v)
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id != "env-file-select":
+            return
+        inp = self.query_one("#env-file-input", Input)
+        if event.value == self._CUSTOM:
+            inp.display = True
+            inp.focus()
+        else:
+            inp.display = False
+
+
 class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     """A modal form for a repo's fields. Submits a ``{field: value}`` dict on save (Enter
     or Ctrl+S), or ``None`` on cancel (Escape). The text fields are strings; the privileged
@@ -687,6 +789,7 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     #wf-scroll SpaceCheckbox { margin-bottom: 0; }
     #wf-desc { height: 4; border: tall $panel; padding: 0 1; color: $text-muted; margin-top: 1; }
     #form-hint { color: $text-muted; text-align: center; margin-top: 1; }
+    #pane-general EnvFileField #env-file-input { margin-bottom: 0; }
     """
     # Enter saves from any field. Text Inputs consume Enter via their own submit binding (posting
     # Input.Submitted → on_input_submitted), so this screen binding only fires for fields that
@@ -698,8 +801,9 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     ]
 
     # git_url leads (the auto-fill source); the rest follow. ``id`` is rendered between git_url
-    # and these, separately, since it's editable only in create mode.
-    FIELDS = ("git_url", "name", "default_base", "env_file")
+    # and these, separately, since it's editable only in create mode. ``env_file`` is rendered
+    # as an EnvFileField (dropdown + custom-path input) rather than a plain Input.
+    FIELDS = ("git_url", "name", "default_base")
     # Fields auto-derived from git_url → how to derive each (create mode only; see
     # _autofill_from_git_url). id and name are the bare repo name.
     _DERIVED: dict[str, Callable[[str], str]] = {
@@ -744,6 +848,7 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
                         yield Input(placeholder="id", id="field-id")
                     for name in self.FIELDS[1:]:  # git_url already rendered above
                         yield Input(value=self._initial(name), placeholder=name, id=f"field-{name}")
+                    yield EnvFileField(initial=self._initial("env_file"), id="field-env_file")
                     yield SpaceCheckbox(
                         "privileged docker (docker-in-docker)",
                         value=bool(self._repo.get("capabilities", {}).get("docker_in_docker")),
@@ -801,6 +906,7 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
             values["id"] = self.query_one("#field-id", Input).value.strip()
         for name in self.FIELDS:
             values[name] = self.query_one(f"#field-{name}", Input).value.strip()
+        values["env_file"] = self.query_one("#field-env_file", EnvFileField).env_file_value or None
         values["docker_in_docker"] = self.query_one("#field-docker_in_docker", Checkbox).value
         enabled: list[str] = []
         disabled: list[str] = []
@@ -847,7 +953,7 @@ class ReposScreen(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="repos-box"):
             yield Label("repos — n: new   e: edit   esc: close")
-            yield DataTable(id="repos")
+            yield _VimDataTable(id="repos")
 
     def on_mount(self) -> None:
         table = self.query_one("#repos", DataTable)
@@ -1073,18 +1179,27 @@ class HelpScreen(ModalScreen[None]):
     ]
 
     def compose(self) -> ComposeResult:
-        # Enter is handled via DataTable.RowSelected (not a HOTKEYS binding), so it's listed here
-        # as a literal line rather than derived from the HOTKEYS table.
+        # Enter and hjkl are handled on the list widgets themselves (not HOTKEYS bindings), so
+        # they're listed here as literal lines rather than derived from the HOTKEYS table.
         enter_line = f"  [b]{'Enter':<5}[/b] Collapse/expand the ensemble of governed tasks under the cursor"
+        vim_line = f"  [b]{'hjkl':<5}[/b] Vim-style navigation (task/repo tables, option-list pickers)"
         rows = "\n".join(
             f"  [b]{(h.display or h.key):<5}[/b] {h.description}" for h in HOTKEYS
         )
         with Vertical(id="help-box"):
             yield Label("panopticon — keys")
-            yield Static(enter_line + "\n" + rows, id="help-keys")
+            yield Static(enter_line + "\n" + vim_line + "\n" + rows, id="help-keys")
 
     def action_close(self) -> None:
         self.dismiss(None)
+
+
+def _setup_task_columns(table: DataTable[Any], *, multi_runner: bool) -> None:
+    """Add the task table's columns. Includes a "runner" column when tasks span multiple hosts."""
+    if multi_runner:
+        table.add_columns("state", "turn", "container", "runner", "repo", Text("slug[memo]"))
+    else:
+        table.add_columns("state", "turn", "container", "repo", Text("slug[memo]"))
 
 
 class Dashboard(App[None]):
@@ -1113,10 +1228,10 @@ class Dashboard(App[None]):
         self,
         client: TaskServiceClient,
         *,
-        on_switch: Callable[[str], None] | None = None,
+        on_switch: Callable[[str, str | None], None] | None = None,
         on_service: Callable[[], bool] | None = None,
         on_runner: Callable[[], bool] | None = None,
-        artifacts_root: str | Path = DEFAULT_ARTIFACTS,
+        artifacts_root: str | Path = ARTIFACTS_DIR,
         refresh_interval: float | None = REFRESH_INTERVAL,
     ) -> None:
         super().__init__()
@@ -1135,6 +1250,7 @@ class Dashboard(App[None]):
         self._last_cursor_row = 0  # previous cursor row index → infer travel direction to skip the divider
         self._collapsed: set[str] = set()  # governor IDs whose ensembles are currently collapsed
         self._governors: set[str] = set()  # governor IDs visible in the current table build
+        self._multi_runner: bool = False  # True when tasks span >1 distinct runner_host
         # one reused scratch dir for `a`'s REST-open (lazily made, cleaned on exit) — so opening
         # many artifacts doesn't leak a temp dir each.
         self._artifact_tmp: tempfile.TemporaryDirectory[str] | None = None
@@ -1142,7 +1258,7 @@ class Dashboard(App[None]):
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal():
-            yield DataTable(id="tasks")
+            yield _VimDataTable(id="tasks")
             yield Static(id="detail")
         yield Input(id="search", placeholder="search tasks…")  # hidden until `/` (CSS display:none)
         yield _StatusFooter()
@@ -1158,8 +1274,7 @@ class Dashboard(App[None]):
     def on_mount(self) -> None:
         table = self.query_one("#tasks", DataTable)
         table.cursor_type = "row"
-        # the slug header carries a literal "[" — pass it as Text so Textual doesn't eat it as markup
-        table.add_columns("state", "turn", "container", "repo", Text("slug[memo]"))
+        _setup_task_columns(table, multi_runner=False)
         table.focus()  # the (hidden) search Input would otherwise grab initial focus
         self._load_repo_names()
         self.action_refresh()  # first paint; the feed worker drives every refresh after
@@ -1227,6 +1342,11 @@ class Dashboard(App[None]):
         selected = self._current  # keep the operator's highlight across the rebuild (feed refresh)
         table.clear()
         ordered = sorted(self._client.list_tasks(), key=_sort_key)  # terminal last, then slug
+        new_multi_runner = len({r.get("host") for r in self._client.live_runners() if r.get("host")}) > 1
+        if new_multi_runner != self._multi_runner:
+            table.clear(columns=True)  # rows already gone; also clears columns for rebuild
+            self._multi_runner = new_multi_runner
+            _setup_task_columns(table, multi_runner=self._multi_runner)
         active = [t for t in ordered if t.get("state") not in TERMINAL_LABELS]
         agent_on = sum(1 for t in active if t.get("turn") == "agent")
         self.query_one(_StatusFooter).set_counter(f"active agents {agent_on}/{len(active)}")
@@ -1237,9 +1357,31 @@ class Dashboard(App[None]):
         # The two sections come back separately so the divider sits at the structural
         # boundary — not based on individual task state (a terminal governed task can live
         # in the active section when its governor is still active).
-        active_group, terminal_group = _group_by_governor(ordered, self._collapsed)
-        active_visible = [(t, p) for t, p in active_group if _matches(t, self._query)]
-        terminal_visible = [(t, p) for t, p in terminal_group if _matches(t, self._query)]
+        # While a search is active, expand every ensemble so collapsed children are
+        # searchable — otherwise a `└─ ...` placeholder hides them from the filter. We
+        # pass an empty collapsed set (not mutating self._collapsed), so the operator's
+        # collapse state is restored as soon as the query is cleared.
+        collapsed_for_display = set() if self._query else self._collapsed
+        # When a query is active, filter *before* grouping and pull each matching task's
+        # governor chain up with it: a visible child must keep its ancestors visible, or the
+        # tree breaks (a child rendered under a governor that got filtered out is orphaned).
+        # This is one-directional — a matching governor does not pull its children down.
+        if self._query:
+            task_by_id_all: dict[str, JsonObj] = {t["id"]: t for t in ordered}
+            visible_ids: set[str] = set()
+            for t in ordered:
+                if _matches(t, self._query):
+                    tid: str | None = str(t["id"])
+                    while tid is not None and tid not in visible_ids:
+                        visible_ids.add(tid)
+                        parent = task_by_id_all.get(tid)
+                        tid = parent.get("governor_task_id") if parent else None
+            search_filtered = [t for t in ordered if t["id"] in visible_ids]
+        else:
+            search_filtered = ordered
+        active_group, terminal_group = _group_by_governor(search_filtered, collapsed_for_display)
+        active_visible = list(active_group)
+        terminal_visible = list(terminal_group)
         visible = active_visible + terminal_visible
         # Build the task index (real tasks only; ensemble placeholders are synthetic).
         self._tasks = {t["id"]: t for t, _ in visible if not t.get("_ensemble")}
@@ -1258,24 +1400,31 @@ class Dashboard(App[None]):
             if task.get("_ensemble"):
                 gov_id = task["_governor_id"]
                 slug_cell = Text(f"{prefix}...", style="dim")
+                runner_blank = (Text(""),) if self._multi_runner else ()
                 table.add_row(
-                    Text(""), Text(""), Text(""), Text(""), slug_cell,
+                    Text(""), Text(""), Text(""), *runner_blank, Text(""), slug_cell,
                     key=f"{_ENSEMBLE_KEY_PREFIX}{gov_id}",
                 )
             else:
                 state_cell: Text | str = task["state"]
                 turn_cell = _turn_cell(task)
                 status_cell = _status_cell(task)
+                runner_cell: Text | None = (
+                    Text(task.get("runner_host") or "") if self._multi_runner else None
+                )
                 repo_cell: Text | str = _repo_cell(task, self._repo_names)
                 slug_cell_real = _slug_cell(task, prefix)
                 if task["state"] in TERMINAL_LABELS:
                     state_cell = _dim(state_cell)
                     turn_cell = _dim(turn_cell)
                     status_cell = _dim(status_cell)
+                    if runner_cell is not None:
+                        runner_cell = _dim(runner_cell)
                     repo_cell = _dim(repo_cell)
                     slug_cell_real = _dim(slug_cell_real)
+                runner_extra = (runner_cell,) if runner_cell is not None else ()
                 table.add_row(
-                    state_cell, turn_cell, status_cell, repo_cell, slug_cell_real,
+                    state_cell, turn_cell, status_cell, *runner_extra, repo_cell, slug_cell_real,
                     key=task["id"],
                 )
 
@@ -1425,7 +1574,9 @@ class Dashboard(App[None]):
         if not registrations:
             self.notify("No running container for this task.", severity="warning")
             return
-        self._on_switch(registrations[0]["container_id"])  # session == container id (runner names it)
+        task = self._tasks.get(self._current)
+        runner_host = task.get("runner_host") if task else None
+        self._on_switch(registrations[0]["container_id"], runner_host)  # session == container id
 
     def action_open_url(self) -> None:
         """`p`: open the highlighted task's `url` in the browser (cloude-cade's `p` "open PR").
@@ -1604,10 +1755,10 @@ class Dashboard(App[None]):
 def run(
     client: TaskServiceClient,
     *,
-    on_switch: Callable[[str], None] | None = None,
+    on_switch: Callable[[str, str | None], None] | None = None,
     on_service: Callable[[], bool] | None = None,
     on_runner: Callable[[], bool] | None = None,
-    artifacts_root: str | Path = DEFAULT_ARTIFACTS,
+    artifacts_root: str | Path = ARTIFACTS_DIR,
 ) -> None:
     """Run the dashboard. ``on_switch``/``on_service``/``on_runner`` are the supervisor's `t`/`s`/`u`
     hooks (ADR 0009); all ``None`` standalone. ``artifacts_root`` is the local artifact-store root

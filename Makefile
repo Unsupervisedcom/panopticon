@@ -19,11 +19,11 @@ typecheck:  ## Type-check (mypy, strict)
 
 check: typecheck test  ## Type-check + tests (what CI runs)
 
-migrate:  ## Apply DB migrations up to head (uses $PANOPTICON_DB; override with DB=<url>)
-	uv run alembic $(if $(DB),-x db=$(DB),) upgrade head
+migrate:  ## Apply DB migrations up to head (uses $PANOPTICON_DB; default ~/.local/share/panopticon/panopticon.db)
+	uv run panopticon migrate
 
 migrate-revision:  ## Autogenerate a migration from ORM changes (MSG="describe the change")
-	uv run alembic revision --autogenerate -m "$(MSG)"
+	uv run panopticon migrate -- revision --autogenerate -m "$(MSG)"
 
 serve:  ## Run the task service over HTTP (the control plane)
 	uv run python -m panopticon.taskservice
@@ -31,25 +31,26 @@ serve:  ## Run the task service over HTTP (the control plane)
 dashboard:  ## Launch the dashboard (foreground; no tmux)
 	uv run panopticon dashboard
 
-host: migrate  ## Start task service + session-service host in background tmux sessions (no console; use for CI or headless ops)
-	# Always kill-and-recreate so a crashed process doesn't leave a stale session that make host silently reuses.
-	tmux -L panopticon kill-session -t service 2>/dev/null || true
-	tmux -L panopticon new-session -d -s service 'uv run python -m panopticon.taskservice 2>&1 | tee /tmp/panopticon-service.log'
-	tmux -L panopticon kill-session -t runner 2>/dev/null || true
-	tmux -L panopticon new-session -d -s runner 'uv run python -m panopticon.sessionservice.host 2>&1 | tee /tmp/panopticon-runner.log'
+host:  ## Start task service + session-service host in background tmux sessions (no console; use for CI or headless ops)
+	uv run panopticon host
 
-start: host  ## Run panopticon: task service + session-service runner (background) + dashboard supervisor
-	uv run panopticon console
+start:  ## Run panopticon: task service + session-service runner (background) + dashboard supervisor
+	uv run panopticon start
 
 stop:  ## Stop everything `make start` started: the task containers + the -L panopticon tmux server
-	-docker ps --all --quiet --filter label=panopticon.task | { ids=$$(cat); [ -z "$$ids" ] || docker rm --force $$ids; }
-	-tmux -L panopticon kill-server 2>/dev/null
+	uv run panopticon stop
 
 doctor:  ## Run preflight checks (Docker, tmux, base image, task service, repo tokens)
 	uv run panopticon doctor
 
 build:  ## Build the base task-container image (override with IMAGE=)
-	docker build --tag $(IMAGE) --file docker/Dockerfile .
+	uv build --wheel --out-dir src/panopticon/docker/
+	docker build \
+	  --tag $(IMAGE) \
+	  --build-arg PANOPTICON_WHEEL=$(shell ls -1 src/panopticon/docker/panopticon_app*.whl | xargs -n1 basename) \
+	  --file src/panopticon/docker/Dockerfile \
+	  src/panopticon/docker/
+	rm --force src/panopticon/docker/panopticon_app*.whl
 
 clean:  ## Remove the base image and any composed panopticon-* images
 	-docker rmi --force $(IMAGE)
