@@ -2130,13 +2130,16 @@ async def test_pressing_j_skips_the_ensemble_row_like_the_down_arrow() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
-        table.move_cursor(row=table.get_row_index("gov"))
-        await pilot.pause()  # let the highlight settle before Enter, so the collapse targets gov
-        await pilot.press("enter")  # collapse: gov, ensemble(gov), zzz-extra
+        # Collapse gov's ensemble directly, then rebuild — the Enter-key collapse path is covered
+        # by test_enter_on_governor_collapses_to_ensemble_row; here we exercise the j/k skip over
+        # the resulting sentinel row without coupling to key/focus event timing.
+        app._collapsed.add("gov")
+        app.action_refresh()
         await pilot.pause()
         row_keys = [str(k.value) for k in table.rows]
-        assert "wrk" not in row_keys  # collapse took: the governed child is hidden under the ensemble
-        assert any(k.startswith(dashboard._ENSEMBLE_KEY_PREFIX) for k in row_keys)
+        assert row_keys == ["gov", f"{dashboard._ENSEMBLE_KEY_PREFIX}gov", "zzz-extra"]
+        table.move_cursor(row=table.get_row_index("gov"))
+        await pilot.pause()
         await pilot.press("j")  # from gov, steps over the ensemble row onto zzz-extra
         await pilot.pause()
         assert app._current == "zzz-extra"
