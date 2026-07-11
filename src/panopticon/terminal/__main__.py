@@ -1,9 +1,12 @@
 """``panopticon`` / ``python -m panopticon.terminal`` — the operator CLI.
 
-`panopticon` (or `panopticon console`) runs the session supervisor (ADR 0009): the dashboard,
-plus handing the terminal to a task's tmux on `t` and rejoining on detach. `panopticon dashboard`
-runs the dashboard once without the attach loop; `panopticon tasks` lists tasks as plain text;
-`panopticon migrate` applies DB migrations to head via the bundled Alembic config.
+`panopticon` with no argument (or `panopticon start`) starts everything: runs DB migrations,
+starts the task service and session-service runner in background tmux sessions, then opens the
+session supervisor (ADR 0009) — the dashboard, plus handing the terminal to a task's tmux on `t`
+and rejoining on detach. `panopticon console` opens the supervisor only (assumes services are
+already running). `panopticon dashboard` runs the dashboard once without the attach loop;
+`panopticon tasks` lists tasks as plain text; `panopticon migrate` applies DB migrations to head
+via the bundled Alembic config.
 """
 
 from __future__ import annotations
@@ -61,7 +64,7 @@ def main(
         help="task service base URL",
     )
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser("console", help="session supervisor: dashboard + attach loop (default)")
+    sub.add_parser("console", help="session supervisor: dashboard + attach loop (assumes services are running)")
     dash = sub.add_parser("dashboard", help="run the dashboard once, without the attach loop")
     # Set by the supervisor (ADR 0009): the dashboard runs inside tmux, so it reports the session
     # the operator picked with `t` by writing it here instead of returning it in-process.
@@ -148,7 +151,10 @@ def main(
             client, on_switch=on_switch, on_service=on_service, on_runner=on_runner,
             artifacts_root=artifacts_root,
         )
-    else:  # default / "console"
+    else:  # "console" or no subcommand (no subcommand → alias for start)
+        if args.command is None:
+            _run_migrate()
+            _start_sessions()
         from panopticon.terminal.console import run_console_local
 
         run_console_local(args.service_url)

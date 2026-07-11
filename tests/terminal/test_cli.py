@@ -51,6 +51,18 @@ def test_host_runs_migrate_then_sessions() -> None:
     mock_sessions.assert_called_once_with()
 
 
+def test_no_arg_aliases_start() -> None:
+    with (
+        patch("panopticon.terminal.__main__._run_migrate") as mock_migrate,
+        patch("panopticon.terminal.__main__._start_sessions") as mock_sessions,
+        patch("panopticon.terminal.console.run_console_local") as mock_console,
+    ):
+        assert main([]) == 0
+    mock_migrate.assert_called_once_with()
+    mock_sessions.assert_called_once_with()
+    mock_console.assert_called_once()
+
+
 def test_start_runs_migrate_sessions_then_console() -> None:
     with (
         patch("panopticon.terminal.__main__._run_migrate") as mock_migrate,
