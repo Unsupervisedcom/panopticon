@@ -114,7 +114,7 @@ def _make_sort_key(
             # Terminal tasks always use updated_at descending; by_updated mode does too.
             raw = task.get("updated_at") or ""
             try:
-                ts = -datetime.fromisoformat(raw).timestamp()  # negative → newest first
+                ts = - datetime.fromisoformat(raw).timestamp()   # negative → newest first
             except ValueError:
                 ts = 0.0
         else:
