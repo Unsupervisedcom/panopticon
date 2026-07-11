@@ -60,6 +60,7 @@ class GithubSelfReviewed(GithubForgeWorkflow):
                 key="pr-updated",
                 description="The PR title and description reflect the final change, with no Test Plan / Verification section.",
             ),
+            GithubForgeWorkflow.URL_RECORDED,
         )
         transitions = ("MERGING",)  # no REVIEW: the user self-reviews, then advances to MERGING
 

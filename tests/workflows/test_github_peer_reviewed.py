@@ -66,7 +66,7 @@ def test_responsibilities_mirror_cloude_cade_dod() -> None:
     assert "set_token_estimate" in by_key["token-estimated"].description
     assert {r.key for r in WF.responsibilities("ITERATING")} == {
         "plan-implemented", "requests-implemented", "tests-pass",
-        "committed-pushed", "ci-passing", "pr-updated",
+        "committed-pushed", "ci-passing", "pr-updated", "url-recorded",
     }
     assert {r.key for r in WF.responsibilities("REVIEW")} == {"pr-reviewed"}
     assert {r.key for r in WF.responsibilities("MERGING")} == {"pr-merged"}

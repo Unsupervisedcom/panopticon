@@ -70,6 +70,7 @@ class GithubPeerReviewed(GithubForgeWorkflow):
                 key="pr-updated",
                 description="The PR title and description reflect the final change, with no Test Plan / Verification section.",
             ),
+            GithubForgeWorkflow.URL_RECORDED,
         )
         transitions = ("REVIEW",)
 

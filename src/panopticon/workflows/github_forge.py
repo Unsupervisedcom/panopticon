@@ -20,8 +20,9 @@ string `name` defined in the scanned module.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import ClassVar
 
-from panopticon.core.models import Skill, Tool
+from panopticon.core.models import Responsibility, Skill, Tool
 from panopticon.workflows.planned_workflow import PlannedWorkflow
 
 
@@ -33,6 +34,11 @@ class GithubForgeWorkflow(PlannedWorkflow):
     The plan convention (``PLAN_ARTIFACT_NAME``, ``PLAN_WRITTEN``, ``TOKEN_ESTIMATED``,
     :meth:`plan_uri`, :meth:`_briefing_extras`) is inherited from
     :class:`~panopticon.workflows.planned_workflow.PlannedWorkflow`."""
+
+    URL_RECORDED: ClassVar[Responsibility] = Responsibility(
+        key="url-recorded",
+        description="The PR URL is recorded on the task with the `set_url` MCP tool.",
+    )
 
     def tools(self) -> Sequence[Tool]:
         """`gh` is in the image (see `image_layer`); name it so the agent reaches for it."""
@@ -56,11 +62,13 @@ class GithubForgeWorkflow(PlannedWorkflow):
             Skill(
                 "open-pr",
                 "Open a draft PR for this task's branch.",
-                "Push the task's branch and open a **draft** PR against the repo's base branch with "
+                f"1. Push the task's branch.\n"
+                f"2. Open a **draft** PR against the repo's base branch with "
                 f"`gh pr create --draft`. Title it for the change and reference the plan artifact "
-                f"(`{self.PLAN_ARTIFACT_NAME}`). "
-                "Then record the PR's URL on the task with the `set_url` tool, so the dashboard's "
-                "`p` hotkey opens it.",
+                f"(`{self.PLAN_ARTIFACT_NAME}`).\n"
+                f"3. Call the `set_url` MCP tool with the PR URL returned by `gh pr create`, "
+                f"so the dashboard's `p` hotkey opens it and the `url-recorded` responsibility "
+                f"can be resolved.",
             ),
             Skill(
                 "babysit-ci",
