@@ -328,13 +328,14 @@ async def test_pressing_d_toggles_the_detail_pane() -> None:
 
 
 async def test_tasks_are_sorted_active_then_terminal_in_creation_order() -> None:
-    # The order: (1) non-terminal above terminal, (2) creation time ascending (oldest first) within
-    # each section — stable, never changes after a task is created regardless of turn or updates.
+    # Active tasks: creation order ascending (oldest first), turn irrelevant.
+    # Terminal tasks: always updated_at descending (most recently completed first),
+    # regardless of sort mode — their order is stable once completed.
     tasks = [
         {**_TASK, "id": "t-term-2", "slug": "done", "state": "COMPLETE", "turn": "user",
-         "created_at": "2026-06-01T02:00:00"},
+         "created_at": "2026-06-01T01:00:00", "updated_at": "2026-06-01T02:00:00"},
         {**_TASK, "id": "t-term-1", "slug": "drop", "state": "DROPPED", "turn": "agent",
-         "created_at": "2026-06-01T01:00:00"},
+         "created_at": "2026-06-01T02:00:00", "updated_at": "2026-06-01T03:00:00"},
         {**_TASK, "id": "t-active-3", "slug": "charlie", "turn": "agent",
          "created_at": "2026-06-01T03:00:00"},
         {**_TASK, "id": "t-active-1", "slug": "alpha", "turn": "user",
@@ -348,8 +349,8 @@ async def test_tasks_are_sorted_active_then_terminal_in_creation_order() -> None
         table = app.query_one("#tasks", DataTable)
         keys = [str(k.value) for k in table.rows]
         assert keys == [
-            "t-active-1", "t-active-2", "t-active-3",  # active: oldest-first, turn irrelevant
-            "t-term-1", "t-term-2",                    # terminal: oldest-first
+            "t-active-1", "t-active-2", "t-active-3",  # active: oldest created_at first
+            "t-term-1", "t-term-2",                    # terminal: newest updated_at first (t-term-1 updated 03:00 > 02:00)
         ]
 
 

@@ -97,17 +97,20 @@ def _make_sort_key(
 ) -> Callable[[JsonObj], tuple[bool, float, str]]:
     """Return a sort key function for the task table.
 
-    ``recency=False`` (default): sort by ``created_at`` ascending — stable creation order,
-    never rearranges after the task is created.
+    Active tasks:
+    - ``recency=False`` (default): sort by ``created_at`` ascending — stable creation order.
+    - ``recency=True``: sort by ``updated_at`` descending — most recently active tasks rise
+      to the top as work happens.
 
-    ``recency=True``: sort by ``updated_at`` descending — most recently active tasks rise
-    to the top as work happens.
+    Terminal tasks always sort by ``updated_at`` descending (most recently completed first),
+    regardless of the sort mode.
 
     Both modes keep non-terminal tasks above terminal ones and use ``id`` as a tiebreaker.
     """
     def key(task: JsonObj) -> tuple[bool, float, str]:
         is_terminal = task["state"] in TERMINAL_LABELS
-        if recency:
+        if is_terminal or recency:
+            # Terminal tasks always use updated_at descending; recency mode does too.
             raw = task.get("updated_at") or ""
             try:
                 ts = -datetime.fromisoformat(raw).timestamp()  # negative → newest first
