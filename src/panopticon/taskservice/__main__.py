@@ -25,7 +25,7 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI
 
-from panopticon.core.dirs import ARTIFACTS_DIR, DB_URL, LAYERS_DIR, user_data_dir
+from panopticon.core.dirs import ARTIFACTS_DIR, LAYERS_DIR, user_data_dir
 from panopticon.taskservice.api import create_app
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 from panopticon.taskservice.layers_fs import FilesystemLayerStore
@@ -34,6 +34,11 @@ from panopticon.taskservice.store_sqlalchemy import SqlAlchemyStore
 from panopticon.workflows.discovery import discover_workflows
 
 _SQLITE_PREFIX = "sqlite:///"
+
+#: Default task-store DB — a SQLite file under $PANOPTICON_DATA. PANOPTICON_DB overrides to any
+#: SQLAlchemy URL (e.g. postgresql://); it's a full URL, not a sub-path, so it lives here rather
+#: than with the base-dir path constants in core.dirs.
+DB_URL: str = _SQLITE_PREFIX + str(user_data_dir() / "panopticon.db")
 
 
 def migrate_db_to_home(db_url: str) -> None:

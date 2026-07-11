@@ -8,7 +8,7 @@ walking the override chain:
   ``~/.local/share`` / ``~/.cache`` / ``~/.config``
 
 The module-level constants below then **compose panopticon's well-known sub-paths** onto those
-bases (artifacts, tasks, the clone cache, layer files, the DB). Setting one base-dir variable moves
+bases (artifacts, tasks, the clone cache, layer files). Setting one base-dir variable moves
 its entire subtree — there are no per-path overrides. Code that needs a base for an ad-hoc subpath
 not listed here (e.g. ``workflows/``, ``hooks/``) calls the ``user_*_dir()`` functions directly.
 """
@@ -59,9 +59,6 @@ def user_config_dir() -> Path:
     base = Path(xdg) if xdg else Path.home() / ".config"
     return base / "panopticon"
 
-
-#: SQLite DB URL. PANOPTICON_DB overrides to any SQLAlchemy URL (e.g. postgresql://).
-DB_URL: str = "sqlite:///" + str(user_data_dir() / "panopticon.db")
 
 #: Task artifact store — $PANOPTICON_DATA/artifacts
 ARTIFACTS_DIR: str = str(user_data_dir() / "artifacts")

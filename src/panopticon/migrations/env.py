@@ -19,8 +19,7 @@ from pathlib import Path
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from panopticon.core.dirs import DB_URL
-from panopticon.taskservice.__main__ import migrate_db_to_home
+from panopticon.taskservice.__main__ import DB_URL, migrate_db_to_home
 from panopticon.taskservice.store_sqlalchemy import metadata
 
 config = context.config
