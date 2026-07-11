@@ -111,7 +111,7 @@ def main(
         _qs.wait_for_service(args.service_url)
         env_file = _qs.ensure_secrets_file()
         git_url = _qs.detect_git_url()
-        _qs.setup_panopticon_repo(
+        _qs.setup_repo(
             TaskServiceClient(httpx.Client(base_url=args.service_url)), git_url, env_file
         )
         from panopticon.terminal.console import run_console_local

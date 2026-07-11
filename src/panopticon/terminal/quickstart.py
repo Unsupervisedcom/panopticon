@@ -1,16 +1,14 @@
 """First-time setup helpers for ``panopticon quickstart``.
 
-Registers the panopticon repo with the running task service (idempotent), and writes a secrets
-template to ``~/.config/panopticon/panopticon.env`` when it doesn't already exist.
+Registers the repo quickstart is run in with the running task service (idempotent — deduped on
+the remote URL), and writes a secrets template to ``~/.config/panopticon/panopticon.env`` when it
+doesn't already exist.
 """
 
 from __future__ import annotations
 
-import httpx
-
 from panopticon.client import TaskServiceClient
 
-PANOPTICON_REPO_ID = "panopticon"
 _FALLBACK_GIT_URL = "https://github.com/Unsupervisedcom/panopticon.git"
 _SECRETS_TEMPLATE = """\
 # Panopticon agent secrets
@@ -26,7 +24,11 @@ GH_TOKEN=
 
 
 def detect_git_url() -> str:
-    """Return the git remote URL for origin in CWD, or the known GitHub fallback."""
+    """Return the git remote URL for origin in CWD, or the panopticon fallback.
+
+    Quickstart adopts whatever repo it's run in; the fallback covers running outside a git
+    checkout (or one without an ``origin`` remote).
+    """
     import subprocess
 
     try:
@@ -36,9 +38,29 @@ def detect_git_url() -> str:
             text=True,
             check=True,
         )
-        return result.stdout.strip()
+        url = result.stdout.strip()
+        return url or _FALLBACK_GIT_URL
     except (subprocess.CalledProcessError, FileNotFoundError):
         return _FALLBACK_GIT_URL
+
+
+def _normalize_url(git_url: str) -> str:
+    """Canonical form for comparing remote URLs: trimmed, no trailing ``.git`` or ``/``."""
+    url = git_url.strip().rstrip("/")
+    if url.endswith(".git"):
+        url = url[: -len(".git")]
+    return url
+
+
+def repo_id_from_url(git_url: str) -> str:
+    """Derive a repo id/name from a git URL — its last path segment without the ``.git`` suffix.
+
+    ``https://github.com/Unsupervisedcom/panopticon.git`` → ``panopticon``;
+    ``git@github.com:acme/Widget.git`` → ``widget``. Falls back to ``repo`` if the URL yields
+    nothing usable.
+    """
+    tail = _normalize_url(git_url).replace(":", "/").rstrip("/").rsplit("/", 1)[-1]
+    return tail.lower() or "repo"
 
 
 def ensure_secrets_file() -> str:
@@ -78,18 +100,19 @@ def wait_for_service(service_url: str, *, timeout: int = 30) -> None:
             time.sleep(1.0)
 
 
-def setup_panopticon_repo(client: TaskServiceClient, git_url: str, env_file: str) -> None:
-    """Register the panopticon repo with the task service.
+def setup_repo(client: TaskServiceClient, git_url: str, env_file: str) -> None:
+    """Register the repo quickstart is run in with the task service.
 
-    Idempotent: prints a message and returns immediately when the repo already exists.
+    Idempotent: deduped on the remote URL — if any registered repo already points at ``git_url``
+    (compared normalized, ignoring a trailing ``.git`` or ``/``), prints a message and returns
+    without registering.
     """
-    try:
-        client.get_repo(PANOPTICON_REPO_ID)
-        print("Panopticon repo already configured — skipping registration.")
-        return
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code != 404:
-            raise
-    client.create_repo(PANOPTICON_REPO_ID, "panopticon", git_url, env_file=env_file)
-    print(f"Registered panopticon repo (git_url={git_url!r}).")
+    target = _normalize_url(git_url)
+    for repo in client.list_repos():
+        if _normalize_url(str(repo.get("git_url", ""))) == target:
+            print(f"Repo already configured for {git_url!r} — skipping registration.")
+            return
+    repo_id = repo_id_from_url(git_url)
+    client.create_repo(repo_id, repo_id, git_url, env_file=env_file)
+    print(f"Registered repo {repo_id!r} (git_url={git_url!r}).")
     print(f"  → Secrets file: {env_file}")

@@ -58,7 +58,7 @@ def test_quickstart_invokes_all_steps(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(qs, "wait_for_service", lambda url, **kw: calls.append("wait"))
     monkeypatch.setattr(qs, "ensure_secrets_file", lambda: (calls.append("secrets"), "/tmp/env")[1])
     monkeypatch.setattr(qs, "detect_git_url", lambda: (calls.append("git_url"), "https://x.git")[1])
-    monkeypatch.setattr(qs, "setup_panopticon_repo", lambda c, g, e: calls.append("setup"))
+    monkeypatch.setattr(qs, "setup_repo", lambda c, g, e: calls.append("setup"))
     monkeypatch.setattr(console, "run_console_local", lambda url: calls.append("console"))
 
     rc = cli.main(["quickstart"])

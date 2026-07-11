@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
-import httpx
 import pytest
 
 from panopticon.terminal import quickstart as qs
@@ -63,51 +62,50 @@ def test_ensure_secrets_file_no_overwrite(tmp_path: Path, monkeypatch: pytest.Mo
     assert secrets_path.read_text() == existing_content
 
 
-def test_setup_panopticon_repo_already_exists(capsys: pytest.CaptureFixture[str]) -> None:
-    class _AlreadyExists:
+@pytest.mark.parametrize(
+    "url, expected",
+    [
+        ("https://github.com/Unsupervisedcom/panopticon.git", "panopticon"),
+        ("https://github.com/example/repo", "repo"),
+        ("git@github.com:acme/Widget.git", "widget"),
+        ("https://github.com/acme/thing.git/", "thing"),
+    ],
+)
+def test_repo_id_from_url(url: str, expected: str) -> None:
+    assert qs.repo_id_from_url(url) == expected
+
+
+def test_setup_repo_dedups_on_remote_url(capsys: pytest.CaptureFixture[str]) -> None:
+    # A registered repo whose git_url matches (modulo a trailing ``.git``) → no re-registration.
+    class _HasRepo:
         create_repo_called = False
 
-        def get_repo(self, repo_id: str) -> dict[str, object]:
-            return {"id": repo_id}
+        def list_repos(self) -> list[dict[str, object]]:
+            return [{"id": "other", "git_url": "https://github.com/x/y"}]
 
         def create_repo(self, *a: Any, **kw: Any) -> dict[str, object]:
             self.create_repo_called = True
             return {}
 
-    fake_client = _AlreadyExists()
-    qs.setup_panopticon_repo(fake_client, "https://github.com/x/y.git", "/tmp/env")  # type: ignore[arg-type]
+    fake_client = _HasRepo()
+    qs.setup_repo(fake_client, "https://github.com/x/y.git", "/tmp/env")  # type: ignore[arg-type]
     assert not fake_client.create_repo_called
     assert "already configured" in capsys.readouterr().out
 
 
-def test_setup_panopticon_repo_creates_on_404(capsys: pytest.CaptureFixture[str]) -> None:
+def test_setup_repo_creates_when_absent() -> None:
     created: dict[str, Any] = {}
 
-    class _NotFound:
-        def get_repo(self, repo_id: str) -> dict[str, object]:
-            resp = MagicMock()
-            resp.status_code = 404
-            raise httpx.HTTPStatusError("not found", request=MagicMock(), response=resp)
+    class _Empty:
+        def list_repos(self) -> list[dict[str, object]]:
+            return [{"id": "unrelated", "git_url": "https://github.com/a/b.git"}]
 
         def create_repo(self, repo_id: str, name: str, git_url: str, **kw: Any) -> dict[str, object]:
             created.update(repo_id=repo_id, name=name, git_url=git_url, **kw)
             return {}
 
-    qs.setup_panopticon_repo(_NotFound(), "https://github.com/x/y.git", "/tmp/env")  # type: ignore[arg-type]
-    assert created["repo_id"] == qs.PANOPTICON_REPO_ID
+    qs.setup_repo(_Empty(), "https://github.com/x/y.git", "/tmp/env")  # type: ignore[arg-type]
+    assert created["repo_id"] == "y"
+    assert created["name"] == "y"
     assert created["git_url"] == "https://github.com/x/y.git"
     assert created["env_file"] == "/tmp/env"
-
-
-def test_setup_panopticon_repo_reraises_non_404() -> None:
-    class _ServerError:
-        def get_repo(self, repo_id: str) -> dict[str, object]:
-            resp = MagicMock()
-            resp.status_code = 500
-            raise httpx.HTTPStatusError("server error", request=MagicMock(), response=resp)
-
-        def create_repo(self, *a: Any, **kw: Any) -> dict[str, object]:
-            return {}
-
-    with pytest.raises(httpx.HTTPStatusError):
-        qs.setup_panopticon_repo(_ServerError(), "https://x.git", "/tmp/env")  # type: ignore[arg-type]
