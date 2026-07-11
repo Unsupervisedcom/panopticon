@@ -25,14 +25,18 @@ src/panopticon/
                    # = cloude-cade lifecycle; GithubSelfReviewed = same, sans the peer-review state,
                    # the user self-reviews; both share the GithubForgeWorkflow base = gh tool/layer/skills;
                    # Orchestrator = an agent that creates + pre-plans other tasks, `orchestrates=True`
-                   # gating the create/list MCP tools to it, ready-to-approve via the spawn-task skill) +
+                   # gating the create/list MCP tools to it, ready-to-approve via the spawn-task skill;
+                   # SetupToken = a `runner_type="shell"` workflow — no container, the session service runs
+                   # its shell_script in a host tmux session (here: `claude setup-token`)) +
                    # discovery.py = scan the package + an optional path for Workflow subclasses
                    # (the registry build_app runs on; drop a module in → registered, ADR 0004)
   taskservice/     # control plane: TaskService, FastAPI REST API, the SQLAlchemy store
                    # adapter (in-memory or on-disk SQLite), filesystem artifact store, MCP
                    # server (mcp.py: operations=tools, artifacts=resources; FastMCP) mounted at /mcp
   sessionservice/  # the runner: Runner ABC + StubRunner (in-process) + LocalRunner
-                   # (real Docker+tmux via the CLIs); images.py = ADR-0005 composed images
+                   # (real Docker+tmux via the CLIs) + ShellRunner (shell_runner.py = a workflow's
+                   # shell_script in a host tmux session, no container — for `runner_type="shell"`
+                   # workflows; the spawner routes on it, skipping clone/image); images.py = ADR-0005 composed images
                    # (base→workflow→repo); provisioner.py = host-side provisioning
                    # (ADR 0011: branch the per-task clone on slug, record it back); clones.py =
                    # per-repo clone cache; spawn.py = spawn-prep (clone --local the per-task

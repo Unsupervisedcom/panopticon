@@ -1,0 +1,102 @@
+"""Host shell-script runner: run a workflow's ``shell_script`` in a host tmux session, no container.
+
+The companion to :class:`~panopticon.sessionservice.local_runner.LocalRunner` for workflows whose
+:attr:`~panopticon.core.workflow.Workflow.runner_type` is ``"shell"``. Where the local runner
+spawns a Docker container + a tmux pane execing into it, this runner just opens a **host tmux
+session** whose single pane runs the workflow's script directly on the host — no image, no
+per-task clone, no in-container agent. It's for short operator utilities that need a real shell and
+TTY (e.g. ``claude setup-token``, whose interactive OAuth flow the operator completes by attaching
+to the session).
+
+It shares the local runner's tmux socket (``-L panopticon``) and its ``panopticon-<task_id>``
+session naming, so the terminal supervisor's ``t`` (attach to a task's session) reaches a shell
+task exactly as it does a container one. The command executor is **injectable** so the runner is
+unit-testable without tmux. LLM-free — a shell task runs no agent.
+"""
+
+from __future__ import annotations
+
+import shlex
+from collections.abc import Callable
+
+from panopticon.core.models import LifecyclePhase
+from panopticon.sessionservice.local_runner import TMUX_SOCKET, CommandRunner, _subprocess_run
+from panopticon.sessionservice.runner import Runner
+
+
+class ShellRunner(Runner):
+    """Runs a shell workflow's script in a host tmux session (one host, no container)."""
+
+    def __init__(
+        self,
+        service_url: str,
+        *,
+        runner_id: str = "local",
+        tmux_socket: str | None = TMUX_SOCKET,
+        run: CommandRunner = _subprocess_run,
+    ) -> None:
+        self._service_url = service_url
+        self._runner_id = runner_id
+        self._tmux_socket = tmux_socket
+        self._run = run
+
+    def _tmux(self, *args: str) -> list[str]:
+        prefix = ["tmux", *(["-L", self._tmux_socket] if self._tmux_socket else [])]
+        return [*prefix, *args]
+
+    def spawn(
+        self,
+        task_id: str,
+        *,
+        env_file: str | None = None,
+        script: str = "",
+        progress: Callable[[LifecyclePhase], None] | None = None,
+    ) -> str:
+        """Run ``script`` for ``task_id`` in a fresh host tmux session; return the session name.
+
+        The session is named ``panopticon-<task_id>`` (matching the local runner) so the terminal
+        supervisor attaches to it the same way. The pane runs ``sh -c`` with ``PANOPTICON_SERVICE_URL``
+        and ``PANOPTICON_TASK_ID`` exported — so the script can drive its own lifecycle over REST
+        (e.g. advance to COMPLETE on success) — and the repo's ``env_file`` secrets sourced first when
+        given. Reports ``STARTING`` (before the session) then ``AWAITING`` (once it's up) via
+        ``progress``; there is no ``PREPARING``/``BUILDING`` (no clone, no image). Idempotent: a stale
+        session of the same name is killed first, so a respawn is a no-op restart."""
+
+        def _report(phase: LifecyclePhase) -> None:
+            if progress is not None:
+                progress(phase)
+
+        session = f"panopticon-{task_id}"
+        lines = [
+            f"export PANOPTICON_SERVICE_URL={shlex.quote(self._service_url)}",
+            f"export PANOPTICON_TASK_ID={shlex.quote(task_id)}",
+            f"export PANOPTICON_RUNNER_ID={shlex.quote(self._runner_id)}",
+        ]
+        if env_file:  # per-repo secrets (ADR 0007), sourced into the environment like --env-file
+            lines.append(f"set -a; . {shlex.quote(env_file)}; set +a")
+        lines.append(script)
+        command = "\n".join(lines)
+        # Clear any stale session first so a respawn is idempotent (no-op when none exists).
+        self._run(self._tmux("kill-session", "-t", session), check=False)
+        _report(LifecyclePhase.STARTING)
+        self._run(self._tmux("new-session", "-d", "-s", session, "sh", "-c", command))
+        _report(LifecyclePhase.AWAITING)
+        return session
+
+    def is_running(self, task_id: str) -> bool:
+        """Whether the task's shell session is alive — the running signal for a shell task.
+
+        A shell task registers no ``/live`` connection (it runs no agent), so its tmux session
+        **is** its liveness: the session lives exactly as long as the script's process. Mirrors the
+        local runner's method name so the spawner can probe either backend uniformly."""
+        return self.has_session(task_id)
+
+    def has_session(self, task_id: str) -> bool:
+        """Whether the task's host tmux session exists on this runner's tmux server."""
+        session = f"panopticon-{task_id}"
+        sessions = self._run(self._tmux("list-sessions", "-F", "#{session_name}"), check=False)
+        return session in sessions.splitlines()
+
+    def stop(self, session_id: str) -> None:
+        # Idempotent: tolerate an already-gone session.
+        self._run(self._tmux("kill-session", "-t", session_id), check=False)

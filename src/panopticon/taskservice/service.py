@@ -232,6 +232,16 @@ class TaskService:
         composes onto the base image (e.g. github-peer-reviewed's `gh`). Empty when the workflow needs none."""
         return self._workflow(name).image_layer()
 
+    async def workflow_runner_type(self, name: str) -> str:
+        """How the workflow's tasks run: ``"docker"`` (a task container) or ``"shell"`` (a host
+        shell script, no container). The session service routes to the matching backend."""
+        return self._workflow(name).runner_type
+
+    async def workflow_shell_script(self, name: str) -> str:
+        """The shell script a ``"shell"`` workflow runs (empty for a ``"docker"`` one) — the runner
+        launches it in a host tmux session with ``PANOPTICON_SERVICE_URL``/``PANOPTICON_TASK_ID`` set."""
+        return self._workflow(name).shell_script()
+
     def _workflow(self, name: str) -> Workflow:
         try:
             return self._workflows[name]

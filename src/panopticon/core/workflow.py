@@ -98,6 +98,13 @@ class Workflow(ABC):
     #: so ``claude --model`` is set on first launch. Defaults to ``"opus"`` for all built-in
     #: workflows; override per-workflow to change the default.
     default_model: ClassVar[str] = "opus"
+    #: How this workflow's tasks are executed by the session service. ``"docker"`` (default)
+    #: spawns the base → workflow → repo container image and runs the in-container agent (the
+    #: determinism invariant — LLM calls happen there). ``"shell"`` runs :meth:`shell_script`
+    #: directly in a host tmux session with **no container**: no per-task clone, no image build,
+    #: no agent. Use it for short operator utilities that just need a host shell (e.g. minting an
+    #: auth token). The runner picks the backend off this flag.
+    runner_type: ClassVar[str] = "docker"
 
     # -- build / validate (the resolution pass; answers "why not a free function?") -----
 
@@ -289,7 +296,16 @@ class Workflow(ABC):
     def image_layer(self) -> str:
         """The workflow's Docker image layer (ADR 0005): a Dockerfile fragment appended on top of
         the base image with what this workflow's skills need (e.g. `gh` for forge). Default none;
-        the runner composes base → workflow → repo into the task's image."""
+        the runner composes base → workflow → repo into the task's image. Ignored when
+        :attr:`runner_type` is ``"shell"`` (there is no image)."""
+        return ""
+
+    def shell_script(self) -> str:
+        """The shell script a ``runner_type = "shell"`` workflow runs (in a host tmux session, no
+        container). The session service injects ``PANOPTICON_SERVICE_URL`` and
+        ``PANOPTICON_TASK_ID`` into the environment, so the script can drive its own lifecycle over
+        REST (e.g. ``POST $PANOPTICON_SERVICE_URL/tasks/$PANOPTICON_TASK_ID/operations/advance`` on
+        success). Empty for a ``"docker"`` workflow; a shell workflow overrides it."""
         return ""
 
     # -- agent-facing briefing (the "where am I" prose; LLM-free string building) --------
