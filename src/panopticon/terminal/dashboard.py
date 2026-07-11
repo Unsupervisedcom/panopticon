@@ -120,7 +120,7 @@ def _make_sort_key(
         else:
             raw = task.get("created_at") or task.get("updated_at") or ""
             try:
-                ts = datetime.fromisoformat(raw).timestamp()   # positive → oldest first
+                ts = - datetime.fromisoformat(raw).timestamp()   # negative → newest first
             except ValueError:
                 ts = 0.0
         return (
