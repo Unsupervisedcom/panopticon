@@ -1746,12 +1746,16 @@ def test_slug_cell_prefix_with_memo() -> None:
 
 async def test_governed_task_appears_under_governor_in_dashboard() -> None:
     # Governor and governed both active; governed follows governor with a tree connector.
+    # Governors start collapsed — expand before checking the child row.
     governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
     governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov"}
     app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
+        table.move_cursor(row=table.get_row_index("gov"))
+        await pilot.press("enter")  # expand the ensemble
+        await pilot.pause()
         order = [str(k.value) for k in table.rows]
         assert order == ["gov", "wrk"]
         gov_row = table.get_row("gov")
@@ -1763,6 +1767,7 @@ async def test_governed_task_appears_under_governor_in_dashboard() -> None:
 async def test_active_governor_keeps_terminal_child_in_active_section() -> None:
     # Regression: a terminal governed task whose governor is still active must stay in the
     # active section (above the terminal section), not below it.
+    # Governors start collapsed — expand before checking the child row's position and styling.
     governor = {
         **_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None,
         "state": "WORKING",
@@ -1780,6 +1785,9 @@ async def test_active_governor_keeps_terminal_child_in_active_section() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
+        table.move_cursor(row=table.get_row_index("gov"))
+        await pilot.press("enter")  # expand the ensemble
+        await pilot.pause()
         keys = [str(k.value) for k in table.rows]
         # Governor and its terminal child are in the active section (above "done").
         assert keys.index("gov") < keys.index("done")
@@ -1862,22 +1870,15 @@ def test_matches_always_passes_ensemble_rows() -> None:
 
 
 async def test_enter_on_governor_collapses_to_ensemble_row() -> None:
-    # Pressing Enter on a governing task replaces its children with an ensemble row.
+    # Governors start collapsed — the ensemble row is present on startup without pressing Enter.
     governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
     governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov"}
     app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
-        # Initial state: both rows present.
-        assert "gov" in [str(k.value) for k in table.rows]
-        assert "wrk" in [str(k.value) for k in table.rows]
-        # Move to the governor row and press Enter.
-        table.move_cursor(row=table.get_row_index("gov"))
-        await pilot.press("enter")
-        await pilot.pause()
         keys = [str(k.value) for k in table.rows]
-        # Governor is still there; worker is gone; ensemble sentinel is present.
+        # Initial state: governor present, child hidden behind ensemble sentinel.
         assert "gov" in keys
         assert "wrk" not in keys
         assert f"{_ENSEMBLE_KEY_PREFIX}gov" in keys
@@ -1887,7 +1888,7 @@ async def test_enter_on_governor_collapses_to_ensemble_row() -> None:
 
 
 async def test_enter_again_on_governor_expands_ensemble() -> None:
-    # Pressing Enter twice returns to the fully-expanded tree.
+    # Governors start collapsed; Enter toggles: first press expands, second press collapses again.
     governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
     governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov"}
     app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
@@ -1895,16 +1896,17 @@ async def test_enter_again_on_governor_expands_ensemble() -> None:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
         table.move_cursor(row=table.get_row_index("gov"))
-        # First Enter → collapse.
+        # First Enter → expand (starts collapsed).
         await pilot.press("enter")
         await pilot.pause()
-        assert f"{_ENSEMBLE_KEY_PREFIX}gov" in [str(k.value) for k in table.rows]
-        # Second Enter → expand.
+        assert "wrk" in [str(k.value) for k in table.rows]
+        assert f"{_ENSEMBLE_KEY_PREFIX}gov" not in [str(k.value) for k in table.rows]
+        # Second Enter → collapse again.
         await pilot.press("enter")
         await pilot.pause()
         keys = [str(k.value) for k in table.rows]
-        assert "wrk" in keys
-        assert f"{_ENSEMBLE_KEY_PREFIX}gov" not in keys
+        assert "wrk" not in keys
+        assert f"{_ENSEMBLE_KEY_PREFIX}gov" in keys
 
 
 async def test_enter_on_non_governor_does_nothing() -> None:
@@ -1924,19 +1926,15 @@ async def test_enter_on_non_governor_does_nothing() -> None:
 
 
 async def test_search_expands_collapsed_ensembles_to_reach_their_children() -> None:
-    # A collapsed governor hides its children behind a "..." placeholder. A search must
-    # still reach those children — the ensemble expands for the query, then the operator's
-    # collapse state is restored once the query is cleared.
+    # Governors start collapsed — a search must still reach children hidden behind "...".
+    # The ensemble expands for the query; the collapse state is restored once the query is cleared.
     governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
     governed = {**_TASK, "id": "wrk", "slug": "worker-bee", "governor_task_id": "gov"}
     app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
-        # Collapse the governor: the child is now behind a "..." placeholder.
-        table.move_cursor(row=table.get_row_index("gov"))
-        await pilot.press("enter")
-        await pilot.pause()
+        # Initial state: child hidden behind ensemble placeholder (collapsed on startup).
         assert f"{_ENSEMBLE_KEY_PREFIX}gov" in [str(k.value) for k in table.rows]
         assert "wrk" not in [str(k.value) for k in table.rows]
         # Search for the collapsed child: it surfaces as a real row, no placeholder.

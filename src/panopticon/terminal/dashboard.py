@@ -1265,6 +1265,7 @@ class Dashboard(App[None]):
         self._detail_visible = False  # detail pane hidden by default; `d` toggles it (action_toggle_detail)
         self._last_cursor_row = 0  # previous cursor row index → infer travel direction to skip the divider
         self._collapsed: set[str] = set()  # governor IDs whose ensembles are currently collapsed
+        self._first_refresh: bool = True  # seed _collapsed with all governors on first refresh
         self._governors: set[str] = set()  # governor IDs visible in the current table build
         self._multi_runner: bool = False  # True when tasks span >1 distinct runner_host
         self._sort_by_updated: bool = False  # False = creation order (stable); True = updated_at (newest first)
@@ -1371,6 +1372,20 @@ class Dashboard(App[None]):
         # Inject repo_name so _matches can search on it without a separate lookup per task.
         for task in ordered:
             task["repo_name"] = self._repo_names.get(str(task.get("repo_id") or ""), "")
+        # Governor IDs: the set of task IDs that have at least one governed child in the full
+        # snapshot. Computed from ``ordered`` (pre-collapse, pre-filter) so collapsing a governor
+        # doesn't remove it from the set and prevent a second Enter from re-expanding it.
+        self._governors = {
+            t["governor_task_id"]
+            for t in ordered
+            if t.get("governor_task_id")
+        }
+        # Prune stale collapsed entries for governors no longer present (e.g. task deleted),
+        # then seed all governors as collapsed on the very first refresh.
+        self._collapsed &= self._governors
+        if self._first_refresh:
+            self._collapsed = set(self._governors)
+            self._first_refresh = False
         # Group governed tasks under their governor (within each section), then filter.
         # The two sections come back separately so the divider sits at the structural
         # boundary — not based on individual task state (a terminal governed task can live
@@ -1403,16 +1418,6 @@ class Dashboard(App[None]):
         visible = active_visible + terminal_visible
         # Build the task index (real tasks only; ensemble placeholders are synthetic).
         self._tasks = {t["id"]: t for t, _ in visible if not t.get("_ensemble")}
-        # Governor IDs: the set of task IDs that have at least one governed child in the full
-        # snapshot. Computed from ``ordered`` (pre-collapse, pre-filter) so collapsing a governor
-        # doesn't remove it from the set and prevent a second Enter from re-expanding it.
-        self._governors = {
-            t["governor_task_id"]
-            for t in ordered
-            if t.get("governor_task_id")
-        }
-        # Prune stale collapsed entries for governors no longer present (e.g. task deleted).
-        self._collapsed &= self._governors
 
         def _add_row(task: JsonObj, prefix: str) -> None:
             if task.get("_ensemble"):
