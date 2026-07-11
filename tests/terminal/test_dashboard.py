@@ -328,9 +328,9 @@ async def test_pressing_d_toggles_the_detail_pane() -> None:
 
 
 async def test_tasks_are_sorted_active_then_terminal_in_creation_order() -> None:
-    # Active tasks: user turn first (operator action needed), then by created_at ascending.
+    # Active tasks: user turn first (operator action needed), then by created_at descending.
     # Terminal tasks: agent turn first (task just finished), then by updated_at descending.
-    # In this fixture t-active-1 is user-turn, so it leads even though creation times agree.
+    # In this fixture t-active-1 is user-turn, so it leads despite being the oldest.
     tasks = [
         {**_TASK, "id": "t-term-2", "slug": "done", "state": "COMPLETE", "turn": "user",
          "created_at": "2026-06-01T01:00:00", "updated_at": "2026-06-01T02:00:00"},
@@ -349,13 +349,13 @@ async def test_tasks_are_sorted_active_then_terminal_in_creation_order() -> None
         table = app.query_one("#tasks", DataTable)
         keys = [str(k.value) for k in table.rows]
         assert keys == [
-            "t-active-1", "t-active-2", "t-active-3",  # active: oldest created_at first
+            "t-active-1", "t-active-3", "t-active-2",  # active: user turn first, then newest created_at first
             "t-term-1", "t-term-2",                    # terminal: newest updated_at first (t-term-1 updated 03:00 > 02:00)
         ]
 
 
 async def test_sort_uses_creation_order_within_section() -> None:
-    # Within the same turn-priority tier, created_at ascending is the primary sort (oldest first).
+    # Within the same turn-priority tier, created_at descending is the primary sort (newest first).
     # Falls back to updated_at when created_at is absent (pre-migration rows).
     tasks = [
         {**_TASK, "id": "t-old", "slug": "zebra", "turn": "user", "created_at": "2026-06-01T00:00:00"},
@@ -365,7 +365,7 @@ async def test_sort_uses_creation_order_within_section() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         order = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
-        assert order == ["t-old", "t-new"]  # older first, despite "zebra" > "alpha"
+        assert order == ["t-new", "t-old"]  # newer first, despite "alpha" < "zebra"
 
 
 async def test_sort_breaks_ties_on_id() -> None:
@@ -1664,14 +1664,14 @@ def test_group_by_governor_governed_task_appears_after_governor() -> None:
 
 
 def test_group_by_governor_governed_before_governor_in_sort_still_groups() -> None:
-    # When the governed task has an earlier created_at than its governor, it sorts first by
-    # creation order — but _group_by_governor must still place it AFTER the governor.
+    # When the governed task has a later created_at than its governor, it sorts first by
+    # creation order (newest-first) — but _group_by_governor must still place it AFTER the governor.
     governor = {**_TASK, "id": "gov", "slug": "zoo", "governor_task_id": None,
-                "created_at": "2026-06-01T02:00:00"}
-    governed = {**_TASK, "id": "aaa", "slug": "alpha", "governor_task_id": "gov",
                 "created_at": "2026-06-01T01:00:00"}
+    governed = {**_TASK, "id": "aaa", "slug": "alpha", "governor_task_id": "gov",
+                "created_at": "2026-06-01T02:00:00"}
     sorted_tasks = sorted([governor, governed], key=_make_sort_key())
-    assert sorted_tasks[0]["id"] == "aaa"  # governed created earlier → sorts first
+    assert sorted_tasks[0]["id"] == "aaa"  # governed created later → sorts first
     active, terminal = _group_by_governor(sorted_tasks)
     assert [(t["id"], p) for t, p in active] == [("gov", ""), ("aaa", "└─ ")]
     assert terminal == []
@@ -2119,13 +2119,13 @@ async def test_pressing_jk_moves_the_task_table_cursor_like_arrow_keys() -> None
 async def test_pressing_j_skips_the_ensemble_row_like_the_down_arrow() -> None:
     # A collapsed governor's ensemble row sits between two real rows; `j` must step past it the
     # same way `down` already does (Dashboard.on_data_table_row_highlighted), not land on it.
-    # created_at controls order: gov (01:00) < wrk (02:00) < zzz-extra (03:00).
+    # created_at controls order (newest first): gov (03:00) > wrk (02:00) > zzz-extra (01:00).
     governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None,
-                "created_at": "2026-06-01T01:00:00"}
+                "created_at": "2026-06-01T03:00:00"}
     governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov",
                 "created_at": "2026-06-01T02:00:00"}
     extra = {**_TASK, "id": "zzz-extra", "slug": "zzz-extra", "governor_task_id": None,
-             "created_at": "2026-06-01T03:00:00"}
+             "created_at": "2026-06-01T01:00:00"}
     app = Dashboard(_FakeClient([governor, governed, extra]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()

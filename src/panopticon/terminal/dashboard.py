@@ -101,7 +101,8 @@ def _make_sort_key(
     2. turn priority: for active tasks the user's turn comes first (operator action needed);
        for terminal tasks the agent's turn comes first (task just finished).
     3. timestamp:
-       - Active, ``by_updated=False`` (default): ``created_at`` ascending — stable creation order.
+       - Active, ``by_updated=False`` (default): ``created_at`` descending — newest first
+         (stable: ``created_at`` never changes, so rows don't reorder when a task updates).
        - Active, ``by_updated=True``: ``updated_at`` descending — most recently updated rises first.
        - Terminal (always): ``updated_at`` descending — most recently completed rises first.
     4. id as a stable tiebreaker.
