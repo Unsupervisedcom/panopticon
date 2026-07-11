@@ -26,7 +26,7 @@ from panopticon.terminal.dashboard import (
     _repo_cell,
     _short_tokens,
     _slug_cell,
-    _sort_key,
+    _make_sort_key,
     _status_cell,
     _turn_cell,
     render_detail,
@@ -1589,7 +1589,7 @@ def test_footer_shows_only_the_essential_keys() -> None:
     shown = {b.key for b in Dashboard.BINDINGS if b.show}
     hidden = {b.key for b in Dashboard.BINDINGS if not b.show}
     assert shown == {"t", "n", "x", "/", "d", "question_mark", "q"}
-    assert hidden == {"r", "R", "p", "g", "a", "s", "u", "y", "Y", "escape"}
+    assert hidden == {"o", "r", "R", "p", "g", "a", "s", "u", "y", "Y", "escape"}
 
 
 def test_bindings_and_help_derive_from_the_single_hotkey_table() -> None:
@@ -1669,7 +1669,7 @@ def test_group_by_governor_governed_before_governor_in_sort_still_groups() -> No
                 "created_at": "2026-06-01T02:00:00"}
     governed = {**_TASK, "id": "aaa", "slug": "alpha", "governor_task_id": "gov",
                 "created_at": "2026-06-01T01:00:00"}
-    sorted_tasks = sorted([governor, governed], key=_sort_key)
+    sorted_tasks = sorted([governor, governed], key=_make_sort_key())
     assert sorted_tasks[0]["id"] == "aaa"  # governed created earlier → sorts first
     active, terminal = _group_by_governor(sorted_tasks)
     assert [(t["id"], p) for t, p in active] == [("gov", ""), ("aaa", "└─ ")]
@@ -1688,7 +1688,7 @@ def test_group_by_governor_terminal_governed_follows_active_governor() -> None:
     # is still active, so it nests under the governor above the divider.
     governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None, "state": "WORKING"}
     governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov", "state": "COMPLETE"}
-    sorted_tasks = sorted([governor, governed], key=_sort_key)
+    sorted_tasks = sorted([governor, governed], key=_make_sort_key())
     active, terminal = _group_by_governor(sorted_tasks)
     assert [(t["id"], p) for t, p in active] == [("gov", ""), ("wrk", "└─ ")]
     assert terminal == []
@@ -1707,7 +1707,7 @@ def test_group_by_governor_multiple_governed_tasks_in_sort_order() -> None:
     governor = {**_TASK, "id": "gov", "slug": "orch", "governor_task_id": None}
     w1 = {**_TASK, "id": "w1", "slug": "alpha", "governor_task_id": "gov"}
     w2 = {**_TASK, "id": "w2", "slug": "bravo", "governor_task_id": "gov"}
-    sorted_tasks = sorted([governor, w1, w2], key=_sort_key)
+    sorted_tasks = sorted([governor, w1, w2], key=_make_sort_key())
     active, terminal = _group_by_governor(sorted_tasks)
     assert [(t["id"], p) for t, p in active] == [("gov", ""), ("w1", "├─ "), ("w2", "└─ ")]
     assert terminal == []
@@ -1719,7 +1719,7 @@ def test_group_by_governor_tree_connectors_nested() -> None:
     c1 = {**_TASK, "id": "c1", "slug": "child-1", "governor_task_id": "gov"}
     gc = {**_TASK, "id": "gc", "slug": "grand", "governor_task_id": "c1"}
     c2 = {**_TASK, "id": "c2", "slug": "child-2", "governor_task_id": "gov"}
-    sorted_tasks = sorted([gov, c1, gc, c2], key=_sort_key)
+    sorted_tasks = sorted([gov, c1, gc, c2], key=_make_sort_key())
     active, terminal = _group_by_governor(sorted_tasks)
     assert [(t["id"], p) for t, p in active] == [
         ("gov", ""),
@@ -1774,7 +1774,7 @@ async def test_active_governor_keeps_terminal_child_in_active_section() -> None:
         **_TASK, "id": "done", "slug": "other", "governor_task_id": None,
         "state": "COMPLETE", "turn": "agent",
     }
-    tasks = sorted([governor, governed, other_done], key=_sort_key)
+    tasks = sorted([governor, governed, other_done], key=_make_sort_key())
     app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()

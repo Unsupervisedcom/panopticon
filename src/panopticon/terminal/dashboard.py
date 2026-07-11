@@ -92,24 +92,39 @@ from panopticon.core.dirs import ARTIFACTS_DIR
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 
 
-def _sort_key(task: JsonObj) -> tuple[bool, float, str]:
-    """Order rows: active tasks before terminal, each group sorted by creation order (oldest first).
+def _make_sort_key(
+    recency: bool = False,
+) -> Callable[[JsonObj], tuple[bool, float, str]]:
+    """Return a sort key function for the task table.
 
-    1. non-terminal before terminal — COMPLETE/DROPPED sink to the bottom;
-    2. creation time ascending (oldest first) — stable, never changes after creation;
-    3. id as tiebreaker for tasks with identical timestamps.
+    ``recency=False`` (default): sort by ``created_at`` ascending — stable creation order,
+    never rearranges after the task is created.
+
+    ``recency=True``: sort by ``updated_at`` descending — most recently active tasks rise
+    to the top as work happens.
+
+    Both modes keep non-terminal tasks above terminal ones and use ``id`` as a tiebreaker.
     """
-    is_terminal = task["state"] in TERMINAL_LABELS
-    raw = task.get("created_at") or task.get("updated_at") or ""
-    try:
-        ts = datetime.fromisoformat(raw).timestamp()
-    except ValueError:
-        ts = 0.0
-    return (
-        is_terminal,  # False (active) before True (terminal)
-        ts,           # ascending: oldest first = creation order
-        task["id"],   # stable tiebreaker
-    )
+    def key(task: JsonObj) -> tuple[bool, float, str]:
+        is_terminal = task["state"] in TERMINAL_LABELS
+        if recency:
+            raw = task.get("updated_at") or ""
+            try:
+                ts = -datetime.fromisoformat(raw).timestamp()  # negative → newest first
+            except ValueError:
+                ts = 0.0
+        else:
+            raw = task.get("created_at") or task.get("updated_at") or ""
+            try:
+                ts = datetime.fromisoformat(raw).timestamp()   # positive → oldest first
+            except ValueError:
+                ts = 0.0
+        return (
+            is_terminal,  # False (active) before True (terminal)
+            ts,
+            task["id"],   # stable tiebreaker
+        )
+    return key
 
 
 def _short_tokens(n: int | None) -> str:
@@ -1118,6 +1133,7 @@ HOTKEYS: tuple[Hotkey, ...] = (
     Hotkey("x", "drop", "Drop", "Drop the highlighted task"),
     Hotkey("/", "search", "Search", "Search tasks as you type"),
     Hotkey("d", "toggle_detail", "Detail", "Show/hide the detail pane"),
+    Hotkey("o", "toggle_sort", "Sort order", "Toggle sort: created (stable) ↔ updated (recent first)", show=False),
     Hotkey("r", "refresh", "Refresh", "Refresh from the task service now", show=False),
     Hotkey("R", "respawn", "Respawn", "Respawn a down task (release its claim)", show=False),
     Hotkey("p", "open_url", "Open URL", "Open the task's URL in the browser", show=False),
@@ -1246,6 +1262,7 @@ class Dashboard(App[None]):
         self._collapsed: set[str] = set()  # governor IDs whose ensembles are currently collapsed
         self._governors: set[str] = set()  # governor IDs visible in the current table build
         self._multi_runner: bool = False  # True when tasks span >1 distinct runner_host
+        self._sort_by_recency: bool = False  # False = creation order (stable); True = updated_at (newest first)
         # one reused scratch dir for `a`'s REST-open (lazily made, cleaned on exit) — so opening
         # many artifacts doesn't leak a temp dir each.
         self._artifact_tmp: tempfile.TemporaryDirectory[str] | None = None
@@ -1336,7 +1353,7 @@ class Dashboard(App[None]):
         table = self.query_one("#tasks", DataTable)
         selected = self._current  # keep the operator's highlight across the rebuild (feed refresh)
         table.clear()
-        ordered = sorted(self._client.list_tasks(), key=_sort_key)  # terminal last, each group by creation order
+        ordered = sorted(self._client.list_tasks(), key=_make_sort_key(self._sort_by_recency))
         new_multi_runner = len({r.get("host") for r in self._client.live_runners() if r.get("host")}) > 1
         if new_multi_runner != self._multi_runner:
             table.clear(columns=True)  # rows already gone; also clears columns for rebuild
@@ -1344,7 +1361,8 @@ class Dashboard(App[None]):
             _setup_task_columns(table, multi_runner=self._multi_runner)
         active = [t for t in ordered if t.get("state") not in TERMINAL_LABELS]
         agent_on = sum(1 for t in active if t.get("turn") == "agent")
-        self.query_one(_StatusFooter).set_counter(f"active agents {agent_on}/{len(active)}")
+        sort_label = "sort: updated" if self._sort_by_recency else "sort: created"
+        self.query_one(_StatusFooter).set_counter(f"active agents {agent_on}/{len(active)}  ·  {sort_label}")
         # Inject repo_name so _matches can search on it without a separate lookup per task.
         for task in ordered:
             task["repo_name"] = self._repo_names.get(str(task.get("repo_id") or ""), "")
@@ -1618,6 +1636,11 @@ class Dashboard(App[None]):
             return
         self._copy_to_clipboard(self._current)
         self.notify(f"copied id: {self._current}")
+
+    def action_toggle_sort(self) -> None:
+        """`o`: toggle between creation-order sort (stable) and recency sort (newest first)."""
+        self._sort_by_recency = not self._sort_by_recency
+        self.action_refresh()
 
     def action_toggle_detail(self) -> None:
         """`d`: show/hide the right-hand detail pane. It starts hidden (``display: none``) so the
