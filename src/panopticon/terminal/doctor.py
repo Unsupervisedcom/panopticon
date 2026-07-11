@@ -1,11 +1,20 @@
-"""``panopticon doctor`` — preflight self-check for a panopticon operator host.
+"""``panopticon doctor`` — preflight self-check, meant to run *before* the first ``panopticon
+start`` on a fresh pip-installed host.
 
-Verifies the host prerequisites a pip-installed ``panopticon`` needs to spawn and run task
-containers: Docker, git, tmux, the base task-container image, the task service, and per-repo
-token configuration. Prints OK / WARN / FAIL with a one-line remediation per check, phrased
-for a pip install (``panopticon build`` / ``panopticon start``, not ``make`` targets); exits
-non-zero if any check FAILs. Injectable command-runner and filesystem callables for
-testability. LLM-free.
+It separates two kinds of check:
+
+* **Host prerequisites** — Docker, git, tmux — external tools you must install yourself. A
+  missing one is a hard **FAIL** (doctor exits non-zero): panopticon can't run without it.
+* **Setup status** — the ``panopticon-base`` image and the task service — things panopticon
+  provisions for you. Before first start neither exists yet, so their absence is a non-fatal
+  **WARN** heads-up (the base image is auto-built on first spawn; the service is started by
+  ``panopticon start``), never a FAIL. When the service *is* up, per-repo env-file tokens are
+  checked too.
+
+So a fresh machine with Docker/git/tmux installed passes (exit 0) with a short "here's what
+happens at first start" list, and only a genuinely missing prerequisite fails. Remediations are
+phrased for a pip install (``panopticon build`` / ``panopticon start``, not ``make`` targets).
+Injectable command-runner and filesystem callables for testability. LLM-free.
 """
 
 from __future__ import annotations
@@ -120,29 +129,38 @@ def check_tmux(*, run: CommandRunner) -> CheckResult:
 
 
 def check_base_image(*, run: CommandRunner) -> CheckResult:
-    """Verify the panopticon-base Docker image is present."""
+    """Report whether the panopticon-base image is built.
+
+    Missing is **not** a failure: the runner builds it automatically on first spawn
+    (``ImageBuilder.build_base_if_missing``), so before first start it's simply not there yet.
+    A WARN heads-up, so an operator who wants to pre-build knows the command.
+    """
     try:
         run(["docker", "image", "inspect", "panopticon-base"])
     except (subprocess.CalledProcessError, FileNotFoundError):
         return CheckResult(
-            status="FAIL",
+            status="WARN",
             name="Base image",
-            message="Base image panopticon-base not found",
-            remediation="Run: panopticon build",
+            message="Base image panopticon-base not built yet",
+            remediation="Pre-build with 'panopticon build', or let the first task build it automatically",
         )
     return CheckResult(status="OK", name="Base image", message="panopticon-base present")
 
 
 def check_task_service(*, service_url: str, http_get: Callable[[str], int]) -> CheckResult:
-    """Verify the task service is reachable."""
+    """Report whether the task service is running.
+
+    Not running is **expected** before the first ``panopticon start`` — a WARN heads-up, not a
+    failure. (An HTTP error from a service that *is* answering is also a non-fatal WARN.)
+    """
     url = service_url.rstrip("/") + "/workflows"
     status_code = http_get(url)
     if status_code == 0:
         return CheckResult(
-            status="FAIL",
+            status="WARN",
             name="Task service",
-            message=f"Task service not reachable at {service_url}",
-            remediation="Run: panopticon start (or panopticon host)",
+            message=f"Task service not running at {service_url} (expected before first start)",
+            remediation="Start it with: panopticon start (or panopticon host)",
         )
     if status_code != 200:
         return CheckResult(
@@ -251,8 +269,12 @@ def run_doctor(
     """Run all preflight checks, print results, return 0 (all OK/WARN) or 1 (any FAIL).
 
     ``list_repos`` is called **lazily** — only after the task service is confirmed reachable —
-    so ``doctor`` still runs (and reports the service as down) when the service is offline,
-    rather than crashing on an eager fetch. That offline case is doctor's headline use.
+    so ``doctor`` still runs (and reports the service as not-yet-running) when it's offline,
+    rather than crashing on an eager fetch. Before the first ``panopticon start`` the service is
+    down by definition, so that offline case is doctor's headline use.
+
+    Only host-prerequisite FAILs (Docker/git/tmux) set a non-zero exit; a not-yet-provisioned
+    base image or task service is a WARN, so a fresh-but-ready machine exits 0.
     """
     results: list[CheckResult] = [
         check_docker(run=run, platform=platform),
@@ -279,7 +301,7 @@ def run_doctor(
         results.append(CheckResult(
             status="WARN",
             name="Repos",
-            message="Skipped per-repo token checks — task service unreachable",
+            message="Skipped per-repo token checks — task service not running yet",
         ))
 
     _STATUS_LABEL: dict[CheckStatus, str] = {"OK": "[OK]  ", "WARN": "[WARN]", "FAIL": "[FAIL]"}
@@ -292,11 +314,11 @@ def run_doctor(
 
     fails = sum(1 for r in results if r.status == "FAIL")
     if fails:
-        print(f"\n{fails} check(s) FAILED.")
+        print(f"\n{fails} prerequisite check(s) FAILED — install the missing tool(s) above, then re-run.")
         return 1
     warns = sum(1 for r in results if r.status == "WARN")
     if warns:
-        print(f"\n{warns} check(s) have warnings.")
+        print(f"\nHost prerequisites OK. {warns} item(s) not provisioned yet — expected before your first 'panopticon start'.")
     else:
         print("\nAll checks passed.")
     return 0

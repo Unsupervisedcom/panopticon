@@ -10,6 +10,7 @@ from collections.abc import Sequence
 import pytest
 
 from panopticon.terminal.doctor import (
+    CommandRunner,
     check_base_image,
     check_docker,
     check_git,
@@ -149,22 +150,23 @@ def test_check_base_image_ok() -> None:
     assert runner.calls[0] == ["docker", "image", "inspect", "panopticon-base"]
 
 
-def test_check_base_image_fail_not_built() -> None:
+def test_check_base_image_warn_not_built() -> None:
+    # Not built is a non-fatal heads-up — the runner auto-builds it on first spawn.
     runner = _FakeRunner(failures={"docker"})
     result = check_base_image(run=runner)
-    assert result.status == "FAIL"
+    assert result.status == "WARN"
     assert "panopticon-base" in result.message
     # Remediation targets the pip-install command, not a Makefile target.
     assert "panopticon build" in (result.remediation or "")
 
 
-def test_check_base_image_fail_called_process_error() -> None:
+def test_check_base_image_warn_called_process_error() -> None:
     class _FailRunner:
         def __call__(self, args: Sequence[str], *, check: bool = True) -> str:
             raise subprocess.CalledProcessError(1, list(args))
 
     result = check_base_image(run=_FailRunner())
-    assert result.status == "FAIL"
+    assert result.status == "WARN"
 
 
 # ---------------------------------------------------------------------------
@@ -177,9 +179,10 @@ def test_check_task_service_ok() -> None:
     assert "svc:8000" in result.message
 
 
-def test_check_task_service_fail_unreachable() -> None:
+def test_check_task_service_warn_not_running() -> None:
+    # Before the first `panopticon start` the service is down by design → WARN, not FAIL.
     result = check_task_service(service_url="http://svc:8000", http_get=lambda _: 0)
-    assert result.status == "FAIL"
+    assert result.status == "WARN"
     assert result.remediation is not None
     assert "panopticon start" in (result.remediation or "")
 
@@ -332,7 +335,7 @@ def test_check_repo_env_file_comments_and_blanks_ignored() -> None:
 
 def _run_doctor(
     *,
-    runner: _FakeRunner,
+    runner: CommandRunner,
     list_repos: object = None,
     read_file: object = None,
     file_mode: object = None,
@@ -394,19 +397,45 @@ def test_run_doctor_checks_repos(capsys: pytest.CaptureFixture[str]) -> None:
     assert "myrepo" in out
 
 
-def test_run_doctor_does_not_list_repos_when_service_down(
+class _NoBaseImageRunner:
+    """Docker daemon up and git/tmux present, but the base image isn't built (inspect fails)."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+        self._outputs = {"docker": "Server: Docker Desktop", "git": "git version 2.43.0", "tmux": "tmux 3.3a"}
+
+    def __call__(self, args: Sequence[str], *, check: bool = True) -> str:
+        self.calls.append(list(args))
+        if list(args[:3]) == ["docker", "image", "inspect"]:
+            raise FileNotFoundError("no such image")
+        return self._outputs.get(args[0] if args else "", "")
+
+
+def test_run_doctor_fresh_machine_before_first_start_exits_0(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # The must-fix: doctor's headline case is a downed service. list_repos must NOT be called
-    # (an eager call raised ConnectError and crashed with a traceback).
+    # The headline case: a fresh host with Docker/git/tmux installed but nothing provisioned yet
+    # (no base image, service not running). That's the expected pre-first-start state, so doctor
+    # must exit 0 — only a missing host prerequisite is a failure.
     def _boom() -> list[dict[str, object]]:
-        raise AssertionError("list_repos must not be called when the service is unreachable")
+        raise AssertionError("list_repos must not be called when the service is not running")
 
-    code = _run_doctor(runner=_healthy_runner(), list_repos=_boom, http_get=lambda _: 0)
-    assert code == 1  # service FAIL
+    code = _run_doctor(runner=_NoBaseImageRunner(), list_repos=_boom, http_get=lambda _: 0)  # type: ignore[arg-type]
+    assert code == 0  # host prereqs OK; base image + service are non-fatal WARNs
     out = capsys.readouterr().out
+    assert "not built yet" in out
+    assert "not running" in out
     assert "Skipped per-repo token checks" in out
     assert "panopticon start" in out
+
+
+def test_run_doctor_missing_prerequisite_fails(capsys: pytest.CaptureFixture[str]) -> None:
+    # A genuinely missing host tool (git here) is the only thing that FAILs → exit 1.
+    runner = _FakeRunner(outputs={"docker": "Server: Docker Desktop", "tmux": "tmux 3.3a"}, failures={"git"})
+    code = _run_doctor(runner=runner, http_get=lambda _: 0)
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "prerequisite check(s) FAILED" in out
 
 
 def test_run_doctor_survives_list_repos_error_when_service_up(
