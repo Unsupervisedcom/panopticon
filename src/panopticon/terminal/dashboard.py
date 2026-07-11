@@ -93,7 +93,7 @@ from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 
 
 def _make_sort_key(
-    recency: bool = False,
+    by_updated: bool = False,
 ) -> Callable[[JsonObj], tuple[bool, bool, float, str]]:
     """Return a sort key function for the task table.
 
@@ -101,8 +101,8 @@ def _make_sort_key(
     2. turn priority: for active tasks the user's turn comes first (operator action needed);
        for terminal tasks the agent's turn comes first (task just finished).
     3. timestamp:
-       - Active, ``recency=False`` (default): ``created_at`` ascending — stable creation order.
-       - Active, ``recency=True``: ``updated_at`` descending — most recently active rises first.
+       - Active, ``by_updated=False`` (default): ``created_at`` ascending — stable creation order.
+       - Active, ``by_updated=True``: ``updated_at`` descending — most recently updated rises first.
        - Terminal (always): ``updated_at`` descending — most recently completed rises first.
     4. id as a stable tiebreaker.
     """
@@ -110,8 +110,8 @@ def _make_sort_key(
         is_terminal = task["state"] in TERMINAL_LABELS
         turn_first = "agent" if is_terminal else "user"
         turn_after_priority = task["turn"] != turn_first  # False (priority) sorts before True
-        if is_terminal or recency:
-            # Terminal tasks always use updated_at descending; recency mode does too.
+        if is_terminal or by_updated:
+            # Terminal tasks always use updated_at descending; by_updated mode does too.
             raw = task.get("updated_at") or ""
             try:
                 ts = -datetime.fromisoformat(raw).timestamp()  # negative → newest first
@@ -1267,7 +1267,7 @@ class Dashboard(App[None]):
         self._collapsed: set[str] = set()  # governor IDs whose ensembles are currently collapsed
         self._governors: set[str] = set()  # governor IDs visible in the current table build
         self._multi_runner: bool = False  # True when tasks span >1 distinct runner_host
-        self._sort_by_recency: bool = False  # False = creation order (stable); True = updated_at (newest first)
+        self._sort_by_updated: bool = False  # False = creation order (stable); True = updated_at (newest first)
         # one reused scratch dir for `a`'s REST-open (lazily made, cleaned on exit) — so opening
         # many artifacts doesn't leak a temp dir each.
         self._artifact_tmp: tempfile.TemporaryDirectory[str] | None = None
@@ -1358,7 +1358,7 @@ class Dashboard(App[None]):
         table = self.query_one("#tasks", DataTable)
         selected = self._current  # keep the operator's highlight across the rebuild (feed refresh)
         table.clear()
-        ordered = sorted(self._client.list_tasks(), key=_make_sort_key(self._sort_by_recency))
+        ordered = sorted(self._client.list_tasks(), key=_make_sort_key(self._sort_by_updated))
         new_multi_runner = len({r.get("host") for r in self._client.live_runners() if r.get("host")}) > 1
         if new_multi_runner != self._multi_runner:
             table.clear(columns=True)  # rows already gone; also clears columns for rebuild
@@ -1366,7 +1366,7 @@ class Dashboard(App[None]):
             _setup_task_columns(table, multi_runner=self._multi_runner)
         active = [t for t in ordered if t.get("state") not in TERMINAL_LABELS]
         agent_on = sum(1 for t in active if t.get("turn") == "agent")
-        sort_label = "sort: updated" if self._sort_by_recency else "sort: created"
+        sort_label = "sort: updated" if self._sort_by_updated else "sort: created"
         self.query_one(_StatusFooter).set_counter(f"active agents {agent_on}/{len(active)}  ·  {sort_label}")
         # Inject repo_name so _matches can search on it without a separate lookup per task.
         for task in ordered:
@@ -1643,8 +1643,8 @@ class Dashboard(App[None]):
         self.notify(f"copied id: {self._current}")
 
     def action_toggle_sort(self) -> None:
-        """`o`: toggle between creation-order sort (stable) and recency sort (newest first)."""
-        self._sort_by_recency = not self._sort_by_recency
+        """`o`: toggle between creation-order sort (stable) and updated-at sort (newest first)."""
+        self._sort_by_updated = not self._sort_by_updated
         self.action_refresh()
 
     def action_toggle_detail(self) -> None:
