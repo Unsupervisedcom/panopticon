@@ -44,7 +44,7 @@ build:  ## Build the base task-container image (override with IMAGE=)
 	uv build --wheel --out-dir src/panopticon/docker/
 	docker build \
 	  --tag $(IMAGE) \
-	  --build-arg PANOPTICON_WHEEL=$(shell ls -1 src/panopticon/docker/panopticon_app*.whl | xargs -n1 basename) \
+	  --build-arg PANOPTICON_WHEEL=$$(ls -1 src/panopticon/docker/panopticon_app*.whl | xargs -n1 basename) \
 	  --file src/panopticon/docker/Dockerfile \
 	  src/panopticon/docker/
 	rm --force src/panopticon/docker/panopticon_app*.whl
