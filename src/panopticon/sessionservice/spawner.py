@@ -172,6 +172,7 @@ class Spawner:
                 docker_in_docker=bool((repo.get("capabilities") or {}).get("docker_in_docker")),
                 initial_prompt=task.get("initial_prompt"),  # passed as a CLI arg to claude on the first run
                 turn=task.get("turn"),  # agent's turn → INTERRUPT_PROMPT on respawn
+                starting_model=task.get("starting_model"),  # model selection passed to claude --model on first launch
                 progress=lambda phase: self._report(task_id, phase),  # STARTING then AWAITING
             )
         except Exception as exc:

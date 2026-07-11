@@ -469,6 +469,7 @@ def _fully_populated_task() -> Task:
         claimed_by="local",
         tokens_used=87500,
         token_estimate=500_000,
+        starting_model="opus",
         governor_task_id="t-governor",
         updated_at="t2",
         depends_on_task_ids=["t-dep"],

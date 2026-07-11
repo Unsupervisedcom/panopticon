@@ -93,6 +93,11 @@ class Workflow(ABC):
     #: lists it in ``disabled_workflows``; ``True`` = opt-in, hidden unless the repo lists it
     #: in ``enabled_workflows``.
     opt_in: ClassVar[bool] = False
+    #: The model the agent starts with when working on tasks created by this workflow. Seeded onto
+    #: :attr:`~panopticon.core.models.Task.starting_model` at task creation; the runner injects it
+    #: so ``claude --model`` is set on first launch. Defaults to ``"opus"`` for all built-in
+    #: workflows; override per-workflow to change the default.
+    default_model: ClassVar[str] = "opus"
 
     # -- build / validate (the resolution pass; answers "why not a free function?") -----
 
@@ -468,6 +473,7 @@ class Workflow(ABC):
             turn=self.turn_on_enter(state),
             memo=memo,
             initial_prompt=initial_prompt,
+            starting_model=self.default_model,
             history=[
                 HistoryEntry(
                     at=at,

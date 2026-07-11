@@ -126,6 +126,7 @@ class _TaskRow(_Base):
     claimed_by: Mapped[str | None] = mapped_column(default=None)
     tokens_used: Mapped[int | None] = mapped_column(default=None)
     token_estimate: Mapped[int | None] = mapped_column(default=None)
+    starting_model: Mapped[str | None] = mapped_column(default=None)
     governor_task_id: Mapped[str | None] = mapped_column(ForeignKey("task.id"), default=None)
     updated_at: Mapped[str | None] = mapped_column(default=None)
     depends_on_task_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
@@ -153,6 +154,7 @@ class _TaskRow(_Base):
             claimed_by=self.claimed_by,
             tokens_used=self.tokens_used,
             token_estimate=self.token_estimate,
+            starting_model=self.starting_model,
             governor_task_id=self.governor_task_id,
             updated_at=self.updated_at,
             depends_on_task_ids=list(self.depends_on_task_ids or []),
@@ -177,6 +179,7 @@ class _TaskRow(_Base):
             claimed_by=task.claimed_by,
             tokens_used=task.tokens_used,
             token_estimate=task.token_estimate,
+            starting_model=task.starting_model,
             governor_task_id=task.governor_task_id,
             updated_at=task.updated_at,
             depends_on_task_ids=list(task.depends_on_task_ids),

@@ -31,7 +31,7 @@ class _FakeRunner:
     def __init__(self) -> None:
         self.spawned: list[str] = []
 
-    def spawn(self, task_id: str, *, env_file: str | None = None, workspace: str | None = None, image: str | None = None, docker_in_docker: bool = False, memo: str | None = None, initial_prompt: str | None = None, turn: str | None = None, progress: object = None) -> str:
+    def spawn(self, task_id: str, *, env_file: str | None = None, workspace: str | None = None, image: str | None = None, docker_in_docker: bool = False, memo: str | None = None, initial_prompt: str | None = None, turn: str | None = None, starting_model: str | None = None, progress: object = None) -> str:
         self.spawned.append(task_id)
         return f"panopticon-{task_id}"
 

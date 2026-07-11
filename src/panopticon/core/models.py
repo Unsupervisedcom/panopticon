@@ -269,6 +269,11 @@ class Task:
     #: actual). The GithubForge workflows and the orchestrator record it when producing the plan.
     #: ``None`` until estimated.
     token_estimate: int | None = None
+    #: The model the agent should start with — e.g. ``"opus"``. Seeded from
+    #: :attr:`~panopticon.core.workflow.Workflow.default_model` when the task is created;
+    #: injected as ``PANOPTICON_STARTING_MODEL`` at spawn so the agent can pass ``--model``
+    #: to ``claude`` on first launch. ``None`` means no model preference (claude picks its default).
+    starting_model: str | None = None
     #: The task that *governs* (oversees) this one — its ``id``. Set by the orchestrator on the
     #: tasks it creates so the relationship is recorded; also settable manually via
     #: :meth:`TaskService.set_governor`. ``None`` for ungoverned tasks.

@@ -116,6 +116,7 @@ class LocalRunner(Runner):
         docker_in_docker: bool = False,
         initial_prompt: str | None = None,
         turn: str | None = None,
+        starting_model: str | None = None,
         progress: Callable[[LifecyclePhase], None] | None = None,
     ) -> str:
         """Spawn the task container. ``env_file`` is the task's repo's secret reference (ADR
@@ -130,9 +131,11 @@ class LocalRunner(Runner):
         user input. ``turn`` is the
         task's current turn (``"agent"`` or ``"user"``); passed as ``PANOPTICON_TASK_TURN`` so the
         agent launcher can send :data:`~panopticon.container.agent.INTERRUPT_PROMPT` on respawn when
-        the agent holds the turn. ``progress`` (optional) is called with each spawn phase the runner
-        passes through (``STARTING`` before ``docker run``, ``AWAITING`` once the tmux session is
-        up) so the caller can surface it — see
+        the agent holds the turn. ``starting_model`` is the model the agent should start with
+        (e.g. ``"opus"``); passed as ``PANOPTICON_STARTING_MODEL`` so the agent launcher can pass
+        ``--model`` to ``claude`` on first launch. ``progress`` (optional) is called with each spawn
+        phase the runner passes through (``STARTING`` before ``docker run``, ``AWAITING`` once the
+        tmux session is up) so the caller can surface it — see
         :class:`~panopticon.core.models.LifecyclePhase`."""
         def _report(phase: LifecyclePhase) -> None:
             if progress is not None:
@@ -158,6 +161,8 @@ class LocalRunner(Runner):
             env["PANOPTICON_INITIAL_PROMPT"] = initial_prompt
         if turn:
             env["PANOPTICON_TASK_TURN"] = turn
+        if starting_model:
+            env["PANOPTICON_STARTING_MODEL"] = starting_model
         docker_run = [
             "docker", "run", "--detach",
             "--name", container,

@@ -38,8 +38,8 @@ class _FakeRunner:
         self._running = running
         self._session = session
 
-    def spawn(self, task_id: str, *, env_file: str | None = None, workspace: str | None = None, image: str | None = None, docker_in_docker: bool = False, initial_prompt: str | None = None, turn: str | None = None, progress: Callable[[LifecyclePhase], None] | None = None) -> str:
-        self.spawned.append({"task_id": task_id, "env_file": env_file, "workspace": workspace, "image": image, "docker_in_docker": docker_in_docker, "initial_prompt": initial_prompt, "turn": turn})
+    def spawn(self, task_id: str, *, env_file: str | None = None, workspace: str | None = None, image: str | None = None, docker_in_docker: bool = False, initial_prompt: str | None = None, turn: str | None = None, starting_model: str | None = None, progress: Callable[[LifecyclePhase], None] | None = None) -> str:
+        self.spawned.append({"task_id": task_id, "env_file": env_file, "workspace": workspace, "image": image, "docker_in_docker": docker_in_docker, "initial_prompt": initial_prompt, "turn": turn, "starting_model": starting_model})
         if progress is not None:  # the real runner reports these two sub-steps
             progress(LifecyclePhase.STARTING)
             progress(LifecyclePhase.AWAITING)
@@ -143,6 +143,15 @@ def test_spawn_one_passes_turn_for_interrupt_prompt_on_respawn() -> None:
          "claimed_by": None, "turn": "agent"}
     )
     assert runner.spawned[0]["turn"] == "agent"
+
+
+def test_spawn_one_passes_starting_model_to_runner() -> None:
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner()
+    _spawner(client, runner).spawn_one(
+        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING",
+         "claimed_by": None, "starting_model": "opus"}
+    )
+    assert runner.spawned[0]["starting_model"] == "opus"
 
 
 def test_spawn_one_passes_the_docker_in_docker_capability() -> None:
