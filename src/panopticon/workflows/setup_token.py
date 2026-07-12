@@ -3,12 +3,14 @@
 The first example of ``runner_type = "shell"`` (ADR 0012 retired ``panopticon login``; container
 auth is now just a non-rotating ``claude setup-token`` the operator adds to a repo's env-file).
 Rather than spawn a task container + agent, the session service runs :meth:`shell_script` directly
-in a host tmux session: the operator attaches (``t`` in the dashboard), completes the interactive
-``claude setup-token`` OAuth flow, and the script marks the task ``COMPLETE`` over REST. No image,
-no per-task clone, no LLM — just a host shell doing one operator chore.
+in a host tmux session: the operator attaches (``t`` in the dashboard), the script checks whether a
+credential is already configured and guides them (collect one, or drop the task to add their own),
+and on a final Enter it marks the task ``COMPLETE`` over REST and returns them to the dashboard. No
+image, no per-task clone, no LLM — just a host shell doing one operator chore.
 
 ``RUNNING → {COMPLETE, DROPPED}``. The single state carries no responsibilities (a shell task has
-no agent to gate); the script itself drives the advance to COMPLETE on success.
+no agent to gate); the script itself drives the advance to COMPLETE when the operator finishes (or
+they drop the task instead to keep an existing credential).
 """
 
 from __future__ import annotations
@@ -41,16 +43,17 @@ class SetupToken(Workflow):
 
     class Running(InitialState):
         label = "RUNNING"
-        description = "Run `claude setup-token` in a host shell; the script marks the task complete on success."
+        description = "Run `claude setup-token` in a host shell; the script completes the task when the operator finishes."
         transitions = (Complete,)  # advance → COMPLETE; + DROPPED inherited
 
     initial = Running
 
     def shell_script(self) -> str:
-        """Run ``claude setup-token`` interactively; on success, advance the task to COMPLETE.
+        """Guide the operator through ``claude setup-token``, then complete the task on a final Enter.
 
         The script lives in the sibling ``setup_token.sh``. The session service injects
-        ``PANOPTICON_SERVICE_URL``/``PANOPTICON_TASK_ID``, so the script advances itself over REST;
-        it pauses on the minted token afterwards so the operator (attached to the session) can copy
-        it into the repo's env-file before closing."""
+        ``PANOPTICON_SERVICE_URL``/``PANOPTICON_TASK_ID`` (and sources the repo's secrets), so the
+        script checks for an existing credential, optionally collects a new one, and — whatever route
+        the operator takes — ends with a summary and a prompt to press Enter, which advances the task
+        to COMPLETE over REST and returns them to the dashboard."""
         return _SCRIPT
