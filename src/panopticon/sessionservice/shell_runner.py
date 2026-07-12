@@ -16,6 +16,7 @@ unit-testable without tmux. LLM-free — a shell task runs no agent.
 
 from __future__ import annotations
 
+import importlib.resources
 import os
 import shlex
 from collections.abc import Callable
@@ -30,6 +31,11 @@ from panopticon.sessionservice.local_runner import (
     session_name,
 )
 from panopticon.sessionservice.runner import Runner
+
+#: The panopticon shell lib (``task_lib.sh``): functions a shell workflow's script uses to drive its
+#: task over REST (``panopticon_advance``/``_drop``/``_set_slug``/…) instead of hand-rolling curl.
+#: Loaded once at import and injected into every shell task's shell (see :meth:`ShellRunner.spawn`).
+_TASK_LIB = (importlib.resources.files("panopticon.sessionservice") / "task_lib.sh").read_text()
 
 
 class ShellRunner(Runner):
@@ -75,9 +81,10 @@ class ShellRunner(Runner):
         exported — so the script can drive its own lifecycle over REST (e.g. advance to COMPLETE on
         success) — and the repo's ``env_file`` secrets sourced first when given. ``env_file`` is a
         **name relative to this runner's secrets dir** (ADR 0007), resolved host-locally (like
-        ``LocalRunner``) so a remote runner uses its own host's secrets. It also holds a ``/live``
-        registration open in the background for the session's lifetime, so the dashboard shows the
-        task **live** (not ``awaiting``) while the script runs. Reports ``STARTING`` (before the
+        ``LocalRunner``) so a remote runner uses its own host's secrets. The panopticon shell lib
+        (``panopticon_advance``/``_drop``/…) is loaded into the shell so the script can drive its task
+        over REST. It also holds a ``/live`` registration open in the background for the session's
+        lifetime, so the dashboard shows the task **live** (not ``awaiting``) while the script runs. Reports ``STARTING`` (before the
         session) then ``AWAITING`` (once it's up) via ``progress`` — it composes to ``live`` once the
         background registration connects; there is no ``PREPARING``/``BUILDING`` (no clone, no image).
         Idempotent: a stale session of the same name is killed first, so a respawn is a no-op restart."""
@@ -105,6 +112,8 @@ class ShellRunner(Runner):
             f"curl --silent --no-buffer {shlex.quote(live_url)} >/dev/null 2>&1 &",
             "_panopticon_live_pid=$!",
             "trap 'kill $_panopticon_live_pid 2>/dev/null' EXIT",
+            # Load the panopticon shell lib so the script can drive its task (panopticon_advance, …).
+            _TASK_LIB,
         ]
         # Resolve the env_file *name* to an absolute path under this host's secrets dir, expose the
         # path (so a script can tell the operator where to add their own credential), then source it

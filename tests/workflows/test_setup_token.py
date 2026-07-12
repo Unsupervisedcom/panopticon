@@ -47,8 +47,8 @@ def test_running_has_no_responsibilities() -> None:
 def test_shell_script_runs_setup_token_and_advances() -> None:
     script = WF.shell_script()
     assert "claude setup-token" in script
-    # drives its own lifecycle over REST using the env vars the shell runner injects
-    assert "$PANOPTICON_SERVICE_URL/tasks/$PANOPTICON_TASK_ID/operations/advance" in script
+    # completes the task via the panopticon shell lib (loaded by the shell runner), not raw curl
+    assert "panopticon_advance" in script
 
 
 def test_shell_script_checks_for_an_existing_credential_and_guides_the_operator() -> None:
@@ -68,9 +68,9 @@ def test_shell_script_converges_on_a_summary_and_completes_on_a_final_enter() ->
     assert "Summary:" in script
     assert 'echo "$dashboard_hint"' in script  # the hint is shown unconditionally at the end
     assert "Press Enter to complete this task and return to the dashboard" in script
-    # the completion (advance) is the final action — after the credential-check branches, run on any
-    # route — not gated on `claude setup-token` succeeding
-    assert script.rindex("operations/advance") > script.rindex("claude setup-token")
+    # the completion (panopticon_advance) is the final action — after the credential-check branches,
+    # run on any route — not gated on `claude setup-token` succeeding
+    assert script.rindex("panopticon_advance") > script.rindex("claude setup-token")
 
 
 def test_docker_workflows_have_no_shell_script_and_default_knobs() -> None:

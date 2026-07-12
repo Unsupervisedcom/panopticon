@@ -64,7 +64,5 @@ echo
 echo "$dashboard_hint"
 printf 'Press Enter to complete this task and return to the dashboard. '
 read _
-curl --silent --show-error --fail --request POST \
-    "$PANOPTICON_SERVICE_URL/tasks/$PANOPTICON_TASK_ID/operations/advance" \
-    >/dev/null \
-    || echo "warning: could not mark the task complete via $PANOPTICON_SERVICE_URL"
+# panopticon_advance is provided by the panopticon shell lib (loaded by the session service).
+panopticon_advance || echo "warning: could not mark the task complete via $PANOPTICON_SERVICE_URL"

@@ -215,3 +215,33 @@ def test_shell_task_registers_live_with_the_service(
             break
         time.sleep(0.1)
     assert reaped, "liveness was not reaped after the session ended"
+
+
+@pytest.mark.skipif(not _HAVE_TMUX_CURL, reason="needs tmux + curl")
+def test_shell_lib_drives_the_task_service(served: tuple[TaskService, int], tmp_path: Path) -> None:
+    # The panopticon shell lib injected into every shell task lets its script drive the task over
+    # REST. Here the script calls `panopticon_set_url` and the service reflects it — proving a shell
+    # workflow can drive its own task without hand-rolling curl.
+    service, port = served
+    asyncio.run(service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git")))
+    task_id = asyncio.run(service.create_task("r1", "spike")).id
+
+    runner = ShellRunner(
+        f"http://127.0.0.1:{port}", runner_id="shell-acc", tmux_socket=_SHELL_SOCKET
+    )
+    try:
+        runner.spawn(
+            task_id,
+            script="panopticon_set_url https://example.test/pr/1; sleep 30",
+            workdir=str(tmp_path),
+        )
+        recorded = None
+        for _ in range(100):  # the lib's PUT /url lands on the service
+            recorded = asyncio.run(service.get_task(task_id)).url
+            if recorded:
+                break
+            time.sleep(0.1)
+        assert recorded == "https://example.test/pr/1", "shell lib did not drive the task service"
+    finally:
+        runner.stop(session_name(task_id))
+        subprocess.run(["tmux", "-L", _SHELL_SOCKET, "kill-server"], capture_output=True)

@@ -74,6 +74,19 @@ def test_spawn_exports_service_env_and_runs_the_script() -> None:
     assert command.rstrip().endswith("claude setup-token")  # the workflow script runs last
 
 
+def test_spawn_loads_the_panopticon_shell_lib_before_the_script() -> None:
+    # The shell lib (task_lib.sh) is injected so the workflow script can drive its task over REST
+    # (panopticon_advance/_drop/…) instead of hand-rolling curl.
+    rec = _Recorder()
+    ShellRunner("http://svc:8000", run=rec).spawn("t1", script="panopticon_advance")
+    command = rec.calls[-1][-1]
+    assert "panopticon_advance()" in command  # the function is defined...
+    assert "_panopticon_api" in command  # ...along with the lib internals
+    assert command.index("panopticon_advance()") < command.rindex(
+        "panopticon_advance"
+    )  # def before use
+
+
 def test_spawn_holds_a_liveness_registration_open_in_the_background() -> None:
     # A shell task runs no agent, so the runner holds its /live stream open so the dashboard shows
     # it live (not `awaiting`) while the script runs; a trap drops it when the script exits.
@@ -115,7 +128,8 @@ def test_spawn_rejects_an_env_file_name_escaping_the_secrets_dir() -> None:
 def test_spawn_omits_env_sourcing_without_a_file() -> None:
     rec = _Recorder()
     ShellRunner("http://svc:8000", run=rec).spawn("t1", script="echo hi")
-    assert ". " not in rec.calls[-1][-1]  # no source line
+    command = rec.calls[-1][-1]
+    assert "set -a" not in command and "PANOPTICON_ENV_FILE" not in command  # no source line
 
 
 def test_spawn_reports_starting_then_awaiting() -> None:
