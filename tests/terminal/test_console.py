@@ -7,13 +7,31 @@ hub-and-spoke loop is tested without a TTY or tmux; `switch_to`'s detach is inje
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from panopticon.terminal.console import (
+    resolve_join,
     run_console,
     switch_file_path,
     switch_to,
     wait_for_service,
 )
+
+
+class _JoinClient:
+    """A fake task-service client for resolve_join: canned tasks + per-task registrations."""
+
+    def __init__(
+        self, tasks: list[dict[str, Any]], registrations: dict[str, list[dict[str, Any]]]
+    ) -> None:
+        self._tasks = tasks
+        self._registrations = registrations
+
+    def list_tasks(self) -> list[dict[str, Any]]:
+        return self._tasks
+
+    def list_registrations(self, task_id: str) -> list[dict[str, Any]]:
+        return self._registrations.get(task_id, [])
 
 
 def test_switch_file_is_deterministic_per_socket() -> None:
@@ -65,6 +83,66 @@ def test_quitting_immediately_attaches_nothing() -> None:
     attached: list[str] = []
     run_console(show_dashboard=lambda: None, attach=attached.append)
     assert attached == []
+
+
+def test_initial_join_is_attached_before_the_first_dashboard() -> None:
+    # `panopticon start <task>`: the joined session is attached first, then the loop shows the
+    # dashboard and attaches each pick — so the operator lands straight in the joined task.
+    picks = iter(["sess-b", None])
+    attached: list[str] = []
+
+    run_console(show_dashboard=lambda: next(picks), attach=attached.append, initial="sess-a")
+
+    assert attached == ["sess-a", "sess-b"]  # joined session first, then the picked one
+
+
+def test_no_initial_join_behaves_as_before() -> None:
+    picks = iter(["sess-b", None])
+    attached: list[str] = []
+
+    run_console(show_dashboard=lambda: next(picks), attach=attached.append, initial=None)
+
+    assert attached == ["sess-b"]  # no leading attach when nothing is joined
+
+
+def test_resolve_join_by_slug_returns_the_container_session() -> None:
+    # session == container id; a local task (no runner_host) encodes as a bare "<session>".
+    client = _JoinClient(
+        tasks=[{"id": "t1", "slug": "fix-login", "runner_host": None}],
+        registrations={"t1": [{"container_id": "panopticon-t1"}]},
+    )
+    assert resolve_join(client, "fix-login") == "panopticon-t1"  # type: ignore[arg-type]
+
+
+def test_resolve_join_by_id_returns_the_container_session() -> None:
+    client = _JoinClient(
+        tasks=[{"id": "t1", "slug": "fix-login", "runner_host": None}],
+        registrations={"t1": [{"container_id": "panopticon-t1"}]},
+    )
+    assert resolve_join(client, "t1") == "panopticon-t1"  # type: ignore[arg-type]
+
+
+def test_resolve_join_encodes_a_remote_task_with_its_host() -> None:
+    # A remote runner (M5): the switch-file target carries "<host>\t<session>" so the supervisor
+    # ssh-wraps the attach — same encoding as the dashboard's `t` hook.
+    client = _JoinClient(
+        tasks=[{"id": "t1", "slug": "fix-login", "runner_host": "box.example.com"}],
+        registrations={"t1": [{"container_id": "panopticon-t1"}]},
+    )
+    assert resolve_join(client, "t1") == "box.example.com\tpanopticon-t1"  # type: ignore[arg-type]
+
+
+def test_resolve_join_returns_none_for_an_unknown_task() -> None:
+    client = _JoinClient(tasks=[{"id": "t1", "slug": "fix-login"}], registrations={})
+    assert resolve_join(client, "nope") is None  # type: ignore[arg-type]
+
+
+def test_resolve_join_returns_none_when_no_container_is_running() -> None:
+    # The task exists but has no registration (container not up) → fall back to the dashboard.
+    client = _JoinClient(
+        tasks=[{"id": "t1", "slug": "fix-login", "runner_host": None}], registrations={"t1": []}
+    )
+    assert resolve_join(client, "fix-login") is None  # type: ignore[arg-type]
 
 
 def test_switch_to_records_the_pick_then_detaches(tmp_path: Path) -> None:

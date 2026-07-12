@@ -3,8 +3,10 @@
 `panopticon` with no argument (or `panopticon start`) starts everything: runs DB migrations,
 starts the task service and session-service runner in background tmux sessions, then opens the
 session supervisor (ADR 0009) — the dashboard, plus handing the terminal to a task's tmux on `t`
-and rejoining on detach. `panopticon console` opens the supervisor only (assumes services are
-already running). `panopticon dashboard` runs the dashboard once without the attach loop;
+and rejoining on detach. Given a task id or slug (`panopticon start <task>`), it joins — attaches
+straight to — that task's container session first, falling into the dashboard on detach.
+`panopticon console` opens the supervisor only (assumes services are already running) and takes
+the same optional task argument. `panopticon dashboard` runs the dashboard once without the attach loop;
 `panopticon tasks` lists tasks as plain text; `panopticon migrate` applies DB migrations to head
 via the bundled Alembic config. `panopticon quickstart` registers panopticon itself as a repo
 (idempotent) then starts everything.
@@ -69,9 +71,10 @@ def main(
         help="task service base URL",
     )
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser(
+    con = sub.add_parser(
         "console", help="session supervisor: dashboard + attach loop (assumes services are running)"
     )
+    con.add_argument("task", nargs="?", help="task id or slug to join (attach to) on startup")
     dash = sub.add_parser("dashboard", help="run the dashboard once, without the attach loop")
     # Set by the supervisor (ADR 0009): the dashboard runs inside tmux, so it reports the session
     # the operator picked with `t` by writing it here instead of returning it in-process.
@@ -83,7 +86,8 @@ def main(
     sub.add_parser(
         "host", help="start task service + runner in background tmux sessions (no console)"
     )
-    sub.add_parser("start", help="start everything and open the dashboard supervisor")
+    start = sub.add_parser("start", help="start everything and open the dashboard supervisor")
+    start.add_argument("task", nargs="?", help="task id or slug to join (attach to) on startup")
     sub.add_parser("stop", help="stop task containers and the panopticon tmux server")
     sub.add_parser(
         "quickstart",
@@ -186,7 +190,7 @@ def main(
             _start_sessions()
         from panopticon.terminal.console import run_console_local
 
-        run_console_local(args.service_url)
+        run_console_local(args.service_url, client=client, join=getattr(args, "task", None))
     return 0
 
 

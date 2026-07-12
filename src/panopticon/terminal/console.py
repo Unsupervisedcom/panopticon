@@ -30,6 +30,7 @@ from pathlib import Path
 
 import httpx
 
+from panopticon.client import TaskServiceClient
 from panopticon.sessionservice.local_runner import TMUX_SOCKET
 from panopticon.terminal.attach import attach_command
 
@@ -168,23 +169,65 @@ def wait_for_service(
     return False
 
 
-def run_console(*, show_dashboard: Selector, attach: Attacher) -> None:
+def resolve_join(client: TaskServiceClient, ref: str) -> str | None:
+    """Resolve a task ``ref`` (id or slug) to the supervisor switch-file target for its live
+    container session, or ``None`` when there's no such task / no running container.
+
+    Mirrors the dashboard's `t` hook: the session name is the container id and a remote task
+    encodes as ``"<host>\\t<session>"`` (bare ``"<session>"`` when local), which the supervisor's
+    ``attach`` closure parses. Used to *join* a task directly on `panopticon start <task>`.
+    """
+    match = next(
+        (t for t in client.list_tasks() if t.get("id") == ref or t.get("slug") == ref), None
+    )
+    if match is None:
+        return None
+    registrations = client.list_registrations(str(match["id"]))
+    if not registrations:
+        return None
+    session = str(registrations[0]["container_id"])
+    host = match.get("runner_host")
+    return f"{host}\t{session}" if host else session
+
+
+def run_console(*, show_dashboard: Selector, attach: Attacher, initial: str | None = None) -> None:
     """Loop: dashboard → (pick a task) → attach → (detach) → dashboard, until the operator quits.
 
-    ``show_dashboard`` and ``attach`` are injected so the loop is testable without tmux or a TTY.
+    ``initial`` (set by `panopticon start <task>`) is attached once up front, before the first
+    dashboard, so the operator lands straight in that task's session; detaching falls into the
+    normal loop. ``show_dashboard`` and ``attach`` are injected so the loop is testable without
+    tmux or a TTY.
     """
+    if initial is not None:
+        attach(initial)
     while (session := show_dashboard()) is not None:
         attach(session)
 
 
-def run_console_local(service_url: str, *, socket: str = TMUX_SOCKET) -> None:
+def run_console_local(
+    service_url: str,
+    *,
+    socket: str = TMUX_SOCKET,
+    client: TaskServiceClient | None = None,
+    join: str | None = None,
+) -> None:
     """Wire :func:`run_console` to local tmux: a persistent `dashboard` session, and the task
-    attach on the panopticon socket. The dashboard reports its pick via a switch-file."""
+    attach on the panopticon socket. The dashboard reports its pick via a switch-file.
+
+    ``join`` (a task id or slug from `panopticon start <task>`) is resolved to its live container
+    session and attached first; if the task or its container isn't found we fall back to the
+    dashboard with a notice rather than blocking."""
     # Don't show the dashboard until the service is up, else it crashes on its first read (and its
     # session vanishes) — the `make start` startup race.
     if not wait_for_service(service_url):
         print(f"task service not reachable at {service_url}; is it running?", file=sys.stderr)
         return
+    initial: str | None = None
+    if join:
+        client = client or TaskServiceClient(httpx.Client(base_url=service_url))
+        initial = resolve_join(client, join)
+        if initial is None:
+            print(f"no running container for task '{join}'; opening the dashboard", file=sys.stderr)
     switch_file = switch_file_path(socket)
     switch_file.parent.mkdir(parents=True, exist_ok=True)
     dashboard = [
@@ -217,4 +260,4 @@ def run_console_local(service_url: str, *, socket: str = TMUX_SOCKET) -> None:
         session = parts[-1]
         subprocess.run(attach_command(session, socket=socket, host=host or None), check=False)
 
-    run_console(show_dashboard=show_dashboard, attach=attach)
+    run_console(show_dashboard=show_dashboard, attach=attach, initial=initial)
