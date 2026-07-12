@@ -24,6 +24,7 @@ dev = [
     "pytest>=8",
     "mypy>=1.11",
     "pytest-asyncio>=1.4.0",
+    "ruff>=0.6",
 ]
 
 [build-system]
@@ -48,3 +49,60 @@ strict = true
 mypy_path = "src"
 namespace_packages = true
 explicit_package_bases = true
+
+[tool.ruff]
+# Match requires-python's floor / mypy — the minimum syntax we support, not CI's runner.
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+# A curated, high-signal "best practices" set — deliberately NOT `ALL` (which bundles
+# docstring-everything, annotation rules that duplicate mypy, and formatter-owned rules
+# that would bury signal and fight `ruff format`). F carries the headline F401 unused-import
+# rule this gate exists for. Noisier sets (PTH/PL/RET/ARG) are left for a follow-up once the
+# core set is clean; see plan.md.
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes — includes F401 (unused import), F841 (unused variable)
+    "I",    # isort — import ordering
+    "UP",   # pyupgrade — modernize for the py311 target
+    "B",    # flake8-bugbear — likely-bug patterns
+    "SIM",  # flake8-simplify
+    "C4",   # flake8-comprehensions
+    "PIE",  # flake8-pie — misc lints
+    "RUF",  # Ruff-specific rules
+    "TID",  # flake8-tidy-imports
+]
+ignore = [
+    # `ruff format` owns line length: it reflows code but deliberately leaves comments,
+    # docstrings, and long string/URL literals alone, so E501 here would only ever nag about
+    # lines the formatter won't touch. Format-check is the real width gate.
+    "E501",
+    # Ambiguous-unicode rules: this codebase deliberately uses `—`, `…`, `→`, `≈` in prose,
+    # docstrings, and comments. That's intentional typography, not a homoglyph mistake.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    # Empty methods in ABCs are our optional lifecycle hooks (Workflow.on_transition/provision,
+    # Store.init, ArtifactStore.link_slug/unlink_slug): a default no-op subclasses may override
+    # but need not. Making them @abstractmethod would wrongly force every subclass to implement.
+    "B027",
+    # `class Foo(str, Enum)` → `StrEnum` changes `str(Foo.X)` from `"Foo.X"` to the value; these
+    # enums are persisted/serialized, so that semantic shift is out of scope for a lint adoption.
+    "UP042",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["panopticon"]
+
+[tool.ruff.lint.per-file-ignores]
+# Package __init__.py files re-export their public surface via `__all__`; those imports
+# are "unused" locally by design.
+"__init__.py" = ["F401"]
+# Tests lean on bare asserts (S101), assert-by-attribute-access inside `pytest.raises` (B018),
+# and lambda stubs for fakes (E731); test fixture classes carry mutable class defaults (RUF012).
+"tests/*" = ["S101", "B018", "E731", "RUF012"]
+# Textual widgets declare class-level BINDINGS/CSS/COMPONENT_CLASSES as mutable defaults — a
+# framework convention the framework reads off the class, not a shared-mutable-state bug.
+"src/panopticon/terminal/dashboard.py" = ["RUF012"]

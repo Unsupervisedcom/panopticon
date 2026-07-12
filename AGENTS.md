@@ -90,7 +90,9 @@ A `Makefile` wraps the `uv` commands (`make help` lists targets):
 make sync        # uv sync — venv + deps
 make test        # uv run pytest
 make typecheck   # uv run mypy --package panopticon (strict)
-make check       # typecheck + test (what CI runs)
+make lint        # uv run ruff check --fix + ruff format (lint + auto-format)
+make format      # uv run ruff format
+make check       # lint + typecheck + test (what CI runs)
 make serve       # run the task service over HTTP (python -m panopticon.taskservice)
 make dashboard   # run the dashboard once (no attach loop)
 make start       # bring up everything: task service + session-service runner + dashboard supervisor
@@ -130,8 +132,13 @@ Spawning needs the base image — `make build`
 first. `make dashboard` runs the dashboard once without the attach loop (talks to
 `PANOPTICON_SERVICE_URL`).
 
-CI (`.github/workflows/ci.yml`) runs `uv sync`, `mypy`, and `pytest` on every PR (the same
-commands the Makefile wraps).
+Lint + format is **Ruff** (`make lint` / `make format`); the ruleset lives under `[tool.ruff]` in
+`pyproject.toml` (a curated best-practices `select`, incl. `F401` unused-import — the rule that keeps
+stale imports from landing; `ruff format` owns line width, so `E501` is off). `make check` runs it
+read-only (`ruff check` + `ruff format --check`) before mypy + pytest.
+
+CI (`.github/workflows/ci.yml`) runs `uv sync`, `ruff` (lint + format check), `mypy`, and `pytest`
+on every PR (the same commands the Makefile wraps).
 
 ## Tests worth knowing
 

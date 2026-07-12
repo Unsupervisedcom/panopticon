@@ -20,6 +20,12 @@ jobs:
       - name: Sync dependencies
         run: uv sync
 
+      - name: Lint (ruff)
+        run: uv run ruff check
+
+      - name: Format check (ruff)
+        run: uv run ruff format --check
+
       - name: Type-check (mypy)
         run: uv run mypy --package panopticon
 
