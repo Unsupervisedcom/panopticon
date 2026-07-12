@@ -39,12 +39,16 @@ def _provisioner(client: object, run: Callable[..., str]) -> Provisioner:
 class _FakeClient:
     """A task-service client stub: serves one repo, captures record_provisioning calls."""
 
-    def __init__(self, *, git_url: str = "https://forge/r1.git") -> None:
+    def __init__(self, *, git_url: str = "https://forge/r1.git", runner_type: str = "docker") -> None:
         self._repo: JsonObj = {"id": "r1", "default_base": "trunk", "git_url": git_url}
+        self._runner_type = runner_type
         self.recorded: list[tuple[str, str, str]] = []
 
     def get_repo(self, repo_id: str) -> JsonObj:
         return self._repo
+
+    def workflow_runner_type(self, name: str) -> str:
+        return self._runner_type
 
     def record_provisioning(self, task_id: str, branch: str, clone: str) -> JsonObj:
         self.recorded.append((task_id, branch, clone))
@@ -82,6 +86,19 @@ def test_skips_an_already_provisioned_task() -> None:
     already = {"id": "t1", "repo_id": "r1", "slug": "fix-widget", "provisioned": True}
     assert provisioner.provision(already) is None  # idempotent: already provisioned
     assert calls == []
+    assert client.recorded == []
+
+
+def test_skips_a_shell_workflow_task_which_has_no_clone() -> None:
+    # A `runner_type = "shell"` task runs on the host with no per-task clone, so even with a slug
+    # there is nothing to branch — the no-clone guarantee holds rather than failing on a missing dir.
+    calls, run = _recording_runner()
+    client = _FakeClient(runner_type="shell")
+    provisioner = _provisioner(client, run)
+
+    shell_task = {"id": "t1", "repo_id": "r1", "workflow": "setup-token", "slug": "mint", "provisioned": False}
+    assert provisioner.provision(shell_task) is None
+    assert calls == []  # no git checkout -b against a nonexistent clone
     assert client.recorded == []
 
 

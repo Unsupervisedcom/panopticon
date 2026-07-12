@@ -40,6 +40,17 @@ class Provisioner:
         self._client = client
         self._clones_root = clones_root.rstrip("/")
         self._git = git or GitClones()
+        #: workflow name → runner_type, fetched once over REST then cached (as in the spawner) — so
+        #: the per-pass shell-skip below doesn't re-hit the service for every task each pass.
+        self._runner_types: dict[str, str] = {}
+
+    def _is_shell(self, workflow: str | None) -> bool:
+        """Whether ``workflow`` runs as a host shell script (no per-task clone to branch)."""
+        if not workflow:
+            return False
+        if workflow not in self._runner_types:
+            self._runner_types[workflow] = self._client.workflow_runner_type(workflow)
+        return self._runner_types[workflow] == "shell"
 
     def provision(self, task: JsonObj) -> str | None:
         """Provision ``task`` if it is ready, returning the created branch (else ``None``).
@@ -48,8 +59,14 @@ class Provisioner:
         the pull loop can call it on every task). Branches the per-task clone off its current HEAD,
         then records the branch + clone path on the task service. (``origin`` was pointed at the
         forge at spawn-prep, so there's nothing to repoint here.)
+
+        A **shell** workflow's task is skipped: it runs on the host with no per-task clone, so there
+        is nothing to branch — the guarantee that ``runner_type = "shell"`` means *no clone* holds
+        even if such a task somehow acquires a slug.
         """
         if not task.get("slug") or task.get("provisioned"):
+            return None
+        if self._is_shell(task.get("workflow")):
             return None
         clone = f"{self._clones_root}/{task['id']}"
         branch = branch_name(task["slug"])
