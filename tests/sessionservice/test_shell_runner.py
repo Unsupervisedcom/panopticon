@@ -74,6 +74,21 @@ def test_spawn_exports_service_env_and_runs_the_script() -> None:
     assert command.rstrip().endswith("claude setup-token")  # the workflow script runs last
 
 
+def test_spawn_holds_a_liveness_registration_open_in_the_background() -> None:
+    # A shell task runs no agent, so the runner holds its /live stream open so the dashboard shows
+    # it live (not `awaiting`) while the script runs; a trap drops it when the script exits.
+    rec = _Recorder()
+    ShellRunner("http://svc:8000", runner_id="r1", run=rec).spawn("t1", script="echo hi")
+    command = rec.calls[-1][-1]
+    assert (
+        "/tasks/t1/live?container_id=panopticon-t1&runner_id=r1" in command
+    )  # holds liveness open
+    assert "--no-buffer" in command and command.count(" &\n") >= 1  # backgrounded, streaming GET
+    assert "trap 'kill $_panopticon_live_pid 2>/dev/null' EXIT" in command  # dropped when it exits
+    # the registration is established before the workflow script runs
+    assert command.index("/live?") < command.index("echo hi")
+
+
 def test_spawn_resolves_and_sources_the_env_file_against_the_secrets_dir() -> None:
     # env_file is a name relative to this runner's secrets dir (ADR 0007), resolved host-locally.
     rec = _Recorder()
@@ -82,8 +97,11 @@ def test_spawn_resolves_and_sources_the_env_file_against_the_secrets_dir() -> No
     )
     command = rec.calls[-1][-1]
     assert (
-        "set -a; . /host/secrets/r1.env; set +a" in command
-    )  # resolved + sourced before the script
+        "export PANOPTICON_ENV_FILE=/host/secrets/r1.env" in command
+    )  # path exposed to the script
+    # resolved + sourced (guarded on existence — a not-yet-created secrets file is fine)
+    assert "[ -f /host/secrets/r1.env ]" in command
+    assert "set -a; . /host/secrets/r1.env; set +a" in command
 
 
 def test_spawn_rejects_an_env_file_name_escaping_the_secrets_dir() -> None:

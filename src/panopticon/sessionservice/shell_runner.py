@@ -75,10 +75,12 @@ class ShellRunner(Runner):
         exported — so the script can drive its own lifecycle over REST (e.g. advance to COMPLETE on
         success) — and the repo's ``env_file`` secrets sourced first when given. ``env_file`` is a
         **name relative to this runner's secrets dir** (ADR 0007), resolved host-locally (like
-        ``LocalRunner``) so a remote runner uses its own host's secrets. Reports ``STARTING`` (before
-        the session) then ``AWAITING`` (once it's up) via ``progress``; there is no
-        ``PREPARING``/``BUILDING`` (no clone, no image). Idempotent: a stale session of the same name
-        is killed first, so a respawn is a no-op restart."""
+        ``LocalRunner``) so a remote runner uses its own host's secrets. It also holds a ``/live``
+        registration open in the background for the session's lifetime, so the dashboard shows the
+        task **live** (not ``awaiting``) while the script runs. Reports ``STARTING`` (before the
+        session) then ``AWAITING`` (once it's up) via ``progress`` — it composes to ``live`` once the
+        background registration connects; there is no ``PREPARING``/``BUILDING`` (no clone, no image).
+        Idempotent: a stale session of the same name is killed first, so a respawn is a no-op restart."""
 
         def _report(phase: LifecyclePhase) -> None:
             if progress is not None:
@@ -86,14 +88,31 @@ class ShellRunner(Runner):
 
         start_dir = workdir or os.path.expanduser("~")
         session = session_name(task_id)
+        # A shell task runs no agent to open its own `/live` registration, so the dashboard would
+        # read it as `awaiting` for its whole life. Hold the liveness stream open in the background
+        # for the session's lifetime instead — the task then composes as `live` while the script
+        # runs. `curl --no-buffer` keeps the GET open (the connection *is* the signal); `trap … EXIT`
+        # drops it when the script exits, and killing the session SIGHUPs the whole pane group, which
+        # reaps the backgrounded curl too — either way liveness ends exactly with the session.
+        live_url = (
+            f"{self._service_url}/tasks/{task_id}/live"
+            f"?container_id={session}&runner_id={self._runner_id}"
+        )
         lines = [
             f"export PANOPTICON_SERVICE_URL={shlex.quote(self._service_url)}",
             f"export PANOPTICON_TASK_ID={shlex.quote(task_id)}",
             f"export PANOPTICON_RUNNER_ID={shlex.quote(self._runner_id)}",
+            f"curl --silent --no-buffer {shlex.quote(live_url)} >/dev/null 2>&1 &",
+            "_panopticon_live_pid=$!",
+            "trap 'kill $_panopticon_live_pid 2>/dev/null' EXIT",
         ]
-        # Resolve the env_file *name* to an absolute path under this host's secrets dir, then source it.
+        # Resolve the env_file *name* to an absolute path under this host's secrets dir, expose the
+        # path (so a script can tell the operator where to add their own credential), then source it
+        # if it exists (a not-yet-created secrets file is fine — the script sees the vars unset).
         if env_path := secrets_file_path(env_file, secrets_dir=self._secrets_dir):
-            lines.append(f"set -a; . {shlex.quote(env_path)}; set +a")
+            quoted = shlex.quote(env_path)
+            lines.append(f"export PANOPTICON_ENV_FILE={quoted}")
+            lines.append(f"[ -f {quoted} ] && {{ set -a; . {quoted}; set +a; }}")
         lines.append(script)
         command = "\n".join(lines)
         # Clear any stale session first so a respawn is idempotent (no-op when none exists).

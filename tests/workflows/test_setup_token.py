@@ -51,6 +51,17 @@ def test_shell_script_runs_setup_token_and_advances() -> None:
     assert "$PANOPTICON_SERVICE_URL/tasks/$PANOPTICON_TASK_ID/operations/advance" in script
 
 
+def test_shell_script_checks_for_an_existing_credential_and_guides_the_operator() -> None:
+    script = WF.shell_script()
+    # branches on an already-configured credential (env-file sourced by the shell runner)
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in script and "ANTHROPIC_API_KEY" in script
+    assert "$PANOPTICON_ENV_FILE" in script or "PANOPTICON_ENV_FILE" in script  # names the env-file
+    # tells the operator they can drop the task instead (dashboard 'x')
+    assert "'x'" in script and "drop" in script.lower()
+    # detects/falls back to the tmux detach binding to get back to the dashboard
+    assert "detach-client" in script and "show-options -gv prefix" in script
+
+
 def test_docker_workflows_have_no_shell_script_and_default_knobs() -> None:
     from panopticon.workflows import Spike
 
