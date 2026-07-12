@@ -575,10 +575,11 @@ async def test_dashboard_with_no_tasks() -> None:
 
 async def test_pressing_t_signals_the_pick_and_keeps_the_dashboard_running() -> None:
     # The dashboard records the pick via on_switch (the supervisor detaches + attaches the task)
-    # and stays alive, so returning lands on this same live dashboard (ADR 0009 §6).
+    # and stays alive, so returning lands on this same live dashboard (ADR 0009 §6). A `live` task
+    # is attachable; the session name is derived (`panopticon-<id>`), not read from a registration.
     picked: list[tuple[str, str | None]] = []
-    regs = {"task-abcdef0123": [{"container_id": "panopticon-task-abcdef0123"}]}
-    app = Dashboard(_FakeClient([_TASK], regs), on_switch=lambda s, h=None: picked.append((s, h)))
+    task = {**_TASK, "container_status": "live"}
+    app = Dashboard(_FakeClient([task]), on_switch=lambda s, h=None: picked.append((s, h)))
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("t")
@@ -588,9 +589,26 @@ async def test_pressing_t_signals_the_pick_and_keeps_the_dashboard_running() -> 
         assert app.is_running  # did NOT exit — the dashboard session persists
 
 
-async def test_pressing_t_with_no_running_container_does_not_signal() -> None:
+async def test_pressing_t_attaches_a_shell_task_with_no_registration() -> None:
+    # A shell workflow task runs no agent, so it never registers; its host tmux session *is* its
+    # liveness and it sits at `awaiting` for its whole run. `t` must still reach it — keyed off the
+    # composed status, not a registration lookup — attaching to the same derived session name.
     picked: list[tuple[str, str | None]] = []
-    app = Dashboard(_FakeClient([_TASK], {}), on_switch=lambda s, h=None: picked.append((s, h)))
+    task = {**_TASK, "container_status": "awaiting"}
+    app = Dashboard(_FakeClient([task]), on_switch=lambda s, h=None: picked.append((s, h)))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("t")
+        await pilot.pause()
+        assert picked == [("panopticon-task-abcdef0123", None)]
+        assert app.is_running
+
+
+async def test_pressing_t_with_no_running_session_does_not_signal() -> None:
+    # No attachable session (here: no `container_status` at all → not in _ATTACHABLE_STATUSES):
+    # report and stay on the dashboard rather than attach to nothing.
+    picked: list[tuple[str, str | None]] = []
+    app = Dashboard(_FakeClient([_TASK]), on_switch=lambda s, h=None: picked.append((s, h)))
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("t")

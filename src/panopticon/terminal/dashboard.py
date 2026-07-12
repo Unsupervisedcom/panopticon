@@ -101,6 +101,7 @@ from textual.worker import get_current_worker
 from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.dirs import ARTIFACTS_DIR
 from panopticon.core.state import TERMINAL_LABELS
+from panopticon.sessionservice.local_runner import session_name
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 
 
@@ -337,6 +338,14 @@ _STATUS_COLORS = {
     "failed": "red",
     "disconnected": "red",
 }
+
+#: Container statuses whose tmux session exists and can be attached (`t`). ``live`` = an open
+#: container registration (a docker task); ``awaiting`` = the session is up but not (yet) registered
+#: — a docker task mid-boot, or a **shell** task, which runs no agent so never registers and sits at
+#: ``awaiting`` for its whole run (its session *is* its liveness). Both name the session the same way
+#: (``panopticon-<task_id>``, see :func:`session_name`), so attach keys off the status, not a
+#: registration lookup — which is what lets `t` reach a shell task at all.
+_ATTACHABLE_STATUSES = {"live", "awaiting"}
 
 
 def _status_cell(task: JsonObj) -> Text:
@@ -1643,12 +1652,18 @@ class Dashboard(App[None]):
         self.action_refresh()
 
     def action_attach(self) -> None:
-        """`t`: hand off to the highlighted task's container tmux session, if it's running.
+        """`t`: hand off to the highlighted task's tmux session, if it's running.
 
         Calls ``on_switch`` (the supervisor records the session and detaches this client, then
         attaches the task) and **keeps running**, so returning lands on this same live dashboard
         (ADR 0009). Switching is always detach→attach, never `switch-client`. Standalone (no
-        supervisor) there is nothing to attach to."""
+        supervisor) there is nothing to attach to.
+
+        Attachable when the composed ``container_status`` says a session exists
+        (:data:`_ATTACHABLE_STATUSES`) — ``live`` for a registered container, ``awaiting`` for a
+        session that's up but unregistered (a docker task mid-boot, or a **shell** task, which never
+        registers). The session name is derived, not read from a registration
+        (:func:`session_name`), so this reaches a shell task the same as a container one."""
         if self._current is None:
             return
         if self._on_switch is None:
@@ -1656,13 +1671,13 @@ class Dashboard(App[None]):
                 "Attach is available when run via `panopticon console`.", severity="warning"
             )
             return
-        registrations = self._client.list_registrations(self._current)
-        if not registrations:
-            self.notify("No running container for this task.", severity="warning")
-            return
         task = self._tasks.get(self._current)
+        status = task.get("container_status") if task else None
+        if status not in _ATTACHABLE_STATUSES:
+            self.notify("No running session for this task.", severity="warning")
+            return
         runner_host = task.get("runner_host") if task else None
-        self._on_switch(registrations[0]["container_id"], runner_host)  # session == container id
+        self._on_switch(session_name(self._current), runner_host)
 
     def action_open_url(self) -> None:
         """`p`: open the highlighted task's `url` in the browser (cloude-cade's `p` "open PR").
