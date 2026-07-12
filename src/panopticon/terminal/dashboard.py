@@ -148,8 +148,8 @@ def _short_tokens(n: int | None) -> str:
 
 # Row-key prefix for ensemble placeholder rows. When the operator collapses a governing task
 # (Enter on a governor), its governed children are replaced by one dim ``ensemble`` row whose
-# key is ``f"{_ENSEMBLE_KEY_PREFIX}{governor_id}"``. The highlight handler skips these rows
-# (like the separator) and ``on_data_table_row_selected`` ignores them.
+# key is ``f"{_ENSEMBLE_KEY_PREFIX}{governor_id}"``. Keyboard navigation skips these rows
+# (_VimDataTable steps the cursor straight past them) and ``on_data_table_row_selected`` ignores them.
 _ENSEMBLE_KEY_PREFIX = "__ensemble__"
 
 def _dim(cell: Text | str) -> Text:
@@ -681,7 +681,13 @@ class SpaceCheckbox(Checkbox, inherit_bindings=False):
 
 class _VimDataTable(DataTable[Any]):
     """A :class:`DataTable` with vim-style ``hjkl`` layered onto the default arrow keys (default
-    ``inherit_bindings=True``, so the arrow keys still work — this just adds a second way in)."""
+    ``inherit_bindings=True``, so the arrow keys still work — this just adds a second way in).
+
+    Vertical movement also **skips ensemble placeholder rows** (keys prefixed with
+    ``_ENSEMBLE_KEY_PREFIX``): the cursor steps straight onto the next real row rather than
+    landing on the sentinel and bouncing off it, so a collapsed ensemble is never briefly
+    highlighted mid-traversal. Both the arrow keys and ``j``/``k`` route through
+    ``action_cursor_down``/``action_cursor_up``, so overriding those covers every input path."""
 
     BINDINGS = [
         Binding("j", "cursor_down", "Down", show=False),
@@ -689,6 +695,26 @@ class _VimDataTable(DataTable[Any]):
         Binding("h", "cursor_left", "Left", show=False),
         Binding("l", "cursor_right", "Right", show=False),
     ]
+
+    def _move_skipping(self, direction: int) -> None:
+        """Move the cursor one step in ``direction`` (+1 down, -1 up), stepping over any ensemble
+        placeholder rows so it lands on the first real row. If only sentinels or the table edge
+        lie beyond, stay put — never land on a sentinel."""
+        rows = self.ordered_rows
+        target = self.cursor_row + direction
+        while 0 <= target < len(rows):
+            key = rows[target].key.value
+            if isinstance(key, str) and key.startswith(_ENSEMBLE_KEY_PREFIX):
+                target += direction
+                continue
+            self.move_cursor(row=target)
+            return
+
+    def action_cursor_down(self) -> None:
+        self._move_skipping(1)
+
+    def action_cursor_up(self) -> None:
+        self._move_skipping(-1)
 
 
 class _VimOptionList(OptionList):
@@ -1264,7 +1290,6 @@ class Dashboard(App[None]):
         self._current: str | None = None
         self._query: str = ""  # active search filter ("" → no filter); see action_search
         self._detail_visible = False  # detail pane hidden by default; `d` toggles it (action_toggle_detail)
-        self._last_cursor_row = 0  # previous cursor row index → infer travel direction to skip the divider
         self._collapsed: set[str] = set()  # governor IDs whose ensembles are currently collapsed
         self._first_refresh: bool = True  # seed _collapsed with all governors on first refresh
         self._governors: set[str] = set()  # governor IDs visible in the current table build
@@ -1462,18 +1487,12 @@ class Dashboard(App[None]):
         self._update_detail(target)
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        table = self.query_one("#tasks", DataTable)
-        key_val = event.row_key.value
-        if isinstance(key_val, str) and key_val.startswith(_ENSEMBLE_KEY_PREFIX):
-            # The arrow keys jump ensemble placeholder rows: step one more row in the direction
-            # of travel. Placeholders always sit between real rows, so there's a real row on
-            # both sides; move_cursor re-fires this handler on that real row, so we don't
-            # recurse on the sentinel.
-            step = 1 if table.cursor_row >= self._last_cursor_row else -1
-            table.move_cursor(row=table.cursor_row + step)
-            return
-        self._last_cursor_row = table.cursor_row
         key = event.row_key.value
+        if isinstance(key, str) and key.startswith(_ENSEMBLE_KEY_PREFIX):
+            # Keyboard navigation skips ensemble sentinels (see _VimDataTable), so this only
+            # fires for a mouse hover/click onto the placeholder — leave the detail pane as-is
+            # rather than trying to render a non-task.
+            return
         self._update_detail(str(key) if key is not None else None)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
