@@ -36,7 +36,8 @@ src/panopticon/
   sessionservice/  # the runner: Runner ABC + StubRunner (in-process) + LocalRunner
                    # (real Docker+tmux via the CLIs) + ShellRunner (shell_runner.py = a workflow's
                    # shell_script in a host tmux session, no container — for `runner_type="shell"`
-                   # workflows; the spawner routes on it, skipping clone/image); images.py = ADR-0005 composed images
+                   # workflows; the spawner routes on it, skipping the image + the clone unless the
+                   # workflow opts in via clone_repo); images.py = ADR-0005 composed images
                    # (base→workflow→repo); provisioner.py = host-side provisioning
                    # (ADR 0011: branch the per-task clone on slug, record it back); clones.py =
                    # per-repo clone cache; spawn.py = spawn-prep (clone --local the per-task

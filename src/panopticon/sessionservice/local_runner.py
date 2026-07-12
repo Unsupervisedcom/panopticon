@@ -30,6 +30,17 @@ HOST_GATEWAY = "host.docker.internal:host-gateway"
 #: operator's own tmux and gives the terminal controller a known place to `tmux attach`.
 TMUX_SOCKET = "panopticon"
 
+
+def session_name(task_id: str) -> str:
+    """The tmux session name (and, for a container task, its container name) for ``task_id``.
+
+    The one definition of the ``panopticon-<task_id>`` convention, shared by :class:`LocalRunner`
+    and :class:`~panopticon.sessionservice.shell_runner.ShellRunner` so the terminal supervisor's
+    ``t`` attach and the daemon's self-heal probes reach a task's session the same way on either
+    backend — a drift here would silently break attach/heal for one of them."""
+    return f"panopticon-{task_id}"
+
+
 #: Where a task's per-task clone is mounted — the one stable, writable path the agent works in
 #: for the whole task (ADR 0011): planning, then coding on its branch once provisioned.
 WORKSPACE_MOUNT = "/workspace"
@@ -142,7 +153,7 @@ class LocalRunner(Runner):
                 progress(phase)
 
         # The container name doubles as the tmux session name, so stop() needs only the id.
-        container = f"panopticon-{task_id}"
+        container = session_name(task_id)
         puid, _, pgid = self._user.partition(":")
         env = {
             "PANOPTICON_SERVICE_URL": self._service_url,
@@ -210,7 +221,7 @@ class LocalRunner(Runner):
         output means the container is gone or exited — i.e. the task is **down** and should be
         respawned. Used by the host daemon to reconcile a claimed task that never came up (or
         died) into the displayed ``down`` status."""
-        container = f"panopticon-{task_id}"
+        container = session_name(task_id)
         names = self._run(
             ["docker", "ps", "--filter", f"name=^{container}$", "--format", "{{.Names}}"],
             check=False,
@@ -231,7 +242,7 @@ class LocalRunner(Runner):
         the orphan the host daemon self-heals by respawning. (``make stop`` itself now stops the task
         containers too, so it leaves nothing running — but the still-claimed task is likewise healed on
         the next start.)"""
-        session = f"panopticon-{task_id}"
+        session = session_name(task_id)
         sessions = self._run(self._tmux("list-sessions", "-F", "#{session_name}"), check=False)
         return session in sessions.splitlines()
 

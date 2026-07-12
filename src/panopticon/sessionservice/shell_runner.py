@@ -21,7 +21,7 @@ import shlex
 from collections.abc import Callable
 
 from panopticon.core.models import LifecyclePhase
-from panopticon.sessionservice.local_runner import TMUX_SOCKET, CommandRunner, _subprocess_run
+from panopticon.sessionservice.local_runner import TMUX_SOCKET, CommandRunner, _subprocess_run, session_name
 from panopticon.sessionservice.runner import Runner
 
 
@@ -57,9 +57,9 @@ class ShellRunner(Runner):
         """Run ``script`` for ``task_id`` in a fresh host tmux session; return the session name.
 
         The session is named ``panopticon-<task_id>`` (matching the local runner) so the terminal
-        supervisor attaches to it the same way, and starts in ``workdir`` — the task's own directory,
-        which the spawner creates (a shell task has no clone, so this is an empty per-task scratch dir
-        rather than a checkout). ``workdir`` falls back to the operator's home only when unset (direct
+        supervisor attaches to it the same way, and starts in ``workdir`` — the task's own directory
+        the spawner prepares (empty by default, or a repo clone when the workflow opts in), or the
+        workflow's own override. ``workdir`` falls back to the operator's home only when unset (direct
         use). The pane runs ``sh -c`` with ``PANOPTICON_SERVICE_URL`` and ``PANOPTICON_TASK_ID``
         exported — so the script can drive its own lifecycle over REST (e.g. advance to COMPLETE on
         success) — and the repo's ``env_file`` secrets sourced first when given. Reports ``STARTING``
@@ -72,7 +72,7 @@ class ShellRunner(Runner):
                 progress(phase)
 
         start_dir = workdir or os.path.expanduser("~")
-        session = f"panopticon-{task_id}"
+        session = session_name(task_id)
         lines = [
             f"export PANOPTICON_SERVICE_URL={shlex.quote(self._service_url)}",
             f"export PANOPTICON_TASK_ID={shlex.quote(task_id)}",
@@ -100,7 +100,7 @@ class ShellRunner(Runner):
 
     def has_session(self, task_id: str) -> bool:
         """Whether the task's host tmux session exists on this runner's tmux server."""
-        session = f"panopticon-{task_id}"
+        session = session_name(task_id)
         sessions = self._run(self._tmux("list-sessions", "-F", "#{session_name}"), check=False)
         return session in sessions.splitlines()
 

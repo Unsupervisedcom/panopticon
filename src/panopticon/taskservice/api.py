@@ -424,15 +424,11 @@ def create_app(service: TaskService) -> FastAPI:
         """The workflow's Dockerfile layer (ADR 0005); the runner composes it onto the base."""
         return {"layer": await service.workflow_image_layer(name)}
 
-    @app.get("/workflows/{name}/runner-type")
-    async def workflow_runner_type(name: str) -> dict[str, str]:
-        """How the workflow's tasks run: ``"docker"`` (a container) or ``"shell"`` (a host script)."""
-        return {"runner_type": await service.workflow_runner_type(name)}
-
-    @app.get("/workflows/{name}/shell-script")
-    async def workflow_shell_script(name: str) -> dict[str, str]:
-        """The shell script a ``"shell"`` workflow runs (empty for a ``"docker"`` one)."""
-        return {"script": await service.workflow_shell_script(name)}
+    @app.get("/workflows/{name}/execution")
+    async def workflow_execution(name: str) -> dict[str, Any]:
+        """How the runner executes this workflow's tasks: ``runner_type`` (``"docker"``/``"shell"``),
+        the shell ``script``, ``clone_repo``, and a shell ``workdir`` override."""
+        return await service.workflow_execution(name)
 
     # -- repos --------------------------------------------------------------------
 

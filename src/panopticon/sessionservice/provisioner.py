@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.git import GitClones, branch_name
+from panopticon.sessionservice.executions import WorkflowExecutions
 
 
 class Provisioner:
@@ -27,7 +28,8 @@ class Provisioner:
 
     ``clones_root`` holds the per-task clones (``<clones_root>/<task_id>``, created at spawn-prep and
     mounted at ``/workspace``). ``git`` is injectable so the emitted commands are unit-testable
-    without a real repo.
+    without a real repo. ``executions`` is the shared "how is this workflow run" cache (see the
+    shell-skip in :meth:`provision`); shared with the spawner so both agree which tasks are shell.
     """
 
     def __init__(
@@ -36,21 +38,12 @@ class Provisioner:
         *,
         clones_root: str,
         git: GitClones | None = None,
+        executions: WorkflowExecutions | None = None,
     ) -> None:
         self._client = client
         self._clones_root = clones_root.rstrip("/")
         self._git = git or GitClones()
-        #: workflow name → runner_type, fetched once over REST then cached (as in the spawner) — so
-        #: the per-pass shell-skip below doesn't re-hit the service for every task each pass.
-        self._runner_types: dict[str, str] = {}
-
-    def _is_shell(self, workflow: str | None) -> bool:
-        """Whether ``workflow`` runs as a host shell script (no per-task clone to branch)."""
-        if not workflow:
-            return False
-        if workflow not in self._runner_types:
-            self._runner_types[workflow] = self._client.workflow_runner_type(workflow)
-        return self._runner_types[workflow] == "shell"
+        self._executions = executions or WorkflowExecutions(client)
 
     def provision(self, task: JsonObj) -> str | None:
         """Provision ``task`` if it is ready, returning the created branch (else ``None``).
@@ -66,7 +59,7 @@ class Provisioner:
         """
         if not task.get("slug") or task.get("provisioned"):
             return None
-        if self._is_shell(task.get("workflow")):
+        if self._executions.is_shell(task.get("workflow")):
             return None
         clone = f"{self._clones_root}/{task['id']}"
         branch = branch_name(task["slug"])

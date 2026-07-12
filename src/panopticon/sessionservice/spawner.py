@@ -24,6 +24,7 @@ from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.models import ContainerStatus, LifecyclePhase
 from panopticon.core.state import TERMINAL_LABELS
 from panopticon.sessionservice.clones import CloneCache
+from panopticon.sessionservice.executions import WorkflowExecutions
 from panopticon.sessionservice.images import ImageBuilder
 from panopticon.sessionservice.local_runner import LocalRunner
 from panopticon.sessionservice.shell_runner import ShellRunner
@@ -90,6 +91,7 @@ class Spawner:
         cache: CloneCache,
         tasks_root: str,
         shell_runner: ShellRunner | None = None,
+        executions: WorkflowExecutions | None = None,
         git: object | None = None,
         images: ImageBuilder | None = None,
         run_hook: Callable[[str, str, str, str], None] | None = None,
@@ -105,9 +107,10 @@ class Spawner:
         self._runner = runner
         self._shell_runner = shell_runner
         self._runner_id = runner_id
-        #: workflow name → its runner_type (``"docker"``/``"shell"``), fetched once over REST then
-        #: cached — the per-pass calls (reconcile/cleanup/heal) must not re-hit the service each time.
-        self._runner_types: dict[str, str] = {}
+        #: The cached "how is this workflow run" lookup (runner_type + shell details), shared with the
+        #: provisioner so both agree on which tasks are shell. The per-pass calls (reconcile/cleanup/
+        #: heal) go through it, so it must not re-hit the service each time.
+        self._executions = executions or WorkflowExecutions(client)
         self._cache = cache
         self._tasks_root = tasks_root
         self._git = git
@@ -159,23 +162,36 @@ class Spawner:
             _log.info("task %s: claiming", task_id)
             self._report(task_id, LifecyclePhase.CLAIMING)
             repo = self._client.get_repo(task["repo_id"])
-            if self._runner_type_for(task["workflow"]) == "shell":
+            if self._executions.is_shell(task["workflow"]):
                 return self._spawn_shell(task, repo)
             return self._spawn_container(task, repo)
         except Exception as exc:
             self._report(task_id, LifecyclePhase.FAILED, detail=str(exc))
             raise
 
-    def _spawn_container(self, task: JsonObj, repo: JsonObj) -> str:
-        """The Docker path: prepare the per-task clone, compose base → workflow → repo, and spawn the
-        container (reports ``PREPARING`` → ``BUILDING`` → ``STARTING`` → ``AWAITING``)."""
+    def _prepare_task_dir(self, task: JsonObj, repo: JsonObj, *, clone: bool) -> str:
+        """The task's working directory (``<tasks_root>/<task_id>``) — shared by both backends.
+
+        With ``clone`` it's a per-task ``git clone --local`` of the repo with ``origin`` pointed at
+        the forge (:func:`prepare_workspace`, idempotent); otherwise just an empty directory. Reports
+        ``PREPARING`` either way (it's the "readying the workspace" step). Returns the path."""
         task_id = task["id"]
-        _log.info("task %s: preparing workspace (repo=%s)", task_id, repo.get("name", repo["id"]))
+        _log.info("task %s: preparing workspace (repo=%s, clone=%s)", task_id, repo.get("name", repo["id"]), clone)
         self._report(task_id, LifecyclePhase.PREPARING)
-        workspace = prepare_workspace(
-            task_id, repo, cache=self._cache, tasks_root=self._tasks_root, git=self._git,  # type: ignore[arg-type]
-            makedirs=self._makedirs,
-        )
+        if clone:
+            return prepare_workspace(
+                task_id, repo, cache=self._cache, tasks_root=self._tasks_root, git=self._git,  # type: ignore[arg-type]
+                makedirs=self._makedirs,
+            )
+        workdir = f"{self._tasks_root}/{task_id}"
+        self._makedirs(workdir)
+        return workdir
+
+    def _spawn_container(self, task: JsonObj, repo: JsonObj) -> str:
+        """The Docker path: clone the per-task workspace, compose base → workflow → repo, and spawn
+        the container (reports ``PREPARING`` → ``BUILDING`` → ``STARTING`` → ``AWAITING``)."""
+        task_id = task["id"]
+        workspace = self._prepare_task_dir(task, repo, clone=True)  # a container always mounts a checkout
         if hook_file := repo.get("hook_file"):
             self._run_hook(hook_file, task_id, repo["name"], workspace)
         _log.info("task %s: building image (workflow=%s, repo=%s)", task_id, task["workflow"], repo.get("name", repo["id"]))
@@ -195,34 +211,29 @@ class Spawner:
         )
 
     def _spawn_shell(self, task: JsonObj, repo: JsonObj) -> str:
-        """The shell path: run the workflow's ``shell_script`` in a host tmux session — no clone, no
-        image build, no agent (reports ``STARTING`` → ``AWAITING``, skipping ``PREPARING``/``BUILDING``).
+        """The shell path: run the workflow's ``shell_script`` in a host tmux session — no image, no
+        agent (reports ``PREPARING`` → ``STARTING`` → ``AWAITING``, skipping ``BUILDING``).
 
-        The script runs in the task's own directory (``<tasks_root>/<task_id>``, created empty here —
-        a shell task has no clone), mirroring where a container task works, and cleaned up with the
-        rest when the task finishes (:meth:`cleanup`)."""
+        Shares the same task directory as a container task (:meth:`_prepare_task_dir`): empty by
+        default, or a repo clone when the workflow sets ``clone_repo``. The script starts there unless
+        the workflow overrides it with an explicit ``shell_workdir``. Cleaned up with the rest when the
+        task finishes (:meth:`cleanup`)."""
         task_id = task["id"]
         if self._shell_runner is None:
             raise RuntimeError(
                 f"task {task_id!r} uses shell workflow {task['workflow']!r} but this runner has no shell runner"
             )
-        _log.info("task %s: starting shell session (workflow=%s)", task_id, task["workflow"])
-        workdir = f"{self._tasks_root}/{task_id}"
-        self._makedirs(workdir)  # empty per-task working dir (no clone) — the pane starts here
-        script = self._client.workflow_shell_script(task["workflow"])
+        spec = self._executions.spec(task["workflow"])
+        task_dir = self._prepare_task_dir(task, repo, clone=bool(spec["clone_repo"]))
+        workdir = spec["workdir"] or task_dir  # the workflow's override, else the task's own dir
+        _log.info("task %s: starting shell session (workflow=%s, workdir=%s)", task_id, task["workflow"], workdir)
         return self._shell_runner.spawn(
             task_id,
             env_file=repo.get("env_file"),  # per-repo secrets, sourced into the shell (ADR 0007)
-            script=script,
+            script=spec["script"],
             workdir=workdir,
             progress=lambda phase: self._report(task_id, phase),  # STARTING then AWAITING
         )
-
-    def _runner_type_for(self, workflow: str) -> str:
-        """The workflow's execution backend (``"docker"``/``"shell"``), fetched once then cached."""
-        if workflow not in self._runner_types:
-            self._runner_types[workflow] = self._client.workflow_runner_type(workflow)
-        return self._runner_types[workflow]
 
     def _runner_for(self, task: JsonObj) -> LocalRunner | ShellRunner:
         """The runner that owns ``task``'s session — the shell runner for a shell workflow (when one
@@ -230,8 +241,7 @@ class Spawner:
         ``has_session``) in :meth:`reconcile`, :meth:`cleanup`, :meth:`startup_reclaim` and
         :meth:`_is_orphan` check the right backend. Tasks without a ``workflow`` key (some internal
         callers) fall back to the Docker runner."""
-        workflow = task.get("workflow")
-        if workflow and self._shell_runner is not None and self._runner_type_for(workflow) == "shell":
+        if self._shell_runner is not None and self._executions.is_shell(task.get("workflow")):
             return self._shell_runner
         return self._runner
 
@@ -274,7 +284,7 @@ class Spawner:
         operator cancelling), not a crash to respawn — so re-running it would be wrong."""
         if task.get("claimed_by") != self._runner_id or task["state"] in TERMINAL_LABELS:
             return False
-        if task.get("workflow") and self._runner_type_for(task["workflow"]) == "shell":
+        if self._executions.is_shell(task.get("workflow")):
             return False
         return not self._runner.has_session(task["id"])
 
@@ -364,12 +374,19 @@ class Spawner:
         Best-effort per task: a failed release is silently skipped — :meth:`heal` picks it
         up on the next tick, fast but functional. Called once by
         :meth:`~panopticon.sessionservice.host.HostDaemon.run` on the first successful task
-        fetch."""
+        fetch.
+
+        Shell tasks are left claimed: releasing one would let :meth:`spawn_one` re-run its script
+        (the unclaimed-spawn path), but a shell script is run **once** — its exit is completion, not
+        a crash to recover (the same reason :meth:`_is_orphan`/:meth:`heal` skip them). A shell task
+        whose session is gone reconciles to ``down`` for the operator to drop or respawn explicitly."""
         for task in tasks:
             if task.get("claimed_by") != self._runner_id:
                 continue
             if task["state"] in TERMINAL_LABELS:
                 continue
+            if self._executions.is_shell(task.get("workflow")):
+                continue  # never auto-respawn a shell task — leave it claimed (reconciles to `down`)
             if self._runner_for(task).is_running(task["id"]):
                 continue  # container survived (runner-only crash) — keep claim, heal handles it
             try:

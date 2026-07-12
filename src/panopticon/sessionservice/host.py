@@ -37,6 +37,7 @@ from panopticon.core.dirs import CLONE_CACHE_DIR, TASKS_DIR
 from panopticon.core.git import GitClones
 from panopticon.sessionservice._migration import migrate_session_dirs
 from panopticon.sessionservice.clones import CloneCache
+from panopticon.sessionservice.executions import WorkflowExecutions
 from panopticon.sessionservice.images import ImageBuilder
 from panopticon.sessionservice.local_runner import DEFAULT_IMAGE, LocalRunner
 from panopticon.sessionservice.provisioner import Provisioner
@@ -176,11 +177,12 @@ def run_host(
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
     """Wire the spawner + provisioner over a shared per-task-clone root and run the host loop."""
+    executions = WorkflowExecutions(client)  # one shared "how is this workflow run" cache for both
     spawner = Spawner(
         client, runner, runner_id=runner_id, cache=cache, tasks_root=tasks_root,
-        shell_runner=shell_runner, git=git, images=images, makedirs=makedirs,
+        shell_runner=shell_runner, executions=executions, git=git, images=images, makedirs=makedirs,
     )
-    provisioner = Provisioner(client, clones_root=tasks_root, git=git)
+    provisioner = Provisioner(client, clones_root=tasks_root, git=git, executions=executions)
     HostDaemon(client, spawner, provisioner, interval=interval, sleep=sleep).run(until=until)
 
 

@@ -101,10 +101,20 @@ class Workflow(ABC):
     #: How this workflow's tasks are executed by the session service. ``"docker"`` (default)
     #: spawns the base → workflow → repo container image and runs the in-container agent (the
     #: determinism invariant — LLM calls happen there). ``"shell"`` runs :meth:`shell_script`
-    #: directly in a host tmux session with **no container**: no per-task clone, no image build,
-    #: no agent. Use it for short operator utilities that just need a host shell (e.g. minting an
-    #: auth token). The runner picks the backend off this flag.
+    #: directly in a host tmux session with **no container** and no agent. Both run in the task's
+    #: own directory (``<tasks_root>/<task_id>``); a docker task always gets the repo cloned there,
+    #: a shell task only if :attr:`clone_repo`. Use ``"shell"`` for short operator utilities that
+    #: just need a host shell (e.g. minting an auth token). The runner picks the backend off this flag.
     runner_type: ClassVar[str] = "docker"
+    #: Whether to ``git clone --local`` the repo into the task directory before the task runs.
+    #: A ``"docker"`` task always clones (it mounts the checkout at ``/workspace``), so this only
+    #: governs a ``"shell"`` task: default ``False`` (an empty task dir — the common case for a
+    #: utility that doesn't touch repo code), set ``True`` when the script needs the checkout.
+    clone_repo: ClassVar[bool] = False
+    #: A ``"shell"`` workflow's start directory, overriding the default (the task's own directory).
+    #: ``None`` (default) runs in the task dir; set an absolute path for a workflow that operates
+    #: somewhere else (e.g. the operator's home). Ignored for ``"docker"`` (which works in ``/workspace``).
+    shell_workdir: ClassVar[str | None] = None
 
     # -- build / validate (the resolution pass; answers "why not a free function?") -----
 

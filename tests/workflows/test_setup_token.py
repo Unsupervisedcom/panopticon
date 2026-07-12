@@ -20,6 +20,12 @@ def test_setup_token_is_a_shell_workflow() -> None:
     assert WF.opt_in is True  # an operator utility, hidden from the picker unless enabled
 
 
+def test_setup_token_needs_no_clone_and_no_workdir_override() -> None:
+    # It mints a token, so it doesn't touch repo code — runs in an empty task dir at the default spot.
+    assert WF.clone_repo is False
+    assert WF.shell_workdir is None
+
+
 def test_starts_running_with_user_turn() -> None:
     task = WF.start_task("t1", "r1", at="2026-07-11T00:00:00Z")
     assert task.state == "RUNNING"
@@ -45,7 +51,10 @@ def test_shell_script_runs_setup_token_and_advances() -> None:
     assert "$PANOPTICON_SERVICE_URL/tasks/$PANOPTICON_TASK_ID/operations/advance" in script
 
 
-def test_docker_workflows_have_no_shell_script() -> None:
+def test_docker_workflows_have_no_shell_script_and_default_knobs() -> None:
     from panopticon.workflows import Spike
 
-    assert Spike().shell_script() == ""  # the base default; only shell workflows override it
+    spike = Spike()
+    assert spike.shell_script() == ""  # the base default; only shell workflows override it
+    assert spike.clone_repo is False  # the base defaults; a docker task clones regardless
+    assert spike.shell_workdir is None

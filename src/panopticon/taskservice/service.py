@@ -232,15 +232,22 @@ class TaskService:
         composes onto the base image (e.g. github-peer-reviewed's `gh`). Empty when the workflow needs none."""
         return self._workflow(name).image_layer()
 
-    async def workflow_runner_type(self, name: str) -> str:
-        """How the workflow's tasks run: ``"docker"`` (a task container) or ``"shell"`` (a host
-        shell script, no container). The session service routes to the matching backend."""
-        return self._workflow(name).runner_type
+    async def workflow_execution(self, name: str) -> dict[str, Any]:
+        """How the session service runs this workflow's tasks — everything the runner needs to route
+        and launch, in one call so it fetches once and caches:
 
-    async def workflow_shell_script(self, name: str) -> str:
-        """The shell script a ``"shell"`` workflow runs (empty for a ``"docker"`` one) — the runner
-        launches it in a host tmux session with ``PANOPTICON_SERVICE_URL``/``PANOPTICON_TASK_ID`` set."""
-        return self._workflow(name).shell_script()
+        * ``runner_type`` — ``"docker"`` (a task container) or ``"shell"`` (a host shell script);
+        * ``script`` — the shell script a ``"shell"`` workflow runs (empty for ``"docker"``);
+        * ``clone_repo`` — whether to clone the repo into the task dir (``"docker"`` always does);
+        * ``workdir`` — a ``"shell"`` workflow's start-directory override (``None`` = the task dir).
+        """
+        workflow = self._workflow(name)
+        return {
+            "runner_type": workflow.runner_type,
+            "script": workflow.shell_script(),
+            "clone_repo": workflow.clone_repo,
+            "workdir": workflow.shell_workdir,
+        }
 
     def _workflow(self, name: str) -> Workflow:
         try:

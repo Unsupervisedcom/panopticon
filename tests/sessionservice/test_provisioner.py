@@ -47,8 +47,8 @@ class _FakeClient:
     def get_repo(self, repo_id: str) -> JsonObj:
         return self._repo
 
-    def workflow_runner_type(self, name: str) -> str:
-        return self._runner_type
+    def workflow_execution(self, name: str) -> JsonObj:
+        return {"runner_type": self._runner_type, "script": "", "clone_repo": False, "workdir": None}
 
     def record_provisioning(self, task_id: str, branch: str, clone: str) -> JsonObj:
         self.recorded.append((task_id, branch, clone))
