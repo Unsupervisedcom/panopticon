@@ -49,10 +49,18 @@ def _start_sessions() -> None:
             f"{python} -m panopticon.sessionservice.host 2>&1 | tee /tmp/panopticon-runner.log",
         ),
     ]:
-        subprocess.run(
-            ["tmux", "-L", "panopticon", "kill-session", "-t", name],
-            capture_output=True,
-        )
+        # Don't bounce an already-running session. Restarting the task service wipes its in-memory
+        # registrations (connection-scoped liveness), so a `panopticon start <task>` that restarts a
+        # healthy service would find no container to join until every task reconnects its /live
+        # stream — the join races the reconnect and falls back to the dashboard. Leave it be.
+        if (
+            subprocess.run(
+                ["tmux", "-L", "panopticon", "has-session", "-t", name],
+                capture_output=True,
+            ).returncode
+            == 0
+        ):
+            continue
         subprocess.run(
             ["tmux", "-L", "panopticon", "new-session", "-d", "-s", name, cmd],
             check=True,

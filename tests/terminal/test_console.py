@@ -157,6 +157,45 @@ def test_resolve_join_returns_none_when_no_container_is_running() -> None:
     assert resolve_join(client, "fix-login") is None  # type: ignore[arg-type]
 
 
+def test_resolve_join_polls_across_the_reconnect_window() -> None:
+    # `start` (re)starts the service, wiping in-memory registrations; the container re-registers a
+    # beat later. resolve_join polls and resolves on the first hit rather than racing the reconnect.
+    registrations: dict[str, list[dict[str, Any]]] = {"t1": []}
+    client = _JoinClient(
+        tasks=[{"id": "t1", "slug": "fix-login", "runner_host": None}], registrations=registrations
+    )
+
+    naps = {"n": 0}
+
+    def sleep(_s: float) -> None:
+        naps["n"] += 1
+        if naps["n"] == 3:  # container reconnects on the 3rd poll
+            registrations["t1"] = [{"container_id": "panopticon-t1"}]
+
+    assert (
+        resolve_join(client, "fix-login", attempts=25, interval=0.2, sleep=sleep)  # type: ignore[arg-type]
+        == "panopticon-t1"
+    )
+    assert naps["n"] == 3  # stopped polling once it appeared
+
+
+def test_resolve_join_does_not_poll_for_an_unknown_task() -> None:
+    # A typo'd ref can't be conjured by waiting — bail immediately instead of burning the window.
+    client = _JoinClient(tasks=[{"id": "t1", "slug": "fix-login"}], registrations={})
+    naps = {"n": 0}
+    assert (
+        resolve_join(  # type: ignore[arg-type]
+            client,
+            "nope",
+            attempts=25,
+            interval=0.2,
+            sleep=lambda _s: naps.__setitem__("n", naps["n"] + 1),
+        )
+        is None
+    )
+    assert naps["n"] == 0
+
+
 def test_switch_to_records_the_pick_then_detaches(tmp_path: Path) -> None:
     # The dashboard's `t` hook: write the pick for the supervisor, then detach this client so the
     # supervisor regains the TTY and attaches the task. The dashboard process stays alive.

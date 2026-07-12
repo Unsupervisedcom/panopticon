@@ -187,24 +187,39 @@ def wait_for_service(
     return False
 
 
-def resolve_join(client: TaskServiceClient, ref: str) -> str | None:
+def resolve_join(
+    client: TaskServiceClient,
+    ref: str,
+    *,
+    attempts: int = 1,
+    interval: float = 0.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> str | None:
     """Resolve a task ``ref`` (id or slug) to the supervisor switch-file target for its live
     container session, or ``None`` when there's no such task / no running container.
 
     Mirrors the dashboard's `t` hook — the session name is the container id, paired with the task's
     ``runner_host`` and run through :func:`encode_switch_target`. Used to *join* a task directly on
     `panopticon start <task>`.
+
+    Registrations are connection-scoped in-memory liveness, so a just-(re)started task service holds
+    none until each container reconnects its /live stream. ``attempts``/``interval`` poll across that
+    reconnect window (the join races it) before giving up; an *unknown* task returns immediately —
+    waiting won't conjure it.
     """
-    match = next(
-        (t for t in client.list_tasks() if t.get("id") == ref or t.get("slug") == ref), None
-    )
-    if match is None:
-        return None
-    registrations = client.list_registrations(str(match["id"]))
-    if not registrations:
-        return None
-    session = str(registrations[0]["container_id"])
-    return encode_switch_target(session, match.get("runner_host"))
+    for attempt in range(attempts):
+        match = next(
+            (t for t in client.list_tasks() if t.get("id") == ref or t.get("slug") == ref), None
+        )
+        if match is None:
+            return None
+        registrations = client.list_registrations(str(match["id"]))
+        if registrations:
+            session = str(registrations[0]["container_id"])
+            return encode_switch_target(session, match.get("runner_host"))
+        if attempt < attempts - 1:
+            sleep(interval)
+    return None
 
 
 def run_console(*, show_dashboard: Selector, attach: Attacher, initial: str | None = None) -> None:
@@ -242,7 +257,9 @@ def run_console_local(
     initial: str | None = None
     if join:
         client = client or TaskServiceClient(httpx.Client(base_url=service_url))
-        initial = resolve_join(client, join)
+        # Poll across the container's /live reconnect window: `start` may have just (re)started the
+        # runner, whose containers re-register a beat later — resolve on the first hit, ~5s ceiling.
+        initial = resolve_join(client, join, attempts=25, interval=0.2)
         if initial is None:
             print(f"no running container for task '{join}'; opening the dashboard", file=sys.stderr)
     switch_file = switch_file_path(socket)
