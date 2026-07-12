@@ -105,6 +105,18 @@ def test_no_initial_join_behaves_as_before() -> None:
     assert attached == ["sess-b"]  # no leading attach when nothing is joined
 
 
+def test_switch_target_encode_decode_round_trips() -> None:
+    # The one format the `t` hook, the join, and the supervisor's attach all share.
+    from panopticon.terminal.console import decode_switch_target, encode_switch_target
+
+    assert (
+        encode_switch_target("panopticon-t1", "box.example.com") == "box.example.com\tpanopticon-t1"
+    )
+    assert encode_switch_target("panopticon-t2", None) == "panopticon-t2"
+    assert decode_switch_target(encode_switch_target("s", "h")) == ("s", "h")
+    assert decode_switch_target(encode_switch_target("s", None)) == ("s", None)
+
+
 def test_resolve_join_by_slug_returns_the_container_session() -> None:
     # session == container id; a local task (no runner_host) encodes as a bare "<session>".
     client = _JoinClient(
@@ -168,25 +180,18 @@ def test_switch_to_with_remote_host_encodes_host_and_session(tmp_path: Path) -> 
 
 
 def test_supervisor_parses_remote_host_from_switch_file(tmp_path: Path) -> None:
-    # run_console_local's attach() closure parses "<host>\t<session>" from the switch-file and
+    # run_console_local's attach() closure decodes "<host>\t<session>" from the switch-file and
     # passes host= to attach_command; a plain session (no tab) means local (host=None).
     from panopticon.terminal.attach import attach_command
-
-    parsed: list[tuple[str, str | None]] = []
-
-    def _fake_attach(pick: str) -> None:
-        parts = pick.split("\t", 1)
-        host = parts[0] if len(parts) == 2 else None
-        session = parts[-1]
-        parsed.append((session, host or None))
+    from panopticon.terminal.console import decode_switch_target
 
     # Remote pick: "host\tsession"
-    _fake_attach("box.example.com\tpanopticon-t1")
-    assert parsed[-1] == ("panopticon-t1", "box.example.com")
-
+    assert decode_switch_target("box.example.com\tpanopticon-t1") == (
+        "panopticon-t1",
+        "box.example.com",
+    )
     # Local pick: plain "session"
-    _fake_attach("panopticon-t2")
-    assert parsed[-1] == ("panopticon-t2", None)
+    assert decode_switch_target("panopticon-t2") == ("panopticon-t2", None)
 
     # Confirm attach_command receives the host correctly
     assert attach_command("panopticon-t1", socket="panopticon", host="box.example.com") == [

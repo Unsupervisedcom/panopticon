@@ -65,6 +65,24 @@ def _tmux_detach() -> None:
     subprocess.run(["tmux", "detach-client"], check=False)
 
 
+def encode_switch_target(session: str, host: str | None) -> str:
+    """Encode a ``(session, host)`` pick into a switch-file line: ``"<host>\\t<session>"`` for a
+    remote runner (so the supervisor can ssh-wrap the attach), bare ``"<session>"`` when local.
+
+    The **one** place the switch-file format is written — the `t` hook (:func:`switch_to`) and the
+    `panopticon start <task>` join (:func:`resolve_join`) both go through it; :func:`decode_switch_target`
+    is the inverse the supervisor's attach parses with."""
+    return f"{host}\t{session}" if host else session
+
+
+def decode_switch_target(line: str) -> tuple[str, str | None]:
+    """Inverse of :func:`encode_switch_target`: the ``(session, host)`` from a switch-file line
+    (``host`` is ``None`` when there's no ``\\t`` — a local pick)."""
+    parts = line.split("\t", 1)
+    host = parts[0] if len(parts) == 2 else None
+    return parts[-1], host or None
+
+
 def switch_to(
     session: str,
     *,
@@ -79,7 +97,7 @@ def switch_to(
     When ``host`` is set the switch-file carries ``<host>\\t<session>`` so the
     supervisor can ssh-wrap the attach; a plain ``<session>`` (no tab) means local.
     """
-    switch_file.write_text(f"{host}\t{session}" if host else session)
+    switch_file.write_text(encode_switch_target(session, host))
     detach()
 
 
@@ -173,9 +191,9 @@ def resolve_join(client: TaskServiceClient, ref: str) -> str | None:
     """Resolve a task ``ref`` (id or slug) to the supervisor switch-file target for its live
     container session, or ``None`` when there's no such task / no running container.
 
-    Mirrors the dashboard's `t` hook: the session name is the container id and a remote task
-    encodes as ``"<host>\\t<session>"`` (bare ``"<session>"`` when local), which the supervisor's
-    ``attach`` closure parses. Used to *join* a task directly on `panopticon start <task>`.
+    Mirrors the dashboard's `t` hook — the session name is the container id, paired with the task's
+    ``runner_host`` and run through :func:`encode_switch_target`. Used to *join* a task directly on
+    `panopticon start <task>`.
     """
     match = next(
         (t for t in client.list_tasks() if t.get("id") == ref or t.get("slug") == ref), None
@@ -186,8 +204,7 @@ def resolve_join(client: TaskServiceClient, ref: str) -> str | None:
     if not registrations:
         return None
     session = str(registrations[0]["container_id"])
-    host = match.get("runner_host")
-    return f"{host}\t{session}" if host else session
+    return encode_switch_target(session, match.get("runner_host"))
 
 
 def run_console(*, show_dashboard: Selector, attach: Attacher, initial: str | None = None) -> None:
@@ -254,10 +271,7 @@ def run_console_local(
         return switch_file.read_text().strip() or None
 
     def attach(pick: str) -> None:
-        # Parse the switch-file format: "<host>\t<session>" (remote) or "<session>" (local).
-        parts = pick.split("\t", 1)
-        host = parts[0] if len(parts) == 2 else None
-        session = parts[-1]
-        subprocess.run(attach_command(session, socket=socket, host=host or None), check=False)
+        session, host = decode_switch_target(pick)
+        subprocess.run(attach_command(session, socket=socket, host=host), check=False)
 
     run_console(show_dashboard=show_dashboard, attach=attach, initial=initial)
