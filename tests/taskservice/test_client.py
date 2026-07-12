@@ -90,9 +90,9 @@ def test_create_repo_over_rest(client: TaskServiceClient) -> None:
 def test_create_repo_with_secret_references(client: TaskServiceClient) -> None:
     repo = client.create_repo(
         "r3", "acme/svc", "https://x/r3.git",
-        env_file="/secrets/r3.env",
+        env_file="r3.env",
     )
-    assert repo["env_file"] == "/secrets/r3.env"
+    assert repo["env_file"] == "r3.env"
 
 
 def test_update_repo_patches_only_sent_fields(client: TaskServiceClient) -> None:

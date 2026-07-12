@@ -14,8 +14,10 @@ from __future__ import annotations
 import os
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 from typing import Protocol
 
+from panopticon.core.dirs import secrets_file_path
 from panopticon.core.models import LifecyclePhase
 from panopticon.sessionservice.runner import Runner
 
@@ -87,11 +89,16 @@ class LocalRunner(Runner):
         tmux_socket: str | None = TMUX_SOCKET,
         extra_env: Mapping[str, str] | None = None,
         user: str | None = None,
+        secrets_dir: str | Path | None = None,
         run: CommandRunner = _subprocess_run,
     ) -> None:
         self._service_url = service_url
         self._image = image
         self._runner_id = runner_id
+        # Root the repo's `env_file` name resolves against — this host's local secrets dir, so a
+        # remote runner uses its own secrets (the stored value is host-agnostic; ADR 0007). None =
+        # resolve the host's secrets dir dynamically at spawn.
+        self._secrets_dir = secrets_dir
         # Run the task container unprivileged as the invoking user (uid:gid), so it can't act as
         # root on the host and its writes to the mounted workspace are owned by the operator.
         self._user = user if user is not None else _invoking_user()
@@ -120,7 +127,9 @@ class LocalRunner(Runner):
         progress: Callable[[LifecyclePhase], None] | None = None,
     ) -> str:
         """Spawn the task container. ``env_file`` is the task's repo's secret reference (ADR
-        0007), injected at launch — never baked into the image. ``workspace`` is the
+        0007) — a name **relative to this runner's secrets dir** (:data:`SECRETS_DIR`), resolved
+        host-locally and injected at launch (``--env-file``), never baked into the image and never
+        crossing the wire (so a remote runner uses its own host's secrets). ``workspace`` is the
         task's per-task clone on the host (ADR 0011), bind-mounted read-write at ``/workspace`` as
         the agent's working dir. ``image`` overrides the default base with the task's composed image
         (base → workflow → repo, ADR 0005); ``None`` uses the configured base. ``docker_in_docker``
@@ -173,8 +182,8 @@ class LocalRunner(Runner):
             docker_run.append("--privileged")
             docker_run += ["--volume", f"panopticon-dind-{task_id}:/var/lib/docker"]
             env["PANOPTICON_DOCKER_IN_DOCKER"] = "1"
-        if env_file:  # per-repo API-key secrets, injected at run (not in the image)
-            docker_run += ["--env-file", env_file]
+        if env_path := secrets_file_path(env_file, secrets_dir=self._secrets_dir):
+            docker_run += ["--env-file", env_path]  # per-repo secrets, resolved host-locally
         if workspace:  # the per-task clone — the agent's writable working dir (ADR 0011)
             docker_run += ["--volume", f"{workspace}:{WORKSPACE_MOUNT}", "--workdir", WORKSPACE_MOUNT]
         # Per-task config volume: persists claude's session history across respawn/recreate (the

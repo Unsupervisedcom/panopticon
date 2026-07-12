@@ -70,12 +70,12 @@ async def test_create_and_get_repo(store: Store) -> None:
 async def test_repo_secret_references_round_trip(store: Store) -> None:
     await store.create_repo(
         Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git",
-             env_file="/secrets/r1.env",
+             env_file="r1.env",
              image_layer_file="r1.layer", capabilities={"docker_in_docker": True})
     )
     got = await store.get_repo("r1")
     assert got is not None
-    assert got.env_file == "/secrets/r1.env"
+    assert got.env_file == "r1.env"
     assert got.capabilities == {"docker_in_docker": True}  # JSON capabilities round-trip
     assert got.image_layer_file == "r1.layer"  # ADR 0005 repo tier round-trips
 
@@ -103,7 +103,7 @@ async def test_update_repo_round_trips(store: Store) -> None:
     )
     await store.update_repo(
         Repo(id="r1", name="new", git_url="https://x/new.git", default_base="trunk",
-             env_file="/secrets/r1.env",
+             env_file="r1.env",
              image_layer_file="r1.layer", capabilities={"docker_in_docker": True})
     )
     got = await store.get_repo("r1")
@@ -111,7 +111,7 @@ async def test_update_repo_round_trips(store: Store) -> None:
     assert got.name == "new"
     assert got.git_url == "https://x/new.git"
     assert got.default_base == "trunk"
-    assert got.env_file == "/secrets/r1.env"
+    assert got.env_file == "r1.env"
     assert got.image_layer_file == "r1.layer"  # untouched fields persist
     assert got.capabilities == {"docker_in_docker": True}
 

@@ -9,6 +9,14 @@
 > in the repo's **`env_file`** as `CLAUDE_CODE_OAUTH_TOKEN` (the runner already injects `env_file`);
 > there is no `panopticon login`. The per-repo **env-file** mechanism below is unchanged — it simply
 > also carries that token. See [`docs/container-auth.md`](../container-auth.md).
+>
+> **Amendment (remote runners).** `env_file` is stored as a **name relative to the secrets dir**
+> (`$PANOPTICON_CONFIG/secrets`, default `~/.config/panopticon/secrets/`), not an absolute host
+> path. Each runner resolves it against its **own** local secrets dir at launch, so the stored value
+> is host-agnostic and a remote runner uses its own host's secrets — directly answering the *Remote
+> delivery* open question below. The file's content still never crosses the wire (only the name is
+> stored/served); the operator provisions the same-named env-file on each host that runs the repo's
+> tasks. This mirrors how `image_layer_file` is stored relative to the layers dir (ADR 0005).
 
 ## Context
 
