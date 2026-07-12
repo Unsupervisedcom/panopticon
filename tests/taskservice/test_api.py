@@ -133,6 +133,28 @@ def test_repo_image_layer_unknown_repo_404(tmp_path: Path) -> None:
         assert c.get("/repos/ghost/image-layer").status_code == 404
 
 
+def test_create_repo_with_a_missing_env_file_is_400(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # env_file is a name under the secrets dir (#291); an unresolvable name is a 400 at create.
+    monkeypatch.setenv("PANOPTICON_CONFIG", str(tmp_path))
+    resp = client.post("/repos", json={"id": "r2", "name": "acme/other",
+                                       "git_url": "https://x/r2.git", "env_file": "absent.env"})
+    assert resp.status_code == 400, resp.text
+    assert "env_file" in resp.json()["detail"]
+
+
+def test_create_repo_with_an_existing_env_file_is_201(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PANOPTICON_CONFIG", str(tmp_path))
+    (tmp_path / "secrets").mkdir()
+    (tmp_path / "secrets" / "r2.env").write_text("ANTHROPIC_API_KEY=sk-test\n")
+    resp = client.post("/repos", json={"id": "r2", "name": "acme/other",
+                                       "git_url": "https://x/r2.git", "env_file": "r2.env"})
+    assert resp.status_code == 201, resp.text
+
+
 def test_mcp_is_mounted(client: TestClient) -> None:
     # The MCP streamable-HTTP app is mounted at /mcp (in-container agents connect there); it must
     # be a mount, not a REST route, and reachable (i.e. not a REST 404).

@@ -641,3 +641,102 @@ async def test_going_back_to_coding_uses_set_state_not_an_operation(tmp_path: Pa
     assert "iterate" not in await svc.operations(task.id)  # no such operation
     await svc.set_state(task.id, "ITERATING")  # free move back to coding, despite the unmet promise
     assert (await svc.get_task(task.id)).state == "ITERATING"
+
+
+# -- repo env_file (secrets-file) existence validation, ADR 0007 / #291 ----------------------------
+#
+# env_file is a *name* under the secrets dir ($PANOPTICON_CONFIG/secrets); each runner resolves it
+# against its own host's secrets dir at spawn. The task service validates existence against this
+# host's secrets dir on create/update, so these tests point $PANOPTICON_CONFIG at a tmp dir.
+
+
+def _make_secret(config_dir: Path, name: str) -> None:
+    """Create a secrets file ``name`` under ``config_dir/secrets`` (the resolved env_file target)."""
+    secrets = config_dir / "secrets"
+    secrets.mkdir(exist_ok=True)
+    (secrets / name).write_text("ANTHROPIC_API_KEY=sk-test\n")
+
+
+async def test_create_repo_accepts_no_env_file(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)  # r1 (no env_file) is created here — the None case
+    await svc.create_repo(Repo(id="r2", name="acme/other", git_url="https://x/r2.git", env_file=None))
+    assert (await svc.get_repo("r2")).env_file is None
+
+
+async def test_create_repo_accepts_an_existing_env_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PANOPTICON_CONFIG", str(tmp_path))
+    _make_secret(tmp_path, "r2.env")
+    svc = await make_service(tmp_path)
+    await svc.create_repo(Repo(id="r2", name="acme/other", git_url="https://x/r2.git",
+                               env_file="r2.env"))
+    assert (await svc.get_repo("r2")).env_file == "r2.env"
+
+
+async def test_create_repo_rejects_a_missing_env_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PANOPTICON_CONFIG", str(tmp_path))
+    svc = await make_service(tmp_path)
+    with pytest.raises(ValueError, match="env_file"):
+        await svc.create_repo(Repo(id="r2", name="acme/other", git_url="https://x/r2.git",
+                                   env_file="absent.env"))
+    with pytest.raises(NotFound):  # the rejected repo was not persisted
+        await svc.get_repo("r2")
+
+
+async def test_create_repo_rejects_an_env_file_that_is_a_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PANOPTICON_CONFIG", str(tmp_path))
+    (tmp_path / "secrets" / "adir").mkdir(parents=True)  # a name that resolves to a dir, not a file
+    svc = await make_service(tmp_path)
+    with pytest.raises(ValueError, match="env_file"):  # isfile, not merely exists
+        await svc.create_repo(Repo(id="r2", name="acme/other", git_url="https://x/r2.git",
+                                   env_file="adir"))
+
+
+async def test_create_repo_rejects_an_env_file_that_escapes_the_secrets_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PANOPTICON_CONFIG", str(tmp_path))
+    svc = await make_service(tmp_path)
+    with pytest.raises(ValueError, match="escapes"):  # secrets_file_path guards against ../ names
+        await svc.create_repo(Repo(id="r2", name="acme/other", git_url="https://x/r2.git",
+                                   env_file="../escape.env"))
+
+
+async def test_update_repo_rejects_setting_a_missing_env_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PANOPTICON_CONFIG", str(tmp_path))
+    svc = await make_service(tmp_path)
+    with pytest.raises(ValueError, match="env_file"):
+        await svc.update_repo("r1", {"env_file": "absent.env"})
+    assert (await svc.get_repo("r1")).env_file is None  # unchanged
+
+
+async def test_update_repo_accepts_setting_an_existing_env_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PANOPTICON_CONFIG", str(tmp_path))
+    _make_secret(tmp_path, "r1.env")
+    svc = await make_service(tmp_path)
+    updated = await svc.update_repo("r1", {"env_file": "r1.env"})
+    assert updated.env_file == "r1.env"
+
+
+async def test_update_repo_not_touching_env_file_skips_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A repo whose env_file was valid at create can have the file vanish later; an unrelated patch
+    # (here toggling workflows) must not fail on it — env_file is validated only when it's in the change set.
+    monkeypatch.setenv("PANOPTICON_CONFIG", str(tmp_path))
+    _make_secret(tmp_path, "r1.env")
+    svc = await make_service(tmp_path)
+    await svc.update_repo("r1", {"env_file": "r1.env"})
+    (tmp_path / "secrets" / "r1.env").unlink()  # file goes away out of band
+    updated = await svc.update_repo("r1", {"enabled_workflows": ["spike"]})  # no env_file in the patch
+    assert updated.enabled_workflows == ["spike"]
+    assert updated.env_file == "r1.env"  # preserved, not re-validated

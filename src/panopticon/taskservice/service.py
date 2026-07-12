@@ -10,7 +10,9 @@ deterministic. No LLM (the determinism invariant).
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
@@ -18,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from panopticon.core.artifacts import ArtifactStore
+from panopticon.core.dirs import secrets_file_path
 from panopticon.core.layers import LayerStore
 from panopticon.core.models import (
     Actor,
@@ -144,8 +147,31 @@ class TaskService:
     # -- repos --------------------------------------------------------------------
 
     async def create_repo(self, repo: Repo) -> Repo:
+        await self._validate_env_file(repo.env_file)
         await self._store.create_repo(repo)
         return repo
+
+    async def _validate_env_file(self, env_file: str | None) -> None:
+        """Reject a repo whose secrets-file reference points at a missing file.
+
+        ``env_file`` is a *name* relative to the secrets dir (``$PANOPTICON_CONFIG/secrets``,
+        ADR 0007 / #291); the runner resolves it against its own local secrets dir at
+        ``docker run --env-file``. Validated here on create/update so a bad reference is caught at
+        registration rather than surfacing as an obscure ``--env-file`` failure at spawn. ``None``
+        (no secrets file) is valid. Raises :class:`ValueError` — for a name that escapes the
+        secrets dir (via :func:`secrets_file_path`) or one that resolves to a missing file — which
+        the API maps to HTTP 400.
+
+        NOTE(M5): ``env_file`` is resolved against *this host's* secrets dir. Today the task
+        service and the runner share a host (M1), so this stat answers the real question; when the
+        runner is remote, the file lives on the runner's host — move/duplicate the check on the
+        session service then.
+        """
+        path = secrets_file_path(env_file)  # None for no reference; raises ValueError on escape
+        if path is None:
+            return
+        if not await asyncio.to_thread(os.path.isfile, path):
+            raise ValueError(f"env_file {env_file!r} does not exist under the secrets dir")
 
     async def get_repo(self, repo_id: str) -> Repo:
         repo = await self._store.get_repo(repo_id)
@@ -167,6 +193,8 @@ class TaskService:
         if "id" in changes and changes["id"] != repo_id:
             raise ValueError("a repo's id cannot be changed")
         updated = replace(existing, **{k: v for k, v in changes.items() if k != "id"})
+        if "env_file" in changes:  # validate only when the caller is actually setting the field,
+            await self._validate_env_file(updated.env_file)  # so an unrelated patch never fails on it
         await self._store.update_repo(updated)
         return updated
 

@@ -87,7 +87,13 @@ def test_create_repo_over_rest(client: TaskServiceClient) -> None:
     assert {r["id"] for r in client.list_repos()} == {"r1", "r2"}
 
 
-def test_create_repo_with_secret_references(client: TaskServiceClient) -> None:
+def test_create_repo_with_secret_references(
+    client: TaskServiceClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # env_file is a name under the secrets dir (#291), validated to exist on create (ADR 0007).
+    monkeypatch.setenv("PANOPTICON_CONFIG", str(tmp_path))
+    (tmp_path / "secrets").mkdir()
+    (tmp_path / "secrets" / "r3.env").write_text("ANTHROPIC_API_KEY=sk-test\n")
     repo = client.create_repo(
         "r3", "acme/svc", "https://x/r3.git",
         env_file="r3.env",

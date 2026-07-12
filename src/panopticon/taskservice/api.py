@@ -428,7 +428,10 @@ def create_app(service: TaskService) -> FastAPI:
 
     @app.post("/repos", status_code=201)
     async def create_repo(body: RepoIn) -> RepoOut:
-        repo = await service.create_repo(Repo(**body.model_dump()))
+        try:
+            repo = await service.create_repo(Repo(**body.model_dump()))
+        except ValueError as exc:  # e.g. env_file does not exist
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return RepoOut.model_validate(repo)
 
     @app.get("/repos")
