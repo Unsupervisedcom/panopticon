@@ -36,6 +36,7 @@ packages = ["src/panopticon"]
 include = [
   "src/panopticon/docker/Dockerfile",
   "src/panopticon/docker/entrypoint.sh",
+  "src/panopticon/workflows/setup_token.sh",
 ]
 
 [tool.pytest.ini_options]

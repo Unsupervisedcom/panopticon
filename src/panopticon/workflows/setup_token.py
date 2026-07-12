@@ -13,11 +13,15 @@ no agent to gate); the script itself drives the advance to COMPLETE on success.
 
 from __future__ import annotations
 
-import textwrap
+import importlib.resources
 from typing import ClassVar
 
 from panopticon.core.state import Complete, InitialState
 from panopticon.core.workflow import Workflow
+
+#: The shell script the workflow runs, kept in a sibling ``setup_token.sh`` so it's edited (and
+#: shell-linted) as a real script rather than a Python string. Read once at import.
+_SCRIPT = (importlib.resources.files("panopticon.workflows") / "setup_token.sh").read_text()
 
 
 class SetupToken(Workflow):
@@ -45,26 +49,8 @@ class SetupToken(Workflow):
     def shell_script(self) -> str:
         """Run ``claude setup-token`` interactively; on success, advance the task to COMPLETE.
 
-        The session service injects ``PANOPTICON_SERVICE_URL``/``PANOPTICON_TASK_ID``, so the
-        script advances itself over REST. It pauses on the minted token afterwards so the operator
-        (attached to the session) can copy it into the repo's env-file before closing."""
-        return textwrap.dedent(
-            """\
-            echo "Running 'claude setup-token' — follow the prompts to mint a token."
-            echo
-            if claude setup-token; then
-                echo
-                echo "Token minted — marking this task complete."
-                curl --silent --show-error --fail --request POST \\
-                    "$PANOPTICON_SERVICE_URL/tasks/$PANOPTICON_TASK_ID/operations/advance" \\
-                    >/dev/null \\
-                    || echo "warning: could not mark the task complete via $PANOPTICON_SERVICE_URL"
-                echo
-                echo "Copy the token shown above into the repo's env-file as CLAUDE_CODE_OAUTH_TOKEN."
-                printf 'Press Enter to close this session. '
-                read _
-            else
-                echo "claude setup-token failed or was cancelled — leaving the task unchanged."
-            fi
-            """
-        )
+        The script lives in the sibling ``setup_token.sh``. The session service injects
+        ``PANOPTICON_SERVICE_URL``/``PANOPTICON_TASK_ID``, so the script advances itself over REST;
+        it pauses on the minted token afterwards so the operator (attached to the session) can copy
+        it into the repo's env-file before closing."""
+        return _SCRIPT
