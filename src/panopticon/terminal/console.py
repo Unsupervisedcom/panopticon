@@ -88,16 +88,6 @@ def session_exists(session: str, *, socket: str = TMUX_SOCKET) -> bool:
     ).returncode == 0
 
 
-def service_session_exists(*, socket: str = TMUX_SOCKET) -> bool:
-    """Whether the task-service tmux session is running on the panopticon socket."""
-    return session_exists(SERVICE_SESSION, socket=socket)
-
-
-def runner_session_exists(*, socket: str = TMUX_SOCKET) -> bool:
-    """Whether the session-service (runner) tmux session is running on the panopticon socket."""
-    return session_exists(RUNNER_SESSION, socket=socket)
-
-
 def make_session_switch(
     session: str,
     switch_file: Path,
