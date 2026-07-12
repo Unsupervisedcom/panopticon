@@ -3,7 +3,11 @@ the command runner is a fake that records calls. LLM-free (a shell task runs no 
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+import time
 from collections.abc import Sequence
+from pathlib import Path
 
 import pytest
 
@@ -120,3 +124,33 @@ def test_stop_kills_the_session() -> None:
     rec = _Recorder()
     ShellRunner("http://svc:8000", run=rec).stop("panopticon-t1")
     assert rec.calls == [["tmux", "-L", "panopticon", "kill-session", "-t", "panopticon-t1"]]
+
+
+# -- integration: a real host tmux session (no container) ---------------------------
+
+
+@pytest.mark.skipif(not shutil.which("tmux"), reason="needs tmux")
+def test_spawn_runs_the_script_in_a_real_tmux_session(tmp_path: Path) -> None:
+    # Proves a shell task runs in a live host tmux session (no container): the script executes in
+    # the pane (drops a marker), the session is attachable while it runs, and stop() tears it down.
+    socket = "panopticon-shelltest"
+    runner = ShellRunner("http://unused", tmux_socket=socket)
+    marker = tmp_path / "ran"
+    session = "panopticon-itest1"
+    try:
+        # touch a marker (the script really ran in the pane), then sleep so the session stays up
+        assert (
+            runner.spawn("itest1", script=f"touch {marker}; sleep 30", workdir=str(tmp_path))
+            == session
+        )
+        for _ in range(50):  # new-session returns once the pane is up; poll defensively
+            if runner.has_session("itest1") and marker.exists():
+                break
+            time.sleep(0.1)
+        assert runner.has_session("itest1")  # a live tmux session the operator could `t`-attach to
+        assert runner.is_running("itest1")  # the session is the shell task's liveness
+        assert marker.exists()  # the script executed inside the pane
+    finally:
+        runner.stop(session)
+        subprocess.run(["tmux", "-L", socket, "kill-server"], capture_output=True)
+    assert not runner.has_session("itest1")  # stop() killed it
