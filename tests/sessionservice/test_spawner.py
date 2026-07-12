@@ -187,8 +187,8 @@ class _FakeShellRunner:
         self.spawned: list[dict[str, object]] = []
         self._session = session
 
-    def spawn(self, task_id: str, *, env_file: str | None = None, script: str = "", progress: Callable[[LifecyclePhase], None] | None = None) -> str:
-        self.spawned.append({"task_id": task_id, "env_file": env_file, "script": script})
+    def spawn(self, task_id: str, *, env_file: str | None = None, script: str = "", workdir: str | None = None, progress: Callable[[LifecyclePhase], None] | None = None) -> str:
+        self.spawned.append({"task_id": task_id, "env_file": env_file, "script": script, "workdir": workdir})
         if progress is not None:
             progress(LifecyclePhase.STARTING)
             progress(LifecyclePhase.AWAITING)
@@ -204,11 +204,11 @@ class _FakeShellRunner:
         pass
 
 
-def _shell_spawner(client: object, runner: object, shell_runner: object) -> Spawner:
+def _shell_spawner(client: object, runner: object, shell_runner: object, made: list[str] | None = None) -> Spawner:
     cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
     return Spawner(client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
                    shell_runner=shell_runner, git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
-                   makedirs=lambda _p: None)
+                   makedirs=(made.append if made is not None else (lambda _p: None)))
 
 
 _SHELL_TASK: JsonObj = {"id": "t1", "repo_id": "r1", "workflow": "setup-token", "state": "RUNNING", "claimed_by": None}
@@ -217,12 +217,16 @@ _SHELL_TASK: JsonObj = {"id": "t1", "repo_id": "r1", "workflow": "setup-token", 
 def test_spawn_one_shell_workflow_runs_the_script_and_skips_docker() -> None:
     client = _FakeClient(repo=_REPO, runner_type="shell", shell_script="claude setup-token")
     runner, shell = _FakeRunner(), _FakeShellRunner()
-    cid = _shell_spawner(client, runner, shell).spawn_one(dict(_SHELL_TASK))
+    made: list[str] = []
+    cid = _shell_spawner(client, runner, shell, made).spawn_one(dict(_SHELL_TASK))
     assert cid == "panopticon-t1"
     assert runner.spawned == []  # the Docker runner is never touched for a shell workflow
     assert shell.spawned[0]["task_id"] == "t1"
     assert shell.spawned[0]["script"] == "claude setup-token"  # fetched from the workflow over REST
     assert shell.spawned[0]["env_file"] == "/sec/r1.env"  # the repo's secrets are still sourced
+    # the script runs in the task's own directory, which the spawner creates (empty — no clone)
+    assert shell.spawned[0]["workdir"] == "/tasks/t1"
+    assert made == ["/tasks/t1"]
 
 
 def test_spawn_one_shell_reports_phases_without_preparing_or_building() -> None:

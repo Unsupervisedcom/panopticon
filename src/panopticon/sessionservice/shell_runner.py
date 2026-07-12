@@ -16,6 +16,7 @@ unit-testable without tmux. LLM-free — a shell task runs no agent.
 
 from __future__ import annotations
 
+import os
 import shlex
 from collections.abc import Callable
 
@@ -50,22 +51,27 @@ class ShellRunner(Runner):
         *,
         env_file: str | None = None,
         script: str = "",
+        workdir: str | None = None,
         progress: Callable[[LifecyclePhase], None] | None = None,
     ) -> str:
         """Run ``script`` for ``task_id`` in a fresh host tmux session; return the session name.
 
         The session is named ``panopticon-<task_id>`` (matching the local runner) so the terminal
-        supervisor attaches to it the same way. The pane runs ``sh -c`` with ``PANOPTICON_SERVICE_URL``
-        and ``PANOPTICON_TASK_ID`` exported — so the script can drive its own lifecycle over REST
-        (e.g. advance to COMPLETE on success) — and the repo's ``env_file`` secrets sourced first when
-        given. Reports ``STARTING`` (before the session) then ``AWAITING`` (once it's up) via
-        ``progress``; there is no ``PREPARING``/``BUILDING`` (no clone, no image). Idempotent: a stale
-        session of the same name is killed first, so a respawn is a no-op restart."""
+        supervisor attaches to it the same way, and starts in ``workdir`` — the task's own directory,
+        which the spawner creates (a shell task has no clone, so this is an empty per-task scratch dir
+        rather than a checkout). ``workdir`` falls back to the operator's home only when unset (direct
+        use). The pane runs ``sh -c`` with ``PANOPTICON_SERVICE_URL`` and ``PANOPTICON_TASK_ID``
+        exported — so the script can drive its own lifecycle over REST (e.g. advance to COMPLETE on
+        success) — and the repo's ``env_file`` secrets sourced first when given. Reports ``STARTING``
+        (before the session) then ``AWAITING`` (once it's up) via ``progress``; there is no
+        ``PREPARING``/``BUILDING`` (no clone, no image). Idempotent: a stale session of the same name
+        is killed first, so a respawn is a no-op restart."""
 
         def _report(phase: LifecyclePhase) -> None:
             if progress is not None:
                 progress(phase)
 
+        start_dir = workdir or os.path.expanduser("~")
         session = f"panopticon-{task_id}"
         lines = [
             f"export PANOPTICON_SERVICE_URL={shlex.quote(self._service_url)}",
@@ -79,7 +85,8 @@ class ShellRunner(Runner):
         # Clear any stale session first so a respawn is idempotent (no-op when none exists).
         self._run(self._tmux("kill-session", "-t", session), check=False)
         _report(LifecyclePhase.STARTING)
-        self._run(self._tmux("new-session", "-d", "-s", session, "sh", "-c", command))
+        # -c sets the pane's start directory (the task's own dir) so the script runs in a known place.
+        self._run(self._tmux("new-session", "-d", "-s", session, "-c", start_dir, "sh", "-c", command))
         _report(LifecyclePhase.AWAITING)
         return session
 

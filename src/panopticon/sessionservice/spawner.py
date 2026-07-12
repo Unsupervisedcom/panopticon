@@ -196,18 +196,25 @@ class Spawner:
 
     def _spawn_shell(self, task: JsonObj, repo: JsonObj) -> str:
         """The shell path: run the workflow's ``shell_script`` in a host tmux session — no clone, no
-        image build, no agent (reports ``STARTING`` → ``AWAITING``, skipping ``PREPARING``/``BUILDING``)."""
+        image build, no agent (reports ``STARTING`` → ``AWAITING``, skipping ``PREPARING``/``BUILDING``).
+
+        The script runs in the task's own directory (``<tasks_root>/<task_id>``, created empty here —
+        a shell task has no clone), mirroring where a container task works, and cleaned up with the
+        rest when the task finishes (:meth:`cleanup`)."""
         task_id = task["id"]
         if self._shell_runner is None:
             raise RuntimeError(
                 f"task {task_id!r} uses shell workflow {task['workflow']!r} but this runner has no shell runner"
             )
         _log.info("task %s: starting shell session (workflow=%s)", task_id, task["workflow"])
+        workdir = f"{self._tasks_root}/{task_id}"
+        self._makedirs(workdir)  # empty per-task working dir (no clone) — the pane starts here
         script = self._client.workflow_shell_script(task["workflow"])
         return self._shell_runner.spawn(
             task_id,
             env_file=repo.get("env_file"),  # per-repo secrets, sourced into the shell (ADR 0007)
             script=script,
+            workdir=workdir,
             progress=lambda phase: self._report(task_id, phase),  # STARTING then AWAITING
         )
 

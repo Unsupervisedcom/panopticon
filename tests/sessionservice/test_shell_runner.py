@@ -26,11 +26,11 @@ def test_shell_runner_is_a_runner() -> None:
     assert issubclass(ShellRunner, Runner)
 
 
-def test_spawn_kills_stale_session_then_starts_the_script() -> None:
+def test_spawn_kills_stale_session_then_starts_the_script_in_the_task_dir() -> None:
     rec = _Recorder()
     runner = ShellRunner("http://svc:8000", runner_id="r1", run=rec)
 
-    session = runner.spawn("t1", script="claude setup-token")
+    session = runner.spawn("t1", script="claude setup-token", workdir="/tasks/t1")
 
     assert session == "panopticon-t1"
     kill, new_session = rec.calls
@@ -38,7 +38,17 @@ def test_spawn_kills_stale_session_then_starts_the_script() -> None:
     assert kill == ["tmux", "-L", "panopticon", "kill-session", "-t", "panopticon-t1"]
     assert new_session[:6] == ["tmux", "-L", "panopticon", "new-session", "-d", "-s"]
     assert new_session[6] == "panopticon-t1"
-    assert new_session[7:9] == ["sh", "-c"]  # the pane runs the assembled script under sh -c
+    assert new_session[7:9] == ["-c", "/tasks/t1"]  # the pane starts in the task's own directory
+    assert new_session[9:11] == ["sh", "-c"]  # the pane runs the assembled script under sh -c
+
+
+def test_spawn_falls_back_to_the_operator_home_without_a_workdir() -> None:
+    import os
+
+    rec = _Recorder()
+    ShellRunner("http://svc:8000", run=rec).spawn("t1", script="echo hi")  # no workdir → home
+    new_session = rec.calls[-1]
+    assert new_session[new_session.index("-c") + 1] == os.path.expanduser("~")
 
 
 def test_spawn_exports_service_env_and_runs_the_script() -> None:
