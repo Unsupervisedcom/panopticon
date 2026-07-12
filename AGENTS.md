@@ -217,9 +217,9 @@ on every PR (the same commands the Makefile wraps).
 
 - **Ensemble** — the collapsible group of governed tasks shown under a governor in the
   dashboard. Pressing `Enter` on a governing task collapses its children into a single dim
-  `ensemble` placeholder row; pressing `Enter` again expands them. Pure display state — no
+  placeholder row; pressing `Enter` again expands them. Pure display state — no
   change is made to the task service. The placeholder row's key uses the `_ENSEMBLE_KEY_PREFIX`
-  sentinel and its slug cell reads `ensemble` (dim). Arrow keys skip it like the separator.
+  sentinel and its slug cell renders a dim `...`. Arrow keys skip it like the separator.
 - **Task** — a unit of work; identity is `id`, label is `slug`.
 - **Repo** — a repository tasks operate on. Holds `env_file` (a *reference* — a name relative to the
   secrets dir `$PANOPTICON_CONFIG/secrets` naming an env-file of secrets, ADR 0007), never the
