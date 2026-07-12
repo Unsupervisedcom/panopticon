@@ -50,6 +50,21 @@ class ImageBuilder:
             self._run(["docker", "build", "--tag", tag, context], verbose=verbose)
         return tag
 
+    def build_base(self, *, verbose: bool = False) -> None:
+        """Build the base image unconditionally from the bundled Dockerfile."""
+        import panopticon
+        import panopticon.docker as _docker_pkg
+        dockerfile_ref = importlib.resources.files(_docker_pkg) / "Dockerfile"
+        with importlib.resources.as_file(dockerfile_ref) as dockerfile_path:
+            self._run(
+                ["docker", "build",
+                 "--tag", self._base,
+                 "--build-arg", f"PANOPTICON_VERSION={panopticon.__version__}",
+                 "--file", str(dockerfile_path),
+                 str(dockerfile_path.parent)],
+                verbose=verbose,
+            )
+
     def build_base_if_missing(self, *, verbose: bool = False) -> bool:
         """Probe for the base image; build it from the bundled Dockerfile if absent.
 

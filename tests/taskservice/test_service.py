@@ -331,6 +331,32 @@ async def test_reclaim_skips_terminal_tasks(tmp_path: Path) -> None:
     assert (await svc.get_task(done.id)).claimed_by == "host-dead"  # unchanged
 
 
+async def test_claim_does_not_bump_updated_at(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    before = task.updated_at
+    await svc.claim(task.id, "host-1")
+    assert (await svc.get_task(task.id)).updated_at == before
+
+
+async def test_release_does_not_bump_updated_at(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    await svc.claim(task.id, "host-1")
+    before = (await svc.get_task(task.id)).updated_at
+    await svc.release(task.id)
+    assert (await svc.get_task(task.id)).updated_at == before
+
+
+async def test_reclaim_does_not_bump_updated_at(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    await svc.claim(task.id, "host-dead")
+    before = (await svc.get_task(task.id)).updated_at
+    await svc.reclaim("host-dead")
+    assert (await svc.get_task(task.id)).updated_at == before
+
+
 # -- container lifecycle: the session service's reported spawn phase, folded into a status ---------
 
 

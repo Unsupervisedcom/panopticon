@@ -38,8 +38,8 @@ class _FakeRunner:
         self._running = running
         self._session = session
 
-    def spawn(self, task_id: str, *, env_file: str | None = None, workspace: str | None = None, image: str | None = None, docker_in_docker: bool = False, initial_prompt: str | None = None, turn: str | None = None, progress: Callable[[LifecyclePhase], None] | None = None) -> str:
-        self.spawned.append({"task_id": task_id, "env_file": env_file, "workspace": workspace, "image": image, "docker_in_docker": docker_in_docker, "initial_prompt": initial_prompt, "turn": turn})
+    def spawn(self, task_id: str, *, env_file: str | None = None, workspace: str | None = None, image: str | None = None, docker_in_docker: bool = False, initial_prompt: str | None = None, turn: str | None = None, starting_model: str | None = None, progress: Callable[[LifecyclePhase], None] | None = None) -> str:
+        self.spawned.append({"task_id": task_id, "env_file": env_file, "workspace": workspace, "image": image, "docker_in_docker": docker_in_docker, "initial_prompt": initial_prompt, "turn": turn, "starting_model": starting_model})
         if progress is not None:  # the real runner reports these two sub-steps
             progress(LifecyclePhase.STARTING)
             progress(LifecyclePhase.AWAITING)
@@ -52,6 +52,9 @@ class _FakeRunner:
         return self._session
 
     def stop(self, container_id: str) -> None:
+        pass
+
+    def delete_workspace_contents(self, path: str) -> None:
         pass
 
 
@@ -140,6 +143,15 @@ def test_spawn_one_passes_turn_for_interrupt_prompt_on_respawn() -> None:
          "claimed_by": None, "turn": "agent"}
     )
     assert runner.spawned[0]["turn"] == "agent"
+
+
+def test_spawn_one_passes_starting_model_to_runner() -> None:
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner()
+    _spawner(client, runner).spawn_one(
+        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING",
+         "claimed_by": None, "starting_model": "opus"}
+    )
+    assert runner.spawned[0]["starting_model"] == "opus"
 
 
 def test_spawn_one_passes_the_docker_in_docker_capability() -> None:
@@ -534,6 +546,31 @@ def test_cleanup_is_a_no_op_for_non_terminal_task() -> None:
     )
     spawner.cleanup({"id": "t1", "state": "ITERATING"})
     assert removed == []  # live task — never touch its workspace
+
+
+def test_cleanup_invokes_docker_cleanup_when_rmtree_fails() -> None:
+    # Spawner wires docker_cleanup through to cleanup_workspace; verify the path end-to-end.
+    docker_called: list[str] = []
+    rmtree_calls = 0
+
+    def rmtree_first_fails(path: str) -> None:
+        nonlocal rmtree_calls
+        rmtree_calls += 1
+        if rmtree_calls == 1:
+            raise PermissionError(13, "Permission denied", "/tasks/t1/.mypy_cache")
+
+    runner = _FakeRunner(running=False)
+    client = _FakeClient(repo=_REPO)
+    cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
+    spawner = Spawner(
+        client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
+        git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        makedirs=lambda _p: None, exists=lambda _p: True,
+        rmtree=rmtree_first_fails, docker_cleanup=docker_called.append,
+    )
+    spawner.cleanup({"id": "t1", "state": "COMPLETE"})
+    assert docker_called == ["/tasks/t1"]
+    assert rmtree_calls == 2
 
 
 def test_spawn_hook_failure_aborts_spawn() -> None:

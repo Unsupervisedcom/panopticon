@@ -94,6 +94,7 @@ class Spawner:
         makedirs: Callable[[str], None] = lambda p: Path(p).mkdir(parents=True, exist_ok=True),
         exists: Callable[[str], bool] = os.path.isdir,
         rmtree: Callable[[str], None] = shutil.rmtree,
+        docker_cleanup: Callable[[str], None] | None = None,
         now: Callable[[], float] = time.monotonic,
         max_respawns: int = MAX_RESPAWNS,
         respawn_reset: float = RESPAWN_RESET_SECONDS,
@@ -109,6 +110,7 @@ class Spawner:
         self._makedirs = makedirs
         self._exists = exists
         self._rmtree = rmtree
+        self._docker_cleanup = docker_cleanup if docker_cleanup is not None else runner.delete_workspace_contents
         self._now = now
         self._max_respawns = max_respawns
         self._respawn_reset = respawn_reset
@@ -170,6 +172,7 @@ class Spawner:
                 docker_in_docker=bool((repo.get("capabilities") or {}).get("docker_in_docker")),
                 initial_prompt=task.get("initial_prompt"),  # passed as a CLI arg to claude on the first run
                 turn=task.get("turn"),  # agent's turn → INTERRUPT_PROMPT on respawn
+                starting_model=task.get("starting_model"),  # model selection passed to claude --model on first launch
                 progress=lambda phase: self._report(task_id, phase),  # STARTING then AWAITING
             )
         except Exception as exc:
@@ -326,7 +329,10 @@ class Spawner:
             return
         if self._runner.is_running(task["id"]):
             return  # container still up — wait for it to exit naturally
-        cleanup_workspace(task["id"], self._tasks_root, exists=self._exists, rmtree=self._rmtree)
+        cleanup_workspace(
+            task["id"], self._tasks_root,
+            exists=self._exists, rmtree=self._rmtree, docker_cleanup=self._docker_cleanup,
+        )
 
     def _compose_image(self, workflow: str, repo: JsonObj) -> str | None:
         """Compose the task's image (base → workflow → repo layers, ADR 0005) and return its tag;

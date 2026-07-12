@@ -78,7 +78,9 @@ class TaskSummaryOut(BaseModel):
     claimed_by: str | None
     tokens_used: int | None
     token_estimate: int | None
+    starting_model: str | None = None
     governor_task_id: str | None = None
+    created_at: str | None = None
     updated_at: str | None = None
     depends_on_task_ids: list[str] = []
     provisioned: bool
@@ -105,7 +107,9 @@ class TaskOut(BaseModel):
     claimed_by: str | None  # the runner that owns this task (the spawn gate), or None
     tokens_used: int | None  # cost-weighted input-equivalent tokens used (None until reported)
     token_estimate: int | None  # the agent's forecast of total tokens (set in planning; None until then)
+    starting_model: str | None = None  # the model seeded at creation from the workflow's default_model
     governor_task_id: str | None = None  # the task that oversees this one, or None for ungoverned tasks
+    created_at: str | None = None  # ISO-8601 timestamp when the task was created; set once, never changed
     updated_at: str | None = None  # ISO-8601 timestamp of the last mutation, stamped by the task service
     depends_on_task_ids: list[str] = []  # task IDs that must complete before work on this task should begin
     provisioned: bool  # computed (Task.provisioned): branch + clone recorded

@@ -28,7 +28,7 @@ def test_migrate_db_moves_old_file(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     old.write_bytes(b"sqlite-data")
 
     fake_url = _make_fake_db_url(tmp_path)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_DB", fake_url)
+    monkeypatch.setattr("panopticon.taskservice.__main__.DB_URL", fake_url)
 
     from panopticon.taskservice.__main__ import migrate_db_to_home
     migrate_db_to_home(fake_url)
@@ -48,7 +48,7 @@ def test_migrate_db_skips_when_new_already_exists(tmp_path: Path, monkeypatch: p
     new = Path(fake_url[len("sqlite:///"):])
     new.parent.mkdir(parents=True)
     new.write_bytes(b"existing")
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_DB", fake_url)
+    monkeypatch.setattr("panopticon.taskservice.__main__.DB_URL", fake_url)
 
     from panopticon.taskservice.__main__ import migrate_db_to_home
     migrate_db_to_home(fake_url)
@@ -60,7 +60,7 @@ def test_migrate_db_skips_when_new_already_exists(tmp_path: Path, monkeypatch: p
 def test_migrate_db_noop_when_old_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     fake_url = _make_fake_db_url(tmp_path)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_DB", fake_url)
+    monkeypatch.setattr("panopticon.taskservice.__main__.DB_URL", fake_url)
 
     from panopticon.taskservice.__main__ import migrate_db_to_home
     migrate_db_to_home(fake_url)  # no error, no file created
@@ -74,7 +74,7 @@ def test_migrate_db_skips_custom_url(tmp_path: Path, monkeypatch: pytest.MonkeyP
     old.write_bytes(b"data")
 
     fake_url = _make_fake_db_url(tmp_path)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_DB", fake_url)
+    monkeypatch.setattr("panopticon.taskservice.__main__.DB_URL", fake_url)
 
     from panopticon.taskservice.__main__ import migrate_db_to_home
     migrate_db_to_home("sqlite:////custom/other.db")  # custom URL, not the default
@@ -107,9 +107,9 @@ def test_migrate_artifacts_moves_old_dir(tmp_path: Path, monkeypatch: pytest.Mon
     fake_artifacts = str(fake_home / ".panopticon" / "artifacts")
     fake_layers = str(fake_home / ".panopticon" / "layers")
     fake_db = _make_fake_db_url(tmp_path)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_DB", fake_db)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_ARTIFACTS", fake_artifacts)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_LAYERS", fake_layers)
+    monkeypatch.setattr("panopticon.taskservice.__main__.DB_URL", fake_db)
+    monkeypatch.setattr("panopticon.taskservice.__main__.ARTIFACTS_DIR", fake_artifacts)
+    monkeypatch.setattr("panopticon.taskservice.__main__.LAYERS_DIR", fake_layers)
 
     from panopticon.taskservice.__main__ import _migrate_legacy_to_home
     _migrate_legacy_to_home(fake_db, fake_artifacts, fake_layers)
@@ -128,9 +128,9 @@ def test_migrate_layers_moves_old_dir(tmp_path: Path, monkeypatch: pytest.Monkey
     fake_artifacts = str(fake_home / ".panopticon" / "artifacts")
     fake_layers = str(fake_home / ".panopticon" / "layers")
     fake_db = _make_fake_db_url(tmp_path)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_DB", fake_db)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_ARTIFACTS", fake_artifacts)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_LAYERS", fake_layers)
+    monkeypatch.setattr("panopticon.taskservice.__main__.DB_URL", fake_db)
+    monkeypatch.setattr("panopticon.taskservice.__main__.ARTIFACTS_DIR", fake_artifacts)
+    monkeypatch.setattr("panopticon.taskservice.__main__.LAYERS_DIR", fake_layers)
 
     from panopticon.taskservice.__main__ import _migrate_legacy_to_home
     _migrate_legacy_to_home(fake_db, fake_artifacts, fake_layers)
@@ -153,9 +153,9 @@ def test_migrate_skips_artifacts_when_new_exists(tmp_path: Path, monkeypatch: py
     fake_artifacts = str(new_artifacts)
     fake_layers = str(fake_home / ".panopticon" / "layers")
     fake_db = _make_fake_db_url(tmp_path)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_DB", fake_db)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_ARTIFACTS", fake_artifacts)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_LAYERS", fake_layers)
+    monkeypatch.setattr("panopticon.taskservice.__main__.DB_URL", fake_db)
+    monkeypatch.setattr("panopticon.taskservice.__main__.ARTIFACTS_DIR", fake_artifacts)
+    monkeypatch.setattr("panopticon.taskservice.__main__.LAYERS_DIR", fake_layers)
 
     from panopticon.taskservice.__main__ import _migrate_legacy_to_home
     _migrate_legacy_to_home(fake_db, fake_artifacts, fake_layers)
@@ -171,9 +171,9 @@ def test_migrate_skips_custom_artifacts_path(tmp_path: Path, monkeypatch: pytest
     fake_home = tmp_path / "home"
     fake_artifacts = str(fake_home / ".panopticon" / "artifacts")
     fake_db = _make_fake_db_url(tmp_path)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_DB", fake_db)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_ARTIFACTS", fake_artifacts)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_LAYERS", str(fake_home / ".panopticon" / "layers"))
+    monkeypatch.setattr("panopticon.taskservice.__main__.DB_URL", fake_db)
+    monkeypatch.setattr("panopticon.taskservice.__main__.ARTIFACTS_DIR", fake_artifacts)
+    monkeypatch.setattr("panopticon.taskservice.__main__.LAYERS_DIR", str(fake_home / ".panopticon" / "layers"))
 
     from panopticon.taskservice.__main__ import _migrate_legacy_to_home
     _migrate_legacy_to_home(fake_db, "/custom/artifacts", str(fake_home / ".panopticon" / "layers"))
@@ -198,7 +198,7 @@ def test_migrate_db_moves_dot_panopticon_file(tmp_path: Path, monkeypatch: pytes
     old.write_bytes(b"sqlite-data-from-251")
 
     fake_url = _make_xdg_db_url(tmp_path)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_DB", fake_url)
+    monkeypatch.setattr("panopticon.taskservice.__main__.DB_URL", fake_url)
     _run_migrate_db_second_hop(tmp_path, fake_url)
 
     new = Path(fake_url[len("sqlite:///"):])
@@ -234,9 +234,9 @@ def test_migrate_artifacts_moves_dot_panopticon_dir(tmp_path: Path, monkeypatch:
     xdg_artifacts = str(tmp_path / "xdg" / "panopticon" / "artifacts")
     xdg_layers = str(tmp_path / "xdg" / "panopticon" / "layers")
     xdg_db = _make_xdg_db_url(tmp_path)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_DB", xdg_db)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_ARTIFACTS", xdg_artifacts)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_LAYERS", xdg_layers)
+    monkeypatch.setattr("panopticon.taskservice.__main__.DB_URL", xdg_db)
+    monkeypatch.setattr("panopticon.taskservice.__main__.ARTIFACTS_DIR", xdg_artifacts)
+    monkeypatch.setattr("panopticon.taskservice.__main__.LAYERS_DIR", xdg_layers)
 
     import panopticon.taskservice.__main__ as m
 
@@ -266,9 +266,9 @@ def test_migrate_layers_moves_dot_panopticon_dir(tmp_path: Path, monkeypatch: py
     xdg_artifacts = str(tmp_path / "xdg" / "panopticon" / "artifacts")
     xdg_layers = str(tmp_path / "xdg" / "panopticon" / "layers")
     xdg_db = _make_xdg_db_url(tmp_path)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_DB", xdg_db)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_ARTIFACTS", xdg_artifacts)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_LAYERS", xdg_layers)
+    monkeypatch.setattr("panopticon.taskservice.__main__.DB_URL", xdg_db)
+    monkeypatch.setattr("panopticon.taskservice.__main__.ARTIFACTS_DIR", xdg_artifacts)
+    monkeypatch.setattr("panopticon.taskservice.__main__.LAYERS_DIR", xdg_layers)
 
     import panopticon.taskservice.__main__ as m
 
@@ -300,9 +300,9 @@ def _run_migrate_with_fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     xdg_artifacts = str(tmp_path / "xdg-data" / "panopticon" / "artifacts")
     xdg_layers = str(tmp_path / "xdg-data" / "panopticon" / "layers")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_config))
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_DB", xdg_db)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_ARTIFACTS", xdg_artifacts)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_LAYERS", xdg_layers)
+    monkeypatch.setattr("panopticon.taskservice.__main__.DB_URL", xdg_db)
+    monkeypatch.setattr("panopticon.taskservice.__main__.ARTIFACTS_DIR", xdg_artifacts)
+    monkeypatch.setattr("panopticon.taskservice.__main__.LAYERS_DIR", xdg_layers)
 
     import panopticon.taskservice.__main__ as m
     original = Path.home
@@ -327,9 +327,9 @@ def test_migrate_hooks_moves_dot_panopticon_dir(tmp_path: Path, monkeypatch: pyt
     xdg_artifacts = str(tmp_path / "xdg-data" / "panopticon" / "artifacts")
     xdg_layers = str(tmp_path / "xdg-data" / "panopticon" / "layers")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_config))
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_DB", xdg_db)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_ARTIFACTS", xdg_artifacts)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_LAYERS", xdg_layers)
+    monkeypatch.setattr("panopticon.taskservice.__main__.DB_URL", xdg_db)
+    monkeypatch.setattr("panopticon.taskservice.__main__.ARTIFACTS_DIR", xdg_artifacts)
+    monkeypatch.setattr("panopticon.taskservice.__main__.LAYERS_DIR", xdg_layers)
 
     import panopticon.taskservice.__main__ as m
     original = Path.home
@@ -357,9 +357,9 @@ def test_migrate_secrets_moves_dot_panopticon_dir(tmp_path: Path, monkeypatch: p
     xdg_artifacts = str(tmp_path / "xdg-data" / "panopticon" / "artifacts")
     xdg_layers = str(tmp_path / "xdg-data" / "panopticon" / "layers")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_config))
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_DB", xdg_db)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_ARTIFACTS", xdg_artifacts)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_LAYERS", xdg_layers)
+    monkeypatch.setattr("panopticon.taskservice.__main__.DB_URL", xdg_db)
+    monkeypatch.setattr("panopticon.taskservice.__main__.ARTIFACTS_DIR", xdg_artifacts)
+    monkeypatch.setattr("panopticon.taskservice.__main__.LAYERS_DIR", xdg_layers)
 
     import panopticon.taskservice.__main__ as m
     original = Path.home
@@ -391,9 +391,9 @@ def test_migrate_hooks_skips_when_new_exists(tmp_path: Path, monkeypatch: pytest
     xdg_artifacts = str(tmp_path / "xdg-data" / "panopticon" / "artifacts")
     xdg_layers = str(tmp_path / "xdg-data" / "panopticon" / "layers")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_config))
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_DB", xdg_db)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_ARTIFACTS", xdg_artifacts)
-    monkeypatch.setattr("panopticon.taskservice.__main__.DEFAULT_LAYERS", xdg_layers)
+    monkeypatch.setattr("panopticon.taskservice.__main__.DB_URL", xdg_db)
+    monkeypatch.setattr("panopticon.taskservice.__main__.ARTIFACTS_DIR", xdg_artifacts)
+    monkeypatch.setattr("panopticon.taskservice.__main__.LAYERS_DIR", xdg_layers)
 
     import panopticon.taskservice.__main__ as m
     original = Path.home
@@ -424,8 +424,8 @@ def test_migrate_session_cache_from_cwd(tmp_path: Path, monkeypatch: pytest.Monk
     import panopticon.sessionservice._migration as mig
     fake_clone_cache = str(xdg_cache / "panopticon" / "repos")
     fake_tasks = str(xdg_cache / "panopticon" / "tasks")
-    monkeypatch.setattr(mig, "DEFAULT_CLONE_CACHE_ROOT", fake_clone_cache)
-    monkeypatch.setattr(mig, "DEFAULT_TASKS_ROOT", fake_tasks)
+    monkeypatch.setattr(mig, "CLONE_CACHE_DIR", fake_clone_cache)
+    monkeypatch.setattr(mig, "TASKS_DIR", fake_tasks)
 
     original = Path.home
     try:
@@ -452,8 +452,8 @@ def test_migrate_session_cache_from_dot_panopticon(tmp_path: Path, monkeypatch: 
     import panopticon.sessionservice._migration as mig
     fake_clone_cache = str(xdg_cache / "panopticon" / "repos")
     fake_tasks = str(xdg_cache / "panopticon" / "tasks")
-    monkeypatch.setattr(mig, "DEFAULT_CLONE_CACHE_ROOT", fake_clone_cache)
-    monkeypatch.setattr(mig, "DEFAULT_TASKS_ROOT", fake_tasks)
+    monkeypatch.setattr(mig, "CLONE_CACHE_DIR", fake_clone_cache)
+    monkeypatch.setattr(mig, "TASKS_DIR", fake_tasks)
 
     original = Path.home
     try:

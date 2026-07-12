@@ -33,12 +33,9 @@ from pathlib import Path
 import httpx
 
 from panopticon.client import JsonObj, TaskServiceClient
+from panopticon.core.dirs import CLONE_CACHE_DIR, TASKS_DIR
 from panopticon.core.git import GitClones
-from panopticon.sessionservice._migration import (
-    DEFAULT_CLONE_CACHE_ROOT,
-    DEFAULT_TASKS_ROOT,
-    migrate_session_dirs,
-)
+from panopticon.sessionservice._migration import migrate_session_dirs
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.images import ImageBuilder
 from panopticon.sessionservice.local_runner import DEFAULT_IMAGE, LocalRunner
@@ -207,15 +204,13 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
         help="hostname or alias reported to the task service",
     )
     parser.add_argument("--image", default=DEFAULT_IMAGE)
-    parser.add_argument("--cache-root", default=os.environ.get("PANOPTICON_CACHE_ROOT", DEFAULT_CLONE_CACHE_ROOT))
-    parser.add_argument("--tasks-root", default=os.environ.get("PANOPTICON_TASKS_ROOT", DEFAULT_TASKS_ROOT))
     parser.add_argument(
         "--interval", type=float, default=2.0,
         help="change-feed long-poll wait, seconds (the keepalive ceiling between blocking calls)",
     )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    migrate_session_dirs(args.cache_root, args.tasks_root)
+    migrate_session_dirs(CLONE_CACHE_DIR, TASKS_DIR)
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
     runner = LocalRunner(args.container_service_url, image=args.image, runner_id=args.runner_id)
     # Hold this host's liveness connection for the daemon's whole life, alongside the spawn/provision
@@ -230,8 +225,8 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
     liveness.start()
     run_host(
         client, runner,
-        runner_id=args.runner_id, tasks_root=args.tasks_root,
-        cache=CloneCache(args.cache_root), git=GitClones(),
+        runner_id=args.runner_id, tasks_root=TASKS_DIR,
+        cache=CloneCache(CLONE_CACHE_DIR), git=GitClones(),
         images=ImageBuilder(base=args.image),  # compose workflow layers onto the same base (ADR 0005)
         interval=args.interval,
     )

@@ -229,6 +229,21 @@ def test_stop_kills_session_and_force_removes_container_idempotently() -> None:
     assert (["docker", "rm", "--force", "panopticon-t1"], False) in rec.calls
 
 
+def test_delete_workspace_contents_runs_root_container_to_empty_directory() -> None:
+    rec = _Recorder()
+    LocalRunner("http://svc", image="panopticon-base", run=rec).delete_workspace_contents("/tasks/t1")
+    assert rec.calls == [(
+        [
+            "docker", "run", "--rm",
+            "--entrypoint", "/bin/sh",
+            "--volume", "/tasks/t1:/cleanup",
+            "panopticon-base",
+            "-c", "find /cleanup -mindepth 1 -delete",
+        ],
+        True,
+    )]
+
+
 def test_tmux_socket_can_be_overridden() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", tmux_socket="panopt", run=rec).spawn("t1")
@@ -300,17 +315,23 @@ class _FakeClient:
         return self._repo
 
 
-def test_cli_preps_the_workspace_then_spawns_with_secrets_and_mount(tmp_path: Path) -> None:
+def test_cli_preps_the_workspace_then_spawns_with_secrets_and_mount(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from panopticon.sessionservice import __main__ as cli
     from panopticon.sessionservice.__main__ import main as cli_main
 
     rec = _Recorder()
     fake = _FakeClient(
         {"id": "r1", "git_url": "https://forge/r1.git", "env_file": "/secrets/r1.env"}
     )
+    # The clone cache and per-task clones roots are the base-dir defaults (no per-path flags); the
+    # defaults are import-time constants, so point them at tmp dirs by patching them in place.
     cache_root, tasks_root = tmp_path / "cache", tmp_path / "tasks"
+    monkeypatch.setattr(cli, "CLONE_CACHE_DIR", str(cache_root))
+    monkeypatch.setattr(cli, "TASKS_DIR", str(tasks_root))
     cid = cli_main(
-        ["t1", "--service-url", "http://svc:9", "--image", "img:2",
-         "--cache-root", str(cache_root), "--tasks-root", str(tasks_root)],
+        ["t1", "--service-url", "http://svc:9", "--image", "img:2"],
         run=rec, client=fake,  # type: ignore[arg-type]
     )
     assert cid == "panopticon-t1"

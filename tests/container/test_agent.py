@@ -133,6 +133,25 @@ def test_claude_argv_appends_the_workflow_overview_to_the_system_prompt(tmp_path
     assert argv[i + 1] == "# the workflow map"  # the map's contents go inline into the system prompt
 
 
+def test_claude_argv_passes_model_on_first_run(tmp_path: Path) -> None:
+    argv = agent._claude_argv(tmp_path, Path("/work/repo"), starting_model="opus")
+    assert argv == ["claude", "--dangerously-skip-permissions", "--model", "opus"]
+
+
+def test_claude_argv_omits_model_on_resume(tmp_path: Path) -> None:
+    project = tmp_path / "projects" / "-work-repo"
+    project.mkdir(parents=True)
+    (project / "session.jsonl").write_text("{}")
+    argv = agent._claude_argv(tmp_path, Path("/work/repo"), starting_model="opus")
+    assert "--model" not in argv
+    assert "--continue" in argv
+
+
+def test_claude_argv_passes_model_before_initial_prompt_on_first_run(tmp_path: Path) -> None:
+    argv = agent._claude_argv(tmp_path, Path("/work/repo"), initial_prompt="start now", starting_model="opus")
+    assert argv == ["claude", "--dangerously-skip-permissions", "--model", "opus", "start now"]
+
+
 def test_trust_workspace_seeds_acceptance_for_a_fresh_config(tmp_path: Path) -> None:
     import json
 

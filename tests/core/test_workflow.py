@@ -77,6 +77,15 @@ def test_start_task_records_initial_prompt() -> None:
     assert task.initial_prompt == "review your plan"
 
 
+def test_start_task_seeds_starting_model_from_default_model() -> None:
+    task = WF.start_task("t1", "r1", at="t0")
+    assert task.starting_model == WF.default_model
+
+
+def test_workflow_default_model_is_opus() -> None:
+    assert WF.default_model == "opus"
+
+
 # -- resolution: string + class refs, inherited DROPPED -----------------------------
 
 

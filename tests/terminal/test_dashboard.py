@@ -26,7 +26,7 @@ from panopticon.terminal.dashboard import (
     _repo_cell,
     _short_tokens,
     _slug_cell,
-    _sort_key,
+    _make_sort_key,
     _status_cell,
     _turn_cell,
     render_detail,
@@ -327,21 +327,21 @@ async def test_pressing_d_toggles_the_detail_pane() -> None:
         assert not app._detail_visible and detail.styles.display == "none"
 
 
-async def test_tasks_are_sorted_live_then_user_then_slug() -> None:
-    # The order: (1) non-terminal above terminal, (2) turn priority differs by group — active tasks
-    # surface the user's turn first (operator action needed), terminal tasks surface the agent's turn
-    # first (just finished); (3) most recently updated first, (4) slug (then id) as the stable tiebreaker.
-    # Here all tasks share the same updated_at (None → 0.0), so slug is the effective tiebreaker.
+async def test_tasks_are_sorted_active_then_terminal_in_creation_order() -> None:
+    # Active tasks: user turn first (operator action needed), then by created_at descending.
+    # Terminal tasks: agent turn first (task just finished), then by updated_at descending.
+    # In this fixture t-active-1 is user-turn, so it leads despite being the oldest.
     tasks = [
-        # terminal tasks — sink below all live work; agent-turn rises to top of this section.
-        {**_TASK, "id": "t-done", "slug": "done", "state": "COMPLETE", "turn": "user"},
-        {**_TASK, "id": "t-drop", "slug": "drop", "state": "DROPPED", "turn": "agent"},
-        # live agent-turn tasks — below the user-turn ones, sorted by slug.
-        {**_TASK, "id": "t-agent-b", "slug": "bravo", "turn": "agent"},
-        {**_TASK, "id": "t-agent-a", "slug": "alpha", "turn": "agent"},
-        # live user-turn tasks — at the very top, sorted by slug.
-        {**_TASK, "id": "t-user-b", "slug": "zebra", "turn": "user"},
-        {**_TASK, "id": "t-user-a", "slug": "mango", "turn": "user"},
+        {**_TASK, "id": "t-term-2", "slug": "done", "state": "COMPLETE", "turn": "user",
+         "created_at": "2026-06-01T01:00:00", "updated_at": "2026-06-01T02:00:00"},
+        {**_TASK, "id": "t-term-1", "slug": "drop", "state": "DROPPED", "turn": "agent",
+         "created_at": "2026-06-01T02:00:00", "updated_at": "2026-06-01T03:00:00"},
+        {**_TASK, "id": "t-active-3", "slug": "charlie", "turn": "agent",
+         "created_at": "2026-06-01T03:00:00"},
+        {**_TASK, "id": "t-active-1", "slug": "alpha", "turn": "user",
+         "created_at": "2026-06-01T01:00:00"},
+        {**_TASK, "id": "t-active-2", "slug": "bravo", "turn": "agent",
+         "created_at": "2026-06-01T02:00:00"},
     ]
     app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
@@ -349,27 +349,27 @@ async def test_tasks_are_sorted_live_then_user_then_slug() -> None:
         table = app.query_one("#tasks", DataTable)
         keys = [str(k.value) for k in table.rows]
         assert keys == [
-            "t-user-a", "t-user-b",    # live, user's turn, slug order
-            "t-agent-a", "t-agent-b",  # live, agent's turn, slug order
-            "t-drop", "t-done",        # terminal: agent-turn first (just finished), then user-turn
+            "t-active-1", "t-active-3", "t-active-2",  # active: user turn first, then newest created_at first
+            "t-term-1", "t-term-2",                    # terminal: newest updated_at first (t-term-1 updated 03:00 > 02:00)
         ]
 
 
-async def test_sort_uses_recency_within_tier() -> None:
-    # Within the same (terminal, turn) tier, more recently updated tasks sort first.
+async def test_sort_uses_creation_order_within_section() -> None:
+    # Within the same turn-priority tier, created_at descending is the primary sort (newest first).
+    # Falls back to updated_at when created_at is absent (pre-migration rows).
     tasks = [
-        {**_TASK, "id": "t-old", "slug": "alpha", "turn": "user", "updated_at": "2026-06-01T00:00:00"},
-        {**_TASK, "id": "t-new", "slug": "zebra", "turn": "user", "updated_at": "2026-06-25T00:00:00"},
+        {**_TASK, "id": "t-old", "slug": "zebra", "turn": "user", "created_at": "2026-06-01T00:00:00"},
+        {**_TASK, "id": "t-new", "slug": "alpha", "turn": "user", "created_at": "2026-06-25T00:00:00"},
     ]
     app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
         order = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
-        assert order == ["t-new", "t-old"]  # newer first, despite "zebra" > "alpha"
+        assert order == ["t-new", "t-old"]  # newer first, despite "alpha" < "zebra"
 
 
-async def test_sort_breaks_ties_on_slug() -> None:
-    # Same terminal-ness, turn, and updated_at → fall back to slug (then id) for a stable order.
+async def test_sort_breaks_ties_on_id() -> None:
+    # Same terminal-ness and created_at → fall back to id for a stable order.
     tasks = [
         {**_TASK, "id": "t2", "slug": "zebra", "turn": "user"},
         {**_TASK, "id": "t1", "slug": "alpha", "turn": "user"},
@@ -378,7 +378,7 @@ async def test_sort_breaks_ties_on_slug() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         order = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
-        assert order == ["t1", "t2"]  # alpha < zebra
+        assert order == ["t1", "t2"]  # t1 < t2 by id
 
 
 # -- active/terminal dim styling ---------------------------------------------------
@@ -1590,7 +1590,7 @@ def test_footer_shows_only_the_essential_keys() -> None:
     shown = {b.key for b in Dashboard.BINDINGS if b.show}
     hidden = {b.key for b in Dashboard.BINDINGS if not b.show}
     assert shown == {"t", "n", "x", "/", "d", "question_mark", "q"}
-    assert hidden == {"r", "R", "p", "g", "a", "s", "u", "y", "Y", "escape"}
+    assert hidden == {"o", "r", "R", "p", "g", "a", "s", "u", "y", "Y", "escape"}
 
 
 def test_bindings_and_help_derive_from_the_single_hotkey_table() -> None:
@@ -1664,13 +1664,16 @@ def test_group_by_governor_governed_task_appears_after_governor() -> None:
 
 
 def test_group_by_governor_governed_before_governor_in_sort_still_groups() -> None:
-    # Governed slug sorts before the governor, but it must still appear AFTER the governor.
-    governor = {**_TASK, "id": "gov", "slug": "zoo", "governor_task_id": None}
-    governed = {**_TASK, "id": "wrk", "slug": "alpha", "governor_task_id": "gov"}
-    sorted_tasks = sorted([governor, governed], key=_sort_key)
-    assert sorted_tasks[0]["id"] == "wrk"  # governed sorts first alphabetically
+    # When the governed task has a later created_at than its governor, it sorts first by
+    # creation order (newest-first) — but _group_by_governor must still place it AFTER the governor.
+    governor = {**_TASK, "id": "gov", "slug": "zoo", "governor_task_id": None,
+                "created_at": "2026-06-01T01:00:00"}
+    governed = {**_TASK, "id": "aaa", "slug": "alpha", "governor_task_id": "gov",
+                "created_at": "2026-06-01T02:00:00"}
+    sorted_tasks = sorted([governor, governed], key=_make_sort_key())
+    assert sorted_tasks[0]["id"] == "aaa"  # governed created later → sorts first
     active, terminal = _group_by_governor(sorted_tasks)
-    assert [(t["id"], p) for t, p in active] == [("gov", ""), ("wrk", "└─ ")]
+    assert [(t["id"], p) for t, p in active] == [("gov", ""), ("aaa", "└─ ")]
     assert terminal == []
 
 
@@ -1686,7 +1689,7 @@ def test_group_by_governor_terminal_governed_follows_active_governor() -> None:
     # is still active, so it nests under the governor above the divider.
     governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None, "state": "WORKING"}
     governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov", "state": "COMPLETE"}
-    sorted_tasks = sorted([governor, governed], key=_sort_key)
+    sorted_tasks = sorted([governor, governed], key=_make_sort_key())
     active, terminal = _group_by_governor(sorted_tasks)
     assert [(t["id"], p) for t, p in active] == [("gov", ""), ("wrk", "└─ ")]
     assert terminal == []
@@ -1705,7 +1708,7 @@ def test_group_by_governor_multiple_governed_tasks_in_sort_order() -> None:
     governor = {**_TASK, "id": "gov", "slug": "orch", "governor_task_id": None}
     w1 = {**_TASK, "id": "w1", "slug": "alpha", "governor_task_id": "gov"}
     w2 = {**_TASK, "id": "w2", "slug": "bravo", "governor_task_id": "gov"}
-    sorted_tasks = sorted([governor, w1, w2], key=_sort_key)
+    sorted_tasks = sorted([governor, w1, w2], key=_make_sort_key())
     active, terminal = _group_by_governor(sorted_tasks)
     assert [(t["id"], p) for t, p in active] == [("gov", ""), ("w1", "├─ "), ("w2", "└─ ")]
     assert terminal == []
@@ -1717,7 +1720,7 @@ def test_group_by_governor_tree_connectors_nested() -> None:
     c1 = {**_TASK, "id": "c1", "slug": "child-1", "governor_task_id": "gov"}
     gc = {**_TASK, "id": "gc", "slug": "grand", "governor_task_id": "c1"}
     c2 = {**_TASK, "id": "c2", "slug": "child-2", "governor_task_id": "gov"}
-    sorted_tasks = sorted([gov, c1, gc, c2], key=_sort_key)
+    sorted_tasks = sorted([gov, c1, gc, c2], key=_make_sort_key())
     active, terminal = _group_by_governor(sorted_tasks)
     assert [(t["id"], p) for t, p in active] == [
         ("gov", ""),
@@ -1743,12 +1746,16 @@ def test_slug_cell_prefix_with_memo() -> None:
 
 async def test_governed_task_appears_under_governor_in_dashboard() -> None:
     # Governor and governed both active; governed follows governor with a tree connector.
+    # Governors start collapsed — expand before checking the child row.
     governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
     governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov"}
     app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
+        table.move_cursor(row=table.get_row_index("gov"))
+        await pilot.press("enter")  # expand the ensemble
+        await pilot.pause()
         order = [str(k.value) for k in table.rows]
         assert order == ["gov", "wrk"]
         gov_row = table.get_row("gov")
@@ -1760,6 +1767,7 @@ async def test_governed_task_appears_under_governor_in_dashboard() -> None:
 async def test_active_governor_keeps_terminal_child_in_active_section() -> None:
     # Regression: a terminal governed task whose governor is still active must stay in the
     # active section (above the terminal section), not below it.
+    # Governors start collapsed — expand before checking the child row's position and styling.
     governor = {
         **_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None,
         "state": "WORKING",
@@ -1772,11 +1780,14 @@ async def test_active_governor_keeps_terminal_child_in_active_section() -> None:
         **_TASK, "id": "done", "slug": "other", "governor_task_id": None,
         "state": "COMPLETE", "turn": "agent",
     }
-    tasks = sorted([governor, governed, other_done], key=_sort_key)
+    tasks = sorted([governor, governed, other_done], key=_make_sort_key())
     app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
+        table.move_cursor(row=table.get_row_index("gov"))
+        await pilot.press("enter")  # expand the ensemble
+        await pilot.pause()
         keys = [str(k.value) for k in table.rows]
         # Governor and its terminal child are in the active section (above "done").
         assert keys.index("gov") < keys.index("done")
@@ -1859,22 +1870,15 @@ def test_matches_always_passes_ensemble_rows() -> None:
 
 
 async def test_enter_on_governor_collapses_to_ensemble_row() -> None:
-    # Pressing Enter on a governing task replaces its children with an ensemble row.
+    # Governors start collapsed — the ensemble row is present on startup without pressing Enter.
     governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
     governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov"}
     app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
-        # Initial state: both rows present.
-        assert "gov" in [str(k.value) for k in table.rows]
-        assert "wrk" in [str(k.value) for k in table.rows]
-        # Move to the governor row and press Enter.
-        table.move_cursor(row=table.get_row_index("gov"))
-        await pilot.press("enter")
-        await pilot.pause()
         keys = [str(k.value) for k in table.rows]
-        # Governor is still there; worker is gone; ensemble sentinel is present.
+        # Initial state: governor present, child hidden behind ensemble sentinel.
         assert "gov" in keys
         assert "wrk" not in keys
         assert f"{_ENSEMBLE_KEY_PREFIX}gov" in keys
@@ -1884,7 +1888,7 @@ async def test_enter_on_governor_collapses_to_ensemble_row() -> None:
 
 
 async def test_enter_again_on_governor_expands_ensemble() -> None:
-    # Pressing Enter twice returns to the fully-expanded tree.
+    # Governors start collapsed; Enter toggles: first press expands, second press collapses again.
     governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
     governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov"}
     app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
@@ -1892,16 +1896,17 @@ async def test_enter_again_on_governor_expands_ensemble() -> None:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
         table.move_cursor(row=table.get_row_index("gov"))
-        # First Enter → collapse.
+        # First Enter → expand (starts collapsed).
         await pilot.press("enter")
         await pilot.pause()
-        assert f"{_ENSEMBLE_KEY_PREFIX}gov" in [str(k.value) for k in table.rows]
-        # Second Enter → expand.
+        assert "wrk" in [str(k.value) for k in table.rows]
+        assert f"{_ENSEMBLE_KEY_PREFIX}gov" not in [str(k.value) for k in table.rows]
+        # Second Enter → collapse again.
         await pilot.press("enter")
         await pilot.pause()
         keys = [str(k.value) for k in table.rows]
-        assert "wrk" in keys
-        assert f"{_ENSEMBLE_KEY_PREFIX}gov" not in keys
+        assert "wrk" not in keys
+        assert f"{_ENSEMBLE_KEY_PREFIX}gov" in keys
 
 
 async def test_enter_on_non_governor_does_nothing() -> None:
@@ -1918,6 +1923,80 @@ async def test_enter_on_non_governor_does_nothing() -> None:
         await pilot.pause()
         after = [str(k.value) for k in table.rows]
         assert before == after
+
+
+async def test_search_expands_collapsed_ensembles_to_reach_their_children() -> None:
+    # Governors start collapsed — a search must still reach children hidden behind "...".
+    # The ensemble expands for the query; the collapse state is restored once the query is cleared.
+    governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
+    governed = {**_TASK, "id": "wrk", "slug": "worker-bee", "governor_task_id": "gov"}
+    app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        # Initial state: child hidden behind ensemble placeholder (collapsed on startup).
+        assert f"{_ENSEMBLE_KEY_PREFIX}gov" in [str(k.value) for k in table.rows]
+        assert "wrk" not in [str(k.value) for k in table.rows]
+        # Search for the collapsed child: it surfaces as a real row, no placeholder.
+        app._query = "worker-bee"
+        app.action_refresh()
+        await pilot.pause()
+        keys = [str(k.value) for k in table.rows]
+        assert "wrk" in keys
+        assert f"{_ENSEMBLE_KEY_PREFIX}gov" not in keys
+        # Clear the query: the collapse state is restored (placeholder is back).
+        app._query = ""
+        app.action_refresh()
+        await pilot.pause()
+        keys = [str(k.value) for k in table.rows]
+        assert f"{_ENSEMBLE_KEY_PREFIX}gov" in keys
+        assert "wrk" not in keys
+
+
+async def test_search_with_no_collapse_shows_matching_child_under_its_governor() -> None:
+    # A matching child keeps its governor visible so the tree stays intact — even though the
+    # governor's own text doesn't match the query.
+    governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
+    governed = {**_TASK, "id": "wrk", "slug": "worker-bee", "governor_task_id": "gov"}
+    app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        app._query = "worker"
+        app.action_refresh()
+        keys = [str(k.value) for k in table.rows]
+        # The governor is pulled up alongside its matching child (governor first, then child).
+        assert keys == ["gov", "wrk"]
+
+
+async def test_search_shows_governing_task_when_child_matches() -> None:
+    # The user's request: a task visible in a search must show its governing task too.
+    governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
+    governed = {**_TASK, "id": "wrk", "slug": "worker-bee", "governor_task_id": "gov"}
+    app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        app._query = "worker-bee"  # matches only the child
+        app.action_refresh()
+        keys = [str(k.value) for k in table.rows]
+        assert "wrk" in keys
+        assert "gov" in keys  # governor pulled up even though it doesn't match
+
+
+async def test_search_shows_all_ancestors_when_deep_child_matches() -> None:
+    # A multi-level chain: only the leaf matches, but every ancestor must stay visible.
+    root = {**_TASK, "id": "root", "slug": "root-orch", "governor_task_id": None}
+    mid = {**_TASK, "id": "mid", "slug": "mid-orch", "governor_task_id": "root"}
+    leaf = {**_TASK, "id": "leaf", "slug": "leaf-worker", "governor_task_id": "mid"}
+    app = Dashboard(_FakeClient([root, mid, leaf]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        app._query = "leaf-worker"  # matches only the deepest task
+        app.action_refresh()
+        keys = [str(k.value) for k in table.rows]
+        assert set(keys) == {"root", "mid", "leaf"}  # whole chain visible
 
 
 # -- multi-runner column -----------------------------------------------------------
@@ -2035,23 +2114,104 @@ async def test_pressing_jk_moves_the_task_table_cursor_like_arrow_keys() -> None
         assert app._current == _TASK["id"]
 
 
+def _collapsed_ensemble_app() -> Dashboard:
+    # A collapsed governor's ensemble row sits between two real rows.
+    # created_at controls order (newest first): gov (03:00) > wrk (02:00) > zzz-extra (01:00).
+    governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None,
+                "created_at": "2026-06-01T03:00:00"}
+    governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov",
+                "created_at": "2026-06-01T02:00:00"}
+    extra = {**_TASK, "id": "zzz-extra", "slug": "zzz-extra", "governor_task_id": None,
+             "created_at": "2026-06-01T01:00:00"}
+    return Dashboard(_FakeClient([governor, governed, extra]))  # type: ignore[arg-type]
+
+
 async def test_pressing_j_skips_the_ensemble_row_like_the_down_arrow() -> None:
-    # A collapsed governor's ensemble row sits between two real rows; `j` must step past it the
-    # same way `down` already does (Dashboard.on_data_table_row_highlighted), not land on it.
-    governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
-    governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov"}
-    extra = {**_TASK, "id": "extra", "slug": "zzz-extra", "governor_task_id": None}
-    app = Dashboard(_FakeClient([governor, governed, extra]))  # type: ignore[arg-type]
+    # A collapsed governor's ensemble row sits between two real rows; `j` must step straight past
+    # it (_VimDataTable.action_cursor_down skips the sentinel), landing on the next real row.
+    app = _collapsed_ensemble_app()
     async with app.run_test() as pilot:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
+        # Collapse gov's ensemble directly, then rebuild — the Enter-key collapse path is covered
+        # by test_enter_on_governor_collapses_to_ensemble_row; here we exercise the j/k skip over
+        # the resulting sentinel row without coupling to key/focus event timing.
+        app._collapsed.add("gov")
+        app.action_refresh()
+        await pilot.pause()
+        row_keys = [str(k.value) for k in table.rows]
+        assert row_keys == ["gov", f"{dashboard._ENSEMBLE_KEY_PREFIX}gov", "zzz-extra"]
         table.move_cursor(row=table.get_row_index("gov"))
-        await pilot.press("enter")  # collapse: gov, ensemble(gov), extra
         await pilot.pause()
-        await pilot.press("j")  # from gov, steps over the ensemble row onto extra
+        await pilot.press("j")  # from gov, steps over the ensemble row onto zzz-extra
         await pilot.pause()
-        assert app._current == "extra"
+        assert app._current == "zzz-extra"
         await pilot.press("k")  # and back up, over the ensemble row, onto gov
+        await pilot.pause()
+        assert app._current == "gov"
+
+
+async def test_arrow_keys_skip_the_ensemble_row_like_j_and_k() -> None:
+    # The default arrow keys route through the same overridden cursor actions as j/k, so they
+    # must skip the sentinel identically.
+    app = _collapsed_ensemble_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        app._collapsed.add("gov")
+        app.action_refresh()
+        await pilot.pause()
+        table.move_cursor(row=table.get_row_index("gov"))
+        await pilot.pause()
+        await pilot.press("down")
+        await pilot.pause()
+        assert app._current == "zzz-extra"
+        await pilot.press("up")
+        await pilot.pause()
+        assert app._current == "gov"
+
+
+async def test_navigating_over_an_ensemble_row_never_selects_the_sentinel() -> None:
+    # The reported bug: the sentinel was briefly selected mid-traversal. The cursor must never
+    # land on it, so _current is never the ensemble key at any observed step.
+    app = _collapsed_ensemble_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        app._collapsed.add("gov")
+        app.action_refresh()
+        await pilot.pause()
+        sentinel = f"{dashboard._ENSEMBLE_KEY_PREFIX}gov"
+        table.move_cursor(row=table.get_row_index("gov"))
+        await pilot.pause()
+        assert app._current != sentinel
+        for key in ("j", "j", "k", "k"):
+            await pilot.press(key)
+            await pilot.pause()
+            assert app._current != sentinel
+        # The cursor row is a real row too — never the sentinel.
+        assert str(table.ordered_rows[table.cursor_row].key.value) != sentinel
+
+
+async def test_ensemble_row_as_the_last_row_is_not_landed_on() -> None:
+    # When a collapsed ensemble is the last navigable row, pressing down keeps the cursor on the
+    # real row above it rather than clamping onto the sentinel.
+    governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None,
+                "created_at": "2026-06-01T02:00:00"}
+    governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov",
+                "created_at": "2026-06-01T01:00:00"}
+    app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        app._collapsed.add("gov")
+        app.action_refresh()
+        await pilot.pause()
+        row_keys = [str(k.value) for k in table.rows]
+        assert row_keys == ["gov", f"{dashboard._ENSEMBLE_KEY_PREFIX}gov"]
+        table.move_cursor(row=table.get_row_index("gov"))
+        await pilot.pause()
+        await pilot.press("j")  # nothing real below the sentinel — stay on gov
         await pilot.pause()
         assert app._current == "gov"
 

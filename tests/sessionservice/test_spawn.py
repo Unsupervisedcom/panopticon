@@ -134,3 +134,44 @@ def test_cleanup_swallows_a_failed_quarantine() -> None:
         rmtree=_raise_permission_denied,
         rename=rename_fails,
     )  # no exception is the assertion
+
+
+def test_cleanup_uses_docker_to_scrub_root_owned_files() -> None:
+    # When rmtree fails (root-owned files), docker_cleanup empties the directory so the
+    # second rmtree call can remove the empty dir — no quarantine needed.
+    docker_called: list[str] = []
+    rmtree_calls = 0
+
+    def rmtree_first_fails_then_succeeds(path: str) -> None:
+        nonlocal rmtree_calls
+        rmtree_calls += 1
+        if rmtree_calls == 1:
+            raise PermissionError(13, "Permission denied", "/tasks/t1/.mypy_cache")
+
+    renamed: list[tuple[str, str]] = []
+    cleanup_workspace(
+        "t1", "/tasks",
+        exists=lambda _p: True,
+        rmtree=rmtree_first_fails_then_succeeds,
+        docker_cleanup=docker_called.append,
+        rename=lambda src, dst: renamed.append((src, dst)),
+    )
+    assert docker_called == ["/tasks/t1"]
+    assert rmtree_calls == 2  # first fails, second (on the now-empty dir) succeeds
+    assert renamed == []  # quarantine not reached
+
+
+def test_cleanup_quarantines_when_docker_cleanup_also_fails() -> None:
+    # When both rmtree and docker_cleanup fail, fall back to quarantine.
+    def docker_cleanup_fails(_path: str) -> None:
+        raise OSError("docker not available")
+
+    renamed: list[tuple[str, str]] = []
+    cleanup_workspace(
+        "t1", "/tasks",
+        exists=lambda _p: True,
+        rmtree=_raise_permission_denied,
+        docker_cleanup=docker_cleanup_fails,
+        rename=lambda src, dst: renamed.append((src, dst)),
+    )
+    assert renamed == [("/tasks/t1", "/tasks/t1.stale")]

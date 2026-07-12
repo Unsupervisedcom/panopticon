@@ -14,12 +14,9 @@ from collections.abc import Sequence
 import httpx
 
 from panopticon.client import TaskServiceClient
+from panopticon.core.dirs import CLONE_CACHE_DIR, TASKS_DIR
 from panopticon.core.git import GitClones
-from panopticon.sessionservice._migration import (
-    DEFAULT_CLONE_CACHE_ROOT,
-    DEFAULT_TASKS_ROOT,
-    migrate_session_dirs,
-)
+from panopticon.sessionservice._migration import migrate_session_dirs
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.local_runner import (
     DEFAULT_IMAGE,
@@ -46,10 +43,8 @@ def main(
         help="task service URL the container connects back to",
     )
     parser.add_argument("--image", default=DEFAULT_IMAGE)
-    parser.add_argument("--cache-root", default=os.environ.get("PANOPTICON_CACHE_ROOT", DEFAULT_CLONE_CACHE_ROOT))
-    parser.add_argument("--tasks-root", default=os.environ.get("PANOPTICON_TASKS_ROOT", DEFAULT_TASKS_ROOT))
     args = parser.parse_args(argv)
-    migrate_session_dirs(args.cache_root, args.tasks_root)
+    migrate_session_dirs(CLONE_CACHE_DIR, TASKS_DIR)
 
     # Look up the task's repo to inject that repo's secrets (ADR 0007), scoped to this task.
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
@@ -58,7 +53,7 @@ def main(
     # Spawn-prep (ADR 0011): give the task a writable per-task clone, mounted at /workspace.
     workspace = prepare_workspace(
         args.task_id, repo,
-        cache=CloneCache(args.cache_root, run=run), tasks_root=args.tasks_root, git=GitClones(run=run),
+        cache=CloneCache(CLONE_CACHE_DIR, run=run), tasks_root=TASKS_DIR, git=GitClones(run=run),
     )
     container_id = LocalRunner(args.service_url, image=args.image, run=run).spawn(
         args.task_id,

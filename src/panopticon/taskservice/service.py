@@ -245,6 +245,15 @@ class TaskService:
         task.updated_at = self._clock()
         await self._store.save_task(task)
 
+    async def _save_container_state(self, task: Task) -> None:
+        """Persist container-ownership fields (``claimed_by``) without stamping ``updated_at``.
+
+        Container status changes (claim / release / reclaim) are runner bookkeeping, not task
+        content mutations — they must not reorder the dashboard or wake watchers that key on
+        meaningful task progress.
+        """
+        await self._store.save_task(task)
+
     async def create_task(
         self,
         repo_id: str,
@@ -267,6 +276,7 @@ class TaskService:
         now = self._clock()
         task = wf.start_task(self._id(), repo_id, at=now, memo=memo, initial_prompt=initial_prompt)
         task.governor_task_id = governor_task_id
+        task.created_at = now
         task.updated_at = now  # creation time = first mutation
         await self._store.create_task(task)
         _log.info("task %s: created (workflow=%s, repo=%s)", task.id, workflow_name, repo_id)
@@ -569,7 +579,7 @@ class TaskService:
             raise AlreadyClaimed(f"task {task_id!r} is already claimed by {task.claimed_by!r}")
         task.claimed_by = runner_id
         self.clear_lifecycle(task_id)  # drop any stale phase from a prior owner; this spawn re-reports
-        await self._save_task(task)
+        await self._save_container_state(task)
         _log.info("task %s: claimed by runner %s", task_id, runner_id)
         return task
 
@@ -579,7 +589,7 @@ class TaskService:
         task = await self.get_task(task_id)
         task.claimed_by = None
         self.clear_lifecycle(task_id)
-        await self._save_task(task)
+        await self._save_container_state(task)
         _log.info("task %s: claim released", task_id)
         return task
 
@@ -757,7 +767,7 @@ class TaskService:
             if task.claimed_by == runner_id and task.state not in TERMINAL_LABELS:
                 task.claimed_by = None
                 self.clear_lifecycle(task.id)  # the dead runner's phase is stale; start clean
-                await self._save_task(task)
+                await self._save_container_state(task)
                 reclaimed.append(task)
         if reclaimed:
             _log.info("runner %s: reclaim released %d task(s)", runner_id, len(reclaimed))

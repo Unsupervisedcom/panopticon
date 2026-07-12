@@ -88,32 +88,49 @@ from textual.worker import get_current_worker
 
 from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.state import TERMINAL_LABELS
-from panopticon.taskservice.artifacts_fs import DEFAULT_ARTIFACTS, FilesystemArtifactStore
+from panopticon.core.dirs import ARTIFACTS_DIR
+from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 
 
-def _sort_key(task: JsonObj) -> tuple[bool, bool, float, str]:
-    """Order rows for the operator: live work first, then by whose turn it is, then recency.
+def _make_sort_key(
+    by_updated: bool = False,
+) -> Callable[[JsonObj], tuple[bool, bool, float, str]]:
+    """Return a sort key function for the task table.
 
-    1. non-terminal before terminal — COMPLETE/DROPPED sink to the bottom;
-    2. turn priority differs by group: for active tasks the user's turn comes first (tasks waiting
-       on the operator surface early); for terminal tasks the agent's turn comes first (tasks the
-       agent just finished surface at the top of the completed section);
-    3. most recently updated first (negative timestamp);
-    4. slug (then id) for a stable, readable order within each tier.
+    1. non-terminal before terminal — COMPLETE/DROPPED sink to the bottom.
+    2. turn priority: for active tasks the user's turn comes first (operator action needed);
+       for terminal tasks the agent's turn comes first (task just finished).
+    3. timestamp:
+       - Active, ``by_updated=False`` (default): ``created_at`` descending — newest first
+         (stable: ``created_at`` never changes, so rows don't reorder when a task updates).
+       - Active, ``by_updated=True``: ``updated_at`` descending — most recently updated rises first.
+       - Terminal (always): ``updated_at`` descending — most recently completed rises first.
+    4. id as a stable tiebreaker.
     """
-    is_terminal = task["state"] in TERMINAL_LABELS
-    raw = task.get("updated_at") or ""
-    try:
-        ts = -datetime.fromisoformat(raw).timestamp()
-    except ValueError:
-        ts = 0.0
-    turn_first = "agent" if is_terminal else "user"
-    return (
-        is_terminal,  # False (live) before True (terminal)
-        task["turn"] != turn_first,  # False (priority turn) before True (other turn)
-        ts,  # negative so newest sorts first
-        task["slug"] or task["id"],
-    )
+    def key(task: JsonObj) -> tuple[bool, bool, float, str]:
+        is_terminal = task["state"] in TERMINAL_LABELS
+        turn_first = "agent" if is_terminal else "user"
+        turn_after_priority = task["turn"] != turn_first  # False (priority) sorts before True
+        if is_terminal or by_updated:
+            # Terminal tasks always use updated_at descending; by_updated mode does too.
+            raw = task.get("updated_at") or ""
+            try:
+                ts = - datetime.fromisoformat(raw).timestamp()   # negative → newest first
+            except ValueError:
+                ts = 0.0
+        else:
+            raw = task.get("created_at") or task.get("updated_at") or ""
+            try:
+                ts = - datetime.fromisoformat(raw).timestamp()   # negative → newest first
+            except ValueError:
+                ts = 0.0
+        return (
+            is_terminal,         # False (active) before True (terminal)
+            turn_after_priority, # priority turn sorts first within each section
+            ts,
+            task["id"],          # stable tiebreaker
+        )
+    return key
 
 
 def _short_tokens(n: int | None) -> str:
@@ -131,8 +148,8 @@ def _short_tokens(n: int | None) -> str:
 
 # Row-key prefix for ensemble placeholder rows. When the operator collapses a governing task
 # (Enter on a governor), its governed children are replaced by one dim ``ensemble`` row whose
-# key is ``f"{_ENSEMBLE_KEY_PREFIX}{governor_id}"``. The highlight handler skips these rows
-# (like the separator) and ``on_data_table_row_selected`` ignores them.
+# key is ``f"{_ENSEMBLE_KEY_PREFIX}{governor_id}"``. Keyboard navigation skips these rows
+# (_VimDataTable steps the cursor straight past them) and ``on_data_table_row_selected`` ignores them.
 _ENSEMBLE_KEY_PREFIX = "__ensemble__"
 
 def _dim(cell: Text | str) -> Text:
@@ -633,7 +650,13 @@ class SpaceCheckbox(Checkbox, inherit_bindings=False):
 
 class _VimDataTable(DataTable[Any]):
     """A :class:`DataTable` with vim-style ``hjkl`` layered onto the default arrow keys (default
-    ``inherit_bindings=True``, so the arrow keys still work — this just adds a second way in)."""
+    ``inherit_bindings=True``, so the arrow keys still work — this just adds a second way in).
+
+    Vertical movement also **skips ensemble placeholder rows** (keys prefixed with
+    ``_ENSEMBLE_KEY_PREFIX``): the cursor steps straight onto the next real row rather than
+    landing on the sentinel and bouncing off it, so a collapsed ensemble is never briefly
+    highlighted mid-traversal. Both the arrow keys and ``j``/``k`` route through
+    ``action_cursor_down``/``action_cursor_up``, so overriding those covers every input path."""
 
     BINDINGS = [
         Binding("j", "cursor_down", "Down", show=False),
@@ -641,6 +664,26 @@ class _VimDataTable(DataTable[Any]):
         Binding("h", "cursor_left", "Left", show=False),
         Binding("l", "cursor_right", "Right", show=False),
     ]
+
+    def _move_skipping(self, direction: int) -> None:
+        """Move the cursor one step in ``direction`` (+1 down, -1 up), stepping over any ensemble
+        placeholder rows so it lands on the first real row. If only sentinels or the table edge
+        lie beyond, stay put — never land on a sentinel."""
+        rows = self.ordered_rows
+        target = self.cursor_row + direction
+        while 0 <= target < len(rows):
+            key = rows[target].key.value
+            if isinstance(key, str) and key.startswith(_ENSEMBLE_KEY_PREFIX):
+                target += direction
+                continue
+            self.move_cursor(row=target)
+            return
+
+    def action_cursor_down(self) -> None:
+        self._move_skipping(1)
+
+    def action_cursor_up(self) -> None:
+        self._move_skipping(-1)
 
 
 class _VimOptionList(OptionList):
@@ -1091,6 +1134,7 @@ HOTKEYS: tuple[Hotkey, ...] = (
     Hotkey("x", "drop", "Drop", "Drop the highlighted task"),
     Hotkey("/", "search", "Search", "Search tasks as you type"),
     Hotkey("d", "toggle_detail", "Detail", "Show/hide the detail pane"),
+    Hotkey("o", "toggle_sort", "Sort order", "Toggle sort: created ↔ updated", show=False),
     Hotkey("r", "refresh", "Refresh", "Refresh from the task service now", show=False),
     Hotkey("R", "respawn", "Respawn", "Respawn a down task (release its claim)", show=False),
     Hotkey("p", "open_url", "Open URL", "Open the task's URL in the browser", show=False),
@@ -1199,7 +1243,7 @@ class Dashboard(App[None]):
         on_switch: Callable[[str, str | None], None] | None = None,
         on_service: Callable[[], bool] | None = None,
         on_runner: Callable[[], bool] | None = None,
-        artifacts_root: str | Path = DEFAULT_ARTIFACTS,
+        artifacts_root: str | Path = ARTIFACTS_DIR,
         refresh_interval: float | None = REFRESH_INTERVAL,
     ) -> None:
         super().__init__()
@@ -1215,10 +1259,11 @@ class Dashboard(App[None]):
         self._current: str | None = None
         self._query: str = ""  # active search filter ("" → no filter); see action_search
         self._detail_visible = False  # detail pane hidden by default; `d` toggles it (action_toggle_detail)
-        self._last_cursor_row = 0  # previous cursor row index → infer travel direction to skip the divider
         self._collapsed: set[str] = set()  # governor IDs whose ensembles are currently collapsed
+        self._first_refresh: bool = True  # seed _collapsed with all governors on first refresh
         self._governors: set[str] = set()  # governor IDs visible in the current table build
         self._multi_runner: bool = False  # True when tasks span >1 distinct runner_host
+        self._sort_by_updated: bool = False  # False = creation order (stable); True = updated_at (newest first)
         # one reused scratch dir for `a`'s REST-open (lazily made, cleaned on exit) — so opening
         # many artifacts doesn't leak a temp dir each.
         self._artifact_tmp: tempfile.TemporaryDirectory[str] | None = None
@@ -1309,7 +1354,7 @@ class Dashboard(App[None]):
         table = self.query_one("#tasks", DataTable)
         selected = self._current  # keep the operator's highlight across the rebuild (feed refresh)
         table.clear()
-        ordered = sorted(self._client.list_tasks(), key=_sort_key)  # terminal last, then slug
+        ordered = sorted(self._client.list_tasks(), key=_make_sort_key(self._sort_by_updated))
         new_multi_runner = len({r.get("host") for r in self._client.live_runners() if r.get("host")}) > 1
         if new_multi_runner != self._multi_runner:
             table.clear(columns=True)  # rows already gone; also clears columns for rebuild
@@ -1317,20 +1362,11 @@ class Dashboard(App[None]):
             _setup_task_columns(table, multi_runner=self._multi_runner)
         active = [t for t in ordered if t.get("state") not in TERMINAL_LABELS]
         agent_on = sum(1 for t in active if t.get("turn") == "agent")
-        self.query_one(_StatusFooter).set_counter(f"active agents {agent_on}/{len(active)}")
+        sort_label = "sort: updated" if self._sort_by_updated else "sort: created"
+        self.query_one(_StatusFooter).set_counter(f"active agents {agent_on}/{len(active)}  ·  {sort_label}")
         # Inject repo_name so _matches can search on it without a separate lookup per task.
         for task in ordered:
             task["repo_name"] = self._repo_names.get(str(task.get("repo_id") or ""), "")
-        # Group governed tasks under their governor (within each section), then filter.
-        # The two sections come back separately so the divider sits at the structural
-        # boundary — not based on individual task state (a terminal governed task can live
-        # in the active section when its governor is still active).
-        active_group, terminal_group = _group_by_governor(ordered, self._collapsed)
-        active_visible = [(t, p) for t, p in active_group if _matches(t, self._query)]
-        terminal_visible = [(t, p) for t, p in terminal_group if _matches(t, self._query)]
-        visible = active_visible + terminal_visible
-        # Build the task index (real tasks only; ensemble placeholders are synthetic).
-        self._tasks = {t["id"]: t for t, _ in visible if not t.get("_ensemble")}
         # Governor IDs: the set of task IDs that have at least one governed child in the full
         # snapshot. Computed from ``ordered`` (pre-collapse, pre-filter) so collapsing a governor
         # doesn't remove it from the set and prevent a second Enter from re-expanding it.
@@ -1339,8 +1375,44 @@ class Dashboard(App[None]):
             for t in ordered
             if t.get("governor_task_id")
         }
-        # Prune stale collapsed entries for governors no longer present (e.g. task deleted).
+        # Prune stale collapsed entries for governors no longer present (e.g. task deleted),
+        # then seed all governors as collapsed on the very first refresh.
         self._collapsed &= self._governors
+        if self._first_refresh:
+            self._collapsed = set(self._governors)
+            self._first_refresh = False
+        # Group governed tasks under their governor (within each section), then filter.
+        # The two sections come back separately so the divider sits at the structural
+        # boundary — not based on individual task state (a terminal governed task can live
+        # in the active section when its governor is still active).
+        # While a search is active, expand every ensemble so collapsed children are
+        # searchable — otherwise a `└─ ...` placeholder hides them from the filter. We
+        # pass an empty collapsed set (not mutating self._collapsed), so the operator's
+        # collapse state is restored as soon as the query is cleared.
+        collapsed_for_display = set() if self._query else self._collapsed
+        # When a query is active, filter *before* grouping and pull each matching task's
+        # governor chain up with it: a visible child must keep its ancestors visible, or the
+        # tree breaks (a child rendered under a governor that got filtered out is orphaned).
+        # This is one-directional — a matching governor does not pull its children down.
+        if self._query:
+            task_by_id_all: dict[str, JsonObj] = {t["id"]: t for t in ordered}
+            visible_ids: set[str] = set()
+            for t in ordered:
+                if _matches(t, self._query):
+                    tid: str | None = str(t["id"])
+                    while tid is not None and tid not in visible_ids:
+                        visible_ids.add(tid)
+                        parent = task_by_id_all.get(tid)
+                        tid = parent.get("governor_task_id") if parent else None
+            search_filtered = [t for t in ordered if t["id"] in visible_ids]
+        else:
+            search_filtered = ordered
+        active_group, terminal_group = _group_by_governor(search_filtered, collapsed_for_display)
+        active_visible = list(active_group)
+        terminal_visible = list(terminal_group)
+        visible = active_visible + terminal_visible
+        # Build the task index (real tasks only; ensemble placeholders are synthetic).
+        self._tasks = {t["id"]: t for t, _ in visible if not t.get("_ensemble")}
 
         def _add_row(task: JsonObj, prefix: str) -> None:
             if task.get("_ensemble"):
@@ -1384,18 +1456,12 @@ class Dashboard(App[None]):
         self._update_detail(target)
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        table = self.query_one("#tasks", DataTable)
-        key_val = event.row_key.value
-        if isinstance(key_val, str) and key_val.startswith(_ENSEMBLE_KEY_PREFIX):
-            # The arrow keys jump ensemble placeholder rows: step one more row in the direction
-            # of travel. Placeholders always sit between real rows, so there's a real row on
-            # both sides; move_cursor re-fires this handler on that real row, so we don't
-            # recurse on the sentinel.
-            step = 1 if table.cursor_row >= self._last_cursor_row else -1
-            table.move_cursor(row=table.cursor_row + step)
-            return
-        self._last_cursor_row = table.cursor_row
         key = event.row_key.value
+        if isinstance(key, str) and key.startswith(_ENSEMBLE_KEY_PREFIX):
+            # Keyboard navigation skips ensemble sentinels (see _VimDataTable), so this only
+            # fires for a mouse hover/click onto the placeholder — leave the detail pane as-is
+            # rather than trying to render a non-task.
+            return
         self._update_detail(str(key) if key is not None else None)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
@@ -1570,6 +1636,11 @@ class Dashboard(App[None]):
         self._copy_to_clipboard(self._current)
         self.notify(f"copied id: {self._current}")
 
+    def action_toggle_sort(self) -> None:
+        """`o`: toggle between sorting by creation time or update time."""
+        self._sort_by_updated = not self._sort_by_updated
+        self.action_refresh()
+
     def action_toggle_detail(self) -> None:
         """`d`: show/hide the right-hand detail pane. It starts hidden (``display: none``) so the
         task table — the only remaining row child — takes the full width; pressing `d` reveals the
@@ -1703,7 +1774,7 @@ def run(
     on_switch: Callable[[str, str | None], None] | None = None,
     on_service: Callable[[], bool] | None = None,
     on_runner: Callable[[], bool] | None = None,
-    artifacts_root: str | Path = DEFAULT_ARTIFACTS,
+    artifacts_root: str | Path = ARTIFACTS_DIR,
 ) -> None:
     """Run the dashboard. ``on_switch``/``on_service``/``on_runner`` are the supervisor's `t`/`s`/`u`
     hooks (ADR 0009); all ``None`` standalone. ``artifacts_root`` is the local artifact-store root

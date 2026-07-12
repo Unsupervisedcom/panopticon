@@ -1,19 +1,26 @@
-"""The GithubPeerReviewed workflow: the full cloude-cade lifecycle, gated and turn-aware (ROADMAP Slice 4).
+"""The GithubSelfReviewed workflow: `github-peer-reviewed` minus the peer-review gate.
 
-This is the golden behavioral spec for the github-peer-reviewed flow — every legal/illegal transition, the
-foreground/background (advanced_by) policy, responsibility gating at each stage, the
-iterate-back edges, and the universal drop.
+The golden behavioral spec for the self-review flow — the collapsed graph
+(`PLANNING → ITERATING → MERGING → COMPLETE`, no REVIEW), the foreground/background
+(advanced_by) policy, responsibility gating at each stage, the iterate-back free move, the
+inability to skip straight to merging, the inherited forge plumbing, and the universal drop.
 """
 
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
+
 import pytest
 
 from panopticon.core import Actor, IllegalTransition, ResponsibilitiesNotMet
+from panopticon.core.artifacts import mcp_uri
 from panopticon.core.models import Status, Task
-from panopticon.workflows import GithubPeerReviewed
+from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
+from panopticon.workflows import GithubSelfReviewed
+from panopticon.workflows.github_forge import GithubForgeWorkflow
 
-WF = GithubPeerReviewed()
+WF = GithubSelfReviewed()
 
 
 def _meet_all(task: Task) -> None:
@@ -34,56 +41,43 @@ def test_starts_in_planning_on_the_users_turn() -> None:
     task = WF.start_task("t1", "r1", at="t0")
     assert task.state == "PLANNING"
     assert task.turn is Actor.USER  # initial state → the agent waits for the user's first input
-    assert task.workflow == "github-peer-reviewed"
+    assert task.workflow == "github-self-reviewed"
     assert [h.to_state for h in task.history] == ["PLANNING"]
 
 
 def test_transition_graph_is_the_happy_path_plus_drop() -> None:
-    # Backward edges (iterate) are NOT declared transitions — they're free moves. So each
-    # non-terminal state has a single forward edge (+ inherited DROPPED).
+    # No REVIEW state — ITERATING advances straight to MERGING. Backward edges (iterate) are
+    # free moves, not declared transitions, so each non-terminal state has one forward edge.
     assert set(WF.transitions("PLANNING")) == {"ITERATING", "DROPPED"}
-    assert set(WF.transitions("ITERATING")) == {"REVIEW", "DROPPED"}
-    assert set(WF.transitions("REVIEW")) == {"MERGING", "DROPPED"}
+    assert set(WF.transitions("ITERATING")) == {"MERGING", "DROPPED"}
     assert set(WF.transitions("MERGING")) == {"COMPLETE", "DROPPED"}
     assert list(WF.transitions("COMPLETE")) == []
+    assert "REVIEW" not in set(WF.labels())  # the peer-review state is gone
 
 
 def test_foreground_states_are_user_advanced_merging_is_agent_driven() -> None:
     assert WF.advanced_by("PLANNING") is Actor.USER
-    assert WF.advanced_by("ITERATING") is Actor.USER
-    assert WF.advanced_by("REVIEW") is Actor.USER
+    assert WF.advanced_by("ITERATING") is Actor.USER  # the user self-reviews, then advances
     assert WF.advanced_by("MERGING") is Actor.AGENT  # background: agent shepherds the merge
 
 
-def test_responsibilities_mirror_cloude_cade_dod() -> None:
-    # cloude-cade's per-stage dod_bullets (bin/cloude_stages.py), agent-only (no user-approval),
-    # DB state replacing the terminal org bullets, and draft-PR creation moved to provisioning.
+def test_responsibilities_drop_the_peer_review_obligation() -> None:
+    # Same per-stage DoD as github-peer-reviewed, minus the REVIEW state's `pr-reviewed`
+    # (there is no peer — the user self-reviews, which is the advance, not a responsibility).
     assert {r.key for r in WF.responsibilities("PLANNING")} == {"plan-written", "token-estimated"}
-    # the plan is a markdown artifact (`plan.md`), so the dashboard opens it with the right handler
+    # the plan is a markdown artifact (`plan.md`), shared with github-peer-reviewed via PLAN_WRITTEN
     by_key = {r.key: r for r in WF.responsibilities("PLANNING")}
     assert "plan.md" in by_key["plan-written"].description and "markdown" in by_key["plan-written"].description
-    # planning also forecasts the task's cost via the set_token_estimate tool
+    # the token estimate is recorded with the set_token_estimate tool, shared via TOKEN_ESTIMATED
     assert "set_token_estimate" in by_key["token-estimated"].description
     assert {r.key for r in WF.responsibilities("ITERATING")} == {
         "plan-implemented", "requests-implemented", "tests-pass",
-        "committed-pushed", "ci-passing", "pr-updated",
+        "committed-pushed", "ci-passing", "pr-updated", "url-recorded",
     }
-    assert {r.key for r in WF.responsibilities("REVIEW")} == {"pr-reviewed"}
     assert {r.key for r in WF.responsibilities("MERGING")} == {"pr-merged"}
 
 
-def test_each_state_describes_its_phase() -> None:
-    # every step carries a human-facing description (what the phase is for), sourced from
-    # cloude-cade's per-stage prose — guards against the field regressing to empty.
-    assert WF.description("PLANNING") == "Collect requirements. Produce a plan for the implementation."
-    assert WF.description("ITERATING").startswith("Implement the plan.")
-    assert WF.description("REVIEW") == "Wait for review or approval of the PR."
-    assert WF.description("MERGING") == "Add the PR to the merge queue. If the PR exits the merge queue, re-add it."
-    assert WF.description("COMPLETE")  # the terminal state is described too
-    assert all(WF.description(label) for label in ("PLANNING", "ITERATING", "REVIEW", "MERGING"))
-
-
-def test_github_peer_reviewed_exposes_forge_skills() -> None:
+def test_github_self_reviewed_inherits_the_forge_skills() -> None:
     skills = WF.skills()
     assert {s.name for s in skills} == {"open-pr", "babysit-ci", "babysit-merge"}
     assert all(s.description and s.instructions for s in skills)  # functional specs, not stubs
@@ -102,19 +96,39 @@ def test_babysit_merge_skill_covers_key_protocol_elements() -> None:
     assert "double" in instructions.lower() or "already" in instructions.lower() or "autoMergeRequest" in instructions  # Gap 4: no double-queuing
 
 
-def test_github_peer_reviewed_image_layer_installs_gh() -> None:
+def test_plan_artifact_name_and_uri_are_single_sourced_on_the_forge_base() -> None:
+    # The forge base owns the plan convention; the subclass inherits the name + URI resolver.
+    assert GithubForgeWorkflow.PLAN_ARTIFACT_NAME == "plan.md"
+    assert GithubSelfReviewed.PLAN_ARTIFACT_NAME == "plan.md"  # inherited
+    assert GithubForgeWorkflow.plan_uri("t1") == mcp_uri("t1", "plan.md") == "panopticon://tasks/t1/artifacts/plan.md"
+
+
+def test_briefing_surfaces_the_plan_uri_once_the_plan_artifact_exists(tmp_path: Path) -> None:
+    # The forge `_briefing_extras` hook points the agent at the plan's canonical MCP URI — but only
+    # once `plan.md` is written, so a still-to-plan PLANNING turn doesn't dangle a missing file.
+    artifacts = FilesystemArtifactStore(tmp_path)
+    task = WF.start_task("t1", "r1", at="t0")
+
+    assert "panopticon://" not in asyncio.run(WF.briefing(task, artifacts=artifacts))  # no plan yet → no URI
+
+    asyncio.run(artifacts.put(task.id, "plan.md", b"# Plan"))
+    text = asyncio.run(WF.briefing(task, artifacts=artifacts))
+    assert "panopticon://tasks/t1/artifacts/plan.md" in text  # the exact URI to read it back at
+    assert "don't guess" in text
+
+
+def test_github_self_reviewed_image_layer_installs_gh() -> None:
     assert "gh" in WF.image_layer()  # forge skills need gh layered onto the base image
 
 
-def test_github_peer_reviewed_declares_gh_as_a_tool() -> None:
+def test_github_self_reviewed_declares_gh_as_a_tool() -> None:
     names = {t.name for t in WF.tools()}  # named in the agent's system prompt (it ships in the image)
     assert "gh" in names
 
 
 def test_core_operations_per_state() -> None:
     assert WF.operations("PLANNING") == {"advance": "ITERATING", "drop": "DROPPED"}
-    assert WF.operations("ITERATING") == {"advance": "REVIEW", "drop": "DROPPED"}
-    assert WF.operations("REVIEW") == {"advance": "MERGING", "drop": "DROPPED"}
+    assert WF.operations("ITERATING") == {"advance": "MERGING", "drop": "DROPPED"}
     assert WF.operations("MERGING") == {"advance": "COMPLETE", "drop": "DROPPED"}
     assert WF.operations("COMPLETE") == {}
 
@@ -124,23 +138,13 @@ def test_core_operations_per_state() -> None:
 
 def test_full_lifecycle_planning_to_complete() -> None:
     task = WF.start_task("t1", "r1", at="t0")
-    for nxt in ("ITERATING", "REVIEW", "MERGING", "COMPLETE"):
+    for nxt in ("ITERATING", "MERGING", "COMPLETE"):
         _advance(task, nxt)
     assert task.state == "COMPLETE"
     assert [h.to_state for h in task.history] == [
-        "PLANNING", "ITERATING", "REVIEW", "MERGING", "COMPLETE",
+        "PLANNING", "ITERATING", "MERGING", "COMPLETE",
     ]
     assert WF.is_terminal("COMPLETE")
-
-
-def test_turn_flips_to_user_on_entering_a_foreground_state() -> None:
-    # PLANNING (the initial state) enters on the user's turn; every *non-initial* state enters
-    # on the agent's turn (the agent acts first). The *advance* policy is what makes the
-    # foreground states user-driven, independent of the entry turn.
-    task = WF.start_task("t1", "r1", at="t0")
-    assert task.turn is Actor.USER  # PLANNING is the initial state
-    _advance(task, "ITERATING")
-    assert task.turn is Actor.AGENT  # a non-initial state enters on the agent's turn
 
 
 # -- gating -------------------------------------------------------------------------
@@ -157,7 +161,7 @@ def test_partial_resolution_still_gates() -> None:
     _advance(task, "ITERATING")  # now in ITERATING with several promises
     task.resolve_responsibility(key="tests-pass", status=Status.MET)
     with pytest.raises(ResponsibilitiesNotMet):
-        WF.apply_transition(task, "REVIEW", at="t2")  # the rest (e.g. plan-implemented) still PENDING
+        WF.apply_transition(task, "MERGING", at="t2")  # the rest (e.g. plan-implemented) still PENDING
 
 
 # -- iterate-back + drop ------------------------------------------------------------
@@ -165,17 +169,17 @@ def test_partial_resolution_still_gates() -> None:
 
 def test_free_move_back_from_merging_to_iterating() -> None:
     task = WF.start_task("t1", "r1", at="t0")
-    for nxt in ("ITERATING", "REVIEW", "MERGING"):
+    for nxt in ("ITERATING", "MERGING"):
         _advance(task, nxt)
-    WF.force_transition(task, "ITERATING", at="t4", trigger="set-state")  # free move, ungated
+    WF.force_transition(task, "ITERATING", at="t3", trigger="set-state")  # free move, ungated
     assert task.state == "ITERATING"
 
 
 def test_drop_is_allowed_from_every_state_and_bypasses_gating() -> None:
-    for start in ("PLANNING", "ITERATING", "REVIEW", "MERGING"):
+    for start in ("PLANNING", "ITERATING", "MERGING"):
         task = WF.start_task("t1", "r1", at="t0")
         # walk to `start` without dropping
-        path = ["ITERATING", "REVIEW", "MERGING"]
+        path = ["ITERATING", "MERGING"]
         for nxt in path[: path.index(start) + 1] if start != "PLANNING" else []:
             _advance(task, nxt)
         assert task.state == start
@@ -183,9 +187,8 @@ def test_drop_is_allowed_from_every_state_and_bypasses_gating() -> None:
         assert task.state == "DROPPED"
 
 
-def test_cannot_skip_review() -> None:
+def test_cannot_skip_straight_to_merging() -> None:
     task = WF.start_task("t1", "r1", at="t0")
-    _advance(task, "ITERATING")
     _meet_all(task)
     with pytest.raises(IllegalTransition):
-        WF.apply_transition(task, "MERGING", at="t2")  # no ITERATING -> MERGING edge in the base workflow
+        WF.apply_transition(task, "MERGING", at="t1")  # no PLANNING -> MERGING edge

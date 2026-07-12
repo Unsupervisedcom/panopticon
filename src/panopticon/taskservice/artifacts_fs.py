@@ -12,11 +12,7 @@ import asyncio
 from pathlib import Path
 
 from panopticon.core.artifacts import ArtifactStore, InvalidArtifactName, validate_segment
-from panopticon.core.dirs import user_data_dir
-
-#: Default artifact-store root. Shared so the task service and any co-located reader (e.g. the
-#: dashboard's open-in-place) resolve the same location from one source rather than copied literals.
-DEFAULT_ARTIFACTS: str = str(user_data_dir() / "artifacts")
+from panopticon.core.dirs import ARTIFACTS_DIR
 
 
 class FilesystemArtifactStore(ArtifactStore):
