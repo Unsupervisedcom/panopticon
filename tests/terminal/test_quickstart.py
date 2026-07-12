@@ -46,8 +46,11 @@ def test_ensure_secrets_file_creates(tmp_path: Path, monkeypatch: pytest.MonkeyP
     secrets = Path(path)
     assert secrets.exists()
     content = secrets.read_text()
-    assert "CLAUDE_CODE_OAUTH_TOKEN=" in content
-    assert "GH_TOKEN=" in content
+    # Placeholder assignments are commented out — the user uncomments the one they use.
+    assert "# CLAUDE_CODE_OAUTH_TOKEN=" in content
+    assert "# GH_TOKEN=" in content
+    assert "\nCLAUDE_CODE_OAUTH_TOKEN=" not in content
+    assert "\nGH_TOKEN=" not in content
 
 
 def test_ensure_secrets_file_no_overwrite(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -10,17 +10,14 @@ from __future__ import annotations
 from panopticon.client import TaskServiceClient
 
 _FALLBACK_GIT_URL = "https://github.com/Unsupervisedcom/panopticon.git"
-_SECRETS_TEMPLATE = """\
-# Panopticon agent secrets
-# Fill in before creating tasks. This file is injected into task containers as environment variables.
-#
-# Claude authentication — one of:
-CLAUDE_CODE_OAUTH_TOKEN=
-# ANTHROPIC_API_KEY=
-#
-# GitHub access token (for creating/reading PRs, issues, etc.)
-GH_TOKEN=
-"""
+
+
+def _secrets_template() -> str:
+    """The secrets-file template, read from the packaged ``panopticon.env.template`` data file."""
+    import importlib.resources
+
+    ref = importlib.resources.files("panopticon.terminal") / "panopticon.env.template"
+    return ref.read_text()
 
 
 def detect_git_url() -> str:
@@ -75,7 +72,7 @@ def ensure_secrets_file() -> str:
     if secrets_path.exists():
         print(f"Secrets file already exists: {secrets_path}")
     else:
-        secrets_path.write_text(_SECRETS_TEMPLATE)
+        secrets_path.write_text(_secrets_template())
         print(f"Created secrets template: {secrets_path}")
         print("  → Edit it to add your CLAUDE_CODE_OAUTH_TOKEN and GH_TOKEN before creating tasks.")
     return str(secrets_path)
