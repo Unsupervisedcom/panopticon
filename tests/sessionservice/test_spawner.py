@@ -214,7 +214,10 @@ _SHELL_TASK: JsonObj = {"id": "t1", "repo_id": "r1", "workflow": "setup-token", 
 
 
 def test_spawn_one_shell_workflow_runs_the_script_and_skips_docker() -> None:
-    client = _FakeClient(repo=_REPO, runner_type="shell", shell_script="claude setup-token")
+    # A locally-built repo (not the shared module-level ``_REPO``) so the env_file assertion is
+    # hermetic: under Docker in CI a leaked background thread can mutate the shared dict mid-test.
+    repo = {"id": "r1", "git_url": "https://forge/r1.git", "env_file": "/sec/r1.env"}
+    client = _FakeClient(repo=repo, runner_type="shell", shell_script="claude setup-token")
     runner, shell = _FakeRunner(), _FakeShellRunner()
     made: list[str] = []
     cid = _shell_spawner(client, runner, shell, made).spawn_one(dict(_SHELL_TASK))
