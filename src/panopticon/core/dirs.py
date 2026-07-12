@@ -12,6 +12,7 @@ bases (artifacts, tasks, the clone cache, layer files). Setting one base-dir var
 its entire subtree — there are no per-path overrides. Code that needs a base for an ad-hoc subpath
 not listed here (e.g. ``workflows/``, ``hooks/``) calls the ``user_*_dir()`` functions directly.
 """
+
 from __future__ import annotations
 
 import os
@@ -87,9 +88,7 @@ def _secrets_dir() -> Path:
     return user_config_dir() / "secrets"
 
 
-def secrets_file_path(
-    name: str | None, *, secrets_dir: str | Path | None = None
-) -> str | None:
+def secrets_file_path(name: str | None, *, secrets_dir: str | Path | None = None) -> str | None:
     """Resolve a stored ``env_file`` *name* to an absolute path under the secrets dir.
 
     ``name`` is a path relative to the secrets dir (see :data:`SECRETS_DIR`); ``secrets_dir``

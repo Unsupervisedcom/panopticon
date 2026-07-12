@@ -35,7 +35,9 @@ def _assert_matches_fixture(name: str, actual: str) -> None:
     if os.environ.get("UPDATE_FIXTURES"):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(actual)
-    assert actual == path.read_text(), f"{name} drifted — regenerate with UPDATE_FIXTURES=1 and review"
+    assert actual == path.read_text(), (
+        f"{name} drifted — regenerate with UPDATE_FIXTURES=1 and review"
+    )
 
 
 def _gpr_task_in(state: str):  # type: ignore[no-untyped-def]
@@ -48,7 +50,13 @@ def _gpr_task_in(state: str):  # type: ignore[no-untyped-def]
 
 def test_ordered_phases_walks_the_advance_edges() -> None:
     # The happy path as a line: from the initial state, follow `advance` to the terminal state.
-    assert GithubPeerReviewed().ordered_phases() == ["PLANNING", "ITERATING", "REVIEW", "MERGING", "COMPLETE"]
+    assert GithubPeerReviewed().ordered_phases() == [
+        "PLANNING",
+        "ITERATING",
+        "REVIEW",
+        "MERGING",
+        "COMPLETE",
+    ]
 
 
 def test_briefing_names_the_phase_responsibilities_and_user_advance(tmp_path: Path) -> None:
@@ -60,7 +68,9 @@ def test_briefing_names_the_phase_responsibilities_and_user_advance(tmp_path: Pa
     assert "PLANNING" in text  # the agent learns which phase it's in
     assert "later phase" in text  # ... and not to do later-phase work (e.g. implementing)
     assert "plan-written" in text and "plan artifact" in text  # this phase's responsibility
-    assert "Produce a plan for the implementation." in text  # PLANNING's description (what it's for)
+    assert (
+        "Produce a plan for the implementation." in text
+    )  # PLANNING's description (what it's for)
     assert "ITERATING" in text  # the advance target
     # PLANNING is user-advanced, so the agent should hand back, not advance itself
     assert "hand back to the user" in text and "Don't advance on your own" in text
@@ -99,7 +109,10 @@ def test_workflow_overview_maps_the_ordered_phases() -> None:
     assert "Add the PR to the merge queue." in text  # MERGING
     # the responsibility gate and who advances are two separate sentences (gate before the bullets,
     # advance after them) — meeting the responsibilities is not what triggers the advance
-    assert "You must meet these responsibilities before ending your turn — mark each as met the moment you complete it:" in text
+    assert (
+        "You must meet these responsibilities before ending your turn — mark each as met the moment you complete it:"
+        in text
+    )
     assert "The user will advance to the next state." in text  # user-advanced phases
     assert "Automatically advance to the next state." in text  # MERGING (agent-advanced)
     assert "terminal" in text  # COMPLETE
@@ -112,10 +125,14 @@ def test_workflow_overview_handles_a_phase_with_no_responsibilities() -> None:
     # spike's ITERATING declares no responsibilities — the line must not dangle a colon + empty list.
     text = Spike().overview()
     assert "ITERATING" in text
-    assert "Open-ended agent work until the user marks the task complete." in text  # its description
+    assert (
+        "Open-ended agent work until the user marks the task complete." in text
+    )  # its description
     # with no responsibilities the gate sentence is omitted — just the advance sentence
     assert "The user will advance to the next state." in text
-    assert "responsibilities before ending your turn" not in text  # no gate sentence with nothing listed
+    assert (
+        "responsibilities before ending your turn" not in text
+    )  # no gate sentence with nothing listed
     assert "## Tools" not in text  # spike declares no tools → the section is omitted
 
 
@@ -175,11 +192,16 @@ def test_default_extras_leave_the_output_unchanged(tmp_path: Path) -> None:
 
 def test_github_peer_reviewed_system_prompt_matches_fixture() -> None:
     # The whole-workflow system prompt (the map + tools), captured verbatim.
-    _assert_matches_fixture("github_peer_reviewed_system_prompt.md", GithubPeerReviewed().overview())
+    _assert_matches_fixture(
+        "github_peer_reviewed_system_prompt.md", GithubPeerReviewed().overview()
+    )
 
 
 @pytest.mark.parametrize("state", ["PLANNING", "ITERATING", "REVIEW", "MERGING", "COMPLETE"])
 def test_github_peer_reviewed_state_briefing_matches_fixture(state: str, tmp_path: Path) -> None:
     # The per-turn briefing for each github-peer-reviewed phase, captured verbatim.
     wf, task = _gpr_task_in(state)
-    _assert_matches_fixture(f"github_peer_reviewed_state_{state}.md", asyncio.run(wf.briefing(task, artifacts=_artifacts(tmp_path))))
+    _assert_matches_fixture(
+        f"github_peer_reviewed_state_{state}.md",
+        asyncio.run(wf.briefing(task, artifacts=_artifacts(tmp_path))),
+    )

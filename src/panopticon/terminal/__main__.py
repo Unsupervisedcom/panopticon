@@ -13,6 +13,7 @@ via the bundled Alembic config. `panopticon quickstart` registers panopticon its
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 from collections.abc import Sequence
 from pathlib import Path
@@ -22,6 +23,7 @@ import httpx
 from panopticon.client import TaskServiceClient
 
 DEFAULT_SERVICE_URL = "http://localhost:8000"
+
 
 def _run_migrate() -> None:
     import importlib.resources
@@ -40,7 +42,10 @@ def _start_sessions() -> None:
     python = sys.executable
     for name, cmd in [
         ("service", f"{python} -m panopticon.taskservice 2>&1 | tee /tmp/panopticon-service.log"),
-        ("runner", f"{python} -m panopticon.sessionservice.host 2>&1 | tee /tmp/panopticon-runner.log"),
+        (
+            "runner",
+            f"{python} -m panopticon.sessionservice.host 2>&1 | tee /tmp/panopticon-runner.log",
+        ),
     ]:
         subprocess.run(
             ["tmux", "-L", "panopticon", "kill-session", "-t", name],
@@ -64,7 +69,9 @@ def main(
         help="task service base URL",
     )
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser("console", help="session supervisor: dashboard + attach loop (assumes services are running)")
+    sub.add_parser(
+        "console", help="session supervisor: dashboard + attach loop (assumes services are running)"
+    )
     dash = sub.add_parser("dashboard", help="run the dashboard once, without the attach loop")
     # Set by the supervisor (ADR 0009): the dashboard runs inside tmux, so it reports the session
     # the operator picked with `t` by writing it here instead of returning it in-process.
@@ -73,7 +80,9 @@ def main(
     mig = sub.add_parser("migrate", help="apply DB migrations to head (or pass alembic args)")
     mig.add_argument("alembic_args", nargs="*", default=["upgrade", "head"])
     sub.add_parser("build", help="build the base task-container image (panopticon-base)")
-    sub.add_parser("host", help="start task service + runner in background tmux sessions (no console)")
+    sub.add_parser(
+        "host", help="start task service + runner in background tmux sessions (no console)"
+    )
     sub.add_parser("start", help="start everything and open the dashboard supervisor")
     sub.add_parser("stop", help="stop task containers and the panopticon tmux server")
     sub.add_parser(
@@ -92,7 +101,7 @@ def main(
 
         ini_ref = importlib.resources.files("panopticon") / "alembic.ini"
         with importlib.resources.as_file(ini_ref) as ini_path:
-            alembic.config.main(argv=["--config", str(ini_path)] + list(args.alembic_args))
+            alembic.config.main(argv=["--config", str(ini_path), *list(args.alembic_args)])
         return 0
     elif args.command == "build":
         from panopticon.sessionservice.images import ImageBuilder
@@ -129,16 +138,14 @@ def main(
             )
             ids = result.stdout.split() if result.stdout.strip() else []
             if ids:
-                subprocess.run(["docker", "rm", "--force"] + ids, check=True)
+                subprocess.run(["docker", "rm", "--force", *ids], check=True)
         except FileNotFoundError:
             pass
-        try:
+        with contextlib.suppress(FileNotFoundError):
             subprocess.run(
                 ["tmux", "-L", "panopticon", "kill-server"],
                 capture_output=True,
             )
-        except FileNotFoundError:
-            pass
         return 0
 
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
@@ -152,9 +159,13 @@ def main(
         on_switch = None
         on_service = None
         on_runner = None
-        if args.switch_file:  # run under the supervisor: report `t`/`s`/`u` picks via the switch-file
+        if (
+            args.switch_file
+        ):  # run under the supervisor: report `t`/`s`/`u` picks via the switch-file
             switch_file = Path(args.switch_file)
-            on_switch = lambda session, host=None: switch_to(session, host=host, switch_file=switch_file)  # noqa: E731
+            on_switch = lambda session, host=None: switch_to(  # noqa: E731
+                session, host=host, switch_file=switch_file
+            )
             on_service = make_service_switch(switch_file)
             on_runner = make_runner_switch(switch_file)
         # Same default as the task service (shared ARTIFACTS_DIR): when the dashboard shares
@@ -163,7 +174,10 @@ def main(
 
         artifacts_root = ARTIFACTS_DIR
         run(
-            client, on_switch=on_switch, on_service=on_service, on_runner=on_runner,
+            client,
+            on_switch=on_switch,
+            on_service=on_service,
+            on_runner=on_runner,
             artifacts_root=artifacts_root,
         )
     else:  # "start", "console", or no subcommand (no subcommand → alias for "start")

@@ -67,12 +67,20 @@ def test_responsibilities_drop_the_peer_review_obligation() -> None:
     assert {r.key for r in WF.responsibilities("PLANNING")} == {"plan-written", "token-estimated"}
     # the plan is a markdown artifact (`plan.md`), shared with github-peer-reviewed via PLAN_WRITTEN
     by_key = {r.key: r for r in WF.responsibilities("PLANNING")}
-    assert "plan.md" in by_key["plan-written"].description and "markdown" in by_key["plan-written"].description
+    assert (
+        "plan.md" in by_key["plan-written"].description
+        and "markdown" in by_key["plan-written"].description
+    )
     # the token estimate is recorded with the set_token_estimate tool, shared via TOKEN_ESTIMATED
     assert "set_token_estimate" in by_key["token-estimated"].description
     assert {r.key for r in WF.responsibilities("ITERATING")} == {
-        "plan-implemented", "requests-implemented", "tests-pass",
-        "committed-pushed", "ci-passing", "pr-updated", "url-recorded",
+        "plan-implemented",
+        "requests-implemented",
+        "tests-pass",
+        "committed-pushed",
+        "ci-passing",
+        "pr-updated",
+        "url-recorded",
     }
     assert {r.key for r in WF.responsibilities("MERGING")} == {"pr-merged"}
 
@@ -84,23 +92,35 @@ def test_github_self_reviewed_inherits_the_forge_skills() -> None:
     babysit = next(s for s in skills if s.name == "babysit-ci")
     assert "run_in_background" in babysit.instructions  # push-driven pattern, not blocking watch
     assert "state artifact" in babysit.instructions  # cross-turn state for retry budget
-    assert "retries" in babysit.instructions or "retry" in babysit.instructions  # per-check retry cap
+    assert (
+        "retries" in babysit.instructions or "retry" in babysit.instructions
+    )  # per-check retry cap
 
 
 def test_babysit_merge_skill_covers_key_protocol_elements() -> None:
     merge_skill = next(s for s in WF.skills() if s.name == "babysit-merge")
     instructions = merge_skill.instructions
-    assert "CLOSED" in instructions          # Gap 3: PR closed without merge
+    assert "CLOSED" in instructions  # Gap 3: PR closed without merge
     assert "run_in_background" in instructions  # Gap 1: push-driven, non-blocking watch
-    assert "state artifact" in instructions.lower() or "babysit-merge-state" in instructions  # Gap 2: cross-turn state (stored as task artifact)
-    assert "double" in instructions.lower() or "already" in instructions.lower() or "autoMergeRequest" in instructions  # Gap 4: no double-queuing
+    assert (
+        "state artifact" in instructions.lower() or "babysit-merge-state" in instructions
+    )  # Gap 2: cross-turn state (stored as task artifact)
+    assert (
+        "double" in instructions.lower()
+        or "already" in instructions.lower()
+        or "autoMergeRequest" in instructions
+    )  # Gap 4: no double-queuing
 
 
 def test_plan_artifact_name_and_uri_are_single_sourced_on_the_forge_base() -> None:
     # The forge base owns the plan convention; the subclass inherits the name + URI resolver.
     assert GithubForgeWorkflow.PLAN_ARTIFACT_NAME == "plan.md"
     assert GithubSelfReviewed.PLAN_ARTIFACT_NAME == "plan.md"  # inherited
-    assert GithubForgeWorkflow.plan_uri("t1") == mcp_uri("t1", "plan.md") == "panopticon://tasks/t1/artifacts/plan.md"
+    assert (
+        GithubForgeWorkflow.plan_uri("t1")
+        == mcp_uri("t1", "plan.md")
+        == "panopticon://tasks/t1/artifacts/plan.md"
+    )
 
 
 def test_briefing_surfaces_the_plan_uri_once_the_plan_artifact_exists(tmp_path: Path) -> None:
@@ -109,7 +129,9 @@ def test_briefing_surfaces_the_plan_uri_once_the_plan_artifact_exists(tmp_path: 
     artifacts = FilesystemArtifactStore(tmp_path)
     task = WF.start_task("t1", "r1", at="t0")
 
-    assert "panopticon://" not in asyncio.run(WF.briefing(task, artifacts=artifacts))  # no plan yet → no URI
+    assert "panopticon://" not in asyncio.run(
+        WF.briefing(task, artifacts=artifacts)
+    )  # no plan yet → no URI
 
     asyncio.run(artifacts.put(task.id, "plan.md", b"# Plan"))
     text = asyncio.run(WF.briefing(task, artifacts=artifacts))
@@ -122,7 +144,9 @@ def test_github_self_reviewed_image_layer_installs_gh() -> None:
 
 
 def test_github_self_reviewed_declares_gh_as_a_tool() -> None:
-    names = {t.name for t in WF.tools()}  # named in the agent's system prompt (it ships in the image)
+    names = {
+        t.name for t in WF.tools()
+    }  # named in the agent's system prompt (it ships in the image)
     assert "gh" in names
 
 
@@ -142,7 +166,10 @@ def test_full_lifecycle_planning_to_complete() -> None:
         _advance(task, nxt)
     assert task.state == "COMPLETE"
     assert [h.to_state for h in task.history] == [
-        "PLANNING", "ITERATING", "MERGING", "COMPLETE",
+        "PLANNING",
+        "ITERATING",
+        "MERGING",
+        "COMPLETE",
     ]
     assert WF.is_terminal("COMPLETE")
 
@@ -153,7 +180,9 @@ def test_full_lifecycle_planning_to_complete() -> None:
 def test_cannot_advance_with_unresolved_responsibilities() -> None:
     task = WF.start_task("t1", "r1", at="t0")
     with pytest.raises(ResponsibilitiesNotMet):
-        WF.apply_transition(task, "ITERATING", at="t1")  # plan-written/token-estimated still PENDING
+        WF.apply_transition(
+            task, "ITERATING", at="t1"
+        )  # plan-written/token-estimated still PENDING
 
 
 def test_partial_resolution_still_gates() -> None:
@@ -161,7 +190,9 @@ def test_partial_resolution_still_gates() -> None:
     _advance(task, "ITERATING")  # now in ITERATING with several promises
     task.resolve_responsibility(key="tests-pass", status=Status.MET)
     with pytest.raises(ResponsibilitiesNotMet):
-        WF.apply_transition(task, "MERGING", at="t2")  # the rest (e.g. plan-implemented) still PENDING
+        WF.apply_transition(
+            task, "MERGING", at="t2"
+        )  # the rest (e.g. plan-implemented) still PENDING
 
 
 # -- iterate-back + drop ------------------------------------------------------------

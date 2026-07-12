@@ -52,7 +52,9 @@ def served(tmp_path: Path) -> Iterator[tuple[TaskService, int]]:
     """A real TaskService served by uvicorn in a background thread, on 0.0.0.0:<port>."""
     import uvicorn
 
-    service = TaskService(SqlAlchemyStore("sqlite://"), {"spike": Spike()}, FilesystemArtifactStore(tmp_path))
+    service = TaskService(
+        SqlAlchemyStore("sqlite://"), {"spike": Spike()}, FilesystemArtifactStore(tmp_path)
+    )
     port = _free_port()
     config = uvicorn.Config(create_app(service), host="0.0.0.0", port=port, log_level="warning")
     server = uvicorn.Server(config)
@@ -84,7 +86,9 @@ def test_runner_spawns_real_container_that_registers_and_loses_liveness(
     wheel_out.mkdir()
     subprocess.run(
         ["uv", "build", "--wheel", f"--out-dir={wheel_out}"],
-        check=True, capture_output=True, cwd=repo_root,
+        check=True,
+        capture_output=True,
+        cwd=repo_root,
     )
     (whl,) = list(wheel_out.glob("*.whl"))
 
@@ -94,11 +98,19 @@ def test_runner_spawns_real_container_that_registers_and_loses_liveness(
         shutil.copy(whl, ctx_whl)
         try:
             subprocess.run(
-                ["docker", "build", "--tag", _IMAGE,
-                 "--build-arg", f"PANOPTICON_WHEEL={whl.name}",
-                 "--file", str(dockerfile_path),
-                 str(dockerfile_path.parent)],
-                check=True, capture_output=True,
+                [
+                    "docker",
+                    "build",
+                    "--tag",
+                    _IMAGE,
+                    "--build-arg",
+                    f"PANOPTICON_WHEEL={whl.name}",
+                    "--file",
+                    str(dockerfile_path),
+                    str(dockerfile_path.parent),
+                ],
+                check=True,
+                capture_output=True,
             )
         finally:
             ctx_whl.unlink(missing_ok=True)
@@ -127,9 +139,10 @@ def test_runner_spawns_real_container_that_registers_and_loses_liveness(
                 reg = regs[0]
                 break
             time.sleep(0.25)
-        assert reg is not None, "container never registered: " + subprocess.run(
-            ["docker", "logs", container], capture_output=True, text=True
-        ).stderr
+        assert reg is not None, (
+            "container never registered: "
+            + subprocess.run(["docker", "logs", container], capture_output=True, text=True).stderr
+        )
 
         # 2. the slug hook ran in-container
         for _ in range(40):
@@ -139,9 +152,12 @@ def test_runner_spawns_real_container_that_registers_and_loses_liveness(
         assert asyncio.run(service.get_task(task_id)).slug == "acc-slug"
 
         # 3. tmux session exists (operator could `tmux attach`)
-        assert subprocess.run(
-            ["tmux", "-L", _TMUX_SOCKET, "has-session", "-t", container], capture_output=True
-        ).returncode == 0
+        assert (
+            subprocess.run(
+                ["tmux", "-L", _TMUX_SOCKET, "has-session", "-t", container], capture_output=True
+            ).returncode
+            == 0
+        )
 
         # 4. killing the container (SIGKILL) drops the liveness connection, so the service reaps
         #    the registration immediately — push, not a TTL age-out (the old model waited ~20s).

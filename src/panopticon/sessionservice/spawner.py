@@ -10,6 +10,7 @@ unified host daemon runs both. LLM-free.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import shutil
@@ -110,7 +111,9 @@ class Spawner:
         self._makedirs = makedirs
         self._exists = exists
         self._rmtree = rmtree
-        self._docker_cleanup = docker_cleanup if docker_cleanup is not None else runner.delete_workspace_contents
+        self._docker_cleanup = (
+            docker_cleanup if docker_cleanup is not None else runner.delete_workspace_contents
+        )
         self._now = now
         self._max_respawns = max_respawns
         self._respawn_reset = respawn_reset
@@ -152,15 +155,26 @@ class Spawner:
             _log.info("task %s: claiming", task_id)
             self._report(task_id, LifecyclePhase.CLAIMING)
             repo = self._client.get_repo(task["repo_id"])
-            _log.info("task %s: preparing workspace (repo=%s)", task_id, repo.get("name", repo["id"]))
+            _log.info(
+                "task %s: preparing workspace (repo=%s)", task_id, repo.get("name", repo["id"])
+            )
             self._report(task_id, LifecyclePhase.PREPARING)
             workspace = prepare_workspace(
-                task_id, repo, cache=self._cache, tasks_root=self._tasks_root, git=self._git,  # type: ignore[arg-type]
+                task_id,
+                repo,
+                cache=self._cache,
+                tasks_root=self._tasks_root,
+                git=self._git,  # type: ignore[arg-type]
                 makedirs=self._makedirs,
             )
             if hook_file := repo.get("hook_file"):
                 self._run_hook(hook_file, task_id, repo["name"], workspace)
-            _log.info("task %s: building image (workflow=%s, repo=%s)", task_id, task["workflow"], repo.get("name", repo["id"]))
+            _log.info(
+                "task %s: building image (workflow=%s, repo=%s)",
+                task_id,
+                task["workflow"],
+                repo.get("name", repo["id"]),
+            )
             self._report(task_id, LifecyclePhase.BUILDING)
             self._images.build_base_if_missing(verbose=True)
             image = self._compose_image(task["workflow"], repo)
@@ -170,9 +184,13 @@ class Spawner:
                 workspace=workspace,
                 image=image,
                 docker_in_docker=bool((repo.get("capabilities") or {}).get("docker_in_docker")),
-                initial_prompt=task.get("initial_prompt"),  # passed as a CLI arg to claude on the first run
+                initial_prompt=task.get(
+                    "initial_prompt"
+                ),  # passed as a CLI arg to claude on the first run
                 turn=task.get("turn"),  # agent's turn → INTERRUPT_PROMPT on respawn
-                starting_model=task.get("starting_model"),  # model selection passed to claude --model on first launch
+                starting_model=task.get(
+                    "starting_model"
+                ),  # model selection passed to claude --model on first launch
                 progress=lambda phase: self._report(task_id, phase),  # STARTING then AWAITING
             )
         except Exception as exc:
@@ -188,10 +206,8 @@ class Spawner:
             _log.info("task %s: awaiting registration", task_id)
         elif phase == LifecyclePhase.FAILED:
             _log.error("task %s: spawn failed — %s", task_id, detail)
-        try:
+        with contextlib.suppress(httpx.HTTPError):
             self._client.report_lifecycle(task_id, self._runner_id, phase.value, detail)
-        except httpx.HTTPError:
-            pass
 
     def reconcile(self, task: JsonObj) -> None:
         """Reconcile a task this runner claims into the right lifecycle status (down-detection).
@@ -281,11 +297,14 @@ class Spawner:
         if count >= self._max_respawns:
             _log.error(
                 "task %s keeps losing its tmux session (%d respawns) — leaving it for attention",
-                task_id, count,
+                task_id,
+                count,
             )
             return None
         self._respawns[task_id] = (count + 1, now)
-        _log.warning("self-healing orphaned task %s (no tmux session) — respawn %d", task_id, count + 1)
+        _log.warning(
+            "self-healing orphaned task %s (no tmux session) — respawn %d", task_id, count + 1
+        )
         return self._spawn(task)
 
     def startup_reclaim(self, tasks: list[JsonObj]) -> None:
@@ -313,10 +332,9 @@ class Spawner:
                 continue
             if self._runner.is_running(task["id"]):
                 continue  # container survived (runner-only crash) — keep claim, heal handles it
-            try:
+            # best-effort — heal() picks up unclaimed tasks that failed to release
+            with contextlib.suppress(httpx.HTTPError):
                 self._client.release(task["id"])
-            except httpx.HTTPError:
-                pass  # best-effort — heal() picks up unclaimed tasks that failed to release
 
     def cleanup(self, task: JsonObj) -> None:
         """Remove the per-task workspace once a terminal task's container has exited.
@@ -330,8 +348,11 @@ class Spawner:
         if self._runner.is_running(task["id"]):
             return  # container still up — wait for it to exit naturally
         cleanup_workspace(
-            task["id"], self._tasks_root,
-            exists=self._exists, rmtree=self._rmtree, docker_cleanup=self._docker_cleanup,
+            task["id"],
+            self._tasks_root,
+            exists=self._exists,
+            rmtree=self._rmtree,
+            docker_cleanup=self._docker_cleanup,
         )
 
     def _compose_image(self, workflow: str, repo: JsonObj) -> str | None:

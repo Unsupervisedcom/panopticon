@@ -24,7 +24,14 @@ class _Recorder:
         self.calls: list[tuple[list[str], bool]] = []
         self.interactive: list[bool] = []
 
-    def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False, verbose: bool = False) -> str:
+    def __call__(
+        self,
+        args: Sequence[str],
+        *,
+        check: bool = True,
+        interactive: bool = False,
+        verbose: bool = False,
+    ) -> str:
         self.calls.append((list(args), check))
         self.interactive.append(interactive)
         return ""
@@ -47,7 +54,7 @@ def test_spawn_runs_detached_container_then_tmux_pane_execing_in() -> None:
     assert rm == ["docker", "rm", "--force", "panopticon-t1"]  # then clear a stale container
     assert docker_run[:3] == ["docker", "run", "--detach"]
     assert docker_run[-1] == "img:1"  # the image is the final positional arg (its entrypoint runs)
-    assert ["--name", "panopticon-t1"] == docker_run[3:5]
+    assert docker_run[3:5] == ["--name", "panopticon-t1"]
     assert "PANOPTICON_SERVICE_URL=http://svc:8000" in docker_run
     assert "PANOPTICON_TASK_ID=t1" in docker_run
     assert "PANOPTICON_CONTAINER_ID=panopticon-t1" in docker_run
@@ -60,8 +67,16 @@ def test_spawn_runs_detached_container_then_tmux_pane_execing_in() -> None:
     assert tmux_new[tmux_new.index("-s") + 1] == "panopticon-t1"
     # the pane execs in as the unprivileged `panopticon` user (so the agent's whoami isn't root)
     assert tmux_new[-10:] == [
-        "docker", "exec", "--interactive", "--tty", "--user", "panopticon", "panopticon-t1",
-        "python", "-m", "panopticon.container.agent",
+        "docker",
+        "exec",
+        "--interactive",
+        "--tty",
+        "--user",
+        "panopticon",
+        "panopticon-t1",
+        "python",
+        "-m",
+        "panopticon.container.agent",
     ]
 
 
@@ -80,7 +95,14 @@ class _ReturningRecorder(_Recorder):
         super().__init__()
         self._output = output
 
-    def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False, verbose: bool = False) -> str:
+    def __call__(
+        self,
+        args: Sequence[str],
+        *,
+        check: bool = True,
+        interactive: bool = False,
+        verbose: bool = False,
+    ) -> str:
         super().__call__(args, check=check, interactive=interactive)
         return self._output
 
@@ -89,7 +111,7 @@ def test_is_running_queries_docker_ps_by_container_name() -> None:
     rec = _ReturningRecorder("panopticon-t1\n")
     runner = LocalRunner("http://svc:8000", run=rec)
     assert runner.is_running("t1") is True
-    (ps, check), = rec.calls
+    ((ps, check),) = rec.calls
     assert ps == ["docker", "ps", "--filter", "name=^panopticon-t1$", "--format", "{{.Names}}"]
     assert check is False  # tolerate a daemon hiccup rather than raise
 
@@ -103,9 +125,11 @@ def test_has_session_lists_the_tmux_server_and_matches_the_session_name() -> Non
     rec = _ReturningRecorder("panopticon-t1\npanopticon-t2\n")  # two sessions on the server
     runner = LocalRunner("http://svc:8000", run=rec)
     assert runner.has_session("t1") is True
-    (ls, check), = rec.calls
+    ((ls, check),) = rec.calls
     assert ls == ["tmux", "-L", "panopticon", "list-sessions", "-F", "#{session_name}"]
-    assert check is False  # an empty list (or no server at all) just means "no session", not an error
+    assert (
+        check is False
+    )  # an empty list (or no server at all) just means "no session", not an error
 
 
 def test_has_session_is_false_when_the_session_is_absent() -> None:
@@ -152,7 +176,9 @@ def test_spawn_with_docker_in_docker_runs_privileged_and_flags_the_entrypoint() 
 
 def test_extra_env_is_forwarded() -> None:
     rec = _Recorder()
-    LocalRunner("http://svc", extra_env={"PANOPTICON_RECONNECT_BACKOFF": "0.5"}, run=rec).spawn("t1")
+    LocalRunner("http://svc", extra_env={"PANOPTICON_RECONNECT_BACKOFF": "0.5"}, run=rec).spawn(
+        "t1"
+    )
     assert "PANOPTICON_RECONNECT_BACKOFF=0.5" in rec.calls[2][0]
 
 
@@ -168,7 +194,9 @@ def test_spawn_resolves_env_file_against_the_runners_secrets_dir() -> None:
 def test_spawn_rejects_env_file_name_escaping_the_secrets_dir() -> None:
     rec = _Recorder()
     with pytest.raises(ValueError):
-        LocalRunner("http://svc", secrets_dir="/host/secrets", run=rec).spawn("t1", env_file="../evil.env")
+        LocalRunner("http://svc", secrets_dir="/host/secrets", run=rec).spawn(
+            "t1", env_file="../evil.env"
+        )
 
 
 def test_spawn_omits_secret_flags_when_repo_has_none() -> None:
@@ -237,23 +265,37 @@ def test_stop_kills_session_and_force_removes_container_idempotently() -> None:
 
 def test_delete_workspace_contents_runs_root_container_to_empty_directory() -> None:
     rec = _Recorder()
-    LocalRunner("http://svc", image="panopticon-base", run=rec).delete_workspace_contents("/tasks/t1")
-    assert rec.calls == [(
-        [
-            "docker", "run", "--rm",
-            "--entrypoint", "/bin/sh",
-            "--volume", "/tasks/t1:/cleanup",
-            "panopticon-base",
-            "-c", "find /cleanup -mindepth 1 -delete",
-        ],
-        True,
-    )]
+    LocalRunner("http://svc", image="panopticon-base", run=rec).delete_workspace_contents(
+        "/tasks/t1"
+    )
+    assert rec.calls == [
+        (
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--entrypoint",
+                "/bin/sh",
+                "--volume",
+                "/tasks/t1:/cleanup",
+                "panopticon-base",
+                "-c",
+                "find /cleanup -mindepth 1 -delete",
+            ],
+            True,
+        )
+    ]
 
 
 def test_tmux_socket_can_be_overridden() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", tmux_socket="panopt", run=rec).spawn("t1")
-    assert rec.calls[3][0][:4] == ["tmux", "-L", "panopt", "new-session"]  # kill-session, rm, run, tmux
+    assert rec.calls[3][0][:4] == [
+        "tmux",
+        "-L",
+        "panopt",
+        "new-session",
+    ]  # kill-session, rm, run, tmux
 
 
 # -- integration: real docker + tmux ------------------------------------------------
@@ -262,9 +304,10 @@ _HAVE_DOCKER_TMUX = bool(shutil.which("docker") and shutil.which("tmux"))
 
 
 def _docker_running() -> bool:
-    return _HAVE_DOCKER_TMUX and subprocess.run(
-        ["docker", "info"], capture_output=True
-    ).returncode == 0
+    return (
+        _HAVE_DOCKER_TMUX
+        and subprocess.run(["docker", "info"], capture_output=True).returncode == 0
+    )
 
 
 @pytest.mark.skipif(not _docker_running(), reason="needs a working docker daemon + tmux")
@@ -275,7 +318,9 @@ def test_spawn_and_stop_real_container_and_session() -> None:
         ["docker", "build", "--tag", image, "-"],
         # a `panopticon` user so the agent pane's `docker exec --user panopticon` resolves
         input='FROM alpine\nRUN adduser -D -u 1000 panopticon\nENTRYPOINT ["sleep", "3600"]\n',
-        text=True, check=True, capture_output=True,
+        text=True,
+        check=True,
+        capture_output=True,
     )
     runner = LocalRunner(
         "http://unused", image=image, runner_id="itest", agent_command=["sh"], tmux_socket=socket
@@ -287,21 +332,28 @@ def test_spawn_and_stop_real_container_and_session() -> None:
         for _ in range(50):  # `docker run -d` returns once running; poll defensively
             running = subprocess.run(
                 ["docker", "inspect", "--format", "{{.State.Running}}", cid],
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             ).stdout.strip()
             if running == "true":
                 break
             time.sleep(0.1)
         assert running == "true"
-        assert subprocess.run(
-            ["tmux", "-L", socket, "has-session", "-t", cid], capture_output=True
-        ).returncode == 0
+        assert (
+            subprocess.run(
+                ["tmux", "-L", socket, "has-session", "-t", cid], capture_output=True
+            ).returncode
+            == 0
+        )
 
         runner.stop(cid)
         assert subprocess.run(["docker", "inspect", cid], capture_output=True).returncode != 0
-        assert subprocess.run(
-            ["tmux", "-L", socket, "has-session", "-t", cid], capture_output=True
-        ).returncode != 0
+        assert (
+            subprocess.run(
+                ["tmux", "-L", socket, "has-session", "-t", cid], capture_output=True
+            ).returncode
+            != 0
+        )
     finally:
         subprocess.run(["docker", "rm", "--force", cid], capture_output=True)
         subprocess.run(["tmux", "-L", socket, "kill-server"], capture_output=True)
@@ -324,15 +376,12 @@ class _FakeClient:
 def test_cli_preps_the_workspace_then_spawns_with_secrets_and_mount(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import panopticon.core.dirs as dirs_mod
     from panopticon.sessionservice import __main__ as cli
     from panopticon.sessionservice.__main__ import main as cli_main
 
-    import panopticon.core.dirs as dirs_mod
-
     rec = _Recorder()
-    fake = _FakeClient(
-        {"id": "r1", "git_url": "https://forge/r1.git", "env_file": "r1.env"}
-    )
+    fake = _FakeClient({"id": "r1", "git_url": "https://forge/r1.git", "env_file": "r1.env"})
     # The clone cache and per-task clones roots are the base-dir defaults (no per-path flags); the
     # defaults are import-time constants, so point them at tmp dirs by patching them in place.
     cache_root, tasks_root = tmp_path / "cache", tmp_path / "tasks"
@@ -342,7 +391,8 @@ def test_cli_preps_the_workspace_then_spawns_with_secrets_and_mount(
     monkeypatch.setattr(dirs_mod, "user_config_dir", lambda: tmp_path)
     cid = cli_main(
         ["t1", "--service-url", "http://svc:9", "--image", "img:2"],
-        run=rec, client=fake,  # type: ignore[arg-type]
+        run=rec,
+        client=fake,  # type: ignore[arg-type]
     )
     assert cid == "panopticon-t1"
     cmds = [c for c, _ in rec.calls]
@@ -351,5 +401,7 @@ def test_cli_preps_the_workspace_then_spawns_with_secrets_and_mount(
     docker_run = next(c for c in cmds if c[:2] == ["docker", "run"])
     assert "PANOPTICON_SERVICE_URL=http://svc:9" in docker_run
     assert docker_run[-1] == "img:2"
-    assert docker_run[docker_run.index("--env-file") + 1] == str(tmp_path / "secrets" / "r1.env")  # repo's secrets
+    assert docker_run[docker_run.index("--env-file") + 1] == str(
+        tmp_path / "secrets" / "r1.env"
+    )  # repo's secrets
     assert f"{tasks_root}/t1:/workspace" in docker_run  # the per-task clone mounted as /workspace

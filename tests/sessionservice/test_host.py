@@ -31,7 +31,20 @@ class _FakeRunner:
     def __init__(self) -> None:
         self.spawned: list[str] = []
 
-    def spawn(self, task_id: str, *, env_file: str | None = None, workspace: str | None = None, image: str | None = None, docker_in_docker: bool = False, memo: str | None = None, initial_prompt: str | None = None, turn: str | None = None, starting_model: str | None = None, progress: object = None) -> str:
+    def spawn(
+        self,
+        task_id: str,
+        *,
+        env_file: str | None = None,
+        workspace: str | None = None,
+        image: str | None = None,
+        docker_in_docker: bool = False,
+        memo: str | None = None,
+        initial_prompt: str | None = None,
+        turn: str | None = None,
+        starting_model: str | None = None,
+        progress: object = None,
+    ) -> str:
         self.spawned.append(task_id)
         return f"panopticon-{task_id}"
 
@@ -51,7 +64,9 @@ class _FakeRunner:
 class _FakeImageBuilder:
     """Stands in for ImageBuilder (no docker); always reports the base image as present."""
 
-    def build(self, workflow: str, repo_id: str, layers: list[str], *, verbose: bool = False) -> str:
+    def build(
+        self, workflow: str, repo_id: str, layers: list[str], *, verbose: bool = False
+    ) -> str:
         return f"panopticon-{workflow}-{repo_id}"
 
     def build_base_if_missing(self, *, verbose: bool = False) -> bool:
@@ -65,7 +80,9 @@ class _FakeClient:
     def __init__(self, tasks: list[JsonObj]) -> None:
         self._tasks = tasks
 
-    def list_tasks_versioned(self, *, since: int = 0, wait: float | None = None) -> tuple[list[JsonObj], int]:
+    def list_tasks_versioned(
+        self, *, since: int = 0, wait: float | None = None
+    ) -> tuple[list[JsonObj], int]:
         return self._tasks, since
 
 
@@ -189,7 +206,9 @@ def test_run_calls_startup_reclaim_once_on_first_successful_tick() -> None:
     passes: list[int] = []
 
     class _FeedClient:
-        def list_tasks_versioned(self, *, since: int = 0, wait: float | None = None) -> tuple[list[JsonObj], int]:
+        def list_tasks_versioned(
+            self, *, since: int = 0, wait: float | None = None
+        ) -> tuple[list[JsonObj], int]:
             passes.append(len(passes))
             return [{"id": f"t{len(passes)}"}], len(passes)
 
@@ -231,7 +250,9 @@ def test_run_blocks_on_the_change_feed_and_feeds_the_version_back() -> None:
             return None
 
     class _FeedClient:
-        def list_tasks_versioned(self, *, since: int = 0, wait: float | None = None) -> tuple[list[JsonObj], int]:
+        def list_tasks_versioned(
+            self, *, since: int = 0, wait: float | None = None
+        ) -> tuple[list[JsonObj], int]:
             sinces.append(since)
             return [{"id": f"t{len(sinces)}"}], len(sinces)  # a fresh snapshot + a bumped version
 
@@ -271,7 +292,9 @@ def test_run_survives_a_whole_pass_failure() -> None:
             return None
 
     class _FlakyClient:
-        def list_tasks_versioned(self, *, since: int = 0, wait: float | None = None) -> tuple[list[JsonObj], int]:
+        def list_tasks_versioned(
+            self, *, since: int = 0, wait: float | None = None
+        ) -> tuple[list[JsonObj], int]:
             passes["n"] += 1
             if passes["n"] == 1:
                 raise RuntimeError("connection refused")  # first call fails (startup race)
@@ -291,7 +314,9 @@ def test_hold_runner_liveness_reconnects_after_a_drop_until_stopped() -> None:
     opens = {"n": 0}
 
     class _DroppingClient:
-        def live_runner(self, runner_id: str, *, host: str | None = None) -> Generator[None, None, None]:
+        def live_runner(
+            self, runner_id: str, *, host: str | None = None
+        ) -> Generator[None, None, None]:
             opens["n"] += 1
 
             def gen() -> Generator[None, None, None]:
@@ -300,7 +325,7 @@ def test_hold_runner_liveness_reconnects_after_a_drop_until_stopped() -> None:
 
             return gen()
 
-    daemon_running = lambda: opens["n"] < 3  # flip after a couple of reconnects  # noqa: E731
+    daemon_running = lambda: opens["n"] < 3  # flip after a couple of reconnects
     hold_runner_liveness(_DroppingClient(), "host-1", running=daemon_running, sleep=lambda _s: None)  # type: ignore[arg-type]
     assert opens["n"] == 3  # reconnected after each drop until `running()` said stop
 
@@ -311,7 +336,9 @@ def test_hold_runner_liveness_passes_host_to_client() -> None:
     recorded: list[str | None] = []
 
     class _RecordingClient:
-        def live_runner(self, runner_id: str, *, host: str | None = None) -> Generator[None, None, None]:
+        def live_runner(
+            self, runner_id: str, *, host: str | None = None
+        ) -> Generator[None, None, None]:
             recorded.append(host)
 
             def gen() -> Generator[None, None, None]:
@@ -320,7 +347,8 @@ def test_hold_runner_liveness_passes_host_to_client() -> None:
             return gen()
 
     hold_runner_liveness(
-        _RecordingClient(), "host-1",  # type: ignore[arg-type]
+        _RecordingClient(),
+        "host-1",  # type: ignore[arg-type]
         running=lambda: len(recorded) < 1,
         host="box.example.com",
         sleep=lambda _s: None,
@@ -331,7 +359,11 @@ def test_hold_runner_liveness_passes_host_to_client() -> None:
 def test_run_host_spawns_then_provisions_end_to_end(tmp_path: Path) -> None:
     service = TaskService(SqlAlchemyStore(), {"spike": Spike()}, FilesystemArtifactStore(tmp_path))
     asyncio.run(service.init())
-    asyncio.run(service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://forge/r1.git", default_base="trunk")))
+    asyncio.run(
+        service.create_repo(
+            Repo(id="r1", name="acme/widgets", git_url="https://forge/r1.git", default_base="trunk")
+        )
+    )
     with TestClient(create_app(service)) as http:
         client = TaskServiceClient(http)
         task_id = client.create_task("r1", "spike")["id"]
@@ -348,10 +380,15 @@ def test_run_host_spawns_then_provisions_end_to_end(tmp_path: Path) -> None:
             return until
 
         kw = dict(  # noqa: C408 - readability
-            runner_id="host-1", tasks_root="/clones",
-            cache=CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None),
-            git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),
-            makedirs=lambda _p: None, sleep=lambda _s: None,
+            runner_id="host-1",
+            tasks_root="/clones",
+            cache=CloneCache(
+                "/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None
+            ),
+            git=GitClones(run=_no_op_run),
+            images=_FakeImageBuilder(),
+            makedirs=lambda _p: None,
+            sleep=lambda _s: None,
         )
 
         # Pass 1: fresh task → claimed + spawned; no slug yet → not provisioned.

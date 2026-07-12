@@ -11,4 +11,10 @@ from panopticon.workflows.local_git_self_reviewed import LocalGitSelfReviewed
 from panopticon.workflows.orchestrator import Orchestrator
 from panopticon.workflows.spike import Spike
 
-__all__ = ["GithubPeerReviewed", "GithubSelfReviewed", "LocalGitSelfReviewed", "Orchestrator", "Spike"]
+__all__ = [
+    "GithubPeerReviewed",
+    "GithubSelfReviewed",
+    "LocalGitSelfReviewed",
+    "Orchestrator",
+    "Spike",
+]

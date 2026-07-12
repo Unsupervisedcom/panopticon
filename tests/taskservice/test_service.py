@@ -17,13 +17,13 @@ from panopticon.core import (
 from panopticon.core.models import Actor, LifecyclePhase, Repo, Responsibility, Status
 from panopticon.core.store import NotFound
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
-from panopticon.taskservice.store_sqlalchemy import SqlAlchemyStore
 from panopticon.taskservice.service import (
     AlreadyClaimed,
     NotAuthorized,
     TaskService,
     UnknownWorkflow,
 )
+from panopticon.taskservice.store_sqlalchemy import SqlAlchemyStore
 from panopticon.workflows import GithubPeerReviewed, Orchestrator, Spike
 
 
@@ -32,14 +32,24 @@ async def make_service(tmp_path: Path) -> TaskService:
     times: Iterator[str] = iter(f"t{i}" for i in range(1, 10_000))
     svc = TaskService(
         SqlAlchemyStore(),
-        {"spike": Spike(), "github-peer-reviewed": GithubPeerReviewed(), "orchestrator": Orchestrator()},
+        {
+            "spike": Spike(),
+            "github-peer-reviewed": GithubPeerReviewed(),
+            "orchestrator": Orchestrator(),
+        },
         FilesystemArtifactStore(tmp_path),
         clock=lambda: next(times),
         id_factory=lambda: next(ids),
     )
     await svc.init()
-    await svc.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git",
-                               enabled_workflows=["github-peer-reviewed"]))
+    await svc.create_repo(
+        Repo(
+            id="r1",
+            name="acme/widgets",
+            git_url="https://x/r1.git",
+            enabled_workflows=["github-peer-reviewed"],
+        )
+    )
     return svc
 
 
@@ -54,8 +64,14 @@ async def test_create_task_as_orchestrator_is_allowed(tmp_path: Path) -> None:
 
 async def test_create_task_as_uses_the_orchestrators_own_repo(tmp_path: Path) -> None:
     svc = await make_service(tmp_path)
-    await svc.create_repo(Repo(id="r2", name="acme/other", git_url="https://x/r2.git",
-                               enabled_workflows=["github-peer-reviewed"]))
+    await svc.create_repo(
+        Repo(
+            id="r2",
+            name="acme/other",
+            git_url="https://x/r2.git",
+            enabled_workflows=["github-peer-reviewed"],
+        )
+    )
     boss = await svc.create_task("r2", "orchestrator")  # the orchestrator lives in r2
     child = await svc.create_task_as(boss.id, "github-peer-reviewed")
     assert child.repo_id == "r2"  # first iteration: always the orchestrator's own repo
@@ -116,8 +132,9 @@ async def test_create_task_opt_out_workflow_is_allowed_by_default(tmp_path: Path
 
 async def test_create_task_opt_out_workflow_can_be_disabled(tmp_path: Path) -> None:
     svc = await make_service(tmp_path)
-    await svc.create_repo(Repo(id="r2", name="acme/other", git_url="https://x/r2.git",
-                               disabled_workflows=["spike"]))
+    await svc.create_repo(
+        Repo(id="r2", name="acme/other", git_url="https://x/r2.git", disabled_workflows=["spike"])
+    )
     with pytest.raises(NotAuthorized, match="spike"):
         await svc.create_task("r2", "spike")
 
@@ -136,8 +153,9 @@ async def test_list_workflow_infos_for_repo_shows_opt_in_and_filters(tmp_path: P
 
 async def test_list_workflow_infos_for_repo_hides_disabled_opt_out(tmp_path: Path) -> None:
     svc = await make_service(tmp_path)
-    await svc.create_repo(Repo(id="r2", name="acme/other", git_url="https://x/r2.git",
-                               disabled_workflows=["spike"]))
+    await svc.create_repo(
+        Repo(id="r2", name="acme/other", git_url="https://x/r2.git", disabled_workflows=["spike"])
+    )
     names = {w["name"] for w in await svc.list_workflow_infos_for_repo("r2")}
     assert "spike" not in names
 
@@ -250,7 +268,9 @@ async def test_claim_is_compare_and_set_and_idempotent_for_the_holder(tmp_path: 
     task = await svc.create_task("r1", "spike")
     assert task.claimed_by is None
     assert (await svc.claim(task.id, "host-1")).claimed_by == "host-1"
-    assert (await svc.claim(task.id, "host-1")).claimed_by == "host-1"  # idempotent for the same runner
+    assert (
+        await svc.claim(task.id, "host-1")
+    ).claimed_by == "host-1"  # idempotent for the same runner
     assert (await svc.get_task(task.id)).claimed_by == "host-1"  # persisted
 
 
@@ -268,7 +288,9 @@ async def test_release_returns_the_task_to_unclaimed(tmp_path: Path) -> None:
     task = await svc.create_task("r1", "spike")
     await svc.claim(task.id, "host-1")
     assert (await svc.release(task.id)).claimed_by is None
-    assert (await svc.claim(task.id, "host-2")).claimed_by == "host-2"  # now another runner can claim
+    assert (
+        await svc.claim(task.id, "host-2")
+    ).claimed_by == "host-2"  # now another runner can claim
 
 
 # -- host (runner) liveness + reclaim: connection-scoped, clock-free (mirror of container liveness) --
@@ -315,8 +337,12 @@ async def test_reclaim_releases_the_runners_non_terminal_claims(tmp_path: Path) 
     reclaimed = await svc.reclaim("host-dead")
 
     assert [t.id for t in reclaimed] == [mine.id]
-    assert (await svc.get_task(mine.id)).claimed_by is None  # released for a healthy host to respawn
-    assert (await svc.get_task(other.id)).claimed_by == "host-live"  # another runner's claim untouched
+    assert (
+        await svc.get_task(mine.id)
+    ).claimed_by is None  # released for a healthy host to respawn
+    assert (
+        await svc.get_task(other.id)
+    ).claimed_by == "host-live"  # another runner's claim untouched
     assert await svc.reclaim("host-dead") == []  # idempotent
 
 
@@ -360,7 +386,9 @@ async def test_reclaim_does_not_bump_updated_at(tmp_path: Path) -> None:
 # -- container lifecycle: the session service's reported spawn phase, folded into a status ---------
 
 
-async def test_container_status_folds_phase_registration_and_runner_liveness(tmp_path: Path) -> None:
+async def test_container_status_folds_phase_registration_and_runner_liveness(
+    tmp_path: Path,
+) -> None:
     svc = await make_service(tmp_path)
     task = await svc.create_task("r1", "spike")
 
@@ -375,12 +403,16 @@ async def test_container_status_folds_phase_registration_and_runner_liveness(tmp
     reg = await svc.register(task.id, "c1", "host-1")
     assert await status() == "live"  # an open container registration trumps the phase
     await svc.deregister(reg.id)
-    assert await status() == "building"  # container gone but phase still in flight (reconcile not yet run)
+    assert (
+        await status() == "building"
+    )  # container gone but phase still in flight (reconcile not yet run)
     svc.clear_lifecycle(task.id)  # the daemon's reconcile clears the stale phase
     assert await status() == "down"  # claimed + runner live + no phase + no registration → down
 
 
-async def test_container_status_is_disconnected_when_the_claiming_runner_is_gone(tmp_path: Path) -> None:
+async def test_container_status_is_disconnected_when_the_claiming_runner_is_gone(
+    tmp_path: Path,
+) -> None:
     svc = await make_service(tmp_path)
     task = await svc.create_task("r1", "spike")
     await svc.claim(task.id, "host-1")
@@ -552,7 +584,9 @@ async def test_registrations_do_not_age_out_on_the_clock(tmp_path: Path) -> None
     # `registrations` touches no clock no matter how much time passes.
     now = {"t": "2026-01-01T00:00:00+00:00"}
     svc = TaskService(
-        SqlAlchemyStore(), {"spike": Spike()}, FilesystemArtifactStore(tmp_path),
+        SqlAlchemyStore(),
+        {"spike": Spike()},
+        FilesystemArtifactStore(tmp_path),
         clock=lambda: now["t"],
     )
     await svc.init()
@@ -561,7 +595,9 @@ async def test_registrations_do_not_age_out_on_the_clock(tmp_path: Path) -> None
     reg = await svc.register(task.id, container_id="c-abc")
 
     now["t"] = "2026-01-01T01:00:00+00:00"  # +1h — would be long past any old TTL
-    assert [r.id for r in svc.registrations(task.id)] == [reg.id]  # still live: only disconnect reaps
+    assert [r.id for r in svc.registrations(task.id)] == [
+        reg.id
+    ]  # still live: only disconnect reaps
 
 
 # -- responsibilities ---------------------------------------------------------------
@@ -630,7 +666,12 @@ async def test_workflow_states_lists_every_state(tmp_path: Path) -> None:
     svc = await make_service(tmp_path)
     task = await svc.create_task("r1", "github-peer-reviewed")
     assert set(await svc.workflow_states(task.id)) == {
-        "PLANNING", "ITERATING", "REVIEW", "MERGING", "COMPLETE", "DROPPED",
+        "PLANNING",
+        "ITERATING",
+        "REVIEW",
+        "MERGING",
+        "COMPLETE",
+        "DROPPED",
     }
 
 

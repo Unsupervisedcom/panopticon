@@ -40,6 +40,7 @@ def test_detect_git_url_fallback_on_nonzero_exit(monkeypatch: pytest.MonkeyPatch
 
 def test_ensure_secrets_file_creates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import panopticon.core.dirs as dirs_mod
+
     monkeypatch.setattr(dirs_mod, "user_config_dir", lambda: tmp_path)
 
     # Returns the file's name (relative to the secrets dir), written under <config>/secrets/.
@@ -57,6 +58,7 @@ def test_ensure_secrets_file_creates(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
 def test_ensure_secrets_file_no_overwrite(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import panopticon.core.dirs as dirs_mod
+
     monkeypatch.setattr(dirs_mod, "user_config_dir", lambda: tmp_path)
 
     existing_content = "MY_EXISTING_SECRET=abc\n"
@@ -106,7 +108,9 @@ def test_setup_repo_creates_when_absent() -> None:
         def list_repos(self) -> list[dict[str, object]]:
             return [{"id": "unrelated", "git_url": "https://github.com/a/b.git"}]
 
-        def create_repo(self, repo_id: str, name: str, git_url: str, **kw: Any) -> dict[str, object]:
+        def create_repo(
+            self, repo_id: str, name: str, git_url: str, **kw: Any
+        ) -> dict[str, object]:
             created.update(repo_id=repo_id, name=name, git_url=git_url, **kw)
             return {}
 

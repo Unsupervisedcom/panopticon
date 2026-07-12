@@ -38,8 +38,31 @@ class _FakeRunner:
         self._running = running
         self._session = session
 
-    def spawn(self, task_id: str, *, env_file: str | None = None, workspace: str | None = None, image: str | None = None, docker_in_docker: bool = False, initial_prompt: str | None = None, turn: str | None = None, starting_model: str | None = None, progress: Callable[[LifecyclePhase], None] | None = None) -> str:
-        self.spawned.append({"task_id": task_id, "env_file": env_file, "workspace": workspace, "image": image, "docker_in_docker": docker_in_docker, "initial_prompt": initial_prompt, "turn": turn, "starting_model": starting_model})
+    def spawn(
+        self,
+        task_id: str,
+        *,
+        env_file: str | None = None,
+        workspace: str | None = None,
+        image: str | None = None,
+        docker_in_docker: bool = False,
+        initial_prompt: str | None = None,
+        turn: str | None = None,
+        starting_model: str | None = None,
+        progress: Callable[[LifecyclePhase], None] | None = None,
+    ) -> str:
+        self.spawned.append(
+            {
+                "task_id": task_id,
+                "env_file": env_file,
+                "workspace": workspace,
+                "image": image,
+                "docker_in_docker": docker_in_docker,
+                "initial_prompt": initial_prompt,
+                "turn": turn,
+                "starting_model": starting_model,
+            }
+        )
         if progress is not None:  # the real runner reports these two sub-steps
             progress(LifecyclePhase.STARTING)
             progress(LifecyclePhase.AWAITING)
@@ -82,7 +105,9 @@ class _FakeClient:
         holder = self._held_by.get(task_id)
         if holder not in (None, runner_id):
             request = httpx.Request("PUT", f"http://svc/tasks/{task_id}/claim")
-            raise httpx.HTTPStatusError("conflict", request=request, response=httpx.Response(409, request=request))
+            raise httpx.HTTPStatusError(
+                "conflict", request=request, response=httpx.Response(409, request=request)
+            )
         self._held_by[task_id] = runner_id
         self.claims.append((task_id, runner_id))
         return {"id": task_id, "claimed_by": runner_id}
@@ -93,7 +118,9 @@ class _FakeClient:
     def get_repo(self, repo_id: str) -> JsonObj:
         return self._repo
 
-    def report_lifecycle(self, task_id: str, runner_id: str, phase: str, detail: str | None = None) -> JsonObj:
+    def report_lifecycle(
+        self, task_id: str, runner_id: str, phase: str, detail: str | None = None
+    ) -> JsonObj:
         self.phases.append((task_id, phase, detail))
         return {"id": task_id}
 
@@ -108,9 +135,16 @@ class _FakeClient:
 
 def _spawner(client: object, runner: object, images: object = None) -> Spawner:
     cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
-    return Spawner(client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
-                   git=GitClones(run=_no_op_run), images=images or _FakeImageBuilder(),  # type: ignore[arg-type]
-                   makedirs=lambda _p: None)
+    return Spawner(
+        client,
+        runner,
+        runner_id="host-1",
+        cache=cache,
+        tasks_root="/tasks",  # type: ignore[arg-type]
+        git=GitClones(run=_no_op_run),
+        images=images or _FakeImageBuilder(),  # type: ignore[arg-type]
+        makedirs=lambda _p: None,
+    )
 
 
 _REPO: JsonObj = {"id": "r1", "git_url": "https://forge/r1.git", "env_file": "r1.env"}
@@ -118,7 +152,9 @@ _REPO: JsonObj = {"id": "r1", "git_url": "https://forge/r1.git", "env_file": "r1
 
 def test_spawn_one_claims_then_spawns_a_fresh_task() -> None:
     client, runner = _FakeClient(repo=_REPO), _FakeRunner()
-    cid = _spawner(client, runner).spawn_one({"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": None})
+    cid = _spawner(client, runner).spawn_one(
+        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": None}
+    )
     assert cid == "panopticon-t1"
     assert client.claims == [("t1", "host-1")]  # claimed for this host first
     assert runner.spawned[0]["workspace"] == "/tasks/t1"  # per-task clone mounted
@@ -130,8 +166,15 @@ def test_spawn_one_claims_then_spawns_a_fresh_task() -> None:
 def test_spawn_one_passes_initial_prompt_as_env_var() -> None:
     client, runner = _FakeClient(repo=_REPO), _FakeRunner()
     _spawner(client, runner).spawn_one(
-        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING",
-         "claimed_by": None, "memo": "build the thing", "initial_prompt": "review your plan"}
+        {
+            "id": "t1",
+            "repo_id": "r1",
+            "workflow": "spike",
+            "state": "PLANNING",
+            "claimed_by": None,
+            "memo": "build the thing",
+            "initial_prompt": "review your plan",
+        }
     )
     assert runner.spawned[0]["initial_prompt"] == "review your plan"
 
@@ -139,8 +182,14 @@ def test_spawn_one_passes_initial_prompt_as_env_var() -> None:
 def test_spawn_one_passes_turn_for_interrupt_prompt_on_respawn() -> None:
     client, runner = _FakeClient(repo=_REPO), _FakeRunner()
     _spawner(client, runner).spawn_one(
-        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING",
-         "claimed_by": None, "turn": "agent"}
+        {
+            "id": "t1",
+            "repo_id": "r1",
+            "workflow": "spike",
+            "state": "ITERATING",
+            "claimed_by": None,
+            "turn": "agent",
+        }
     )
     assert runner.spawned[0]["turn"] == "agent"
 
@@ -148,8 +197,14 @@ def test_spawn_one_passes_turn_for_interrupt_prompt_on_respawn() -> None:
 def test_spawn_one_passes_starting_model_to_runner() -> None:
     client, runner = _FakeClient(repo=_REPO), _FakeRunner()
     _spawner(client, runner).spawn_one(
-        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING",
-         "claimed_by": None, "starting_model": "opus"}
+        {
+            "id": "t1",
+            "repo_id": "r1",
+            "workflow": "spike",
+            "state": "ITERATING",
+            "claimed_by": None,
+            "starting_model": "opus",
+        }
     )
     assert runner.spawned[0]["starting_model"] == "opus"
 
@@ -170,7 +225,9 @@ class _FakeImageBuilder:
         self.built: list[tuple[str, str, list[str]]] = []
         self.base_checks: int = 0
 
-    def build(self, workflow: str, repo_id: str, layers: list[str], *, verbose: bool = False) -> str:
+    def build(
+        self, workflow: str, repo_id: str, layers: list[str], *, verbose: bool = False
+    ) -> str:
         self.built.append((workflow, repo_id, layers))
         return f"panopticon-{workflow}-{repo_id}"
 
@@ -180,31 +237,70 @@ class _FakeImageBuilder:
 
 
 def test_spawn_one_composes_the_workflow_image_when_it_has_a_layer() -> None:
-    client, runner = _FakeClient(repo=_REPO, image_layer="RUN apt-get install --yes gh"), _FakeRunner()
+    client, runner = (
+        _FakeClient(repo=_REPO, image_layer="RUN apt-get install --yes gh"),
+        _FakeRunner(),
+    )
     images = _FakeImageBuilder()
     cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
     spawner = Spawner(
-        client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
-        git=GitClones(run=_no_op_run), images=images, makedirs=lambda _p: None,  # type: ignore[arg-type]
+        client,
+        runner,
+        runner_id="host-1",
+        cache=cache,
+        tasks_root="/tasks",  # type: ignore[arg-type]
+        git=GitClones(run=_no_op_run),
+        images=images,
+        makedirs=lambda _p: None,  # type: ignore[arg-type]
     )
-    spawner.spawn_one({"id": "t1", "repo_id": "r1", "workflow": "github-peer-reviewed", "state": "PLANNING", "claimed_by": None})
-    assert images.built == [("github-peer-reviewed", "r1", ["RUN apt-get install --yes gh"])]  # composed base → layer
-    assert runner.spawned[0]["image"] == "panopticon-github-peer-reviewed-r1"  # spawned on the composed image
+    spawner.spawn_one(
+        {
+            "id": "t1",
+            "repo_id": "r1",
+            "workflow": "github-peer-reviewed",
+            "state": "PLANNING",
+            "claimed_by": None,
+        }
+    )
+    assert images.built == [
+        ("github-peer-reviewed", "r1", ["RUN apt-get install --yes gh"])
+    ]  # composed base → layer
+    assert (
+        runner.spawned[0]["image"] == "panopticon-github-peer-reviewed-r1"
+    )  # spawned on the composed image
 
 
 def test_spawn_one_composes_workflow_then_repo_layers() -> None:
     # base → workflow (gh) → repo (toolchain), in that order (ADR 0005 tiers). The repo layer is
     # fetched over REST (repo_image_layer), not read inline off the repo record.
     repo = {**_REPO, "image_layer_file": "r1.layer"}
-    client = _FakeClient(repo=repo, image_layer="RUN apt-get install --yes gh", repo_layer="RUN pip install uv")
+    client = _FakeClient(
+        repo=repo, image_layer="RUN apt-get install --yes gh", repo_layer="RUN pip install uv"
+    )
     runner, images = _FakeRunner(), _FakeImageBuilder()
     cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
     spawner = Spawner(
-        client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
-        git=GitClones(run=_no_op_run), images=images, makedirs=lambda _p: None,  # type: ignore[arg-type]
+        client,
+        runner,
+        runner_id="host-1",
+        cache=cache,
+        tasks_root="/tasks",  # type: ignore[arg-type]
+        git=GitClones(run=_no_op_run),
+        images=images,
+        makedirs=lambda _p: None,  # type: ignore[arg-type]
     )
-    spawner.spawn_one({"id": "t1", "repo_id": "r1", "workflow": "github-peer-reviewed", "state": "PLANNING", "claimed_by": None})
-    assert images.built == [("github-peer-reviewed", "r1", ["RUN apt-get install --yes gh", "RUN pip install uv"])]
+    spawner.spawn_one(
+        {
+            "id": "t1",
+            "repo_id": "r1",
+            "workflow": "github-peer-reviewed",
+            "state": "PLANNING",
+            "claimed_by": None,
+        }
+    )
+    assert images.built == [
+        ("github-peer-reviewed", "r1", ["RUN apt-get install --yes gh", "RUN pip install uv"])
+    ]
     assert runner.spawned[0]["image"] == "panopticon-github-peer-reviewed-r1"
 
 
@@ -223,7 +319,13 @@ def test_spawn_one_reports_the_phase_sequence() -> None:
         {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None}
     )
     # claiming → preparing → building (in spawn_one), then starting → awaiting (from the runner)
-    assert [p for _, p, _ in client.phases] == ["claiming", "preparing", "building", "starting", "awaiting"]
+    assert [p for _, p, _ in client.phases] == [
+        "claiming",
+        "preparing",
+        "building",
+        "starting",
+        "awaiting",
+    ]
     assert all(tid == "t1" for tid, _, _ in client.phases)
 
 
@@ -235,7 +337,13 @@ def test_spawn_one_reports_failed_with_the_error_when_a_step_raises() -> None:
     client = _FakeClient(repo=_REPO)
     with pytest.raises(RuntimeError):
         _spawner(client, _BoomRunner()).spawn_one(
-            {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None}
+            {
+                "id": "t1",
+                "repo_id": "r1",
+                "workflow": "spike",
+                "state": "PLANNING",
+                "claimed_by": None,
+            }
         )
     last_task, last_phase, last_detail = client.phases[-1]
     assert (last_task, last_phase) == ("t1", "failed")
@@ -262,9 +370,15 @@ def test_reconcile_leaves_a_still_running_container_alone() -> None:
 def test_reconcile_ignores_tasks_not_in_flight_or_not_ours() -> None:
     client, runner = _FakeClient(repo=_REPO), _FakeRunner(running=False)
     spawner = _spawner(client, runner)
-    spawner.reconcile({"id": "t1", "claimed_by": "host-1", "container_status": "live", "state": "ITERATING"})
-    spawner.reconcile({"id": "t2", "claimed_by": "host-1", "container_status": "failed", "state": "ITERATING"})
-    spawner.reconcile({"id": "t3", "claimed_by": "host-9", "container_status": "awaiting", "state": "ITERATING"})
+    spawner.reconcile(
+        {"id": "t1", "claimed_by": "host-1", "container_status": "live", "state": "ITERATING"}
+    )
+    spawner.reconcile(
+        {"id": "t2", "claimed_by": "host-1", "container_status": "failed", "state": "ITERATING"}
+    )
+    spawner.reconcile(
+        {"id": "t3", "claimed_by": "host-9", "container_status": "awaiting", "state": "ITERATING"}
+    )
     assert client.cleared == []  # live/failed are left as-is; t3 belongs to another runner
 
 
@@ -274,7 +388,13 @@ def test_heal_respawns_an_orphan_claimed_by_us_with_no_session() -> None:
     # via the idempotent spawn path (the runner docker-rm's any stale container + starts fresh).
     client, runner = _FakeClient(repo=_REPO), _FakeRunner(session=False)
     cid = _spawner(client, runner).heal(
-        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": "host-1"}
+        {
+            "id": "t1",
+            "repo_id": "r1",
+            "workflow": "spike",
+            "state": "ITERATING",
+            "claimed_by": "host-1",
+        }
     )
     assert cid == "panopticon-t1"
     assert [s["task_id"] for s in runner.spawned] == ["t1"]  # respawned
@@ -283,30 +403,76 @@ def test_heal_respawns_an_orphan_claimed_by_us_with_no_session() -> None:
 
 def test_heal_skips_a_task_whose_session_is_alive() -> None:
     client, runner = _FakeClient(repo=_REPO), _FakeRunner(session=True)
-    assert _spawner(client, runner).heal(
-        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": "host-1"}
-    ) is None
+    assert (
+        _spawner(client, runner).heal(
+            {
+                "id": "t1",
+                "repo_id": "r1",
+                "workflow": "spike",
+                "state": "ITERATING",
+                "claimed_by": "host-1",
+            }
+        )
+        is None
+    )
     assert runner.spawned == []  # reachable session (e.g. a runner-only restart) — left untouched
 
 
 def test_heal_skips_tasks_not_claimed_by_this_runner() -> None:
     client, runner = _FakeClient(repo=_REPO), _FakeRunner(session=False)
     spawner = _spawner(client, runner)
-    assert spawner.heal({"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": None}) is None
-    assert spawner.heal({"id": "t2", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": "host-9"}) is None
+    assert (
+        spawner.heal(
+            {
+                "id": "t1",
+                "repo_id": "r1",
+                "workflow": "spike",
+                "state": "ITERATING",
+                "claimed_by": None,
+            }
+        )
+        is None
+    )
+    assert (
+        spawner.heal(
+            {
+                "id": "t2",
+                "repo_id": "r1",
+                "workflow": "spike",
+                "state": "ITERATING",
+                "claimed_by": "host-9",
+            }
+        )
+        is None
+    )
     assert runner.spawned == []  # unclaimed → spawn_one's job; another host's → not ours
 
 
 def test_heal_skips_terminal_tasks() -> None:
     client, runner = _FakeClient(repo=_REPO), _FakeRunner(session=False)
-    assert _spawner(client, runner).heal(
-        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "COMPLETE", "claimed_by": "host-1"}
-    ) is None
+    assert (
+        _spawner(client, runner).heal(
+            {
+                "id": "t1",
+                "repo_id": "r1",
+                "workflow": "spike",
+                "state": "COMPLETE",
+                "claimed_by": "host-1",
+            }
+        )
+        is None
+    )
     assert runner.spawned == []  # done — nothing to keep alive
 
 
 def _orphan(task_id: str = "t1") -> JsonObj:
-    return {"id": task_id, "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": "host-1"}
+    return {
+        "id": task_id,
+        "repo_id": "r1",
+        "workflow": "spike",
+        "state": "ITERATING",
+        "claimed_by": "host-1",
+    }
 
 
 def test_heal_caps_respawns_then_surfaces_a_crash_looping_task() -> None:
@@ -315,15 +481,26 @@ def test_heal_caps_respawns_then_surfaces_a_crash_looping_task() -> None:
     clock = {"t": 0.0}
     client, runner = _FakeClient(repo=_REPO), _FakeRunner(session=False)
     spawner = Spawner(
-        client, runner, runner_id="host-1",  # type: ignore[arg-type]
-        cache=CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None), tasks_root="/tasks",
-        git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
-        makedirs=lambda _p: None, now=lambda: clock["t"], max_respawns=3, respawn_reset=60.0,
+        client,
+        runner,
+        runner_id="host-1",  # type: ignore[arg-type]
+        cache=CloneCache(
+            "/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None
+        ),
+        tasks_root="/tasks",
+        git=GitClones(run=_no_op_run),
+        images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        makedirs=lambda _p: None,
+        now=lambda: clock["t"],
+        max_respawns=3,
+        respawn_reset=60.0,
     )
     for _ in range(6):
         spawner.heal(_orphan())
         clock["t"] += 1.0  # rapid failures, well within the reset window
-    assert len(runner.spawned) == 3  # capped at max_respawns; further attempts are surfaced, not spawned
+    assert (
+        len(runner.spawned) == 3
+    )  # capped at max_respawns; further attempts are surfaced, not spawned
 
 
 def test_heal_resets_the_respawn_budget_after_a_survivor_window() -> None:
@@ -332,10 +509,19 @@ def test_heal_resets_the_respawn_budget_after_a_survivor_window() -> None:
     clock = {"t": 0.0}
     client, runner = _FakeClient(repo=_REPO), _FakeRunner(session=False)
     spawner = Spawner(
-        client, runner, runner_id="host-1",  # type: ignore[arg-type]
-        cache=CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None), tasks_root="/tasks",
-        git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
-        makedirs=lambda _p: None, now=lambda: clock["t"], max_respawns=2, respawn_reset=60.0,
+        client,
+        runner,
+        runner_id="host-1",  # type: ignore[arg-type]
+        cache=CloneCache(
+            "/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None
+        ),
+        tasks_root="/tasks",
+        git=GitClones(run=_no_op_run),
+        images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        makedirs=lambda _p: None,
+        now=lambda: clock["t"],
+        max_respawns=2,
+        respawn_reset=60.0,
     )
     spawner.heal(_orphan())  # respawn 1
     spawner.heal(_orphan())  # respawn 2 → budget now exhausted
@@ -358,10 +544,22 @@ def test_mark_healing_skips_healthy_unclaimed_and_terminal_tasks() -> None:
     client = _FakeClient(repo=_REPO)
     _spawner(client, _FakeRunner(session=True)).mark_healing(_orphan())  # session alive → reachable
     _spawner(client, _FakeRunner(session=False)).mark_healing(
-        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": "host-9"}
+        {
+            "id": "t1",
+            "repo_id": "r1",
+            "workflow": "spike",
+            "state": "ITERATING",
+            "claimed_by": "host-9",
+        }
     )  # another runner's
     _spawner(client, _FakeRunner(session=False)).mark_healing(
-        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "COMPLETE", "claimed_by": "host-1"}
+        {
+            "id": "t1",
+            "repo_id": "r1",
+            "workflow": "spike",
+            "state": "COMPLETE",
+            "claimed_by": "host-1",
+        }
     )  # terminal
     assert client.phases == []  # nothing to heal → nothing flagged
 
@@ -382,12 +580,22 @@ def test_mark_healing_skips_a_crash_looped_out_orphan() -> None:
     clock = {"t": 0.0}
     client, runner = _FakeClient(repo=_REPO), _FakeRunner(session=False)
     spawner = Spawner(
-        client, runner, runner_id="host-1",  # type: ignore[arg-type]
-        cache=CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None), tasks_root="/tasks",
-        git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
-        makedirs=lambda _p: None, now=lambda: clock["t"], max_respawns=2, respawn_reset=60.0,
+        client,
+        runner,
+        runner_id="host-1",  # type: ignore[arg-type]
+        cache=CloneCache(
+            "/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None
+        ),
+        tasks_root="/tasks",
+        git=GitClones(run=_no_op_run),
+        images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        makedirs=lambda _p: None,
+        now=lambda: clock["t"],
+        max_respawns=2,
+        respawn_reset=60.0,
     )
-    spawner.heal(_orphan()); spawner.heal(_orphan())  # exhaust the respawn budget
+    spawner.heal(_orphan())  # exhaust the respawn budget
+    spawner.heal(_orphan())
     client.phases.clear()
     spawner.mark_healing(_orphan())  # capped out → not flagged
     assert client.phases == []
@@ -399,8 +607,20 @@ def test_startup_reclaim_releases_our_claimed_tasks_whose_containers_are_gone() 
     client = _FakeClient(repo=_REPO)
     runner = _FakeRunner(running=False, session=False)
     tasks = [
-        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": "host-1"},
-        {"id": "t2", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": "host-1"},
+        {
+            "id": "t1",
+            "repo_id": "r1",
+            "workflow": "spike",
+            "state": "ITERATING",
+            "claimed_by": "host-1",
+        },
+        {
+            "id": "t2",
+            "repo_id": "r1",
+            "workflow": "spike",
+            "state": "ITERATING",
+            "claimed_by": "host-1",
+        },
     ]
     _spawner(client, runner).startup_reclaim(tasks)
     assert client.releases == ["t1", "t2"]
@@ -410,7 +630,15 @@ def test_startup_reclaim_keeps_claims_when_container_is_still_running() -> None:
     # Runner-only crash: the container survived → keep the claim so heal() resumes it.
     client = _FakeClient(repo=_REPO)
     runner = _FakeRunner(running=True, session=False)
-    tasks = [{"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": "host-1"}]
+    tasks = [
+        {
+            "id": "t1",
+            "repo_id": "r1",
+            "workflow": "spike",
+            "state": "ITERATING",
+            "claimed_by": "host-1",
+        }
+    ]
     _spawner(client, runner).startup_reclaim(tasks)
     assert client.releases == []
 
@@ -419,8 +647,20 @@ def test_startup_reclaim_skips_tasks_not_claimed_by_us() -> None:
     client = _FakeClient(repo=_REPO)
     runner = _FakeRunner(running=False, session=False)
     tasks = [
-        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": None},
-        {"id": "t2", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": "host-9"},
+        {
+            "id": "t1",
+            "repo_id": "r1",
+            "workflow": "spike",
+            "state": "ITERATING",
+            "claimed_by": None,
+        },
+        {
+            "id": "t2",
+            "repo_id": "r1",
+            "workflow": "spike",
+            "state": "ITERATING",
+            "claimed_by": "host-9",
+        },
     ]
     _spawner(client, runner).startup_reclaim(tasks)
     assert client.releases == []
@@ -429,7 +669,15 @@ def test_startup_reclaim_skips_tasks_not_claimed_by_us() -> None:
 def test_startup_reclaim_skips_terminal_tasks() -> None:
     client = _FakeClient(repo=_REPO)
     runner = _FakeRunner(running=False, session=False)
-    tasks = [{"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "COMPLETE", "claimed_by": "host-1"}]
+    tasks = [
+        {
+            "id": "t1",
+            "repo_id": "r1",
+            "workflow": "spike",
+            "state": "COMPLETE",
+            "claimed_by": "host-1",
+        }
+    ]
     _spawner(client, runner).startup_reclaim(tasks)
     assert client.releases == []
 
@@ -439,26 +687,49 @@ def test_startup_reclaim_ignores_release_errors() -> None:
     class _ErrorClient(_FakeClient):
         def release(self, task_id: str) -> JsonObj:
             request = httpx.Request("DELETE", f"http://svc/tasks/{task_id}/claim")
-            raise httpx.HTTPStatusError("gone", request=request, response=httpx.Response(500, request=request))
+            raise httpx.HTTPStatusError(
+                "gone", request=request, response=httpx.Response(500, request=request)
+            )
 
     client = _ErrorClient(repo=_REPO)
     runner = _FakeRunner(running=False, session=False)
-    tasks = [{"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": "host-1"}]
+    tasks = [
+        {
+            "id": "t1",
+            "repo_id": "r1",
+            "workflow": "spike",
+            "state": "ITERATING",
+            "claimed_by": "host-1",
+        }
+    ]
     _spawner(client, runner).startup_reclaim(tasks)  # must not raise
 
 
 def test_spawn_one_skips_terminal_and_already_claimed_tasks() -> None:
     client, runner = _FakeClient(repo=_REPO), _FakeRunner()
     spawner = _spawner(client, runner)
-    assert spawner.spawn_one({"id": "t1", "repo_id": "r1", "state": "COMPLETE", "claimed_by": None}) is None
-    assert spawner.spawn_one({"id": "t2", "repo_id": "r1", "state": "ITERATING", "claimed_by": "host-9"}) is None
+    assert (
+        spawner.spawn_one({"id": "t1", "repo_id": "r1", "state": "COMPLETE", "claimed_by": None})
+        is None
+    )
+    assert (
+        spawner.spawn_one(
+            {"id": "t2", "repo_id": "r1", "state": "ITERATING", "claimed_by": "host-9"}
+        )
+        is None
+    )
     assert client.claims == [] and runner.spawned == []
 
 
 def test_spawn_one_skips_when_another_runner_wins_the_claim() -> None:
     client, runner = _FakeClient(repo=_REPO), _FakeRunner()
     client.hold("t1", "host-2")  # another runner grabbed it between our snapshot and claim
-    assert _spawner(client, runner).spawn_one({"id": "t1", "repo_id": "r1", "state": "ITERATING", "claimed_by": None}) is None
+    assert (
+        _spawner(client, runner).spawn_one(
+            {"id": "t1", "repo_id": "r1", "state": "ITERATING", "claimed_by": None}
+        )
+        is None
+    )
     assert runner.spawned == []  # 409 → no spawn
 
 
@@ -484,11 +755,19 @@ def test_spawn_runs_repo_hook_with_correct_args() -> None:
     client, runner = _FakeClient(repo=repo), _FakeRunner()
     cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
     spawner = Spawner(
-        client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
-        git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
-        run_hook=_fake_hook, makedirs=lambda _p: None,
+        client,
+        runner,
+        runner_id="host-1",
+        cache=cache,
+        tasks_root="/tasks",  # type: ignore[arg-type]
+        git=GitClones(run=_no_op_run),
+        images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        run_hook=_fake_hook,
+        makedirs=lambda _p: None,
     )
-    spawner.spawn_one({"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None})
+    spawner.spawn_one(
+        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None}
+    )
     assert calls == [("/hooks/acme.sh", "t1", "acme/widgets", "/tasks/t1")]
     assert runner.spawned  # container still spawned after the hook
 
@@ -498,8 +777,13 @@ def _cleanup_spawner(runner: _FakeRunner, *, workspace_exists: bool) -> Spawner:
     client = _FakeClient(repo=_REPO)
     cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
     return Spawner(
-        client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
-        git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        client,
+        runner,
+        runner_id="host-1",
+        cache=cache,
+        tasks_root="/tasks",  # type: ignore[arg-type]
+        git=GitClones(run=_no_op_run),
+        images=_FakeImageBuilder(),  # type: ignore[arg-type]
         makedirs=lambda _p: None,
         exists=lambda _p: workspace_exists,
         rmtree=lambda _p: None,  # swapped out per test when we need to record calls
@@ -512,9 +796,16 @@ def test_cleanup_removes_workspace_when_terminal_and_container_gone() -> None:
     client = _FakeClient(repo=_REPO)
     cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
     spawner = Spawner(
-        client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
-        git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
-        makedirs=lambda _p: None, exists=lambda _p: True, rmtree=removed.append,
+        client,
+        runner,
+        runner_id="host-1",
+        cache=cache,
+        tasks_root="/tasks",  # type: ignore[arg-type]
+        git=GitClones(run=_no_op_run),
+        images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        makedirs=lambda _p: None,
+        exists=lambda _p: True,
+        rmtree=removed.append,
     )
     spawner.cleanup({"id": "t1", "state": "COMPLETE"})
     assert removed == ["/tasks/t1"]
@@ -526,9 +817,16 @@ def test_cleanup_waits_when_container_still_running() -> None:
     client = _FakeClient(repo=_REPO)
     cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
     spawner = Spawner(
-        client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
-        git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
-        makedirs=lambda _p: None, exists=lambda _p: True, rmtree=removed.append,
+        client,
+        runner,
+        runner_id="host-1",
+        cache=cache,
+        tasks_root="/tasks",  # type: ignore[arg-type]
+        git=GitClones(run=_no_op_run),
+        images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        makedirs=lambda _p: None,
+        exists=lambda _p: True,
+        rmtree=removed.append,
     )
     spawner.cleanup({"id": "t1", "state": "COMPLETE"})
     assert removed == []  # container still up — leave workspace alone
@@ -540,9 +838,16 @@ def test_cleanup_is_a_no_op_for_non_terminal_task() -> None:
     client = _FakeClient(repo=_REPO)
     cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
     spawner = Spawner(
-        client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
-        git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
-        makedirs=lambda _p: None, exists=lambda _p: True, rmtree=removed.append,
+        client,
+        runner,
+        runner_id="host-1",
+        cache=cache,
+        tasks_root="/tasks",  # type: ignore[arg-type]
+        git=GitClones(run=_no_op_run),
+        images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        makedirs=lambda _p: None,
+        exists=lambda _p: True,
+        rmtree=removed.append,
     )
     spawner.cleanup({"id": "t1", "state": "ITERATING"})
     assert removed == []  # live task — never touch its workspace
@@ -563,10 +868,17 @@ def test_cleanup_invokes_docker_cleanup_when_rmtree_fails() -> None:
     client = _FakeClient(repo=_REPO)
     cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
     spawner = Spawner(
-        client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
-        git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
-        makedirs=lambda _p: None, exists=lambda _p: True,
-        rmtree=rmtree_first_fails, docker_cleanup=docker_called.append,
+        client,
+        runner,
+        runner_id="host-1",
+        cache=cache,
+        tasks_root="/tasks",  # type: ignore[arg-type]
+        git=GitClones(run=_no_op_run),
+        images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        makedirs=lambda _p: None,
+        exists=lambda _p: True,
+        rmtree=rmtree_first_fails,
+        docker_cleanup=docker_called.append,
     )
     spawner.cleanup({"id": "t1", "state": "COMPLETE"})
     assert docker_called == ["/tasks/t1"]
@@ -581,12 +893,26 @@ def test_spawn_hook_failure_aborts_spawn() -> None:
     client, runner = _FakeClient(repo=repo), _FakeRunner()
     cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
     spawner = Spawner(
-        client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
-        git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
-        run_hook=_boom, makedirs=lambda _p: None,
+        client,
+        runner,
+        runner_id="host-1",
+        cache=cache,
+        tasks_root="/tasks",  # type: ignore[arg-type]
+        git=GitClones(run=_no_op_run),
+        images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        run_hook=_boom,
+        makedirs=lambda _p: None,
     )
     with pytest.raises(RuntimeError, match="hook exited 1"):
-        spawner.spawn_one({"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None})
+        spawner.spawn_one(
+            {
+                "id": "t1",
+                "repo_id": "r1",
+                "workflow": "spike",
+                "state": "PLANNING",
+                "claimed_by": None,
+            }
+        )
     assert not runner.spawned  # docker run was never called
     assert any(p == "failed" for _, p, _ in client.phases)  # reported as FAILED
 
@@ -597,11 +923,19 @@ def test_spawn_skips_hook_when_repo_has_no_hook_file() -> None:
     client, runner = _FakeClient(repo=repo), _FakeRunner()
     cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
     spawner = Spawner(
-        client, runner, runner_id="host-1", cache=cache, tasks_root="/tasks",  # type: ignore[arg-type]
-        git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
-        run_hook=lambda *a: calls.append(a), makedirs=lambda _p: None,
+        client,
+        runner,
+        runner_id="host-1",
+        cache=cache,
+        tasks_root="/tasks",  # type: ignore[arg-type]
+        git=GitClones(run=_no_op_run),
+        images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        run_hook=lambda *a: calls.append(a),
+        makedirs=lambda _p: None,
     )
-    spawner.spawn_one({"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None})
+    spawner.spawn_one(
+        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None}
+    )
     assert not calls  # hook never invoked
     assert runner.spawned  # container spawned normally
 
@@ -609,15 +943,23 @@ def test_spawn_skips_hook_when_repo_has_no_hook_file() -> None:
 def test_spawner_against_the_real_service(tmp_path: Path) -> None:
     service = TaskService(SqlAlchemyStore(), {"spike": Spike()}, FilesystemArtifactStore(tmp_path))
     asyncio.run(service.init())
-    asyncio.run(service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://forge/r1.git")))
+    asyncio.run(
+        service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://forge/r1.git"))
+    )
     with TestClient(create_app(service)) as http:
         client = TaskServiceClient(http)
         task_id = client.create_task("r1", "spike")["id"]
         runner = _FakeRunner()
         spawner = Spawner(
-            client, runner, runner_id="host-1",  # type: ignore[arg-type]
-            cache=CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None), tasks_root="/tasks",
-            git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
+            client,
+            runner,
+            runner_id="host-1",  # type: ignore[arg-type]
+            cache=CloneCache(
+                "/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None
+            ),
+            tasks_root="/tasks",
+            git=GitClones(run=_no_op_run),
+            images=_FakeImageBuilder(),  # type: ignore[arg-type]
             makedirs=lambda _p: None,
         )
         (task,) = spawnable_tasks(client)()  # the fresh task is spawnable

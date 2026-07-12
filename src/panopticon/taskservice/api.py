@@ -11,24 +11,29 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from panopticon.core.artifacts import ArtifactError
+from panopticon.core.models import Actor, LifecyclePhase, Repo, Status, Task
+from panopticon.core.store import AlreadyExists, NotFound, StoreError
+from panopticon.core.workflow import IllegalTransition, InvalidWorkflow, ResponsibilitiesNotMet
+from panopticon.taskservice.service import (
+    AlreadyClaimed,
+    NotAuthorized,
+    TaskService,
+    UnknownWorkflow,
+)
+
 #: How often the held ``/live`` stream emits a keepalive byte. This does **not** govern how fast
 #: death is noticed — disconnect is event-driven (Starlette cancels the stream the instant the
 #: client drops, so the registration is removed immediately). The keepalive only keeps idle
 #: proxies from closing the connection and gives the container a tick to notice a clean stop.
 LIVENESS_KEEPALIVE_SECONDS = 5.0
-
-from panopticon.core.artifacts import ArtifactError
-from panopticon.core.models import Actor, LifecyclePhase, Repo, Status, Task
-from panopticon.core.store import AlreadyExists, NotFound, StoreError
-from panopticon.core.workflow import IllegalTransition, InvalidWorkflow, ResponsibilitiesNotMet
-from panopticon.taskservice.service import AlreadyClaimed, NotAuthorized, TaskService, UnknownWorkflow
 
 # -- wire schemas -------------------------------------------------------------------
 
@@ -86,7 +91,9 @@ class TaskSummaryOut(BaseModel):
     provisioned: bool
     container_status: str = "–"
     lifecycle_detail: str | None = None
-    runner_host: str | None = None  # hostname the claiming runner registered with (M5: remote attach)
+    runner_host: str | None = (
+        None  # hostname the claiming runner registered with (M5: remote attach)
+    )
 
 
 class TaskOut(BaseModel):
@@ -98,7 +105,9 @@ class TaskOut(BaseModel):
     state: str
     turn: Actor
     blocked: bool
-    memo: str | None  # a brief one-line reminder of what the task is, collected at creation (shown in the summary)
+    memo: (
+        str | None
+    )  # a brief one-line reminder of what the task is, collected at creation (shown in the summary)
     initial_prompt: str | None  # optional text prefilled into Claude's input box on first spawn
     slug: str | None
     url: str | None  # an optional external URL (PR, issue, …); the dashboard's `p` hotkey opens it
@@ -106,19 +115,35 @@ class TaskOut(BaseModel):
     clone: str | None
     claimed_by: str | None  # the runner that owns this task (the spawn gate), or None
     tokens_used: int | None  # cost-weighted input-equivalent tokens used (None until reported)
-    token_estimate: int | None  # the agent's forecast of total tokens (set in planning; None until then)
-    starting_model: str | None = None  # the model seeded at creation from the workflow's default_model
-    governor_task_id: str | None = None  # the task that oversees this one, or None for ungoverned tasks
-    created_at: str | None = None  # ISO-8601 timestamp when the task was created; set once, never changed
-    updated_at: str | None = None  # ISO-8601 timestamp of the last mutation, stamped by the task service
-    depends_on_task_ids: list[str] = []  # task IDs that must complete before work on this task should begin
+    token_estimate: (
+        int | None
+    )  # the agent's forecast of total tokens (set in planning; None until then)
+    starting_model: str | None = (
+        None  # the model seeded at creation from the workflow's default_model
+    )
+    governor_task_id: str | None = (
+        None  # the task that oversees this one, or None for ungoverned tasks
+    )
+    created_at: str | None = (
+        None  # ISO-8601 timestamp when the task was created; set once, never changed
+    )
+    updated_at: str | None = (
+        None  # ISO-8601 timestamp of the last mutation, stamped by the task service
+    )
+    depends_on_task_ids: list[
+        str
+    ] = []  # task IDs that must complete before work on this task should begin
     provisioned: bool  # computed (Task.provisioned): branch + clone recorded
     #: The composed container-lifecycle status the dashboard displays (the task service folds the
     #: session service's reported phase with registration presence + runner liveness). Not a domain
     #: field — attached on serialization (see ``_task_out``), defaulted for the bare-validate path.
     container_status: str = "–"
-    lifecycle_detail: str | None = None  # the reported phase's detail, e.g. the build layers / failure
-    runner_host: str | None = None  # hostname the claiming runner registered with (M5: remote attach)
+    lifecycle_detail: str | None = (
+        None  # the reported phase's detail, e.g. the build layers / failure
+    )
+    runner_host: str | None = (
+        None  # hostname the claiming runner registered with (M5: remote attach)
+    )
     history: list[HistoryOut]
 
 
@@ -316,10 +341,8 @@ class ChangeFeed:
         if self._version() != since:
             return self._version()
         changed = self._changed  # capture before awaiting: notify() swaps in a fresh event
-        try:
+        with suppress(TimeoutError):
             await asyncio.wait_for(changed.wait(), timeout)
-        except (TimeoutError, asyncio.TimeoutError):
-            pass
         return self._version()
 
 
@@ -582,7 +605,9 @@ def create_app(service: TaskService) -> FastAPI:
 
     @app.put("/tasks/{task_id}/token-estimate")
     async def set_token_estimate(task_id: str, body: TokenEstimateIn) -> TaskOut:
-        return TaskOut.model_validate(await service.set_token_estimate(task_id, body.token_estimate))
+        return TaskOut.model_validate(
+            await service.set_token_estimate(task_id, body.token_estimate)
+        )
 
     @app.put("/tasks/{task_id}/turn")
     async def set_turn(task_id: str, body: TurnIn) -> TaskOut:
@@ -621,9 +646,7 @@ def create_app(service: TaskService) -> FastAPI:
     @app.put("/tasks/{task_id}/provisioning")
     async def record_provisioning(task_id: str, body: ProvisioningIn) -> TaskOut:
         try:  # the session service reports the host branch + per-task clone it created (ADR 0011)
-            task = await service.record_provisioning(
-                task_id, branch=body.branch, clone=body.clone
-            )
+            task = await service.record_provisioning(task_id, branch=body.branch, clone=body.clone)
         except ValueError as exc:  # slug not set yet
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return _task_out(task)

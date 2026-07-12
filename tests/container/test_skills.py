@@ -9,7 +9,9 @@ from panopticon.core.models import Skill
 
 
 def test_render_command_is_frontmatter_plus_procedure_with_task_id() -> None:
-    skill = Skill(name="babysit-ci", description="Watch CI and fix failures.", instructions="Do X, then Y.")
+    skill = Skill(
+        name="babysit-ci", description="Watch CI and fix failures.", instructions="Do X, then Y."
+    )
     body = render_command(skill, "t-1")
     assert body.startswith("---\ndescription: Watch CI and fix failures.\n---\nDo X, then Y.\n")
     assert 'task_id="t-1"' in body  # the concrete task id is injected for MCP tool calls

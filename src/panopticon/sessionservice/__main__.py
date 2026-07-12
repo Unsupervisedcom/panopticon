@@ -52,12 +52,16 @@ def main(
 
     # Spawn-prep (ADR 0011): give the task a writable per-task clone, mounted at /workspace.
     workspace = prepare_workspace(
-        args.task_id, repo,
-        cache=CloneCache(CLONE_CACHE_DIR, run=run), tasks_root=TASKS_DIR, git=GitClones(run=run),
+        args.task_id,
+        repo,
+        cache=CloneCache(CLONE_CACHE_DIR, run=run),
+        tasks_root=TASKS_DIR,
+        git=GitClones(run=run),
     )
     container_id = LocalRunner(args.service_url, image=args.image, run=run).spawn(
         args.task_id,
-        env_file=repo.get("env_file"), workspace=workspace,
+        env_file=repo.get("env_file"),
+        workspace=workspace,
     )
     print(container_id)
     return container_id

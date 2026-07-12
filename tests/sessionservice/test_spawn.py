@@ -26,17 +26,30 @@ _REPO = {"id": "r1", "git_url": "https://forge/r1.git"}
 
 def test_prepare_clones_the_cache_then_the_per_task_checkout() -> None:
     calls, run = _recording_runner()
-    cache = CloneCache("/cache", run=run, exists=lambda _p: False, makedirs=lambda _p: None)  # cache absent → clone
+    cache = CloneCache(
+        "/cache", run=run, exists=lambda _p: False, makedirs=lambda _p: None
+    )  # cache absent → clone
 
     clone = prepare_workspace(
-        "t1", _REPO, cache=cache, tasks_root="/tasks", git=GitClones(run=run),
-        exists=lambda _p: False, makedirs=lambda _p: None,
+        "t1",
+        _REPO,
+        cache=cache,
+        tasks_root="/tasks",
+        git=GitClones(run=run),
+        exists=lambda _p: False,
+        makedirs=lambda _p: None,
     )
 
     assert clone == "/tasks/t1"
     assert calls == [
         ["git", "clone", "https://forge/r1.git", "/cache/r1"],  # ensure the repo's cache clone…
-        ["git", "clone", "--local", "/cache/r1", "/tasks/t1"],  # …then the self-contained per-task clone
+        [
+            "git",
+            "clone",
+            "--local",
+            "/cache/r1",
+            "/tasks/t1",
+        ],  # …then the self-contained per-task clone
         # …then point origin at the forge (the git_url, verbatim) — not the cache path, which the
         # container can't push to and gh can't resolve (it would fork to the token's own account)
         ["git", "-C", "/tasks/t1", "remote", "set-url", "origin", "https://forge/r1.git"],
@@ -48,14 +61,21 @@ def test_prepare_is_idempotent_but_still_asserts_origin_when_the_checkout_exists
     cache = CloneCache("/cache", run=run, exists=lambda _p: True, makedirs=lambda _p: None)
 
     clone = prepare_workspace(
-        "t1", _REPO, cache=cache, tasks_root="/tasks", git=GitClones(run=run),
-        exists=lambda _p: True, makedirs=lambda _p: None,
+        "t1",
+        _REPO,
+        cache=cache,
+        tasks_root="/tasks",
+        git=GitClones(run=run),
+        exists=lambda _p: True,
+        makedirs=lambda _p: None,
     )
 
     assert clone == "/tasks/t1"
     # checkout already there (e.g. container re-creation) — no clone/fetch, but origin is re-asserted
     # (idempotent set-url), which also repoints a clone left over from before this fix
-    assert calls == [["git", "-C", "/tasks/t1", "remote", "set-url", "origin", "https://forge/r1.git"]]
+    assert calls == [
+        ["git", "-C", "/tasks/t1", "remote", "set-url", "origin", "https://forge/r1.git"]
+    ]
 
 
 def test_prepare_uses_the_git_url_verbatim_as_origin() -> None:
@@ -66,8 +86,13 @@ def test_prepare_uses_the_git_url_verbatim_as_origin() -> None:
     cache = CloneCache("/cache", run=run, exists=lambda _p: True, makedirs=lambda _p: None)
 
     prepare_workspace(
-        "t1", repo, cache=cache, tasks_root="/tasks", git=GitClones(run=run),
-        exists=lambda _p: True, makedirs=lambda _p: None,
+        "t1",
+        repo,
+        cache=cache,
+        tasks_root="/tasks",
+        git=GitClones(run=run),
+        exists=lambda _p: True,
+        makedirs=lambda _p: None,
     )
 
     assert calls == [
@@ -82,7 +107,10 @@ def test_prepare_creates_tasks_root_before_cloning(tmp_path: Path) -> None:
 
     cache = CloneCache(str(tmp_path / "cache"), run=lambda *_a, **_kw: "", exists=lambda _p: False)
     prepare_workspace(
-        "t1", _REPO, cache=cache, tasks_root=str(tasks_root),
+        "t1",
+        _REPO,
+        cache=cache,
+        tasks_root=str(tasks_root),
         git=GitClones(run=lambda *_a, **_kw: ""),
         exists=lambda _p: False,
         makedirs=lambda p: (created.append(p), Path(p).mkdir(parents=True, exist_ok=True)),  # type: ignore[func-returns-value]
@@ -114,7 +142,8 @@ def test_cleanup_quarantines_a_checkout_it_cannot_delete() -> None:
     # error propagating, so the host pass doesn't refail on it every tick.
     renamed: list[tuple[str, str]] = []
     cleanup_workspace(
-        "t1", "/tasks",
+        "t1",
+        "/tasks",
         exists=lambda _p: True,
         rmtree=_raise_permission_denied,
         rename=lambda src, dst: renamed.append((src, dst)),
@@ -129,7 +158,8 @@ def test_cleanup_swallows_a_failed_quarantine() -> None:
         raise OSError("target exists")
 
     cleanup_workspace(
-        "t1", "/tasks",
+        "t1",
+        "/tasks",
         exists=lambda _p: True,
         rmtree=_raise_permission_denied,
         rename=rename_fails,
@@ -150,7 +180,8 @@ def test_cleanup_uses_docker_to_scrub_root_owned_files() -> None:
 
     renamed: list[tuple[str, str]] = []
     cleanup_workspace(
-        "t1", "/tasks",
+        "t1",
+        "/tasks",
         exists=lambda _p: True,
         rmtree=rmtree_first_fails_then_succeeds,
         docker_cleanup=docker_called.append,
@@ -168,7 +199,8 @@ def test_cleanup_quarantines_when_docker_cleanup_also_fails() -> None:
 
     renamed: list[tuple[str, str]] = []
     cleanup_workspace(
-        "t1", "/tasks",
+        "t1",
+        "/tasks",
         exists=lambda _p: True,
         rmtree=_raise_permission_denied,
         docker_cleanup=docker_cleanup_fails,

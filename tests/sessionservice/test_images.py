@@ -36,7 +36,9 @@ class _BuildRecorder:
 
 def test_build_composes_and_runs_docker_build() -> None:
     rec = _BuildRecorder()
-    tag = ImageBuilder(base="panopticon-base", run=rec).build("github-peer-reviewed", "r1", ["RUN x"])
+    tag = ImageBuilder(base="panopticon-base", run=rec).build(
+        "github-peer-reviewed", "r1", ["RUN x"]
+    )
     assert tag == "panopticon-github-peer-reviewed-r1"
     assert rec.cmd[:4] == ["docker", "build", "--tag", "panopticon-github-peer-reviewed-r1"]
     assert rec.dockerfile.startswith("FROM panopticon-base") and "RUN x" in rec.dockerfile

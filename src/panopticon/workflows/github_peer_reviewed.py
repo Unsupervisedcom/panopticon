@@ -62,10 +62,15 @@ class GithubPeerReviewed(GithubForgeWorkflow):
         )
         responsibilities = (
             Responsibility(key="plan-implemented", description="The plan is implemented in code."),
-            Responsibility(key="requests-implemented", description="All user requests are implemented in code."),
+            Responsibility(
+                key="requests-implemented", description="All user requests are implemented in code."
+            ),
             Responsibility(key="tests-pass", description="New and relevant tests pass locally."),
             Responsibility(key="committed-pushed", description="Changes are committed and pushed."),
-            Responsibility(key="ci-passing", description="CI tests are passing, or any failures are irrelevant flakes."),
+            Responsibility(
+                key="ci-passing",
+                description="CI tests are passing, or any failures are irrelevant flakes.",
+            ),
             Responsibility(
                 key="pr-updated",
                 description="The PR title and description reflect the final change, with no Test Plan / Verification section.",
@@ -86,9 +91,7 @@ class GithubPeerReviewed(GithubForgeWorkflow):
         label = "MERGING"
         description = "Add the PR to the merge queue. If the PR exits the merge queue, re-add it."
         advanced_by = Actor.AGENT  # background: the agent shepherds the merge and advances itself
-        responsibilities = (
-            Responsibility(key="pr-merged", description="The PR is merged."),
-        )
+        responsibilities = (Responsibility(key="pr-merged", description="The PR is merged."),)
         transitions = (Complete,)  # the happy path; `advance` derives → COMPLETE
 
     initial = Planning

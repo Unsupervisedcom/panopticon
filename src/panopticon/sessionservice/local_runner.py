@@ -56,15 +56,25 @@ class CommandRunner(Protocol):
     hang. ``verbose`` also inherits the caller's streams but is for non-interactive commands whose
     output should be visible in the runner's tmux session (e.g. ``docker build``)."""
 
-    def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False, verbose: bool = False) -> str: ...
+    def __call__(
+        self,
+        args: Sequence[str],
+        *,
+        check: bool = True,
+        interactive: bool = False,
+        verbose: bool = False,
+    ) -> str: ...
 
 
-def _subprocess_run(args: Sequence[str], *, check: bool = True, interactive: bool = False, verbose: bool = False) -> str:
-    if interactive or verbose:  # inherit streams: TTY attachment (interactive) or visible build output (verbose)
+def _subprocess_run(
+    args: Sequence[str], *, check: bool = True, interactive: bool = False, verbose: bool = False
+) -> str:
+    if (
+        interactive or verbose
+    ):  # inherit streams: TTY attachment (interactive) or visible build output (verbose)
         subprocess.run(list(args), check=check)
         return ""
     return subprocess.run(list(args), check=check, capture_output=True, text=True).stdout
-
 
 
 def _invoking_user() -> str:
@@ -146,6 +156,7 @@ class LocalRunner(Runner):
         phase the runner passes through (``STARTING`` before ``docker run``, ``AWAITING`` once the
         tmux session is up) so the caller can surface it — see
         :class:`~panopticon.core.models.LifecyclePhase`."""
+
         def _report(phase: LifecyclePhase) -> None:
             if progress is not None:
                 progress(phase)
@@ -173,25 +184,39 @@ class LocalRunner(Runner):
         if starting_model:
             env["PANOPTICON_STARTING_MODEL"] = starting_model
         docker_run = [
-            "docker", "run", "--detach",
-            "--name", container,
-            "--label", f"panopticon.task={task_id}",
-            "--add-host", HOST_GATEWAY,
+            "docker",
+            "run",
+            "--detach",
+            "--name",
+            container,
+            "--label",
+            f"panopticon.task={task_id}",
+            "--add-host",
+            HOST_GATEWAY,
         ]
-        if docker_in_docker:  # privileged nested Docker daemon (repo capability); entrypoint starts it
+        if (
+            docker_in_docker
+        ):  # privileged nested Docker daemon (repo capability); entrypoint starts it
             docker_run.append("--privileged")
             docker_run += ["--volume", f"panopticon-dind-{task_id}:/var/lib/docker"]
             env["PANOPTICON_DOCKER_IN_DOCKER"] = "1"
         if env_path := secrets_file_path(env_file, secrets_dir=self._secrets_dir):
             docker_run += ["--env-file", env_path]  # per-repo secrets, resolved host-locally
         if workspace:  # the per-task clone — the agent's writable working dir (ADR 0011)
-            docker_run += ["--volume", f"{workspace}:{WORKSPACE_MOUNT}", "--workdir", WORKSPACE_MOUNT]
+            docker_run += [
+                "--volume",
+                f"{workspace}:{WORKSPACE_MOUNT}",
+                "--workdir",
+                WORKSPACE_MOUNT,
+            ]
         # Per-task config volume: persists claude's session history across respawn/recreate (the
         # transcripts live in the config dir, which is otherwise thrown away with the container).
         docker_run += ["--volume", f"panopticon-config-{task_id}:{CONFIG_MOUNT}"]
         for key, value in env.items():
             docker_run += ["--env", f"{key}={value}"]
-        docker_run.append(image or self._image)  # composed image if given, else base; its entrypoint runs
+        docker_run.append(
+            image or self._image
+        )  # composed image if given, else base; its entrypoint runs
         # Clear any stale tmux session + container first — handles both a prior exited run and a
         # live force-respawn (dashboard `R` kills and restarts). Both are no-ops when nothing
         # exists, so spawn is fully idempotent. (`stop()` does the same pair.)
@@ -204,9 +229,18 @@ class LocalRunner(Runner):
         # the agent's `whoami` see that named user, not root.
         self._run(
             self._tmux(
-                "new-session", "-d", "-s", container,
-                "docker", "exec", "--interactive", "--tty", "--user", CONTAINER_USER,
-                container, *self._agent_command,
+                "new-session",
+                "-d",
+                "-s",
+                container,
+                "docker",
+                "exec",
+                "--interactive",
+                "--tty",
+                "--user",
+                CONTAINER_USER,
+                container,
+                *self._agent_command,
             )
         )
         _report(LifecyclePhase.AWAITING)  # container + tmux up; waiting for its /live registration
@@ -253,13 +287,20 @@ class LocalRunner(Runner):
         it, so the daemon can then ``rmtree`` the now-empty directory. Overrides the
         panopticon entrypoint (which would remap uid) so the container runs as root and can
         reach files it created. Raises on nonzero docker exit."""
-        self._run([
-            "docker", "run", "--rm",
-            "--entrypoint", "/bin/sh",
-            "--volume", f"{path}:/cleanup",
-            self._image,
-            "-c", "find /cleanup -mindepth 1 -delete",
-        ])
+        self._run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--entrypoint",
+                "/bin/sh",
+                "--volume",
+                f"{path}:/cleanup",
+                self._image,
+                "-c",
+                "find /cleanup -mindepth 1 -delete",
+            ]
+        )
 
     def stop(self, container_id: str) -> None:
         # Idempotent: tolerate an already-gone session/container.

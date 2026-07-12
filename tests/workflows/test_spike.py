@@ -13,7 +13,9 @@ WF = Spike()
 def test_starts_iterating_with_user_turn() -> None:
     task = WF.start_task("t1", "r1", at="2026-06-12T00:00:00Z")
     assert task.state == "ITERATING"
-    assert task.turn is Actor.USER  # initial state → the agent waits for the user's first instruction
+    assert (
+        task.turn is Actor.USER
+    )  # initial state → the agent waits for the user's first instruction
     assert task.workflow == "spike"
     assert [h.to_state for h in task.history] == ["ITERATING"]
 

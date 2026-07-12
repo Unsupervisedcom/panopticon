@@ -14,8 +14,8 @@ from panopticon.core.state import Complete, InitialState
 from panopticon.core.workflow import Workflow
 from panopticon.taskservice.api import create_app
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
-from panopticon.taskservice.store_sqlalchemy import SqlAlchemyStore
 from panopticon.taskservice.service import TaskService
+from panopticon.taskservice.store_sqlalchemy import SqlAlchemyStore
 from panopticon.workflows import Spike
 
 
@@ -54,7 +54,12 @@ def _new_task(client: TestClient) -> str:
 def test_health_and_workflows(client: TestClient) -> None:
     assert client.get("/healthz").json() == {"status": "ok"}
     assert client.get("/workflows").json() == [
-        {"name": "spike", "when_to_use": Spike().when_to_use, "auto_submit_memo": False, "opt_in": False}
+        {
+            "name": "spike",
+            "when_to_use": Spike().when_to_use,
+            "auto_submit_memo": False,
+            "opt_in": False,
+        }
     ]
 
 
@@ -67,10 +72,19 @@ def test_repo_workflows_endpoint_filters_by_opt_in(tmp_path: Path) -> None:
         FilesystemArtifactStore(tmp_path),
     )
     import asyncio
+
     asyncio.run(svc.init())
     asyncio.run(svc.create_repo(Repo(id="r1", name="acme", git_url="https://x/r1.git")))
-    asyncio.run(svc.create_repo(Repo(id="r2", name="acme2", git_url="https://x/r2.git",
-                                     enabled_workflows=["github-self-reviewed"])))
+    asyncio.run(
+        svc.create_repo(
+            Repo(
+                id="r2",
+                name="acme2",
+                git_url="https://x/r2.git",
+                enabled_workflows=["github-self-reviewed"],
+            )
+        )
+    )
 
     with TestClient(create_app(svc)) as c:
         # r1: no enabled_workflows → opt-out only (spike); opt-in github-self-reviewed hidden
@@ -92,9 +106,15 @@ def test_workflow_image_layer_endpoint(client: TestClient) -> None:
 def test_workflow_image_layer_surfaces_github_peer_revieweds_gh_layer(tmp_path: Path) -> None:
     from panopticon.workflows import GithubPeerReviewed
 
-    svc = TaskService(SqlAlchemyStore(), {"github-peer-reviewed": GithubPeerReviewed()}, FilesystemArtifactStore(tmp_path))
+    svc = TaskService(
+        SqlAlchemyStore(),
+        {"github-peer-reviewed": GithubPeerReviewed()},
+        FilesystemArtifactStore(tmp_path),
+    )
     with TestClient(create_app(svc)) as c:
-        assert "gh" in c.get("/workflows/github-peer-reviewed/image-layer").json()["layer"]  # forge skills need gh
+        assert (
+            "gh" in c.get("/workflows/github-peer-reviewed/image-layer").json()["layer"]
+        )  # forge skills need gh
 
 
 def _repo_layer_client(tmp_path: Path, *, image_layer_file: str | None) -> TestClient:
@@ -104,11 +124,19 @@ def _repo_layer_client(tmp_path: Path, *, image_layer_file: str | None) -> TestC
     layers.mkdir()
     (layers / "r1.layer").write_text("RUN pip install uv")
     svc = TaskService(
-        SqlAlchemyStore(), {"spike": Spike()}, FilesystemArtifactStore(tmp_path / "artifacts"),
+        SqlAlchemyStore(),
+        {"spike": Spike()},
+        FilesystemArtifactStore(tmp_path / "artifacts"),
         layers=FilesystemLayerStore(layers),
     )
     asyncio.run(svc.init())
-    asyncio.run(svc.create_repo(Repo(id="r1", name="acme", git_url="https://x/r1.git", image_layer_file=image_layer_file)))
+    asyncio.run(
+        svc.create_repo(
+            Repo(
+                id="r1", name="acme", git_url="https://x/r1.git", image_layer_file=image_layer_file
+            )
+        )
+    )
     return TestClient(create_app(svc))
 
 
@@ -188,7 +216,10 @@ def test_list_legal_transitions(client: TestClient) -> None:
 def test_list_and_apply_operations(client: TestClient) -> None:
     task_id = _new_task(client)  # spike ITERATING
     ops = client.get(f"/tasks/{task_id}/operations")
-    assert ops.json() == {"advance": "COMPLETE", "drop": "DROPPED"}  # advance derived, drop implicit
+    assert ops.json() == {
+        "advance": "COMPLETE",
+        "drop": "DROPPED",
+    }  # advance derived, drop implicit
 
     advanced = client.post(f"/tasks/{task_id}/operations/advance")
     assert advanced.status_code == 200
@@ -204,7 +235,11 @@ def test_apply_unavailable_operation_409(client: TestClient) -> None:
 
 def test_list_states(client: TestClient) -> None:
     task_id = _new_task(client)
-    assert set(client.get(f"/tasks/{task_id}/states").json()) == {"ITERATING", "COMPLETE", "DROPPED"}
+    assert set(client.get(f"/tasks/{task_id}/states").json()) == {
+        "ITERATING",
+        "COMPLETE",
+        "DROPPED",
+    }
 
 
 def test_list_skills_is_just_provision_for_a_forgeless_workflow(client: TestClient) -> None:
@@ -229,7 +264,9 @@ def test_workflow_overview_maps_the_workflow(client: TestClient) -> None:
 
 def test_legal_transition(client: TestClient) -> None:
     task_id = _new_task(client)
-    resp = client.post(f"/tasks/{task_id}/transition", json={"to_state": "COMPLETE", "trigger": "finish"})
+    resp = client.post(
+        f"/tasks/{task_id}/transition", json={"to_state": "COMPLETE", "trigger": "finish"}
+    )
     assert resp.status_code == 200
     assert resp.json()["state"] == "COMPLETE"
 
@@ -270,7 +307,10 @@ def test_claim_release_over_rest(client: TestClient) -> None:
 
     # release frees it; another runner can then claim
     assert client.delete(f"/tasks/{task_id}/claim").json()["claimed_by"] is None
-    assert client.put(f"/tasks/{task_id}/claim", json={"runner_id": "host-2"}).json()["claimed_by"] == "host-2"
+    assert (
+        client.put(f"/tasks/{task_id}/claim", json={"runner_id": "host-2"}).json()["claimed_by"]
+        == "host-2"
+    )
 
 
 # -- artifacts ----------------------------------------------------------------------
@@ -328,7 +368,10 @@ def gated_client(tmp_path: Path) -> Iterator[TestClient]:
 def test_set_state_bypasses_the_gate(gated_client: TestClient) -> None:
     task_id = gated_client.post("/tasks", json={"repo_id": "r1", "workflow": "gated"}).json()["id"]
     # The declared transition is gated (409); the user's free state-set overrides it.
-    assert gated_client.post(f"/tasks/{task_id}/transition", json={"to_state": "COMPLETE"}).status_code == 409
+    assert (
+        gated_client.post(f"/tasks/{task_id}/transition", json={"to_state": "COMPLETE"}).status_code
+        == 409
+    )
     forced = gated_client.put(f"/tasks/{task_id}/state", json={"state": "COMPLETE"})
     assert forced.status_code == 200
     assert forced.json()["state"] == "COMPLETE"

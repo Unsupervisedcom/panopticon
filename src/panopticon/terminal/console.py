@@ -40,6 +40,7 @@ SERVICE_SESSION = "service"
 #: tmux session name the session-service runner runs in under `make start`.
 RUNNER_SESSION = "runner"
 
+
 def switch_file_path(socket: str) -> Path:
     """The supervisor↔dashboard switch-file, **deterministic per socket**.
 
@@ -83,9 +84,12 @@ def switch_to(
 
 def session_exists(session: str, *, socket: str = TMUX_SOCKET) -> bool:
     """Whether the named tmux session is running on the panopticon socket."""
-    return subprocess.run(
-        ["tmux", "-L", socket, "has-session", "-t", session], capture_output=True
-    ).returncode == 0
+    return (
+        subprocess.run(
+            ["tmux", "-L", socket, "has-session", "-t", session], capture_output=True
+        ).returncode
+        == 0
+    )
 
 
 def make_session_switch(
@@ -118,7 +122,9 @@ def make_service_switch(
     detach: Callable[[], None] = _tmux_detach,
 ) -> Callable[[], bool]:
     """Build the dashboard's `s` hook: switch to the task-service session when one exists."""
-    return make_session_switch(SERVICE_SESSION, switch_file, socket=socket, exists=exists, detach=detach)
+    return make_session_switch(
+        SERVICE_SESSION, switch_file, socket=socket, exists=exists, detach=detach
+    )
 
 
 def make_runner_switch(
@@ -129,7 +135,9 @@ def make_runner_switch(
     detach: Callable[[], None] = _tmux_detach,
 ) -> Callable[[], bool]:
     """Build the dashboard's `u` hook: switch to the session-service (runner) session when one exists."""
-    return make_session_switch(RUNNER_SESSION, switch_file, socket=socket, exists=exists, detach=detach)
+    return make_session_switch(
+        RUNNER_SESSION, switch_file, socket=socket, exists=exists, detach=detach
+    )
 
 
 def _service_ready(service_url: str) -> bool:
@@ -180,9 +188,14 @@ def run_console_local(service_url: str, *, socket: str = TMUX_SOCKET) -> None:
     switch_file = switch_file_path(socket)
     switch_file.parent.mkdir(parents=True, exist_ok=True)
     dashboard = [
-        sys.executable, "-m", "panopticon.terminal",
-        "--service-url", service_url,
-        "dashboard", "--switch-file", str(switch_file),
+        sys.executable,
+        "-m",
+        "panopticon.terminal",
+        "--service-url",
+        service_url,
+        "dashboard",
+        "--switch-file",
+        str(switch_file),
     ]
 
     def _tmux(*args: str) -> subprocess.CompletedProcess[bytes]:
@@ -191,7 +204,9 @@ def run_console_local(service_url: str, *, socket: str = TMUX_SOCKET) -> None:
     def show_dashboard() -> str | None:
         switch_file.write_text("")  # clear last round's pick
         if _tmux("has-session", "-t", DASHBOARD_SESSION).returncode != 0:
-            _tmux("new-session", "-d", "-s", DASHBOARD_SESSION, *dashboard)  # start it once, detached
+            _tmux(
+                "new-session", "-d", "-s", DASHBOARD_SESSION, *dashboard
+            )  # start it once, detached
         _tmux("attach", "-t", DASHBOARD_SESSION)  # blocks until `t` detaches (or `q` ends it)
         return switch_file.read_text().strip() or None
 

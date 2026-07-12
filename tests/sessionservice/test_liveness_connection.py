@@ -78,7 +78,9 @@ def test_live_connection_registers_on_connect_and_reaps_on_disconnect(
 
     # Dropping the connection (a dying container) reaps the registration immediately — no TTL.
     conn.close()
-    assert _wait_until(lambda: not service.registrations(task_id)), "registration not reaped on drop"
+    assert _wait_until(lambda: not service.registrations(task_id)), (
+        "registration not reaped on drop"
+    )
 
 
 def test_reconnect_re_registers_after_a_drop(served: tuple[TaskService, str]) -> None:
@@ -95,6 +97,8 @@ def test_reconnect_re_registers_after_a_drop(served: tuple[TaskService, str]) ->
     # A transient blip self-heals: re-opening the connection produces a fresh live registration.
     second = client.live(task_id, container_id="c-live")
     next(second)
-    assert _wait_until(lambda: bool(service.registrations(task_id))), "did not re-register on reconnect"
+    assert _wait_until(lambda: bool(service.registrations(task_id))), (
+        "did not re-register on reconnect"
+    )
     second.close()
     assert _wait_until(lambda: not service.registrations(task_id))

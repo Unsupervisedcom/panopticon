@@ -91,11 +91,11 @@ def wait_for_service(service_url: str, *, timeout: int = 30) -> None:
         try:
             _httpx.get(f"{service_url}/tasks", timeout=1.0).raise_for_status()
             return
-        except Exception:
+        except Exception as err:
             if time.monotonic() >= deadline:
                 raise RuntimeError(
                     f"Task service at {service_url} did not respond within {timeout}s"
-                )
+                ) from err
             time.sleep(1.0)
 
 

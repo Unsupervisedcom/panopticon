@@ -100,8 +100,12 @@ def test_bare_flip_is_a_pure_turn_change_with_no_side_effects(
 
 def test_hook_rejects_unknown_event() -> None:
     assert hook.main(["nonsense"], client=_FakeClient()) == 2  # type: ignore[arg-type]
-    assert hook.main(["user", "bogus"], client=_FakeClient()) == 2  # bad event arg  # type: ignore[arg-type]
-    assert hook.main(["user", "prompt", "extra"], client=_FakeClient()) == 2  # too many args  # type: ignore[arg-type]
+    assert (
+        hook.main(["user", "bogus"], client=_FakeClient()) == 2
+    )  # bad event arg  # type: ignore[arg-type]
+    assert (
+        hook.main(["user", "prompt", "extra"], client=_FakeClient()) == 2
+    )  # too many args  # type: ignore[arg-type]
 
 
 def test_user_turn_briefs_the_phase_and_nudges_provision_while_unslugged(
@@ -122,7 +126,9 @@ def test_briefing_prints_but_no_nudge_once_slugged(
     monkeypatch.setenv("PANOPTICON_TASK_ID", "t1")
     hook.main(["agent", "prompt"], client=_FakeClient(slug="fix-widget"))  # type: ignore[arg-type]
     out = capsys.readouterr().out
-    assert "PHASE BRIEFING" in out and "provision" not in out  # briefing always; nudge only unslugged
+    assert (
+        "PHASE BRIEFING" in out and "provision" not in out
+    )  # briefing always; nudge only unslugged
 
 
 def test_stop_hook_is_silent(
@@ -145,15 +151,27 @@ def _transcript(tmp_path: Path) -> Path:
       line 2: 200 + 100 + 0    + 30  = 330  → total 693
     """
     lines = [
-        {"type": "assistant", "message": {"usage": {
-            "input_tokens": 100, "output_tokens": 50,
-            "cache_creation_input_tokens": 10, "cache_read_input_tokens": 5}}},  # 363
+        {
+            "type": "assistant",
+            "message": {
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "cache_creation_input_tokens": 10,
+                    "cache_read_input_tokens": 5,
+                }
+            },
+        },  # 363
         {"type": "user", "message": {"content": "hi"}},  # no usage
         "",
         "not json at all",
         {"type": "assistant", "message": {"role": "assistant"}},  # assistant, no usage
-        {"type": "assistant", "message": {"usage": {
-            "input_tokens": 200, "output_tokens": 20, "cache_read_input_tokens": 300}}},  # 330
+        {
+            "type": "assistant",
+            "message": {
+                "usage": {"input_tokens": 200, "output_tokens": 20, "cache_read_input_tokens": 300}
+            },
+        },  # 330
     ]
     path = tmp_path / "transcript.jsonl"
     path.write_text("\n".join(x if isinstance(x, str) else json.dumps(x) for x in lines))

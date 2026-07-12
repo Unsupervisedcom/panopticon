@@ -10,13 +10,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import PurePosixPath
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = '8a9ab3fe49b5'
-down_revision: str | None = 'faf3403c8b56'
+revision: str = "8a9ab3fe49b5"
+down_revision: str | None = "faf3403c8b56"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -35,9 +34,7 @@ def upgrade() -> None:
             continue
         name = PurePosixPath(env_file.replace("\\", "/")).name
         if name != env_file:
-            conn.execute(
-                repo.update().where(repo.c.id == repo_id).values(env_file=name)
-            )
+            conn.execute(repo.update().where(repo.c.id == repo_id).values(env_file=name))
 
 
 def downgrade() -> None:

@@ -44,7 +44,9 @@ async def store(request: pytest.FixtureRequest, tmp_path: Path) -> AsyncIterator
 
 
 async def _seed_repo(store: Store, repo_id: str = "r1") -> None:
-    await store.create_repo(Repo(id=repo_id, name="acme/widgets", git_url="https://github.com/acme/widgets.git"))
+    await store.create_repo(
+        Repo(id=repo_id, name="acme/widgets", git_url="https://github.com/acme/widgets.git")
+    )
 
 
 async def _new_task(store: Store, task_id: str = "t1", repo_id: str = "r1") -> Task:
@@ -69,9 +71,14 @@ async def test_create_and_get_repo(store: Store) -> None:
 
 async def test_repo_secret_references_round_trip(store: Store) -> None:
     await store.create_repo(
-        Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git",
-             env_file="r1.env",
-             image_layer_file="r1.layer", capabilities={"docker_in_docker": True})
+        Repo(
+            id="r1",
+            name="acme/widgets",
+            git_url="https://x/r1.git",
+            env_file="r1.env",
+            image_layer_file="r1.layer",
+            capabilities={"docker_in_docker": True},
+        )
     )
     got = await store.get_repo("r1")
     assert got is not None
@@ -98,13 +105,24 @@ async def test_list_repos(store: Store) -> None:
 
 async def test_update_repo_round_trips(store: Store) -> None:
     await store.create_repo(
-        Repo(id="r1", name="old", git_url="https://x/old.git",
-             image_layer_file="r1.layer", capabilities={"docker_in_docker": True})
+        Repo(
+            id="r1",
+            name="old",
+            git_url="https://x/old.git",
+            image_layer_file="r1.layer",
+            capabilities={"docker_in_docker": True},
+        )
     )
     await store.update_repo(
-        Repo(id="r1", name="new", git_url="https://x/new.git", default_base="trunk",
-             env_file="r1.env",
-             image_layer_file="r1.layer", capabilities={"docker_in_docker": True})
+        Repo(
+            id="r1",
+            name="new",
+            git_url="https://x/new.git",
+            default_base="trunk",
+            env_file="r1.env",
+            image_layer_file="r1.layer",
+            capabilities={"docker_in_docker": True},
+        )
     )
     got = await store.get_repo("r1")
     assert got is not None
@@ -486,7 +504,10 @@ def _fully_populated_task() -> Task:
                 note="plan approved",
                 responsibilities=[
                     Responsibility(
-                        key="tests-pass", description="Tests pass", status=Status.MET, comment="green"
+                        key="tests-pass",
+                        description="Tests pass",
+                        status=Status.MET,
+                        comment="green",
                     ),
                     Responsibility(
                         key="pr-opened",
@@ -514,7 +535,9 @@ def _assert_every_field_exercised(instances: list[Any], domain: type) -> None:
         else:
             default = object()  # required field: any provided value differs from this sentinel
         if not any(getattr(i, f.name) != default for i in instances):
-            pytest.fail(f"{domain.__name__}.{f.name} is never exercised — extend _fully_populated_task")
+            pytest.fail(
+                f"{domain.__name__}.{f.name} is never exercised — extend _fully_populated_task"
+            )
 
 
 async def test_full_task_round_trips_and_exercises_every_field(store: Store) -> None:
@@ -527,7 +550,9 @@ async def test_full_task_round_trips_and_exercises_every_field(store: Store) -> 
     _assert_every_field_exercised(responsibilities, Responsibility)
 
     await store.create_task(task)
-    assert await store.get_task(task.id) == task  # every field survives the round trip (dataclass __eq__)
+    assert (
+        await store.get_task(task.id) == task
+    )  # every field survives the round trip (dataclass __eq__)
 
 
 async def test_list_tasks_summary_returns_tasks_without_history(store: Store) -> None:

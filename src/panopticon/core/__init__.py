@@ -31,6 +31,7 @@ from panopticon.core.workflow import (
 )
 
 __all__ = [
+    "TERMINAL_LABELS",
     "Actor",
     "BaseState",
     "Complete",
@@ -45,7 +46,6 @@ __all__ = [
     "Skill",
     "State",
     "Status",
-    "TERMINAL_LABELS",
     "Task",
     "TerminalState",
     "Tool",

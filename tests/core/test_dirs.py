@@ -5,6 +5,7 @@ the task (ADR 0007 / remote runners). ``secrets_file_path`` resolves such a name
 path against a given root (the runner's own); ``relativize_secrets_file`` is the inverse used to
 normalize operator input to a stored name.
 """
+
 from __future__ import annotations
 
 import pytest

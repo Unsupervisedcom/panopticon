@@ -112,11 +112,13 @@ def cleanup_workspace(
         _log.warning(
             "workspace %s could not be removed or quarantined — remove it manually"
             " (it likely holds files owned by another user; may need sudo)",
-            checkout, exc_info=True,
+            checkout,
+            exc_info=True,
         )
         return
     _log.warning(
         "workspace %s holds files the daemon cannot delete (e.g. root-owned caches);"
         " quarantined it as %s — remove it manually (may need sudo)",
-        checkout, quarantine,
+        checkout,
+        quarantine,
     )

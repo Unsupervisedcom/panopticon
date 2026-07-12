@@ -30,7 +30,7 @@ from panopticon.core.workflow import Workflow
 #: artifact exists and its responsibility is met).
 # TODO(non-claude-agents): step 4 references Anthropic-specific cache ratios; see
 # container/pricing.py _WEIGHTS for the tech-debt note.
-_SPAWN_TASK_INSTRUCTIONS = f"""\
+_SPAWN_TASK_INSTRUCTIONS = """\
 Create one new task and leave it **pre-planned, ready for the user to approve**. Repeat per task
 you want to spawn. Throughout, your *own* task id is shown below; the new task has its *own* id.
 
@@ -43,7 +43,7 @@ you want to spawn. Throughout, your *own* task id is shown below; the new task h
    - `memo` — a **brief one-line label for the dashboard** (not a full description)
    - `initial_prompt="review your plan"` — prefilled into the child agent's input box on first
      spawn so it starts by reading the plan you wrote rather than re-planning
-   - `artifacts={{"plan.md": "<full markdown plan>"}}` — write the plan **inside this call** so
+   - `artifacts={"plan.md": "<full markdown plan>"}` — write the plan **inside this call** so
      it exists before the spawner can ever pick up the task; the spawner finds it present
    Record the **new task's id** from the result.
 3. **Name it.** `set_slug` on the new id with a short kebab-case slug.

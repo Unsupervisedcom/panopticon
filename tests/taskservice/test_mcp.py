@@ -18,14 +18,30 @@ from panopticon.workflows import GithubSelfReviewed, Orchestrator, Spike
 async def _service(tmp_path: Path) -> TaskService:
     svc = TaskService(
         SqlAlchemyStore(),
-        {"spike": Spike(), "orchestrator": Orchestrator(), "github-self-reviewed": GithubSelfReviewed()},
+        {
+            "spike": Spike(),
+            "orchestrator": Orchestrator(),
+            "github-self-reviewed": GithubSelfReviewed(),
+        },
         FilesystemArtifactStore(tmp_path),
     )
     await svc.init()
-    await svc.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git",
-                               enabled_workflows=["github-self-reviewed"]))
-    await svc.create_repo(Repo(id="r2", name="acme/other", git_url="https://x/r2.git",
-                               enabled_workflows=["github-self-reviewed"]))
+    await svc.create_repo(
+        Repo(
+            id="r1",
+            name="acme/widgets",
+            git_url="https://x/r1.git",
+            enabled_workflows=["github-self-reviewed"],
+        )
+    )
+    await svc.create_repo(
+        Repo(
+            id="r2",
+            name="acme/other",
+            git_url="https://x/r2.git",
+            enabled_workflows=["github-self-reviewed"],
+        )
+    )
     return svc
 
 
@@ -36,8 +52,15 @@ async def test_tools_are_exposed_and_drive_the_task(tmp_path: Path) -> None:
         await s.initialize()
         names = {t.name for t in (await s.list_tools()).tools}
         assert {
-            "get_task", "set_slug", "set_url", "apply_operation", "set_state",
-            "resolve_responsibility", "set_turn", "set_blocked", "put_artifact",
+            "get_task",
+            "set_slug",
+            "set_url",
+            "apply_operation",
+            "set_state",
+            "resolve_responsibility",
+            "set_turn",
+            "set_blocked",
+            "put_artifact",
             "list_artifacts",
         } <= names
         result = await s.call_tool("apply_operation", {"task_id": task.id, "operation": "advance"})
@@ -52,7 +75,9 @@ async def test_artifacts_round_trip_via_tool_and_resource(tmp_path: Path) -> Non
     task = await svc.create_task("r1", "spike")
     async with connect(build_mcp_server(svc)) as s:
         await s.initialize()
-        await s.call_tool("put_artifact", {"task_id": task.id, "name": "plan.md", "content": "# Plan"})
+        await s.call_tool(
+            "put_artifact", {"task_id": task.id, "name": "plan.md", "content": "# Plan"}
+        )
         res = await s.read_resource(f"panopticon://tasks/{task.id}/artifacts/plan.md")
         assert res.contents[0].text == "# Plan"  # type: ignore[union-attr]
     assert await svc.get_artifact(task.id, "plan.md") == b"# Plan"
@@ -63,8 +88,12 @@ async def test_list_artifacts_returns_names_and_readable_uris(tmp_path: Path) ->
     task = await svc.create_task("r1", "spike")
     async with connect(build_mcp_server(svc)) as s:
         await s.initialize()
-        await s.call_tool("put_artifact", {"task_id": task.id, "name": "plan.md", "content": "# Plan"})
-        await s.call_tool("put_artifact", {"task_id": task.id, "name": "notes.md", "content": "notes"})
+        await s.call_tool(
+            "put_artifact", {"task_id": task.id, "name": "plan.md", "content": "# Plan"}
+        )
+        await s.call_tool(
+            "put_artifact", {"task_id": task.id, "name": "notes.md", "content": "notes"}
+        )
 
         result = await s.call_tool("list_artifacts", {"task_id": task.id})
         assert result.isError is False
@@ -93,7 +122,9 @@ async def test_dotfile_artifacts_are_stored_and_listed(tmp_path: Path) -> None:
     task = await svc.create_task("r1", "spike")
     async with connect(build_mcp_server(svc)) as s:
         await s.initialize()
-        await s.call_tool("put_artifact", {"task_id": task.id, "name": ".hidden", "content": "secret"})
+        await s.call_tool(
+            "put_artifact", {"task_id": task.id, "name": ".hidden", "content": "secret"}
+        )
         result = await s.call_tool("list_artifacts", {"task_id": task.id})
         assert result.isError is False
         listed = result.structuredContent["result"]  # type: ignore[index]
@@ -142,10 +173,14 @@ async def test_set_token_estimate_via_tool(tmp_path: Path) -> None:
     task = await svc.create_task("r1", "spike")
     async with connect(build_mcp_server(svc)) as s:
         await s.initialize()
-        result = await s.call_tool("set_token_estimate", {"task_id": task.id, "token_estimate": 500000})
+        result = await s.call_tool(
+            "set_token_estimate", {"task_id": task.id, "token_estimate": 500000}
+        )
         assert result.structuredContent is not None
         assert result.structuredContent["token_estimate"] == 500000
-    assert (await svc.get_task(task.id)).token_estimate == 500000  # the tool actually mutated the task
+    assert (
+        await svc.get_task(task.id)
+    ).token_estimate == 500000  # the tool actually mutated the task
 
 
 # -- orchestration tools (gated to workflows whose `orchestrates` is set) --------------------

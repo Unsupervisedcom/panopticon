@@ -9,7 +9,7 @@ import pytest
 
 from panopticon.workflows.discovery import discover_workflows
 
-_CUSTOM_WORKFLOW = '''\
+_CUSTOM_WORKFLOW = """\
 from panopticon.core.state import Complete, InitialState
 from panopticon.core.workflow import Workflow
 
@@ -22,7 +22,7 @@ class Custom(Workflow):
         transitions = (Complete,)
 
     initial = Only
-'''
+"""
 
 
 def test_discovers_the_builtin_workflows() -> None:
@@ -46,7 +46,9 @@ def test_ignores_underscored_and_non_workflow_files(tmp_path: Path) -> None:
 
 
 def test_duplicate_name_is_rejected(tmp_path: Path) -> None:
-    (tmp_path / "dupe.py").write_text(_CUSTOM_WORKFLOW.replace('"custom"', '"spike"'))  # clashes with built-in
+    (tmp_path / "dupe.py").write_text(
+        _CUSTOM_WORKFLOW.replace('"custom"', '"spike"')
+    )  # clashes with built-in
     with pytest.raises(ValueError, match="duplicate workflow name 'spike'"):
         discover_workflows(path=str(tmp_path))
 

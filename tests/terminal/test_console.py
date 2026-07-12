@@ -20,7 +20,9 @@ def test_switch_file_is_deterministic_per_socket() -> None:
     # The dashboard session outlives the supervisor, so the switch-file must be stable across
     # `make start` re-invocations — otherwise a re-attached dashboard writes its `t` pick to a
     # file the new supervisor isn't reading, and every `t` reads as a quit (operator dropped to shell).
-    assert switch_file_path("panopticon") == switch_file_path("panopticon")  # same socket → same path
+    assert switch_file_path("panopticon") == switch_file_path(
+        "panopticon"
+    )  # same socket → same path
     assert switch_file_path("panopticon") != switch_file_path("other")  # keyed by socket
 
 
@@ -40,7 +42,10 @@ def test_wait_for_service_polls_until_ready() -> None:
 def test_wait_for_service_gives_up_after_attempts() -> None:
     polled: list[bool] = []
     ok = wait_for_service(
-        "http://svc", ready=lambda _u: polled.append(True) or False, sleep=lambda _s: None, attempts=5
+        "http://svc",
+        ready=lambda _u: polled.append(True) or False,
+        sleep=lambda _s: None,
+        attempts=5,
     )
     assert ok is False and len(polled) == 5  # bounded; reports failure rather than blocking forever
 
@@ -107,10 +112,23 @@ def test_supervisor_parses_remote_host_from_switch_file(tmp_path: Path) -> None:
 
     # Confirm attach_command receives the host correctly
     assert attach_command("panopticon-t1", socket="panopticon", host="box.example.com") == [
-        "ssh", "-t", "box.example.com", "tmux", "-L", "panopticon", "attach", "-t", "panopticon-t1"
+        "ssh",
+        "-t",
+        "box.example.com",
+        "tmux",
+        "-L",
+        "panopticon",
+        "attach",
+        "-t",
+        "panopticon-t1",
     ]
     assert attach_command("panopticon-t2", socket="panopticon", host=None) == [
-        "tmux", "-L", "panopticon", "attach", "-t", "panopticon-t2"
+        "tmux",
+        "-L",
+        "panopticon",
+        "attach",
+        "-t",
+        "panopticon-t2",
     ]
 
 

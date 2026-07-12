@@ -35,7 +35,9 @@ class TaskServiceClient:
 
     def list_workflows_for_repo(self, repo_id: str) -> list[dict[str, str]]:
         """Workflows visible for a repo, filtered by its preferences and each workflow's opt_in."""
-        return cast("list[dict[str, str]]", self._json(self._http.get(f"/repos/{repo_id}/workflows")))
+        return cast(
+            "list[dict[str, str]]", self._json(self._http.get(f"/repos/{repo_id}/workflows"))
+        )
 
     def workflow_image_layer(self, name: str) -> str:
         """The workflow's Dockerfile layer (ADR 0005); empty when it needs none."""
@@ -126,7 +128,10 @@ class TaskServiceClient:
         disabled_workflows: list[str] | None = None,
     ) -> JsonObj:
         body: dict[str, Any] = {
-            "id": repo_id, "name": name, "git_url": git_url, "default_base": default_base,
+            "id": repo_id,
+            "name": name,
+            "git_url": git_url,
+            "default_base": default_base,
             "env_file": env_file,
             "enabled_workflows": enabled_workflows or [],
             "disabled_workflows": disabled_workflows or [],
@@ -155,50 +160,83 @@ class TaskServiceClient:
         return cast(JsonObj, self._json(self._http.post("/tasks", json=body)))
 
     def set_slug(self, task_id: str, slug: str) -> JsonObj:
-        return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/slug", json={"slug": slug})))
+        return cast(
+            JsonObj, self._json(self._http.put(f"/tasks/{task_id}/slug", json={"slug": slug}))
+        )
 
     def set_url(self, task_id: str, url: str) -> JsonObj:
         return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/url", json={"url": url})))
 
     def set_tokens_used(self, task_id: str, tokens_used: int) -> JsonObj:
         """Record cumulative tokens used by claude in this container (the Stop hook reports it)."""
-        return cast(JsonObj, self._json(self._http.put(
-            f"/tasks/{task_id}/tokens-used", json={"tokens_used": tokens_used})))
+        return cast(
+            JsonObj,
+            self._json(
+                self._http.put(f"/tasks/{task_id}/tokens-used", json={"tokens_used": tokens_used})
+            ),
+        )
 
     def set_token_estimate(self, task_id: str, token_estimate: int) -> JsonObj:
         """Record the agent's forecast of the total tokens this task will consume (set in planning)."""
-        return cast(JsonObj, self._json(self._http.put(
-            f"/tasks/{task_id}/token-estimate", json={"token_estimate": token_estimate})))
+        return cast(
+            JsonObj,
+            self._json(
+                self._http.put(
+                    f"/tasks/{task_id}/token-estimate", json={"token_estimate": token_estimate}
+                )
+            ),
+        )
 
     def set_state(self, task_id: str, state: str) -> JsonObj:
         """The user's free override — move the task to any state (bypasses the graph and gate)."""
-        return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/state", json={"state": state})))
+        return cast(
+            JsonObj, self._json(self._http.put(f"/tasks/{task_id}/state", json={"state": state}))
+        )
 
     def set_turn(self, task_id: str, turn: str) -> JsonObj:
         """Flip who holds the turn (the in-container stop/user-prompt hooks call this)."""
-        return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/turn", json={"turn": turn})))
+        return cast(
+            JsonObj, self._json(self._http.put(f"/tasks/{task_id}/turn", json={"turn": turn}))
+        )
 
     def set_blocked(self, task_id: str, blocked: bool) -> JsonObj:
         """Set/clear the deliberate `blocked` marker (survives turn flips)."""
-        return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/blocked", json={"blocked": blocked})))
+        return cast(
+            JsonObj,
+            self._json(self._http.put(f"/tasks/{task_id}/blocked", json={"blocked": blocked})),
+        )
 
     def set_governor(self, task_id: str, governor_task_id: str | None) -> JsonObj:
         """Set or clear the governor task (the task that oversees this one)."""
-        return cast(JsonObj, self._json(self._http.put(
-            f"/tasks/{task_id}/governor", json={"governor_task_id": governor_task_id})))
+        return cast(
+            JsonObj,
+            self._json(
+                self._http.put(
+                    f"/tasks/{task_id}/governor", json={"governor_task_id": governor_task_id}
+                )
+            ),
+        )
 
     def set_dependencies(self, task_id: str, dep_ids: list[str]) -> JsonObj:
         """Replace the task's dependency list (task IDs that must complete first)."""
-        return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/dependencies", json={"dep_ids": dep_ids})))
+        return cast(
+            JsonObj,
+            self._json(self._http.put(f"/tasks/{task_id}/dependencies", json={"dep_ids": dep_ids})),
+        )
 
     def record_provisioning(self, task_id: str, branch: str, clone: str) -> JsonObj:
         """Record the slug-named branch + per-task clone the session service created (ADR 0011)."""
         body: JsonObj = {"branch": branch, "clone": clone}
-        return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/provisioning", json=body)))
+        return cast(
+            JsonObj, self._json(self._http.put(f"/tasks/{task_id}/provisioning", json=body))
+        )
 
     def claim(self, task_id: str, runner_id: str) -> JsonObj:
         """Claim an unclaimed task for `runner_id` (the spawn gate); 409 if another runner holds it."""
-        return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/claim", json={"runner_id": runner_id})))
+        return cast(
+            JsonObj,
+            self._json(self._http.put(f"/tasks/{task_id}/claim", json={"runner_id": runner_id})),
+        )
 
     def release(self, task_id: str) -> JsonObj:
         """Release a task's claim (back to unclaimed) so it can be re-claimed / respawned."""
@@ -212,14 +250,18 @@ class TaskServiceClient:
 
     def apply_operation(self, task_id: str, operation: str) -> JsonObj:
         """Apply a named core operation (e.g. advance/drop); the workflow resolves the target."""
-        return cast(JsonObj, self._json(self._http.post(f"/tasks/{task_id}/operations/{operation}")))
+        return cast(
+            JsonObj, self._json(self._http.post(f"/tasks/{task_id}/operations/{operation}"))
+        )
 
     def resolve_responsibility(
         self, task_id: str, key: str, status: Status, comment: str | None = None
     ) -> JsonObj:
         """Resolve one of the current state's promised responsibilities (MET or FAILED)."""
         body: JsonObj = {"key": key, "status": status.value, "comment": comment}
-        return cast(JsonObj, self._json(self._http.post(f"/tasks/{task_id}/responsibilities", json=body)))
+        return cast(
+            JsonObj, self._json(self._http.post(f"/tasks/{task_id}/responsibilities", json=body))
+        )
 
     # -- artifacts ----------------------------------------------------------------
 
@@ -287,7 +329,9 @@ class TaskServiceClient:
 
     # -- host (runner) liveness + reclaim -----------------------------------------
 
-    def live_runner(self, runner_id: str, *, host: str | None = None) -> Generator[None, None, None]:
+    def live_runner(
+        self, runner_id: str, *, host: str | None = None
+    ) -> Generator[None, None, None]:
         """Hold this host's liveness connection open, yielding once per server keepalive.
 
         The host-liveness mirror of :meth:`live` one layer up: the open ``/runners/{id}/live`` stream
