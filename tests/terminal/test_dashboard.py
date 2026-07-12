@@ -2114,9 +2114,8 @@ async def test_pressing_jk_moves_the_task_table_cursor_like_arrow_keys() -> None
         assert app._current == _TASK["id"]
 
 
-async def test_pressing_j_skips_the_ensemble_row_like_the_down_arrow() -> None:
-    # A collapsed governor's ensemble row sits between two real rows; `j` must step past it the
-    # same way `down` already does (Dashboard.on_data_table_row_highlighted), not land on it.
+def _collapsed_ensemble_app() -> Dashboard:
+    # A collapsed governor's ensemble row sits between two real rows.
     # created_at controls order (newest first): gov (03:00) > wrk (02:00) > zzz-extra (01:00).
     governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None,
                 "created_at": "2026-06-01T03:00:00"}
@@ -2124,7 +2123,13 @@ async def test_pressing_j_skips_the_ensemble_row_like_the_down_arrow() -> None:
                 "created_at": "2026-06-01T02:00:00"}
     extra = {**_TASK, "id": "zzz-extra", "slug": "zzz-extra", "governor_task_id": None,
              "created_at": "2026-06-01T01:00:00"}
-    app = Dashboard(_FakeClient([governor, governed, extra]))  # type: ignore[arg-type]
+    return Dashboard(_FakeClient([governor, governed, extra]))  # type: ignore[arg-type]
+
+
+async def test_pressing_j_skips_the_ensemble_row_like_the_down_arrow() -> None:
+    # A collapsed governor's ensemble row sits between two real rows; `j` must step straight past
+    # it (_VimDataTable.action_cursor_down skips the sentinel), landing on the next real row.
+    app = _collapsed_ensemble_app()
     async with app.run_test() as pilot:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
@@ -2142,6 +2147,71 @@ async def test_pressing_j_skips_the_ensemble_row_like_the_down_arrow() -> None:
         await pilot.pause()
         assert app._current == "zzz-extra"
         await pilot.press("k")  # and back up, over the ensemble row, onto gov
+        await pilot.pause()
+        assert app._current == "gov"
+
+
+async def test_arrow_keys_skip_the_ensemble_row_like_j_and_k() -> None:
+    # The default arrow keys route through the same overridden cursor actions as j/k, so they
+    # must skip the sentinel identically.
+    app = _collapsed_ensemble_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        app._collapsed.add("gov")
+        app.action_refresh()
+        await pilot.pause()
+        table.move_cursor(row=table.get_row_index("gov"))
+        await pilot.pause()
+        await pilot.press("down")
+        await pilot.pause()
+        assert app._current == "zzz-extra"
+        await pilot.press("up")
+        await pilot.pause()
+        assert app._current == "gov"
+
+
+async def test_navigating_over_an_ensemble_row_never_selects_the_sentinel() -> None:
+    # The reported bug: the sentinel was briefly selected mid-traversal. The cursor must never
+    # land on it, so _current is never the ensemble key at any observed step.
+    app = _collapsed_ensemble_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        app._collapsed.add("gov")
+        app.action_refresh()
+        await pilot.pause()
+        sentinel = f"{dashboard._ENSEMBLE_KEY_PREFIX}gov"
+        table.move_cursor(row=table.get_row_index("gov"))
+        await pilot.pause()
+        assert app._current != sentinel
+        for key in ("j", "j", "k", "k"):
+            await pilot.press(key)
+            await pilot.pause()
+            assert app._current != sentinel
+        # The cursor row is a real row too — never the sentinel.
+        assert str(table.ordered_rows[table.cursor_row].key.value) != sentinel
+
+
+async def test_ensemble_row_as_the_last_row_is_not_landed_on() -> None:
+    # When a collapsed ensemble is the last navigable row, pressing down keeps the cursor on the
+    # real row above it rather than clamping onto the sentinel.
+    governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None,
+                "created_at": "2026-06-01T02:00:00"}
+    governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov",
+                "created_at": "2026-06-01T01:00:00"}
+    app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        app._collapsed.add("gov")
+        app.action_refresh()
+        await pilot.pause()
+        row_keys = [str(k.value) for k in table.rows]
+        assert row_keys == ["gov", f"{dashboard._ENSEMBLE_KEY_PREFIX}gov"]
+        table.move_cursor(row=table.get_row_index("gov"))
+        await pilot.pause()
+        await pilot.press("j")  # nothing real below the sentinel — stay on gov
         await pilot.pause()
         assert app._current == "gov"
 
