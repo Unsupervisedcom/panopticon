@@ -700,7 +700,9 @@ def _make_secret(config_dir: Path, name: str) -> None:
 
 async def test_create_repo_accepts_no_env_file(tmp_path: Path) -> None:
     svc = await make_service(tmp_path)  # r1 (no env_file) is created here — the None case
-    await svc.create_repo(Repo(id="r2", name="acme/other", git_url="https://x/r2.git", env_file=None))
+    await svc.create_repo(
+        Repo(id="r2", name="acme/other", git_url="https://x/r2.git", env_file=None)
+    )
     assert (await svc.get_repo("r2")).env_file is None
 
 
@@ -710,8 +712,9 @@ async def test_create_repo_accepts_an_existing_env_file(
     monkeypatch.setenv("PANOPTICON_CONFIG", str(tmp_path))
     _make_secret(tmp_path, "r2.env")
     svc = await make_service(tmp_path)
-    await svc.create_repo(Repo(id="r2", name="acme/other", git_url="https://x/r2.git",
-                               env_file="r2.env"))
+    await svc.create_repo(
+        Repo(id="r2", name="acme/other", git_url="https://x/r2.git", env_file="r2.env")
+    )
     assert (await svc.get_repo("r2")).env_file == "r2.env"
 
 
@@ -721,8 +724,9 @@ async def test_create_repo_rejects_a_missing_env_file(
     monkeypatch.setenv("PANOPTICON_CONFIG", str(tmp_path))
     svc = await make_service(tmp_path)
     with pytest.raises(ValueError, match="env_file"):
-        await svc.create_repo(Repo(id="r2", name="acme/other", git_url="https://x/r2.git",
-                                   env_file="absent.env"))
+        await svc.create_repo(
+            Repo(id="r2", name="acme/other", git_url="https://x/r2.git", env_file="absent.env")
+        )
     with pytest.raises(NotFound):  # the rejected repo was not persisted
         await svc.get_repo("r2")
 
@@ -734,8 +738,9 @@ async def test_create_repo_rejects_an_env_file_that_is_a_directory(
     (tmp_path / "secrets" / "adir").mkdir(parents=True)  # a name that resolves to a dir, not a file
     svc = await make_service(tmp_path)
     with pytest.raises(ValueError, match="env_file"):  # isfile, not merely exists
-        await svc.create_repo(Repo(id="r2", name="acme/other", git_url="https://x/r2.git",
-                                   env_file="adir"))
+        await svc.create_repo(
+            Repo(id="r2", name="acme/other", git_url="https://x/r2.git", env_file="adir")
+        )
 
 
 async def test_create_repo_rejects_an_env_file_that_escapes_the_secrets_dir(
@@ -744,8 +749,9 @@ async def test_create_repo_rejects_an_env_file_that_escapes_the_secrets_dir(
     monkeypatch.setenv("PANOPTICON_CONFIG", str(tmp_path))
     svc = await make_service(tmp_path)
     with pytest.raises(ValueError, match="escapes"):  # secrets_file_path guards against ../ names
-        await svc.create_repo(Repo(id="r2", name="acme/other", git_url="https://x/r2.git",
-                                   env_file="../escape.env"))
+        await svc.create_repo(
+            Repo(id="r2", name="acme/other", git_url="https://x/r2.git", env_file="../escape.env")
+        )
 
 
 async def test_update_repo_rejects_setting_a_missing_env_file(
@@ -778,6 +784,8 @@ async def test_update_repo_not_touching_env_file_skips_validation(
     svc = await make_service(tmp_path)
     await svc.update_repo("r1", {"env_file": "r1.env"})
     (tmp_path / "secrets" / "r1.env").unlink()  # file goes away out of band
-    updated = await svc.update_repo("r1", {"enabled_workflows": ["spike"]})  # no env_file in the patch
+    updated = await svc.update_repo(
+        "r1", {"enabled_workflows": ["spike"]}
+    )  # no env_file in the patch
     assert updated.enabled_workflows == ["spike"]
     assert updated.env_file == "r1.env"  # preserved, not re-validated

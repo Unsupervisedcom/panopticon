@@ -193,7 +193,9 @@ class TaskService:
             raise ValueError("a repo's id cannot be changed")
         updated = replace(existing, **{k: v for k, v in changes.items() if k != "id"})
         if "env_file" in changes:  # validate only when the caller is actually setting the field,
-            await self._validate_env_file(updated.env_file)  # so an unrelated patch never fails on it
+            await self._validate_env_file(
+                updated.env_file
+            )  # so an unrelated patch never fails on it
         await self._store.update_repo(updated)
         return updated
 
