@@ -214,9 +214,11 @@ commands the Makefile wraps).
   change is made to the task service. The placeholder row's key uses the `_ENSEMBLE_KEY_PREFIX`
   sentinel and its slug cell reads `ensemble` (dim). Arrow keys skip it like the separator.
 - **Task** — a unit of work; identity is `id`, label is `slug`.
-- **Repo** — a repository tasks operate on. Holds `env_file` (a *reference* — a host path to an
-  env-file of secrets, ADR 0007), never the values; the runner injects it at launch (`--env-file`),
-  so a task gets only its own repo's secrets. The env-file carries the container's
+- **Repo** — a repository tasks operate on. Holds `env_file` (a *reference* — a name relative to the
+  secrets dir `$PANOPTICON_CONFIG/secrets` naming an env-file of secrets, ADR 0007), never the
+  values; the runner resolves it against its **own** host's secrets dir and injects it at launch
+  (`--env-file`), so a task gets only its own repo's secrets and the value stays host-agnostic for
+  remote runners. The env-file carries the container's
   `CLAUDE_CODE_OAUTH_TOKEN` — a **non-rotating `claude setup-token` the operator adds** (ADR 0012
   retired the old per-repo OAuth creds volume + `panopticon login`; auth is now just this env var,
   read straight from the environment — see `docs/container-auth.md`) — alongside any

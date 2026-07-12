@@ -162,8 +162,11 @@ class Repo:
     """A repository tasks operate on.
 
     Holds a *reference* to its per-repo secrets (ADR 0007), never the values: ``env_file`` is a
-    host path to an env-file of API-key-style secrets, injected into the task container at launch
-    (the runner), so secrets stay out of the DB, artifacts, and image layers.
+    **name relative to the secrets dir** (``$PANOPTICON_CONFIG/secrets``) naming an env-file of
+    API-key-style secrets, injected into the task container at launch (``--env-file``), so secrets
+    stay out of the DB, artifacts, and image layers. The runner resolves it against its **own**
+    host's secrets dir, so a remote runner uses its own secrets and the value stays host-agnostic;
+    the file's content never crosses the wire.
 
     ``image_layer_file`` *references* the repo's Dockerfile fragment (ADR 0005's repo tier): a file
     name resolved relative to the task service's layers directory, not inline content. The task

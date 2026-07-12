@@ -156,13 +156,19 @@ def test_extra_env_is_forwarded() -> None:
     assert "PANOPTICON_RECONNECT_BACKOFF=0.5" in rec.calls[2][0]
 
 
-def test_spawn_injects_repo_env_file() -> None:
+def test_spawn_resolves_env_file_against_the_runners_secrets_dir() -> None:
+    # env_file is a name relative to this runner's secrets dir (ADR 0007 / remote runners), so the
+    # runner resolves it host-locally rather than trusting an absolute path from another host.
     rec = _Recorder()
-    LocalRunner("http://svc", run=rec).spawn(
-        "t1", env_file="/secrets/r1.env"
-    )
+    LocalRunner("http://svc", secrets_dir="/host/secrets", run=rec).spawn("t1", env_file="r1.env")
     docker_run = rec.calls[2][0]
-    assert docker_run[docker_run.index("--env-file") + 1] == "/secrets/r1.env"
+    assert docker_run[docker_run.index("--env-file") + 1] == "/host/secrets/r1.env"
+
+
+def test_spawn_rejects_env_file_name_escaping_the_secrets_dir() -> None:
+    rec = _Recorder()
+    with pytest.raises(ValueError):
+        LocalRunner("http://svc", secrets_dir="/host/secrets", run=rec).spawn("t1", env_file="../evil.env")
 
 
 def test_spawn_omits_secret_flags_when_repo_has_none() -> None:
@@ -321,15 +327,19 @@ def test_cli_preps_the_workspace_then_spawns_with_secrets_and_mount(
     from panopticon.sessionservice import __main__ as cli
     from panopticon.sessionservice.__main__ import main as cli_main
 
+    import panopticon.core.dirs as dirs_mod
+
     rec = _Recorder()
     fake = _FakeClient(
-        {"id": "r1", "git_url": "https://forge/r1.git", "env_file": "/secrets/r1.env"}
+        {"id": "r1", "git_url": "https://forge/r1.git", "env_file": "r1.env"}
     )
     # The clone cache and per-task clones roots are the base-dir defaults (no per-path flags); the
     # defaults are import-time constants, so point them at tmp dirs by patching them in place.
     cache_root, tasks_root = tmp_path / "cache", tmp_path / "tasks"
     monkeypatch.setattr(cli, "CLONE_CACHE_DIR", str(cache_root))
     monkeypatch.setattr(cli, "TASKS_DIR", str(tasks_root))
+    # The runner resolves the repo's env_file *name* against this host's secrets dir (ADR 0007).
+    monkeypatch.setattr(dirs_mod, "user_config_dir", lambda: tmp_path)
     cid = cli_main(
         ["t1", "--service-url", "http://svc:9", "--image", "img:2"],
         run=rec, client=fake,  # type: ignore[arg-type]
@@ -341,5 +351,5 @@ def test_cli_preps_the_workspace_then_spawns_with_secrets_and_mount(
     docker_run = next(c for c in cmds if c[:2] == ["docker", "run"])
     assert "PANOPTICON_SERVICE_URL=http://svc:9" in docker_run
     assert docker_run[-1] == "img:2"
-    assert docker_run[docker_run.index("--env-file") + 1] == "/secrets/r1.env"  # repo's secrets
+    assert docker_run[docker_run.index("--env-file") + 1] == str(tmp_path / "secrets" / "r1.env")  # repo's secrets
     assert f"{tasks_root}/t1:/workspace" in docker_run  # the per-task clone mounted as /workspace

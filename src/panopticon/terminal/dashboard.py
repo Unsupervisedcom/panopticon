@@ -728,20 +728,26 @@ class _VimOptionList(OptionList):
 
 
 def _list_secrets_files() -> list[str]:
-    """Return sorted absolute paths of files in the XDG config secrets dir."""
-    from panopticon.core.dirs import user_config_dir
-    secrets_dir = user_config_dir() / "secrets"
+    """Return the sorted **names** (relative to the secrets dir) of files in the config secrets dir.
+
+    An ``env_file`` is stored relative to the secrets dir so it resolves on whichever host runs the
+    task (ADR 0007), so the picker offers bare names, not absolute paths."""
+    from panopticon.core.dirs import _secrets_dir
+    secrets_dir = _secrets_dir()
     if not secrets_dir.is_dir():
         return []
-    return sorted(str(p) for p in secrets_dir.iterdir() if p.is_file())
+    return sorted(p.name for p in secrets_dir.iterdir() if p.is_file())
 
 
 class EnvFileField(Widget):
     """Secrets env-file picker for the repo form.
 
-    Shows a ``Select`` dropdown listing files found in the XDG config secrets directory
-    (``~/.config/panopticon/secrets/``), with a ``enter custom path…`` option at the bottom
-    that reveals a free-form ``Input`` for any other host path.
+    Shows a ``Select`` dropdown listing the file **names** found in the config secrets directory
+    (``~/.config/panopticon/secrets/``), with an ``enter custom path…`` option at the bottom that
+    reveals a free-form ``Input``. The stored value is always a **name relative to the secrets
+    dir** (so it resolves on whichever host runs the task, ADR 0007); the custom input accepts an
+    absolute or relative path and normalizes it to that relative name on read (see
+    :func:`~panopticon.core.dirs.relativize_secrets_file`).
     """
 
     DEFAULT_CSS = """
@@ -763,14 +769,14 @@ class EnvFileField(Widget):
         is_custom = bool(self._initial and self._initial not in known_set)
         yield Select(
             options,
-            prompt="env_file (secrets dir or custom path)",
+            prompt="env_file (name in secrets dir or custom path)",
             allow_blank=True,
             value=self._initial if (self._initial and not is_custom) else Select.NULL,
             id="env-file-select",
         )
         inp = Input(
             value=self._initial if is_custom else "",
-            placeholder="/path/to/repo.env",
+            placeholder="repo.env (or a path — normalized to a secrets-dir name)",
             id="env-file-input",
         )
         inp.display = is_custom
@@ -778,7 +784,13 @@ class EnvFileField(Widget):
 
     @property
     def env_file_value(self) -> str:
-        """The resolved env_file path, or an empty string when unset."""
+        """The stored env_file **name** (relative to the secrets dir), or ``""`` when unset.
+
+        A dropdown pick is already a bare name; a custom entry is normalized from whatever path the
+        operator typed (absolute or relative) via
+        :func:`~panopticon.core.dirs.relativize_secrets_file`."""
+        from panopticon.core.dirs import relativize_secrets_file
+
         try:
             sel = self.query_one("#env-file-select", Select)
         except NoMatches:
@@ -786,7 +798,7 @@ class EnvFileField(Widget):
         v = sel.value
         if isinstance(v, _SelectNoSelection) or v == self._CUSTOM:
             try:
-                return self.query_one("#env-file-input", Input).value.strip()
+                return relativize_secrets_file(self.query_one("#env-file-input", Input).value)
             except NoMatches:
                 return ""
         return str(v)

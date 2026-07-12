@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 from textual.app import App
-from textual.widgets import Checkbox, DataTable, Input, Static
+from textual.widgets import Checkbox, DataTable, Input, Select, Static
 
 from panopticon.terminal import dashboard
 from panopticon.terminal.dashboard import (
@@ -1415,14 +1415,13 @@ async def test_env_file_field_blank_when_no_known_files(tmp_path: Path, monkeypa
 
 @pytest.mark.asyncio
 async def test_env_file_field_pre_selects_known_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """EnvFileField pre-selects an existing env_file that lives in the secrets dir."""
+    """EnvFileField pre-selects an existing env_file by its name (relative to the secrets dir)."""
     cfg = tmp_path / "config" / "panopticon" / "secrets"
     cfg.mkdir(parents=True)
-    env_path = str(cfg / "r1.env")
     (cfg / "r1.env").write_text("CLAUDE_CODE_OAUTH_TOKEN=tok")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     fake = _FakeClient([], repos=[{"id": "r1", "name": "x", "git_url": "https://x/r.git",
-                                   "default_base": "main", "env_file": env_path}])
+                                   "default_base": "main", "env_file": "r1.env"}])
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -1431,14 +1430,14 @@ async def test_env_file_field_pre_selects_known_file(tmp_path: Path, monkeypatch
         await pilot.press("e")
         await pilot.pause()
         ef = app.screen.query_one("#field-env_file", dashboard.EnvFileField)
-        assert ef.env_file_value == env_path
+        assert ef.env_file_value == "r1.env"
 
 
 @pytest.mark.asyncio
 async def test_env_file_field_custom_path_pre_populates_input(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """EnvFileField shows the custom input pre-populated when stored path isn't in secrets dir."""
+    """EnvFileField shows the custom input pre-populated when the stored name isn't a known file."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    custom = "/some/other/path/r1.env"
+    custom = "other.env"  # a relative name with no matching file in the (absent) secrets dir
     fake = _FakeClient([], repos=[{"id": "r1", "name": "x", "git_url": "https://x/r.git",
                                    "default_base": "main", "env_file": custom}])
     app = Dashboard(fake)  # type: ignore[arg-type]
@@ -1453,6 +1452,27 @@ async def test_env_file_field_custom_path_pre_populates_input(tmp_path: Path, mo
         # The custom input should be visible
         inp = ef.query_one("#env-file-input", Input)
         assert inp.display is True
+
+
+@pytest.mark.asyncio
+async def test_env_file_field_custom_absolute_path_normalized_to_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A custom absolute path is normalized to a bare name (resolved per-runner at launch)."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    fake = _FakeClient([], repos=[{"id": "r1", "name": "x", "git_url": "https://x/r.git",
+                                   "default_base": "main"}])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        ef = app.screen.query_one("#field-env_file", dashboard.EnvFileField)
+        sel = ef.query_one("#env-file-select", Select)
+        sel.value = ef._CUSTOM
+        await pilot.pause()
+        ef.query_one("#env-file-input", Input).value = "/some/other/path/r1.env"
+        assert ef.env_file_value == "r1.env"
 
 
 def _record_popen(monkeypatch: Any) -> list[list[str]]:

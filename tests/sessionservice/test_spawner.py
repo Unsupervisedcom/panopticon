@@ -113,7 +113,7 @@ def _spawner(client: object, runner: object, images: object = None) -> Spawner:
                    makedirs=lambda _p: None)
 
 
-_REPO: JsonObj = {"id": "r1", "git_url": "https://forge/r1.git", "env_file": "/sec/r1.env"}
+_REPO: JsonObj = {"id": "r1", "git_url": "https://forge/r1.git", "env_file": "r1.env"}
 
 
 def test_spawn_one_claims_then_spawns_a_fresh_task() -> None:
@@ -122,7 +122,7 @@ def test_spawn_one_claims_then_spawns_a_fresh_task() -> None:
     assert cid == "panopticon-t1"
     assert client.claims == [("t1", "host-1")]  # claimed for this host first
     assert runner.spawned[0]["workspace"] == "/tasks/t1"  # per-task clone mounted
-    assert runner.spawned[0]["env_file"] == "/sec/r1.env"
+    assert runner.spawned[0]["env_file"] == "r1.env"
     assert runner.spawned[0]["image"] is None  # spike has no image layer → runner uses the base
     assert runner.spawned[0]["docker_in_docker"] is False  # no capability → unprivileged
 
