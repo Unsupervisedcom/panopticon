@@ -36,14 +36,15 @@ keys return while the filter stays applied; `Esc` **clears** it (from typing or 
 filter is applied in ``action_refresh``, so a change-feed refresh preserves it across rebuilds.
 
 `Enter` on a **governing task** (one with governed children) **collapses** its sub-tasks into a
-single dim ``ensemble`` row; pressing `Enter` again **expands** them. Arrow keys skip the ensemble
-row (it is not a real task). Expanding or collapsing does not affect the task service — it is pure
+single dim placeholder row (its slug cell renders ``...``); pressing `Enter` again **expands** them.
+Arrow keys skip the ensemble row (it is not a real task). Expanding or collapsing does not affect the task service — it is pure
 display state local to the dashboard.
 
 The `container` column shows each task's container status: `live` (an active registration), `down`
 (was up, container gone — respawn with `R`), `starting` (claimed, no registration yet — its
-container is still coming up), `–` (unclaimed/not spawned yet), or `respawning` (just released
-by `R`, awaiting the runner's re-claim). Liveness is the registration, independent of provisioning.
+container is still coming up), `healing` (the runner is self-healing an orphan), or `–` (unclaimed
+or just released by `R`, awaiting the runner's re-claim). Liveness is the registration, independent
+of provisioning.
 
 The dashboard does not attach to tmux itself: on `t` it calls ``on_switch`` (the terminal
 supervisor, ADR 0009 §6, records the chosen session and detaches this client) and **keeps
@@ -160,8 +161,8 @@ def _short_tokens(n: int | None) -> str:
 
 
 # Row-key prefix for ensemble placeholder rows. When the operator collapses a governing task
-# (Enter on a governor), its governed children are replaced by one dim ``ensemble`` row whose
-# key is ``f"{_ENSEMBLE_KEY_PREFIX}{governor_id}"``. Keyboard navigation skips these rows
+# (Enter on a governor), its governed children are replaced by one dim placeholder row (its slug
+# cell renders ``...``) whose key is ``f"{_ENSEMBLE_KEY_PREFIX}{governor_id}"``. Keyboard navigation skips these rows
 # (_VimDataTable steps the cursor straight past them) and ``on_data_table_row_selected`` ignores them.
 _ENSEMBLE_KEY_PREFIX = "__ensemble__"
 
@@ -1535,9 +1536,9 @@ class Dashboard(App[None]):
         """`Enter` on a governing task collapses or expands its **ensemble** of governed children.
 
         Pressing Enter on a task that has governed children toggles its collapsed state: a
-        collapsed governor's sub-tasks are replaced by a single dim ``ensemble`` placeholder row;
-        pressing Enter again restores the full tree.  Enter on a non-governor (or on a sentinel
-        row) is a no-op."""
+        collapsed governor's sub-tasks are replaced by a single dim ensemble placeholder row (its
+        slug cell renders ``...``); pressing Enter again restores the full tree.  Enter on a
+        non-governor (or on a sentinel row) is a no-op."""
         key = event.row_key.value
         if not isinstance(key, str):
             return
