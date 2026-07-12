@@ -57,19 +57,25 @@ def test_transition_graph_is_the_happy_path_plus_drop() -> None:
 def test_foreground_states_are_user_advanced_merging_is_agent_driven() -> None:
     assert WF.advanced_by("PLANNING") is Actor.USER
     assert WF.advanced_by("ITERATING") is Actor.USER  # user self-reviews, then advances
-    assert WF.advanced_by("MERGING") is Actor.AGENT   # background: agent drives the local merge
+    assert WF.advanced_by("MERGING") is Actor.AGENT  # background: agent drives the local merge
 
 
 def test_responsibilities_are_local_git_specific() -> None:
     # PLANNING: same plan convention as the forge flows.
     assert {r.key for r in WF.responsibilities("PLANNING")} == {"plan-written", "token-estimated"}
     by_key = {r.key: r for r in WF.responsibilities("PLANNING")}
-    assert "plan.md" in by_key["plan-written"].description and "markdown" in by_key["plan-written"].description
+    assert (
+        "plan.md" in by_key["plan-written"].description
+        and "markdown" in by_key["plan-written"].description
+    )
     assert "set_token_estimate" in by_key["token-estimated"].description
 
     # ITERATING: no forge obligations (no committed-pushed, no ci-passing, no pr-updated).
     assert {r.key for r in WF.responsibilities("ITERATING")} == {
-        "plan-implemented", "requests-implemented", "tests-pass", "committed",
+        "plan-implemented",
+        "requests-implemented",
+        "tests-pass",
+        "committed",
     }
     iterating_keys = {r.key for r in WF.responsibilities("ITERATING")}
     assert "committed-pushed" not in iterating_keys
@@ -106,7 +112,9 @@ def test_briefing_surfaces_the_plan_uri_once_the_plan_artifact_exists(tmp_path: 
     artifacts = FilesystemArtifactStore(tmp_path)
     task = WF.start_task("t1", "r1", at="t0")
 
-    assert "panopticon://" not in asyncio.run(WF.briefing(task, artifacts=artifacts))  # no plan yet → no URI
+    assert "panopticon://" not in asyncio.run(
+        WF.briefing(task, artifacts=artifacts)
+    )  # no plan yet → no URI
 
     asyncio.run(artifacts.put(task.id, "plan.md", b"# Plan"))
     text = asyncio.run(WF.briefing(task, artifacts=artifacts))
@@ -130,7 +138,10 @@ def test_full_lifecycle_planning_to_complete() -> None:
         _advance(task, nxt)
     assert task.state == "COMPLETE"
     assert [h.to_state for h in task.history] == [
-        "PLANNING", "ITERATING", "MERGING", "COMPLETE",
+        "PLANNING",
+        "ITERATING",
+        "MERGING",
+        "COMPLETE",
     ]
     assert WF.is_terminal("COMPLETE")
 

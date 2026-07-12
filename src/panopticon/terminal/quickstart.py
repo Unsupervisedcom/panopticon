@@ -61,21 +61,23 @@ def repo_id_from_url(git_url: str) -> str:
 
 
 def ensure_secrets_file() -> str:
-    """Write the secrets template to ~/.config/panopticon/panopticon.env if absent.
+    """Write the secrets template into the secrets dir (~/.config/panopticon/secrets/) if absent.
 
-    Returns the absolute path to the file (created or pre-existing).
+    Returns the file's **name** relative to the secrets dir (``panopticon.env``) — what a repo's
+    ``env_file`` stores, so it resolves against whichever host runs the task (ADR 0007).
     """
-    from panopticon.core.dirs import user_config_dir
+    from panopticon.core.dirs import _secrets_dir
 
-    secrets_path = user_config_dir() / "panopticon.env"
-    secrets_path.parent.mkdir(parents=True, exist_ok=True)
+    secrets_dir = _secrets_dir()
+    secrets_path = secrets_dir / "panopticon.env"
+    secrets_dir.mkdir(parents=True, exist_ok=True)
     if secrets_path.exists():
         print(f"Secrets file already exists: {secrets_path}")
     else:
         secrets_path.write_text(_secrets_template())
         print(f"Created secrets template: {secrets_path}")
         print("  → Edit it to add your CLAUDE_CODE_OAUTH_TOKEN and GH_TOKEN before creating tasks.")
-    return str(secrets_path)
+    return secrets_path.name
 
 
 def wait_for_service(service_url: str, *, timeout: int = 30) -> None:
@@ -89,11 +91,11 @@ def wait_for_service(service_url: str, *, timeout: int = 30) -> None:
         try:
             _httpx.get(f"{service_url}/tasks", timeout=1.0).raise_for_status()
             return
-        except Exception:
+        except Exception as err:
             if time.monotonic() >= deadline:
                 raise RuntimeError(
                     f"Task service at {service_url} did not respond within {timeout}s"
-                )
+                ) from err
             time.sleep(1.0)
 
 

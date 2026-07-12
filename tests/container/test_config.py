@@ -33,9 +33,8 @@ def test_update_json_config_leaves_file_untouched_on_error(tmp_path: Path) -> No
     path = tmp_path / "config.json"
     path.write_text('{"keep": "me"}')
 
-    with pytest.raises(RuntimeError):
-        with update_json_config(path) as data:
-            data["added"] = True
-            raise RuntimeError("boom")
+    with pytest.raises(RuntimeError), update_json_config(path) as data:
+        data["added"] = True
+        raise RuntimeError("boom")
 
     assert json.loads(path.read_text()) == {"keep": "me"}  # unchanged

@@ -10,14 +10,17 @@ deterministic. No LLM (the determinism invariant).
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from panopticon.core.artifacts import ArtifactStore
+from panopticon.core.dirs import secrets_file_path
 from panopticon.core.layers import LayerStore
 from panopticon.core.models import (
     Actor,
@@ -34,12 +37,11 @@ from panopticon.core.state import TERMINAL_LABELS, Dropped
 from panopticon.core.store import NotFound, Store
 from panopticon.core.workflow import Workflow
 
-
 _log = logging.getLogger(__name__)
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _uuid_hex() -> str:
@@ -144,8 +146,31 @@ class TaskService:
     # -- repos --------------------------------------------------------------------
 
     async def create_repo(self, repo: Repo) -> Repo:
+        await self._validate_env_file(repo.env_file)
         await self._store.create_repo(repo)
         return repo
+
+    async def _validate_env_file(self, env_file: str | None) -> None:
+        """Reject a repo whose secrets-file reference points at a missing file.
+
+        ``env_file`` is a *name* relative to the secrets dir (``$PANOPTICON_CONFIG/secrets``,
+        ADR 0007 / #291); the runner resolves it against its own local secrets dir at
+        ``docker run --env-file``. Validated here on create/update so a bad reference is caught at
+        registration rather than surfacing as an obscure ``--env-file`` failure at spawn. ``None``
+        (no secrets file) is valid. Raises :class:`ValueError` — for a name that escapes the
+        secrets dir (via :func:`secrets_file_path`) or one that resolves to a missing file — which
+        the API maps to HTTP 400.
+
+        NOTE(M5): ``env_file`` is resolved against *this host's* secrets dir. Today the task
+        service and the runner share a host (M1), so this stat answers the real question; when the
+        runner is remote, the file lives on the runner's host — move/duplicate the check on the
+        session service then.
+        """
+        path = secrets_file_path(env_file)  # None for no reference; raises ValueError on escape
+        if path is None:
+            return
+        if not await asyncio.to_thread(os.path.isfile, path):
+            raise ValueError(f"env_file {env_file!r} does not exist under the secrets dir")
 
     async def get_repo(self, repo_id: str) -> Repo:
         repo = await self._store.get_repo(repo_id)
@@ -167,6 +192,10 @@ class TaskService:
         if "id" in changes and changes["id"] != repo_id:
             raise ValueError("a repo's id cannot be changed")
         updated = replace(existing, **{k: v for k, v in changes.items() if k != "id"})
+        if "env_file" in changes:  # validate only when the caller is actually setting the field,
+            await self._validate_env_file(
+                updated.env_file
+            )  # so an unrelated patch never fails on it
         await self._store.update_repo(updated)
         return updated
 
@@ -179,7 +208,9 @@ class TaskService:
         :class:`NotFound` when a referenced file is configured but absent (or no layer store is
         wired), and the layer store rejects a name that escapes its root.
         """
-        name = (await self.get_repo(repo_id)).image_layer_file  # raises NotFound for an unknown repo
+        name = (
+            await self.get_repo(repo_id)
+        ).image_layer_file  # raises NotFound for an unknown repo
         if not name:
             return ""
         if self._layers is None:
@@ -287,9 +318,7 @@ class TaskService:
             await self.get_task(governor_task_id)  # ensure governor exists (raises NotFound)
         wf = self._workflow(workflow_name)
         if not self._workflow_visible(wf, repo):
-            raise NotAuthorized(
-                f"workflow {workflow_name!r} is not enabled for repo {repo_id!r}"
-            )
+            raise NotAuthorized(f"workflow {workflow_name!r} is not enabled for repo {repo_id!r}")
         now = self._clock()
         task = wf.start_task(self._id(), repo_id, at=now, memo=memo, initial_prompt=initial_prompt)
         task.governor_task_id = governor_task_id
@@ -431,7 +460,9 @@ class TaskService:
         task = await self.get_task(task_id)
         return self._workflow(task.workflow).overview()
 
-    async def apply_operation(self, task_id: str, operation: str, *, note: str | None = None) -> Task:
+    async def apply_operation(
+        self, task_id: str, operation: str, *, note: str | None = None
+    ) -> Task:
         """Apply a named core operation (advance/drop) — a gated move along the declared graph."""
         task = await self.get_task(task_id)
         to_state = self._workflow(task.workflow).resolve_operation(task.state, operation)
@@ -447,16 +478,27 @@ class TaskService:
     ) -> Task:
         task = await self.get_task(task_id)
         wf = self._workflow(task.workflow)
-        return await self._commit_transition(task, wf, to_state, force=False, trigger=trigger, note=note)
+        return await self._commit_transition(
+            task, wf, to_state, force=False, trigger=trigger, note=note
+        )
 
     async def set_state(self, task_id: str, to_state: str, *, note: str | None = None) -> Task:
         """The user's free override: move the task to any state, bypassing the graph and the gate."""
         task = await self.get_task(task_id)
         wf = self._workflow(task.workflow)
-        return await self._commit_transition(task, wf, to_state, force=True, trigger="set-state", note=note)
+        return await self._commit_transition(
+            task, wf, to_state, force=True, trigger="set-state", note=note
+        )
 
     async def _commit_transition(
-        self, task: Task, wf: Workflow, to_state: str, *, force: bool, trigger: str | None, note: str | None
+        self,
+        task: Task,
+        wf: Workflow,
+        to_state: str,
+        *,
+        force: bool,
+        trigger: str | None,
+        note: str | None,
     ) -> Task:
         from_state = task.state
         _log.info("task %s: %s → %s (trigger=%s)", task.id, from_state, to_state, trigger)
@@ -466,13 +508,17 @@ class TaskService:
             wf.apply_transition(task, to_state, at=self._clock(), trigger=trigger, note=note)
         # Deterministic lifecycle hook (e.g. seed the plan on plan acceptance) — may touch the
         # task/artifacts; run before the single save so any task mutation persists with it.
-        await wf.on_transition(task, from_state=from_state, to_state=task.state, artifacts=self._artifacts)
+        await wf.on_transition(
+            task, from_state=from_state, to_state=task.state, artifacts=self._artifacts
+        )
         await self._save_task(task)
         if to_state == Dropped.label:
             await self._cascade_drop_governed(task.id, trigger=trigger, note=note)
         return task
 
-    async def _cascade_drop_governed(self, governor_id: str, *, trigger: str | None, note: str | None) -> None:
+    async def _cascade_drop_governed(
+        self, governor_id: str, *, trigger: str | None, note: str | None
+    ) -> None:
         """Drop every non-terminal task governed by governor_id.
 
         Called after a governor lands in DROPPED. Each child's own _commit_transition also
@@ -480,7 +526,9 @@ class TaskService:
         count = 0
         for child in await self._store.list_tasks_summary():
             if child.governor_task_id == governor_id and child.state not in TERMINAL_LABELS:
-                await self.request_transition(child.id, Dropped.label, trigger="cascade-drop", note=note)
+                await self.request_transition(
+                    child.id, Dropped.label, trigger="cascade-drop", note=note
+                )
                 count += 1
         if count:
             _log.info("task %s: cascade-dropped %d governed task(s)", governor_id, count)
@@ -595,7 +643,9 @@ class TaskService:
         if task.claimed_by not in (None, runner_id):
             raise AlreadyClaimed(f"task {task_id!r} is already claimed by {task.claimed_by!r}")
         task.claimed_by = runner_id
-        self.clear_lifecycle(task_id)  # drop any stale phase from a prior owner; this spawn re-reports
+        self.clear_lifecycle(
+            task_id
+        )  # drop any stale phase from a prior owner; this spawn re-reports
         await self._save_container_state(task)
         _log.info("task %s: claimed by runner %s", task_id, runner_id)
         return task
@@ -681,9 +731,7 @@ class TaskService:
             _log.info("task %s: registration %s released", reg.task_id, registration_id)
 
     def registrations(self, task_id: str | None = None) -> list[Registration]:
-        return [
-            r for r in self._registrations.values() if task_id is None or r.task_id == task_id
-        ]
+        return [r for r in self._registrations.values() if task_id is None or r.task_id == task_id]
 
     # -- container lifecycle (the session service reports its spawn progress) -------------
     #
@@ -737,8 +785,12 @@ class TaskService:
     # to tell "runner dead" from "runner idle"; now a dead runner falls out of ``live_runners`` and
     # an operator (or a future supervisor) can release its claims so a healthy host respawns them.
 
-    async def register_runner(self, runner_id: str, *, host: str | None = None) -> RunnerRegistration:
-        reg = RunnerRegistration(id=self._id(), runner_id=runner_id, registered_at=self._clock(), host=host)
+    async def register_runner(
+        self, runner_id: str, *, host: str | None = None
+    ) -> RunnerRegistration:
+        reg = RunnerRegistration(
+            id=self._id(), runner_id=runner_id, registered_at=self._clock(), host=host
+        )
         self._runner_registrations[reg.id] = reg
         self._notify_change()  # a runner (re)connecting can flip its tasks disconnected → …
         _log.info("runner %s: registered (reg=%s, host=%s)", runner_id, reg.id, host)

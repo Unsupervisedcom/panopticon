@@ -56,7 +56,7 @@ _IN_MEMORY = ("sqlite://", "sqlite:///:memory:")
 def _to_async_url(url: str) -> str:
     """Translate a plain ``sqlite://`` URL to its ``sqlite+aiosqlite://`` equivalent."""
     if url.startswith("sqlite://"):
-        return "sqlite+aiosqlite" + url[len("sqlite"):]
+        return "sqlite+aiosqlite" + url[len("sqlite") :]
     return url
 
 
@@ -88,8 +88,12 @@ class _RepoRow(_Base):
 
     def to_domain(self) -> Repo:
         return Repo(
-            id=self.id, name=self.name, git_url=self.git_url, default_base=self.default_base,
-            env_file=self.env_file, image_layer_file=self.image_layer_file,
+            id=self.id,
+            name=self.name,
+            git_url=self.git_url,
+            default_base=self.default_base,
+            env_file=self.env_file,
+            image_layer_file=self.image_layer_file,
             capabilities=dict(self.capabilities or {}),
             hook_file=self.hook_file,
             enabled_workflows=list(self.enabled_workflows or []),
@@ -99,8 +103,12 @@ class _RepoRow(_Base):
     @classmethod
     def from_domain(cls, repo: Repo) -> _RepoRow:
         return cls(
-            id=repo.id, name=repo.name, git_url=repo.git_url, default_base=repo.default_base,
-            env_file=repo.env_file, image_layer_file=repo.image_layer_file,
+            id=repo.id,
+            name=repo.name,
+            git_url=repo.git_url,
+            default_base=repo.default_base,
+            env_file=repo.env_file,
+            image_layer_file=repo.image_layer_file,
             capabilities=dict(repo.capabilities),
             hook_file=repo.hook_file,
             enabled_workflows=list(repo.enabled_workflows),
@@ -237,9 +245,7 @@ class _HistoryRow(_Base):
 
 class _ResponsibilityRow(_Base):
     __tablename__ = "responsibility"
-    __table_args__ = (
-        ForeignKeyConstraint(["task_id", "seq"], ["history.task_id", "history.seq"]),
-    )
+    __table_args__ = (ForeignKeyConstraint(["task_id", "seq"], ["history.task_id", "history.seq"]),)
 
     task_id: Mapped[str] = mapped_column(primary_key=True)
     seq: Mapped[int] = mapped_column(primary_key=True)
@@ -252,7 +258,10 @@ class _ResponsibilityRow(_Base):
 
     def to_domain(self) -> Responsibility:
         return Responsibility(
-            key=self.key, description=self.description, status=Status(self.status), comment=self.comment
+            key=self.key,
+            description=self.description,
+            status=Status(self.status),
+            comment=self.comment,
         )
 
     @classmethod
@@ -273,7 +282,7 @@ def _fulfil_current_promises(history_row: _HistoryRow, entry: HistoryEntry) -> N
     existing = history_row.responsibilities  # ordered by idx
     if [r.key for r in existing] != [r.key for r in entry.responsibilities]:
         raise IntegrityError("the current entry's responsibility set changed")
-    for row, r in zip(existing, entry.responsibilities):
+    for row, r in zip(existing, entry.responsibilities, strict=False):
         row.status = r.status.value
         row.comment = r.comment
 
@@ -394,7 +403,9 @@ class SqlAlchemyStore(Store):
             row.depends_on_task_ids = list(task.depends_on_task_ids)
             # The current (last stored) entry's promises may have been fulfilled in place.
             if stored:
-                _fulfil_current_promises(row.history[len(stored) - 1], task.history[len(stored) - 1])
+                _fulfil_current_promises(
+                    row.history[len(stored) - 1], task.history[len(stored) - 1]
+                )
             # Append any new entries; the relationship cascade inserts them and their children.
             for seq in range(len(stored), len(task.history)):
                 row.history.append(_HistoryRow.from_domain(task.history[seq], seq))

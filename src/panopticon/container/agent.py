@@ -150,10 +150,14 @@ def _claude_argv(
         if turn == "agent":
             argv.append(INTERRUPT_PROMPT)  # positional: auto-resume after container restart
     else:
-        if starting_model:  # first run only — on resume claude uses the conversation's existing model
+        if (
+            starting_model
+        ):  # first run only — on resume claude uses the conversation's existing model
             argv += ["--model", starting_model]
         if initial_prompt:
-            argv.append(initial_prompt)  # positional: claude sends this as the agent's first message
+            argv.append(
+                initial_prompt
+            )  # positional: claude sends this as the agent's first message
     return argv
 
 
@@ -166,7 +170,13 @@ def _run_claude(config_dir: Path) -> None:  # pragma: no cover - real LLM; skipi
     initial_prompt = os.environ.get("PANOPTICON_INITIAL_PROMPT") or None
     turn = os.environ.get("PANOPTICON_TASK_TURN") or None
     starting_model = os.environ.get("PANOPTICON_STARTING_MODEL") or None
-    argv = _claude_argv(config_dir, Path.cwd(), initial_prompt=initial_prompt, turn=turn, starting_model=starting_model)
+    argv = _claude_argv(
+        config_dir,
+        Path.cwd(),
+        initial_prompt=initial_prompt,
+        turn=turn,
+        starting_model=starting_model,
+    )
     subprocess.run(argv, env={**os.environ, "CLAUDE_CONFIG_DIR": str(config_dir)})
 
 
@@ -214,7 +224,9 @@ def main(
     render_operations(client, task_id, config_dir.parent)  # advance/drop/… as slash-commands
     write_settings(config_dir.parent)  # turn-flip hooks → <home>/.claude/settings.json
     write_mcp_config(config_dir, service_url)  # point claude at the task service's MCP server
-    write_workflow_overview(config_dir, client.workflow_overview(task_id))  # → system prompt (the map)
+    write_workflow_overview(
+        config_dir, client.workflow_overview(task_id)
+    )  # → system prompt (the map)
     trust_workspace(config_dir, Path.cwd())  # pre-accept the trust dialog (no operator to)
     launch(config_dir)  # the agent runs until it exits...
     on_exit()  # ...then stop the container (task → down → respawn)

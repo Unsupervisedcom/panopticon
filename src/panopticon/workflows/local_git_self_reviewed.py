@@ -54,9 +54,13 @@ class LocalGitSelfReviewed(PlannedWorkflow):
         )
         responsibilities = (
             Responsibility(key="plan-implemented", description="The plan is implemented in code."),
-            Responsibility(key="requests-implemented", description="All user requests are implemented in code."),
+            Responsibility(
+                key="requests-implemented", description="All user requests are implemented in code."
+            ),
             Responsibility(key="tests-pass", description="New and relevant tests pass locally."),
-            Responsibility(key="committed", description="Changes are committed to the local branch."),
+            Responsibility(
+                key="committed", description="Changes are committed to the local branch."
+            ),
         )
         transitions = ("MERGING",)  # the user self-reviews, then advances to MERGING
 

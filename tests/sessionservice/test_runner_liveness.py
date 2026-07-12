@@ -108,7 +108,7 @@ def test_hold_runner_liveness_loop_goes_live_then_drops_when_stopped(
 def test_reclaim_releases_only_the_dead_runners_non_terminal_claims(
     served: tuple[TaskService, str],
 ) -> None:
-    service, base = served
+    _service, base = served
     client = TaskServiceClient(httpx.Client(base_url=base, timeout=10.0))
     mine = client.create_task("r1", "spike")["id"]
     other = client.create_task("r1", "spike")["id"]

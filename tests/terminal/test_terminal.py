@@ -29,11 +29,18 @@ def test_dashboard_under_supervisor_wires_the_switch_hooks(monkeypatch: pytest.M
 
     seen: dict[str, Any] = {}
     monkeypatch.setattr(
-        dashboard, "run",
-        lambda _c, *, on_switch=None, on_service=None, on_runner=None, artifacts_root=None: seen.update(on_switch=on_switch, on_service=on_service, on_runner=on_runner),
+        dashboard,
+        "run",
+        lambda _c, *, on_switch=None, on_service=None, on_runner=None, artifacts_root=None: (
+            seen.update(on_switch=on_switch, on_service=on_service, on_runner=on_runner)
+        ),
     )
     cli.main(["dashboard", "--switch-file", "/tmp/x"], client=_FakeClient())  # type: ignore[arg-type]
-    assert seen["on_switch"] is not None and seen["on_service"] is not None and seen["on_runner"] is not None
+    assert (
+        seen["on_switch"] is not None
+        and seen["on_service"] is not None
+        and seen["on_runner"] is not None
+    )
 
 
 def test_standalone_dashboard_has_no_switch_hooks(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -41,15 +48,19 @@ def test_standalone_dashboard_has_no_switch_hooks(monkeypatch: pytest.MonkeyPatc
 
     seen: dict[str, Any] = {}
     monkeypatch.setattr(
-        dashboard, "run",
-        lambda _c, *, on_switch=None, on_service=None, on_runner=None, artifacts_root=None: seen.update(on_switch=on_switch, on_service=on_service, on_runner=on_runner),
+        dashboard,
+        "run",
+        lambda _c, *, on_switch=None, on_service=None, on_runner=None, artifacts_root=None: (
+            seen.update(on_switch=on_switch, on_service=on_service, on_runner=on_runner)
+        ),
     )
     cli.main(["dashboard"], client=_FakeClient())  # type: ignore[arg-type]
     assert seen["on_switch"] is None and seen["on_service"] is None and seen["on_runner"] is None
 
 
 def test_quickstart_invokes_all_steps(monkeypatch: pytest.MonkeyPatch) -> None:
-    from panopticon.terminal import console, quickstart as qs
+    from panopticon.terminal import console
+    from panopticon.terminal import quickstart as qs
 
     calls: list[str] = []
 

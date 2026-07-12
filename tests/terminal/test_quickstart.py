@@ -40,10 +40,13 @@ def test_detect_git_url_fallback_on_nonzero_exit(monkeypatch: pytest.MonkeyPatch
 
 def test_ensure_secrets_file_creates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import panopticon.core.dirs as dirs_mod
+
     monkeypatch.setattr(dirs_mod, "user_config_dir", lambda: tmp_path)
 
-    path = qs.ensure_secrets_file()
-    secrets = Path(path)
+    # Returns the file's name (relative to the secrets dir), written under <config>/secrets/.
+    name = qs.ensure_secrets_file()
+    assert name == "panopticon.env"
+    secrets = tmp_path / "secrets" / name
     assert secrets.exists()
     content = secrets.read_text()
     # Placeholder assignments are commented out — the user uncomments the one they use.
@@ -55,10 +58,12 @@ def test_ensure_secrets_file_creates(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
 def test_ensure_secrets_file_no_overwrite(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import panopticon.core.dirs as dirs_mod
+
     monkeypatch.setattr(dirs_mod, "user_config_dir", lambda: tmp_path)
 
     existing_content = "MY_EXISTING_SECRET=abc\n"
-    secrets_path = tmp_path / "panopticon.env"
+    secrets_path = tmp_path / "secrets" / "panopticon.env"
+    secrets_path.parent.mkdir(parents=True)
     secrets_path.write_text(existing_content)
 
     qs.ensure_secrets_file()
@@ -103,12 +108,14 @@ def test_setup_repo_creates_when_absent() -> None:
         def list_repos(self) -> list[dict[str, object]]:
             return [{"id": "unrelated", "git_url": "https://github.com/a/b.git"}]
 
-        def create_repo(self, repo_id: str, name: str, git_url: str, **kw: Any) -> dict[str, object]:
+        def create_repo(
+            self, repo_id: str, name: str, git_url: str, **kw: Any
+        ) -> dict[str, object]:
             created.update(repo_id=repo_id, name=name, git_url=git_url, **kw)
             return {}
 
-    qs.setup_repo(_Empty(), "https://github.com/x/y.git", "/tmp/env")  # type: ignore[arg-type]
+    qs.setup_repo(_Empty(), "https://github.com/x/y.git", "panopticon.env")  # type: ignore[arg-type]
     assert created["repo_id"] == "y"
     assert created["name"] == "y"
     assert created["git_url"] == "https://github.com/x/y.git"
-    assert created["env_file"] == "/tmp/env"
+    assert created["env_file"] == "panopticon.env"

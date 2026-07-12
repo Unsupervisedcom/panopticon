@@ -32,7 +32,9 @@ from panopticon.workflows import Spike
 
 
 def _git(cwd: Path, *args: str) -> str:
-    return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, check=True).stdout.strip()
+    return subprocess.run(
+        ["git", "-C", str(cwd), *args], capture_output=True, text=True, check=True
+    ).stdout.strip()
 
 
 @pytest.mark.skipif(not shutil.which("git"), reason="needs git")
@@ -40,7 +42,9 @@ def test_provisioning_end_to_end_with_real_git(tmp_path: Path) -> None:
     # A real "forge" repo with a base branch — stands in for both the cache source and origin.
     origin = tmp_path / "origin"
     origin.mkdir()
-    subprocess.run(["git", "init", "--initial-branch", "main", str(origin)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--initial-branch", "main", str(origin)], check=True, capture_output=True
+    )
     _git(origin, "config", "user.email", "t@example.com")
     _git(origin, "config", "user.name", "t")
     (origin / "README").write_text("hi\n")
@@ -49,7 +53,11 @@ def test_provisioning_end_to_end_with_real_git(tmp_path: Path) -> None:
 
     service = TaskService(SqlAlchemyStore(), {"spike": Spike()}, FilesystemArtifactStore(tmp_path))
     asyncio.run(service.init())
-    asyncio.run(service.create_repo(Repo(id="r1", name="acme/widgets", git_url=str(origin), default_base="main")))
+    asyncio.run(
+        service.create_repo(
+            Repo(id="r1", name="acme/widgets", git_url=str(origin), default_base="main")
+        )
+    )
     with TestClient(create_app(service)) as http:
         client = TaskServiceClient(http)
         task_id = client.create_task("r1", "spike")["id"]
@@ -59,11 +67,15 @@ def test_provisioning_end_to_end_with_real_git(tmp_path: Path) -> None:
         clones_root = tmp_path / "clones"
         cache = CloneCache(str(tmp_path / "cache"))
         per_task = Path(
-            prepare_workspace(task_id, client.get_repo("r1"), cache=cache, tasks_root=str(clones_root))
+            prepare_workspace(
+                task_id, client.get_repo("r1"), cache=cache, tasks_root=str(clones_root)
+            )
         )
         assert (per_task / "README").read_text() == "hi\n"  # working copy on the base branch
         assert _git(per_task, "branch", "--show-current") == "main"
-        assert _git(per_task, "remote", "get-url", "origin") == str(origin)  # origin → forge at spawn-prep
+        assert _git(per_task, "remote", "get-url", "origin") == str(
+            origin
+        )  # origin → forge at spawn-prep
 
         # The agent sets its slug; the daemon observes it and provisions in one pass.
         client.set_slug(task_id, "fix-widget")

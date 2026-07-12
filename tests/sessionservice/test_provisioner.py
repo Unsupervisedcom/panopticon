@@ -39,7 +39,9 @@ def _provisioner(client: object, run: Callable[..., str]) -> Provisioner:
 class _FakeClient:
     """A task-service client stub: serves one repo, captures record_provisioning calls."""
 
-    def __init__(self, *, git_url: str = "https://forge/r1.git", runner_type: str = "docker") -> None:
+    def __init__(
+        self, *, git_url: str = "https://forge/r1.git", runner_type: str = "docker"
+    ) -> None:
         self._repo: JsonObj = {"id": "r1", "default_base": "trunk", "git_url": git_url}
         self._runner_type = runner_type
         self.recorded: list[tuple[str, str, str]] = []
@@ -48,7 +50,12 @@ class _FakeClient:
         return self._repo
 
     def workflow_execution(self, name: str) -> JsonObj:
-        return {"runner_type": self._runner_type, "script": "", "clone_repo": False, "workdir": None}
+        return {
+            "runner_type": self._runner_type,
+            "script": "",
+            "clone_repo": False,
+            "workdir": None,
+        }
 
     def record_provisioning(self, task_id: str, branch: str, clone: str) -> JsonObj:
         self.recorded.append((task_id, branch, clone))
@@ -60,7 +67,9 @@ def test_provisions_a_ready_task_by_branching_the_clone() -> None:
     client = _FakeClient()
     provisioner = _provisioner(client, run)
 
-    branch = provisioner.provision({"id": "t1", "repo_id": "r1", "slug": "fix-widget", "provisioned": False})
+    branch = provisioner.provision(
+        {"id": "t1", "repo_id": "r1", "slug": "fix-widget", "provisioned": False}
+    )
 
     assert branch == "panopticon/fix-widget"
     # only branches — origin was pointed at the forge at spawn-prep (see test_spawn), not here
@@ -73,7 +82,10 @@ def test_skips_a_task_without_a_slug() -> None:
     client = _FakeClient()
     provisioner = _provisioner(client, run)
 
-    assert provisioner.provision({"id": "t1", "repo_id": "r1", "slug": None, "provisioned": False}) is None
+    assert (
+        provisioner.provision({"id": "t1", "repo_id": "r1", "slug": None, "provisioned": False})
+        is None
+    )
     assert calls == []  # no git
     assert client.recorded == []  # nothing recorded
 
@@ -96,7 +108,13 @@ def test_skips_a_shell_workflow_task_which_has_no_clone() -> None:
     client = _FakeClient(runner_type="shell")
     provisioner = _provisioner(client, run)
 
-    shell_task = {"id": "t1", "repo_id": "r1", "workflow": "setup-token", "slug": "mint", "provisioned": False}
+    shell_task = {
+        "id": "t1",
+        "repo_id": "r1",
+        "workflow": "setup-token",
+        "slug": "mint",
+        "provisioned": False,
+    }
     assert provisioner.provision(shell_task) is None
     assert calls == []  # no git checkout -b against a nonexistent clone
     assert client.recorded == []
@@ -107,9 +125,11 @@ def test_provisioner_against_the_real_service(tmp_path: Path) -> None:
     path, and the second pass is a no-op (the pull loop can call it repeatedly)."""
     service = TaskService(SqlAlchemyStore(), {"spike": Spike()}, FilesystemArtifactStore(tmp_path))
     asyncio.run(service.init())
-    asyncio.run(service.create_repo(
-        Repo(id="r1", name="acme/widgets", git_url="https://forge/r1.git", default_base="trunk")
-    ))
+    asyncio.run(
+        service.create_repo(
+            Repo(id="r1", name="acme/widgets", git_url="https://forge/r1.git", default_base="trunk")
+        )
+    )
     with TestClient(create_app(service)) as http:
         client = TaskServiceClient(http)
         task_id = client.create_task("r1", "spike")["id"]

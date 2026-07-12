@@ -52,9 +52,7 @@ async def test_long_poll_blocks_until_a_concurrent_mutation(tmp_path: Path) -> N
         version = int(snapshot.headers[TASKS_VERSION_HEADER])
 
         # Park a long-poll on the current version: nothing has changed, so it must block.
-        waiter = asyncio.ensure_future(
-            http.get("/tasks", params={"wait": 5, "since": version})
-        )
+        waiter = asyncio.ensure_future(http.get("/tasks", params={"wait": 5, "since": version}))
         await asyncio.sleep(0.05)  # give the request time to reach the waiter
         assert not waiter.done()  # still blocked — the feed is event-driven, not a busy return
 

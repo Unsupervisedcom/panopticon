@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import pytest
+
 from panopticon.core.models import LifecyclePhase
 from panopticon.sessionservice.runner import Runner
 from panopticon.sessionservice.shell_runner import ShellRunner
@@ -17,7 +19,14 @@ class _Recorder:
         self.calls: list[list[str]] = []
         self._stdout = stdout
 
-    def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False, verbose: bool = False) -> str:
+    def __call__(
+        self,
+        args: Sequence[str],
+        *,
+        check: bool = True,
+        interactive: bool = False,
+        verbose: bool = False,
+    ) -> str:
         self.calls.append(list(args))
         return self._stdout
 
@@ -61,11 +70,24 @@ def test_spawn_exports_service_env_and_runs_the_script() -> None:
     assert command.rstrip().endswith("claude setup-token")  # the workflow script runs last
 
 
-def test_spawn_sources_the_env_file_when_given() -> None:
+def test_spawn_resolves_and_sources_the_env_file_against_the_secrets_dir() -> None:
+    # env_file is a name relative to this runner's secrets dir (ADR 0007), resolved host-locally.
     rec = _Recorder()
-    ShellRunner("http://svc:8000", run=rec).spawn("t1", script="echo hi", env_file="/sec/r1.env")
+    ShellRunner("http://svc:8000", secrets_dir="/host/secrets", run=rec).spawn(
+        "t1", script="echo hi", env_file="r1.env"
+    )
     command = rec.calls[-1][-1]
-    assert "set -a; . /sec/r1.env; set +a" in command  # secrets sourced before the script
+    assert (
+        "set -a; . /host/secrets/r1.env; set +a" in command
+    )  # resolved + sourced before the script
+
+
+def test_spawn_rejects_an_env_file_name_escaping_the_secrets_dir() -> None:
+    rec = _Recorder()
+    with pytest.raises(ValueError, match="escapes the secrets dir"):
+        ShellRunner("http://svc:8000", secrets_dir="/host/secrets", run=rec).spawn(
+            "t1", script="echo hi", env_file="../evil.env"
+        )
 
 
 def test_spawn_omits_env_sourcing_without_a_file() -> None:
@@ -76,7 +98,9 @@ def test_spawn_omits_env_sourcing_without_a_file() -> None:
 
 def test_spawn_reports_starting_then_awaiting() -> None:
     phases: list[LifecyclePhase] = []
-    ShellRunner("http://svc:8000", run=_Recorder()).spawn("t1", script="echo hi", progress=phases.append)
+    ShellRunner("http://svc:8000", run=_Recorder()).spawn(
+        "t1", script="echo hi", progress=phases.append
+    )
     assert phases == [LifecyclePhase.STARTING, LifecyclePhase.AWAITING]  # no PREPARING/BUILDING
 
 

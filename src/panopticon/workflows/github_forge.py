@@ -80,7 +80,7 @@ class GithubForgeWorkflow(PlannedWorkflow):
                 "**State artifact: `.babysit-ci-state.json`** (task artifact store)\n"
                 "Read with `ReadMcpResourceTool` (URI "
                 "`panopticon://tasks/<task_id>/artifacts/.babysit-ci-state.json`); write/update "
-                "with the `put_artifact` MCP tool (`name=\".babysit-ci-state.json\"`).\n"
+                'with the `put_artifact` MCP tool (`name=".babysit-ci-state.json"`).\n'
                 "Fields: `started_at` (ISO timestamp — budget anchor), `head_sha` (PR HEAD SHA "
                 "at start), `watch_bash_id` (background task ID, `null` when none), `retries` "
                 "(`{check_name: count}` map), `completed` (`false` while active; `true` when "
@@ -103,8 +103,8 @@ class GithubForgeWorkflow(PlannedWorkflow):
                 "briefly and retry Step 1 — don't treat as ready.\n"
                 "   - `mergeStateStatus=CLEAN` / `HAS_HOOKS` → proceed.\n"
                 "2. Write the state artifact: "
-                "`{\"started_at\": \"<now ISO>\", \"head_sha\": \"<headRefOid>\", "
-                "\"watch_bash_id\": null, \"retries\": {}, \"completed\": false}`.\n"
+                '`{"started_at": "<now ISO>", "head_sha": "<headRefOid>", '
+                '"watch_bash_id": null, "retries": {}, "completed": false}`.\n'
                 "3. Arm the background watcher with `run_in_background`:\n"
                 "   `gh pr checks <pr> --watch 2>&1 | tee /tmp/babysit-ci-watch.log; "
                 "echo EXIT:$? >> /tmp/babysit-ci-watch.log`\n"
@@ -113,7 +113,7 @@ class GithubForgeWorkflow(PlannedWorkflow):
                 "running and fires the agent back when the watcher completes.\n\n"
                 "**Re-invocation** (artifact present AND `completed == false`):\n"
                 "1. Read the state artifact. If `started_at` is more than 2 h ago → write "
-                "`{..., \"completed\": true}` and bail to the user with a timeout message.\n"
+                '`{..., "completed": true}` and bail to the user with a timeout message.\n'
                 "2. If `watch_bash_id` is set and the background task is still running → end "
                 "the turn immediately (spurious re-invocation; the watcher fires us again when "
                 "done).\n"
@@ -121,15 +121,15 @@ class GithubForgeWorkflow(PlannedWorkflow):
                 "4. If `EXIT:0` → all checks passed. Run "
                 "`gh pr view <pr> --json state,autoMergeRequest` to check whether the PR is in "
                 "the merge queue:\n"
-                "   - If `autoMergeRequest` is non-null: write `{..., \"completed\": true}` to "
+                '   - If `autoMergeRequest` is non-null: write `{..., "completed": true}` to '
                 "the state artifact. Do NOT stop — the turn must stay on agent. Immediately run "
                 "`/babysit-merge` to shepherd the PR through the merge queue.\n"
-                "   - Otherwise: write `{..., \"completed\": true}` to the state artifact, "
+                '   - Otherwise: write `{..., "completed": true}` to the state artifact, '
                 "report success, and stop (the stop hook flips turn to user — "
                 "do not auto-advance).\n"
                 "5. If `EXIT:` non-zero → extract failing check names from the log; increment "
                 "their `retries` counters. If any counter exceeds 3 → write "
-                "`{..., \"completed\": true}` and bail to the user. Otherwise: diagnose the "
+                '`{..., "completed": true}` and bail to the user. Otherwise: diagnose the '
                 "failure, fix it in the worktree, commit and push. Overwrite the state artifact "
                 "with fresh state (`watch_bash_id: null`, `completed: false`, updated `retries`, "
                 "same `started_at`) to force a fresh watcher, then restart from First Invocation "
@@ -141,7 +141,7 @@ class GithubForgeWorkflow(PlannedWorkflow):
                 "- Never poll manually with a shell loop — use `run_in_background` + state "
                 "artifact instead, or `gh run watch <run_id> --exit-status` for a single run.\n"
                 "- Never use fixed-length SHA slices (`[:7]`, `[:8]`) for run matching — use "
-                "`headSha.startswith(\"<short-sha>\")` and gate on `status == \"completed\"` "
+                '`headSha.startswith("<short-sha>")` and gate on `status == "completed"` '
                 "before reading any result field.\n"
                 "- Never grep `displayTitle` — GitHub rewrites it on PR rename and the pattern "
                 "will match the wrong run.",

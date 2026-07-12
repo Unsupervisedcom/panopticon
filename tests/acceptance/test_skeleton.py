@@ -20,8 +20,8 @@ from panopticon.core.models import Repo
 from panopticon.sessionservice.stub_runner import StubRunner
 from panopticon.taskservice.api import create_app
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
-from panopticon.taskservice.store_sqlalchemy import SqlAlchemyStore
 from panopticon.taskservice.service import TaskService
+from panopticon.taskservice.store_sqlalchemy import SqlAlchemyStore
 from panopticon.workflows import Spike
 
 
@@ -217,9 +217,11 @@ def test_governor_task_id_over_rest(client: TaskServiceClient) -> None:
     assert client.get_task(child_id)["governor_task_id"] is None
 
     # Create with governor_task_id set via the body.
-    child2 = client._json(client._http.post(
-        "/tasks", json={"repo_id": "r1", "workflow": "spike", "governor_task_id": governor_id}
-    ))
+    child2 = client._json(
+        client._http.post(
+            "/tasks", json={"repo_id": "r1", "workflow": "spike", "governor_task_id": governor_id}
+        )
+    )
     assert child2["governor_task_id"] == governor_id
 
     # Set/clear via PUT /tasks/{id}/governor.
@@ -255,7 +257,9 @@ def test_list_tasks_terminal_filter(client: TaskServiceClient) -> None:
 def _make_governed(client: TaskServiceClient, gov_id: str) -> str:
     """Create a spike task governed by gov_id; return its id."""
     return client._json(
-        client._http.post("/tasks", json={"repo_id": "r1", "workflow": "spike", "governor_task_id": gov_id})
+        client._http.post(
+            "/tasks", json={"repo_id": "r1", "workflow": "spike", "governor_task_id": gov_id}
+        )
     )["id"]
 
 
@@ -293,7 +297,7 @@ def test_cascade_drop_skips_already_terminal_governed(client: TaskServiceClient)
     client.request_transition(done_child_id, "COMPLETE", trigger="advance")
     client.request_transition(gov_id, "DROPPED", trigger="drop")
 
-    assert client.get_task(done_child_id)["state"] == "COMPLETE"   # untouched
+    assert client.get_task(done_child_id)["state"] == "COMPLETE"  # untouched
     assert client.get_task(active_child_id)["state"] == "DROPPED"  # cascaded
 
 

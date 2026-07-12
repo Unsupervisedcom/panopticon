@@ -61,12 +61,20 @@ def test_responsibilities_mirror_cloude_cade_dod() -> None:
     assert {r.key for r in WF.responsibilities("PLANNING")} == {"plan-written", "token-estimated"}
     # the plan is a markdown artifact (`plan.md`), so the dashboard opens it with the right handler
     by_key = {r.key: r for r in WF.responsibilities("PLANNING")}
-    assert "plan.md" in by_key["plan-written"].description and "markdown" in by_key["plan-written"].description
+    assert (
+        "plan.md" in by_key["plan-written"].description
+        and "markdown" in by_key["plan-written"].description
+    )
     # planning also forecasts the task's cost via the set_token_estimate tool
     assert "set_token_estimate" in by_key["token-estimated"].description
     assert {r.key for r in WF.responsibilities("ITERATING")} == {
-        "plan-implemented", "requests-implemented", "tests-pass",
-        "committed-pushed", "ci-passing", "pr-updated", "url-recorded",
+        "plan-implemented",
+        "requests-implemented",
+        "tests-pass",
+        "committed-pushed",
+        "ci-passing",
+        "pr-updated",
+        "url-recorded",
     }
     assert {r.key for r in WF.responsibilities("REVIEW")} == {"pr-reviewed"}
     assert {r.key for r in WF.responsibilities("MERGING")} == {"pr-merged"}
@@ -75,10 +83,15 @@ def test_responsibilities_mirror_cloude_cade_dod() -> None:
 def test_each_state_describes_its_phase() -> None:
     # every step carries a human-facing description (what the phase is for), sourced from
     # cloude-cade's per-stage prose — guards against the field regressing to empty.
-    assert WF.description("PLANNING") == "Collect requirements. Produce a plan for the implementation."
+    assert (
+        WF.description("PLANNING") == "Collect requirements. Produce a plan for the implementation."
+    )
     assert WF.description("ITERATING").startswith("Implement the plan.")
     assert WF.description("REVIEW") == "Wait for review or approval of the PR."
-    assert WF.description("MERGING") == "Add the PR to the merge queue. If the PR exits the merge queue, re-add it."
+    assert (
+        WF.description("MERGING")
+        == "Add the PR to the merge queue. If the PR exits the merge queue, re-add it."
+    )
     assert WF.description("COMPLETE")  # the terminal state is described too
     assert all(WF.description(label) for label in ("PLANNING", "ITERATING", "REVIEW", "MERGING"))
 
@@ -90,16 +103,24 @@ def test_github_peer_reviewed_exposes_forge_skills() -> None:
     babysit = next(s for s in skills if s.name == "babysit-ci")
     assert "run_in_background" in babysit.instructions  # push-driven pattern, not blocking watch
     assert "state artifact" in babysit.instructions  # cross-turn state for retry budget
-    assert "retries" in babysit.instructions or "retry" in babysit.instructions  # per-check retry cap
+    assert (
+        "retries" in babysit.instructions or "retry" in babysit.instructions
+    )  # per-check retry cap
 
 
 def test_babysit_merge_skill_covers_key_protocol_elements() -> None:
     merge_skill = next(s for s in WF.skills() if s.name == "babysit-merge")
     instructions = merge_skill.instructions
-    assert "CLOSED" in instructions          # Gap 3: PR closed without merge
+    assert "CLOSED" in instructions  # Gap 3: PR closed without merge
     assert "run_in_background" in instructions  # Gap 1: push-driven, non-blocking watch
-    assert "state artifact" in instructions.lower() or "babysit-merge-state" in instructions  # Gap 2: cross-turn state (stored as task artifact)
-    assert "double" in instructions.lower() or "already" in instructions.lower() or "autoMergeRequest" in instructions  # Gap 4: no double-queuing
+    assert (
+        "state artifact" in instructions.lower() or "babysit-merge-state" in instructions
+    )  # Gap 2: cross-turn state (stored as task artifact)
+    assert (
+        "double" in instructions.lower()
+        or "already" in instructions.lower()
+        or "autoMergeRequest" in instructions
+    )  # Gap 4: no double-queuing
 
 
 def test_github_peer_reviewed_image_layer_installs_gh() -> None:
@@ -107,7 +128,9 @@ def test_github_peer_reviewed_image_layer_installs_gh() -> None:
 
 
 def test_github_peer_reviewed_declares_gh_as_a_tool() -> None:
-    names = {t.name for t in WF.tools()}  # named in the agent's system prompt (it ships in the image)
+    names = {
+        t.name for t in WF.tools()
+    }  # named in the agent's system prompt (it ships in the image)
     assert "gh" in names
 
 
@@ -128,7 +151,11 @@ def test_full_lifecycle_planning_to_complete() -> None:
         _advance(task, nxt)
     assert task.state == "COMPLETE"
     assert [h.to_state for h in task.history] == [
-        "PLANNING", "ITERATING", "REVIEW", "MERGING", "COMPLETE",
+        "PLANNING",
+        "ITERATING",
+        "REVIEW",
+        "MERGING",
+        "COMPLETE",
     ]
     assert WF.is_terminal("COMPLETE")
 
@@ -149,7 +176,9 @@ def test_turn_flips_to_user_on_entering_a_foreground_state() -> None:
 def test_cannot_advance_with_unresolved_responsibilities() -> None:
     task = WF.start_task("t1", "r1", at="t0")
     with pytest.raises(ResponsibilitiesNotMet):
-        WF.apply_transition(task, "ITERATING", at="t1")  # plan-written/token-estimated still PENDING
+        WF.apply_transition(
+            task, "ITERATING", at="t1"
+        )  # plan-written/token-estimated still PENDING
 
 
 def test_partial_resolution_still_gates() -> None:
@@ -157,7 +186,9 @@ def test_partial_resolution_still_gates() -> None:
     _advance(task, "ITERATING")  # now in ITERATING with several promises
     task.resolve_responsibility(key="tests-pass", status=Status.MET)
     with pytest.raises(ResponsibilitiesNotMet):
-        WF.apply_transition(task, "REVIEW", at="t2")  # the rest (e.g. plan-implemented) still PENDING
+        WF.apply_transition(
+            task, "REVIEW", at="t2"
+        )  # the rest (e.g. plan-implemented) still PENDING
 
 
 # -- iterate-back + drop ------------------------------------------------------------
@@ -188,4 +219,6 @@ def test_cannot_skip_review() -> None:
     _advance(task, "ITERATING")
     _meet_all(task)
     with pytest.raises(IllegalTransition):
-        WF.apply_transition(task, "MERGING", at="t2")  # no ITERATING -> MERGING edge in the base workflow
+        WF.apply_transition(
+            task, "MERGING", at="t2"
+        )  # no ITERATING -> MERGING edge in the base workflow

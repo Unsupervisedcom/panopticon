@@ -61,7 +61,9 @@ def test_provision_branches_watched_tasks_and_returns_their_branches() -> None:
     provisioner = _FakeProvisioner({"t1": "panopticon/a", "t2": None})  # t2 not ready (no slug yet)
     daemon = ProvisionDaemon(_FakeFeed([]), provisioner)  # type: ignore[arg-type]
 
-    branches = daemon.provision([{"id": "t1", "provisioned": False}, {"id": "t2", "provisioned": False}])
+    branches = daemon.provision(
+        [{"id": "t1", "provisioned": False}, {"id": "t2", "provisioned": False}]
+    )
     assert branches == ["panopticon/a"]  # only the provisioned one
     assert provisioner.seen == ["t1", "t2"]  # but both were considered
 
@@ -70,7 +72,9 @@ def test_provision_isolates_a_failing_task_from_the_others() -> None:
     provisioner = _FakeProvisioner({"t1": RuntimeError("git blew up"), "t2": "panopticon/b"})
     daemon = ProvisionDaemon(_FakeFeed([]), provisioner)  # type: ignore[arg-type]
 
-    branches = daemon.provision([{"id": "t1", "provisioned": False}, {"id": "t2", "provisioned": False}])
+    branches = daemon.provision(
+        [{"id": "t1", "provisioned": False}, {"id": "t2", "provisioned": False}]
+    )
     assert branches == ["panopticon/b"]  # t1's error is logged + skipped; t2 still provisions
     assert provisioner.seen == ["t1", "t2"]
 
@@ -133,9 +137,11 @@ def test_daemon_against_the_real_service(tmp_path: Path) -> None:
     end over REST. `git` is faked; the branch + clone path land on the real task service."""
     service = TaskService(SqlAlchemyStore(), {"spike": Spike()}, FilesystemArtifactStore(tmp_path))
     asyncio.run(service.init())
-    asyncio.run(service.create_repo(
-        Repo(id="r1", name="acme/widgets", git_url="https://forge/r1.git", default_base="trunk")
-    ))
+    asyncio.run(
+        service.create_repo(
+            Repo(id="r1", name="acme/widgets", git_url="https://forge/r1.git", default_base="trunk")
+        )
+    )
     with TestClient(create_app(service)) as http:
         client = TaskServiceClient(http)
         task_id = client.create_task("r1", "spike")["id"]
@@ -176,7 +182,11 @@ def test_run_daemon_provisions_a_slugged_task_over_one_pass(tmp_path: Path) -> N
     task — end to end over REST, `git` faked, stopped after one pass."""
     service = TaskService(SqlAlchemyStore(), {"spike": Spike()}, FilesystemArtifactStore(tmp_path))
     asyncio.run(service.init())
-    asyncio.run(service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://forge/r1.git", default_base="trunk")))
+    asyncio.run(
+        service.create_repo(
+            Repo(id="r1", name="acme/widgets", git_url="https://forge/r1.git", default_base="trunk")
+        )
+    )
     with TestClient(create_app(service)) as http:
         client = TaskServiceClient(http)
         task_id = client.create_task("r1", "spike")["id"]
@@ -193,7 +203,11 @@ def test_run_daemon_provisions_a_slugged_task_over_one_pass(tmp_path: Path) -> N
             return done
 
         run_daemon(
-            client, tasks_root="/clones", git=GitClones(run=fake_run), until=until, sleep=lambda _s: None
+            client,
+            tasks_root="/clones",
+            git=GitClones(run=fake_run),
+            until=until,
+            sleep=lambda _s: None,
         )
         got = client.get_task(task_id)
         assert got["branch"] == "panopticon/fix-widget"

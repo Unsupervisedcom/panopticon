@@ -19,9 +19,16 @@ from __future__ import annotations
 import os
 import shlex
 from collections.abc import Callable
+from pathlib import Path
 
+from panopticon.core.dirs import secrets_file_path
 from panopticon.core.models import LifecyclePhase
-from panopticon.sessionservice.local_runner import TMUX_SOCKET, CommandRunner, _subprocess_run, session_name
+from panopticon.sessionservice.local_runner import (
+    TMUX_SOCKET,
+    CommandRunner,
+    _subprocess_run,
+    session_name,
+)
 from panopticon.sessionservice.runner import Runner
 
 
@@ -34,11 +41,15 @@ class ShellRunner(Runner):
         *,
         runner_id: str = "local",
         tmux_socket: str | None = TMUX_SOCKET,
+        secrets_dir: str | Path | None = None,
         run: CommandRunner = _subprocess_run,
     ) -> None:
         self._service_url = service_url
         self._runner_id = runner_id
         self._tmux_socket = tmux_socket
+        # Root the repo's `env_file` *name* resolves against — this host's local secrets dir, matching
+        # LocalRunner (ADR 0007). None = resolve the host's secrets dir dynamically at spawn.
+        self._secrets_dir = secrets_dir
         self._run = run
 
     def _tmux(self, *args: str) -> list[str]:
@@ -62,8 +73,10 @@ class ShellRunner(Runner):
         workflow's own override. ``workdir`` falls back to the operator's home only when unset (direct
         use). The pane runs ``sh -c`` with ``PANOPTICON_SERVICE_URL`` and ``PANOPTICON_TASK_ID``
         exported — so the script can drive its own lifecycle over REST (e.g. advance to COMPLETE on
-        success) — and the repo's ``env_file`` secrets sourced first when given. Reports ``STARTING``
-        (before the session) then ``AWAITING`` (once it's up) via ``progress``; there is no
+        success) — and the repo's ``env_file`` secrets sourced first when given. ``env_file`` is a
+        **name relative to this runner's secrets dir** (ADR 0007), resolved host-locally (like
+        ``LocalRunner``) so a remote runner uses its own host's secrets. Reports ``STARTING`` (before
+        the session) then ``AWAITING`` (once it's up) via ``progress``; there is no
         ``PREPARING``/``BUILDING`` (no clone, no image). Idempotent: a stale session of the same name
         is killed first, so a respawn is a no-op restart."""
 
@@ -78,15 +91,18 @@ class ShellRunner(Runner):
             f"export PANOPTICON_TASK_ID={shlex.quote(task_id)}",
             f"export PANOPTICON_RUNNER_ID={shlex.quote(self._runner_id)}",
         ]
-        if env_file:  # per-repo secrets (ADR 0007), sourced into the environment like --env-file
-            lines.append(f"set -a; . {shlex.quote(env_file)}; set +a")
+        # Resolve the env_file *name* to an absolute path under this host's secrets dir, then source it.
+        if env_path := secrets_file_path(env_file, secrets_dir=self._secrets_dir):
+            lines.append(f"set -a; . {shlex.quote(env_path)}; set +a")
         lines.append(script)
         command = "\n".join(lines)
         # Clear any stale session first so a respawn is idempotent (no-op when none exists).
         self._run(self._tmux("kill-session", "-t", session), check=False)
         _report(LifecyclePhase.STARTING)
         # -c sets the pane's start directory (the task's own dir) so the script runs in a known place.
-        self._run(self._tmux("new-session", "-d", "-s", session, "-c", start_dir, "sh", "-c", command))
+        self._run(
+            self._tmux("new-session", "-d", "-s", session, "-c", start_dir, "sh", "-c", command)
+        )
         _report(LifecyclePhase.AWAITING)
         return session
 

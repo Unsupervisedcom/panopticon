@@ -58,7 +58,9 @@ class CloneCache:
         path = self.path(repo_id)
         if self._exists(path):
             self._run(["git", "-C", path, "fetch", "--all", "--prune"])
-            self._run(["git", "-C", path, "merge", "--ff-only"])  # advance the base branch to upstream
+            self._run(
+                ["git", "-C", path, "merge", "--ff-only"]
+            )  # advance the base branch to upstream
         else:
             self._makedirs(self._root)
             self._run(["git", "clone", git_url, path])

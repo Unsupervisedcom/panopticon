@@ -95,7 +95,9 @@ A `Makefile` wraps the `uv` commands (`make help` lists targets):
 make sync        # uv sync — venv + deps
 make test        # uv run pytest
 make typecheck   # uv run mypy --package panopticon (strict)
-make check       # typecheck + test (what CI runs)
+make lint        # uv run ruff check --fix + ruff format (lint + auto-format)
+make format      # uv run ruff format
+make check       # lint + typecheck + test (what CI runs)
 make serve       # run the task service over HTTP (python -m panopticon.taskservice)
 make dashboard   # run the dashboard once (no attach loop)
 make start       # bring up everything: task service + session-service runner + dashboard supervisor
@@ -135,8 +137,13 @@ Spawning needs the base image — `make build`
 first. `make dashboard` runs the dashboard once without the attach loop (talks to
 `PANOPTICON_SERVICE_URL`).
 
-CI (`.github/workflows/ci.yml`) runs `uv sync`, `mypy`, and `pytest` on every PR (the same
-commands the Makefile wraps).
+Lint + format is **Ruff** (`make lint` / `make format`); the ruleset lives under `[tool.ruff]` in
+`pyproject.toml` (a curated best-practices `select`, incl. `F401` unused-import — the rule that keeps
+stale imports from landing; `ruff format` owns line width, so `E501` is off). `make check` runs it
+read-only (`ruff check` + `ruff format --check`) before mypy + pytest.
+
+CI (`.github/workflows/ci.yml`) runs `uv sync`, `ruff` (lint + format check), `mypy`, and `pytest`
+on every PR (the same commands the Makefile wraps).
 
 ## Tests worth knowing
 
@@ -215,13 +222,15 @@ commands the Makefile wraps).
 
 - **Ensemble** — the collapsible group of governed tasks shown under a governor in the
   dashboard. Pressing `Enter` on a governing task collapses its children into a single dim
-  `ensemble` placeholder row; pressing `Enter` again expands them. Pure display state — no
+  placeholder row; pressing `Enter` again expands them. Pure display state — no
   change is made to the task service. The placeholder row's key uses the `_ENSEMBLE_KEY_PREFIX`
-  sentinel and its slug cell reads `ensemble` (dim). Arrow keys skip it like the separator.
+  sentinel and its slug cell renders a dim `...`. Arrow keys skip it like the separator.
 - **Task** — a unit of work; identity is `id`, label is `slug`.
-- **Repo** — a repository tasks operate on. Holds `env_file` (a *reference* — a host path to an
-  env-file of secrets, ADR 0007), never the values; the runner injects it at launch (`--env-file`),
-  so a task gets only its own repo's secrets. The env-file carries the container's
+- **Repo** — a repository tasks operate on. Holds `env_file` (a *reference* — a name relative to the
+  secrets dir `$PANOPTICON_CONFIG/secrets` naming an env-file of secrets, ADR 0007), never the
+  values; the runner resolves it against its **own** host's secrets dir and injects it at launch
+  (`--env-file`), so a task gets only its own repo's secrets and the value stays host-agnostic for
+  remote runners. The env-file carries the container's
   `CLAUDE_CODE_OAUTH_TOKEN` — a **non-rotating `claude setup-token` the operator adds** (ADR 0012
   retired the old per-repo OAuth creds volume + `panopticon login`; auth is now just this env var,
   read straight from the environment — see `docs/container-auth.md`) — alongside any

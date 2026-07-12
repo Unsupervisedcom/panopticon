@@ -14,8 +14,10 @@ from __future__ import annotations
 import os
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 from typing import Protocol
 
+from panopticon.core.dirs import secrets_file_path
 from panopticon.core.models import LifecyclePhase
 from panopticon.sessionservice.runner import Runner
 
@@ -65,15 +67,25 @@ class CommandRunner(Protocol):
     hang. ``verbose`` also inherits the caller's streams but is for non-interactive commands whose
     output should be visible in the runner's tmux session (e.g. ``docker build``)."""
 
-    def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False, verbose: bool = False) -> str: ...
+    def __call__(
+        self,
+        args: Sequence[str],
+        *,
+        check: bool = True,
+        interactive: bool = False,
+        verbose: bool = False,
+    ) -> str: ...
 
 
-def _subprocess_run(args: Sequence[str], *, check: bool = True, interactive: bool = False, verbose: bool = False) -> str:
-    if interactive or verbose:  # inherit streams: TTY attachment (interactive) or visible build output (verbose)
+def _subprocess_run(
+    args: Sequence[str], *, check: bool = True, interactive: bool = False, verbose: bool = False
+) -> str:
+    if (
+        interactive or verbose
+    ):  # inherit streams: TTY attachment (interactive) or visible build output (verbose)
         subprocess.run(list(args), check=check)
         return ""
     return subprocess.run(list(args), check=check, capture_output=True, text=True).stdout
-
 
 
 def _invoking_user() -> str:
@@ -98,11 +110,16 @@ class LocalRunner(Runner):
         tmux_socket: str | None = TMUX_SOCKET,
         extra_env: Mapping[str, str] | None = None,
         user: str | None = None,
+        secrets_dir: str | Path | None = None,
         run: CommandRunner = _subprocess_run,
     ) -> None:
         self._service_url = service_url
         self._image = image
         self._runner_id = runner_id
+        # Root the repo's `env_file` name resolves against — this host's local secrets dir, so a
+        # remote runner uses its own secrets (the stored value is host-agnostic; ADR 0007). None =
+        # resolve the host's secrets dir dynamically at spawn.
+        self._secrets_dir = secrets_dir
         # Run the task container unprivileged as the invoking user (uid:gid), so it can't act as
         # root on the host and its writes to the mounted workspace are owned by the operator.
         self._user = user if user is not None else _invoking_user()
@@ -131,7 +148,9 @@ class LocalRunner(Runner):
         progress: Callable[[LifecyclePhase], None] | None = None,
     ) -> str:
         """Spawn the task container. ``env_file`` is the task's repo's secret reference (ADR
-        0007), injected at launch — never baked into the image. ``workspace`` is the
+        0007) — a name **relative to this runner's secrets dir** (:data:`SECRETS_DIR`), resolved
+        host-locally and injected at launch (``--env-file``), never baked into the image and never
+        crossing the wire (so a remote runner uses its own host's secrets). ``workspace`` is the
         task's per-task clone on the host (ADR 0011), bind-mounted read-write at ``/workspace`` as
         the agent's working dir. ``image`` overrides the default base with the task's composed image
         (base → workflow → repo, ADR 0005); ``None`` uses the configured base. ``docker_in_docker``
@@ -148,6 +167,7 @@ class LocalRunner(Runner):
         phase the runner passes through (``STARTING`` before ``docker run``, ``AWAITING`` once the
         tmux session is up) so the caller can surface it — see
         :class:`~panopticon.core.models.LifecyclePhase`."""
+
         def _report(phase: LifecyclePhase) -> None:
             if progress is not None:
                 progress(phase)
@@ -175,25 +195,39 @@ class LocalRunner(Runner):
         if starting_model:
             env["PANOPTICON_STARTING_MODEL"] = starting_model
         docker_run = [
-            "docker", "run", "--detach",
-            "--name", container,
-            "--label", f"panopticon.task={task_id}",
-            "--add-host", HOST_GATEWAY,
+            "docker",
+            "run",
+            "--detach",
+            "--name",
+            container,
+            "--label",
+            f"panopticon.task={task_id}",
+            "--add-host",
+            HOST_GATEWAY,
         ]
-        if docker_in_docker:  # privileged nested Docker daemon (repo capability); entrypoint starts it
+        if (
+            docker_in_docker
+        ):  # privileged nested Docker daemon (repo capability); entrypoint starts it
             docker_run.append("--privileged")
             docker_run += ["--volume", f"panopticon-dind-{task_id}:/var/lib/docker"]
             env["PANOPTICON_DOCKER_IN_DOCKER"] = "1"
-        if env_file:  # per-repo API-key secrets, injected at run (not in the image)
-            docker_run += ["--env-file", env_file]
+        if env_path := secrets_file_path(env_file, secrets_dir=self._secrets_dir):
+            docker_run += ["--env-file", env_path]  # per-repo secrets, resolved host-locally
         if workspace:  # the per-task clone — the agent's writable working dir (ADR 0011)
-            docker_run += ["--volume", f"{workspace}:{WORKSPACE_MOUNT}", "--workdir", WORKSPACE_MOUNT]
+            docker_run += [
+                "--volume",
+                f"{workspace}:{WORKSPACE_MOUNT}",
+                "--workdir",
+                WORKSPACE_MOUNT,
+            ]
         # Per-task config volume: persists claude's session history across respawn/recreate (the
         # transcripts live in the config dir, which is otherwise thrown away with the container).
         docker_run += ["--volume", f"panopticon-config-{task_id}:{CONFIG_MOUNT}"]
         for key, value in env.items():
             docker_run += ["--env", f"{key}={value}"]
-        docker_run.append(image or self._image)  # composed image if given, else base; its entrypoint runs
+        docker_run.append(
+            image or self._image
+        )  # composed image if given, else base; its entrypoint runs
         # Clear any stale tmux session + container first — handles both a prior exited run and a
         # live force-respawn (dashboard `R` kills and restarts). Both are no-ops when nothing
         # exists, so spawn is fully idempotent. (`stop()` does the same pair.)
@@ -206,9 +240,18 @@ class LocalRunner(Runner):
         # the agent's `whoami` see that named user, not root.
         self._run(
             self._tmux(
-                "new-session", "-d", "-s", container,
-                "docker", "exec", "--interactive", "--tty", "--user", CONTAINER_USER,
-                container, *self._agent_command,
+                "new-session",
+                "-d",
+                "-s",
+                container,
+                "docker",
+                "exec",
+                "--interactive",
+                "--tty",
+                "--user",
+                CONTAINER_USER,
+                container,
+                *self._agent_command,
             )
         )
         _report(LifecyclePhase.AWAITING)  # container + tmux up; waiting for its /live registration
@@ -255,13 +298,20 @@ class LocalRunner(Runner):
         it, so the daemon can then ``rmtree`` the now-empty directory. Overrides the
         panopticon entrypoint (which would remap uid) so the container runs as root and can
         reach files it created. Raises on nonzero docker exit."""
-        self._run([
-            "docker", "run", "--rm",
-            "--entrypoint", "/bin/sh",
-            "--volume", f"{path}:/cleanup",
-            self._image,
-            "-c", "find /cleanup -mindepth 1 -delete",
-        ])
+        self._run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--entrypoint",
+                "/bin/sh",
+                "--volume",
+                f"{path}:/cleanup",
+                self._image,
+                "-c",
+                "find /cleanup -mindepth 1 -delete",
+            ]
+        )
 
     def stop(self, container_id: str) -> None:
         # Idempotent: tolerate an already-gone session/container.

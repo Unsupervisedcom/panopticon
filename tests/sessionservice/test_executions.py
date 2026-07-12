@@ -18,7 +18,9 @@ class _FakeClient:
 
 
 def test_fetches_once_then_caches() -> None:
-    client = _FakeClient({"wf": {"runner_type": "docker", "script": "", "clone_repo": False, "workdir": None}})
+    client = _FakeClient(
+        {"wf": {"runner_type": "docker", "script": "", "clone_repo": False, "workdir": None}}
+    )
     execs = WorkflowExecutions(client)  # type: ignore[arg-type]
     assert execs.spec("wf")["runner_type"] == "docker"
     assert execs.spec("wf")["runner_type"] == "docker"
@@ -28,7 +30,12 @@ def test_fetches_once_then_caches() -> None:
 def test_is_shell_reflects_runner_type() -> None:
     client = _FakeClient(
         {
-            "sh": {"runner_type": "shell", "script": "echo hi", "clone_repo": False, "workdir": None},
+            "sh": {
+                "runner_type": "shell",
+                "script": "echo hi",
+                "clone_repo": False,
+                "workdir": None,
+            },
             "dk": {"runner_type": "docker", "script": "", "clone_repo": False, "workdir": None},
         }
     )

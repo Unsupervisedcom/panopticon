@@ -54,7 +54,7 @@ def migrate_db_to_home(db_url: str) -> None:
     """
     if db_url != DB_URL:
         return
-    new = Path(db_url[len(_SQLITE_PREFIX):])
+    new = Path(db_url[len(_SQLITE_PREFIX) :])
     if new.exists():
         return
     for old in [Path("panopticon.db"), Path.home() / ".panopticon" / "panopticon.db"]:
@@ -131,14 +131,14 @@ def build_app(
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
     parser = argparse.ArgumentParser(
         prog="python -m panopticon.taskservice", description="Run the task service over HTTP."
     )
     parser.add_argument("--host", default=os.environ.get("PANOPTICON_HOST", "0.0.0.0"))
-    parser.add_argument(
-        "--port", type=int, default=int(os.environ.get("PANOPTICON_PORT", "8000"))
-    )
+    parser.add_argument("--port", type=int, default=int(os.environ.get("PANOPTICON_PORT", "8000")))
     parser.add_argument("--db", default=os.environ.get("PANOPTICON_DB", DB_URL))
     parser.add_argument(
         "--workflows-path",
@@ -149,7 +149,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     user_data_dir().mkdir(parents=True, exist_ok=True)
     _migrate_legacy_to_home(args.db, ARTIFACTS_DIR, LAYERS_DIR)
     app = build_app(
-        db=args.db, artifacts_root=ARTIFACTS_DIR, layers_root=LAYERS_DIR,
+        db=args.db,
+        artifacts_root=ARTIFACTS_DIR,
+        layers_root=LAYERS_DIR,
         workflows_path=args.workflows_path,
     )
     uvicorn.run(app, host=args.host, port=args.port)
