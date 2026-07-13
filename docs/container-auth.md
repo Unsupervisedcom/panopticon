@@ -56,6 +56,12 @@ the previous line is **commented out** (kept as a record, not deleted) and any p
 it can't capture the token (or the repo has no `env_file`), it falls back to printing the copy-it-in
 instructions above.
 
+If the host running the workflow has **no `claude` CLI installed**, it says so and **falls back to
+running `claude setup-token` in the base task-container image** (which ships the CLI) via Docker. If
+that image isn't built yet, it **builds it first** with `make build` (best-effort — it needs Docker
+and a source checkout of this repo on the host; on a wheel-only host it explains it can't auto-build
+and points you here). Either way the container route is announced on screen before it runs.
+
 ## Notes
 
 - **The env-file lives on the host that spawns the container.** Because `env_file` is stored as a

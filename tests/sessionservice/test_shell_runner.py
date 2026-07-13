@@ -12,8 +12,9 @@ from pathlib import Path
 import pytest
 
 from panopticon.core.models import LifecyclePhase
+from panopticon.sessionservice.local_runner import DEFAULT_IMAGE
 from panopticon.sessionservice.runner import Runner
-from panopticon.sessionservice.shell_runner import ShellRunner
+from panopticon.sessionservice.shell_runner import ShellRunner, panopticon_repo_root
 
 
 class _Recorder:
@@ -130,6 +131,43 @@ def test_spawn_omits_env_sourcing_without_a_file() -> None:
     ShellRunner("http://svc:8000", run=rec).spawn("t1", script="echo hi")
     command = rec.calls[-1][-1]
     assert "set -a" not in command and "PANOPTICON_ENV_FILE" not in command  # no source line
+
+
+def test_spawn_exports_the_base_image_for_a_container_fallback() -> None:
+    # A shell workflow (e.g. setup-repo) uses PANOPTICON_BASE_IMAGE to run `claude` in a container
+    # when the host has no `claude` CLI. It's the same base image the local runner defaults to.
+    rec = _Recorder()
+    ShellRunner("http://svc:8000", run=rec).spawn("t1", script="echo hi")
+    command = rec.calls[-1][-1]
+    assert f"export PANOPTICON_BASE_IMAGE={DEFAULT_IMAGE}" in command
+
+
+def test_spawn_exports_the_repo_root_from_a_source_checkout() -> None:
+    # Running from a source checkout (as in the test env), the runner exposes PANOPTICON_REPO_ROOT so
+    # a shell workflow can `make build` the base image on the host. It points at the repo root.
+    rec = _Recorder()
+    ShellRunner("http://svc:8000", run=rec).spawn("t1", script="echo hi")
+    command = rec.calls[-1][-1]
+    root = panopticon_repo_root()
+    assert root is not None  # the test suite runs from the source checkout
+    assert f"export PANOPTICON_REPO_ROOT={root}" in command
+
+
+def test_panopticon_repo_root_finds_the_makefile_root(tmp_path: Path) -> None:
+    # The root is the nearest ancestor holding BOTH a Makefile and a pyproject.toml.
+    (tmp_path / "Makefile").write_text("build:\n")
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    nested = tmp_path / "src" / "pkg" / "sub"
+    nested.mkdir(parents=True)
+    assert panopticon_repo_root(nested) == tmp_path
+
+
+def test_panopticon_repo_root_is_none_without_a_checkout(tmp_path: Path) -> None:
+    # No Makefile+pyproject anywhere up the tree (a wheel install) → None; the workflow then can't
+    # auto-build and says so instead.
+    nested = tmp_path / "a" / "b"
+    nested.mkdir(parents=True)
+    assert panopticon_repo_root(nested) is None
 
 
 def test_spawn_exports_the_git_url_when_given() -> None:

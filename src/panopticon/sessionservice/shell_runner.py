@@ -25,6 +25,7 @@ from pathlib import Path
 from panopticon.core.dirs import secrets_file_path
 from panopticon.core.models import LifecyclePhase
 from panopticon.sessionservice.local_runner import (
+    DEFAULT_IMAGE,
     TMUX_SOCKET,
     CommandRunner,
     _subprocess_run,
@@ -36,6 +37,22 @@ from panopticon.sessionservice.runner import Runner
 #: task over REST (``panopticon_advance``/``_drop``/``_set_slug``/…) instead of hand-rolling curl.
 #: Loaded once at import and injected into every shell task's shell (see :meth:`ShellRunner.spawn`).
 _TASK_LIB = (importlib.resources.files("panopticon.sessionservice") / "task_lib.sh").read_text()
+
+
+def panopticon_repo_root(start: Path | None = None) -> Path | None:
+    """The source-checkout root (holding the ``Makefile``) this package runs from, or ``None``.
+
+    Walks up from this package's directory looking for the repo root — a dir with **both** a
+    ``Makefile`` and a ``pyproject.toml`` (so an unrelated ``Makefile`` higher up isn't mistaken for
+    it). Present for an editable/source install (dev, ``make start``); absent for a wheel install
+    into site-packages. A shell workflow uses it to ``make build`` the base image on the host (e.g.
+    setup-repo's container fallback when ``claude`` isn't installed). ``start`` overrides the search
+    origin (for tests)."""
+    origin = (start or Path(__file__)).resolve()
+    for parent in (origin, *origin.parents):
+        if (parent / "Makefile").is_file() and (parent / "pyproject.toml").is_file():
+            return parent
+    return None
 
 
 class ShellRunner(Runner):
@@ -82,7 +99,10 @@ class ShellRunner(Runner):
         exported — so the script can drive its own lifecycle over REST (e.g. advance to COMPLETE on
         success) — and the repo's ``env_file`` secrets sourced first when given. ``git_url``, when
         given, is exported as ``PANOPTICON_GIT_URL`` so a script can tell what forge the repo lives
-        on (e.g. offer to record a GitHub token). ``env_file`` is a
+        on (e.g. offer to record a GitHub token). ``PANOPTICON_BASE_IMAGE`` (the base task-container
+        image) and — when this host has a source checkout — ``PANOPTICON_REPO_ROOT`` are exported too,
+        so a shell workflow can fall back to a container (e.g. run ``claude setup-token`` in the base
+        image, ``make build``ing it from the repo root if it's missing). ``env_file`` is a
         **name relative to this runner's secrets dir** (ADR 0007), resolved host-locally (like
         ``LocalRunner``) so a remote runner uses its own host's secrets. The panopticon shell lib
         (``panopticon_advance``/``_drop``/…) is loaded into the shell so the script can drive its task
@@ -108,11 +128,22 @@ class ShellRunner(Runner):
             f"{self._service_url}/tasks/{task_id}/live"
             f"?container_id={session}&runner_id={self._runner_id}"
         )
+        # The base task-container image + the source-checkout root, for a shell workflow that needs a
+        # container fallback (e.g. setup-repo runs `claude setup-token` in the base image when the
+        # host has no `claude` CLI, and `make build`s it from the repo root if it's missing). The repo
+        # root is only exported when this host actually has a source checkout (not a wheel install).
+        repo_root = panopticon_repo_root()
         lines = [
             f"export PANOPTICON_SERVICE_URL={shlex.quote(self._service_url)}",
             f"export PANOPTICON_TASK_ID={shlex.quote(task_id)}",
             f"export PANOPTICON_RUNNER_ID={shlex.quote(self._runner_id)}",
+            f"export PANOPTICON_BASE_IMAGE={shlex.quote(DEFAULT_IMAGE)}",
             *([f"export PANOPTICON_GIT_URL={shlex.quote(git_url)}"] if git_url else []),
+            *(
+                [f"export PANOPTICON_REPO_ROOT={shlex.quote(str(repo_root))}"]
+                if repo_root is not None
+                else []
+            ),
             f"curl --silent --no-buffer {shlex.quote(live_url)} >/dev/null 2>&1 &",
             "_panopticon_live_pid=$!",
             "trap 'kill $_panopticon_live_pid 2>/dev/null' EXIT",

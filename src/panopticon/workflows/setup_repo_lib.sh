@@ -42,6 +42,28 @@ store_oauth_token() {
     chmod 600 "$_sot_file" 2>/dev/null || true
 }
 
+# Echo the command that runs `claude setup-token`, or return nonzero when there's no way to run it.
+# Prefers a host `claude` on $PATH; when that's absent, falls back to running it in the base
+# task-container image $1 via docker (which ships the `claude` CLI) — `--rm` throwaway, `-it` so the
+# interactive OAuth flow keeps its TTY (supplied by the pane / the `script` pty that wraps it). Pure
+# (prints only the command, no user-facing chatter — the caller announces the fallback) so it's
+# unit-testable. Returns 1 when neither `claude` nor `docker` is available.
+setup_token_command() {
+    if command -v claude >/dev/null 2>&1; then
+        echo 'claude setup-token'
+    elif command -v docker >/dev/null 2>&1; then
+        echo "docker run --rm -it $1 claude setup-token"
+    else
+        return 1
+    fi
+}
+
+# True when the base task-container image $1 is present locally (so the docker fallback can run
+# without building it first). Nonzero when the image is missing or `docker` isn't installed.
+base_image_present() {
+    command -v docker >/dev/null 2>&1 && docker image inspect "$1" >/dev/null 2>&1
+}
+
 # True when URL $1 names github.com as its host, in either form the repo's `git_url` is stored:
 # HTTPS (`https://github.com/owner/repo.git`) or SSH (`git@github.com:owner/repo.git`). An empty or
 # non-GitHub URL (incl. a GitHub Enterprise host) returns nonzero.

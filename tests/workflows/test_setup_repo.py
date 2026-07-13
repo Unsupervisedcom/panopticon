@@ -95,8 +95,9 @@ def test_shell_script_shows_the_dashboard_hint_first() -> None:
 
 def test_shell_script_captures_and_writes_the_minted_token() -> None:
     script = WF.shell_script()
-    # captures the interactive `claude setup-token` in a pty so its output can be read back
-    assert "script -q -e -c 'claude setup-token'" in script
+    # captures the interactive setup-token command (host `claude` or the docker fallback, resolved
+    # into $_ct_cmd) in a pty so its output can be read back
+    assert 'script -q -e -c "$_ct_cmd"' in script
     # extracts the minted token and stores it in the repo's env-file via the helpers
     assert "extract_oauth_token" in script
     assert "store_oauth_token" in script and "PANOPTICON_ENV_FILE" in script
@@ -187,6 +188,66 @@ def test_shell_script_offers_the_github_token_when_missing() -> None:
     # comes after the credential check) but before the final summary
     assert script.rindex("maybe_offer_github_token") > script.index("${CLAUDE_CODE_OAUTH_TOKEN:-}")
     assert script.rindex("maybe_offer_github_token") < script.rindex('echo "Summary: $summary"')
+
+
+def test_shell_script_falls_back_to_a_container_when_claude_is_missing() -> None:
+    script = WF.shell_script()
+    # resolves how to run setup-token (host `claude` vs a docker fallback) via the helper
+    assert "setup_token_command" in script
+    # the fallback runs `claude setup-token` in the base image, announced explicitly to the operator
+    assert "docker run --rm -it" in script
+    assert "isn't installed on this host" in script
+    # best-effort auto-build of the base image when it's missing, gated on a source checkout
+    assert "base_image_present" in script
+    assert "make build IMAGE=" in script
+    assert "PANOPTICON_REPO_ROOT" in script
+
+
+def test_setup_token_command_prefers_a_host_claude() -> None:
+    # A `claude` on PATH → run it directly on the host (no container).
+    out = _sh(
+        'd=$(mktemp -d); : > "$d/claude"; chmod +x "$d/claude"; '
+        '( PATH="$d"; setup_token_command panopticon-base ); rm -rf "$d"'
+    )
+    assert out.strip() == "claude setup-token"
+
+
+def test_setup_token_command_falls_back_to_a_container_when_claude_is_absent() -> None:
+    # No `claude` but `docker` present → run setup-token in the base image (name interpolated).
+    out = _sh(
+        'd=$(mktemp -d); : > "$d/docker"; chmod +x "$d/docker"; '
+        '( PATH="$d"; setup_token_command my-image ); rm -rf "$d"'
+    )
+    assert out.strip() == "docker run --rm -it my-image claude setup-token"
+
+
+def test_setup_token_command_returns_nonzero_without_claude_or_docker() -> None:
+    # Neither on PATH → no command, nonzero exit (the caller reports it can't mint a token).
+    out = _sh('d=$(mktemp -d); ( PATH="$d"; setup_token_command img || echo NONE ); rm -rf "$d"')
+    assert out.strip() == "NONE"
+
+
+def test_base_image_present_reflects_docker_image_inspect() -> None:
+    # A docker stub exiting 0 → the image is present; exiting nonzero → absent.
+    present = _sh(
+        'd=$(mktemp -d); printf \'#!/bin/sh\\nexit 0\\n\' > "$d/docker"; chmod +x "$d/docker"; '
+        '( PATH="$d"; base_image_present img && echo present || echo absent ); rm -rf "$d"'
+    )
+    assert present.strip() == "present"
+    absent = _sh(
+        'd=$(mktemp -d); printf \'#!/bin/sh\\nexit 1\\n\' > "$d/docker"; chmod +x "$d/docker"; '
+        '( PATH="$d"; base_image_present img && echo present || echo absent ); rm -rf "$d"'
+    )
+    assert absent.strip() == "absent"
+
+
+def test_base_image_present_is_absent_without_docker() -> None:
+    # No `docker` on PATH → absent (not an error).
+    out = _sh(
+        'd=$(mktemp -d); ( PATH="$d"; base_image_present img && echo present || echo absent ); '
+        'rm -rf "$d"'
+    )
+    assert out.strip() == "absent"
 
 
 def test_is_github_url_matches_https_and_ssh_remotes() -> None:
