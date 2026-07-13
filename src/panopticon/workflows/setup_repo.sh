@@ -1,6 +1,7 @@
 # Collect a Claude auth token (`claude setup-token`) for the repo's env-file. Run by the session
 # service in a host tmux session (no container); ShellRunner sources the repo's env-file first, so an
-# already-configured credential shows up as an env var, and exports PANOPTICON_ENV_FILE (its path).
+# already-configured credential shows up as an env var, and exports PANOPTICON_ENV_FILE (its path)
+# and PANOPTICON_GIT_URL (the repo's remote, used to detect a GitHub forge below).
 #
 # Whatever route the operator takes, the script converges on a summary + a prompt to press Enter,
 # which completes the task and returns them to the dashboard.
@@ -64,6 +65,36 @@ collect_token() {
     fi
 }
 
+# Offer to record a GitHub token in the repo's env-file, but only when it's both wanted and missing:
+# the repo is hosted on GitHub (PANOPTICON_GIT_URL), a GH_TOKEN is present in the environment (e.g.
+# the operator's own shell — the shell runner inherits the host env), and the env-file doesn't
+# already carry an active GH_TOKEN line. Records the outcome in $summary. is_github_url /
+# env_file_has_var / append_env_var come from setup_repo_lib.sh (prepended by shell_script()).
+maybe_offer_github_token() {
+    is_github_url "${PANOPTICON_GIT_URL:-}" || return 0
+    [ -n "${GH_TOKEN:-}" ] || return 0
+    [ -n "${PANOPTICON_ENV_FILE:-}" ] || return 0
+    ! env_file_has_var GH_TOKEN "$PANOPTICON_ENV_FILE" || return 0
+    echo
+    echo "This repo is hosted on GitHub and a GH_TOKEN is set in your environment, but $env_file"
+    echo "has no GH_TOKEN. Adding it lets task containers use 'gh' and push over HTTPS."
+    echo
+    printf 'Add GH_TOKEN to %s? [y/N] ' "$env_file"
+    read gh_answer
+    case "$gh_answer" in
+        [Yy]*)
+            if append_env_var GH_TOKEN "$GH_TOKEN" "$PANOPTICON_ENV_FILE"; then
+                echo "Wrote GH_TOKEN to $env_file."
+                summary="$summary Also added GH_TOKEN to $env_file."
+            else
+                echo "Could not write GH_TOKEN to $env_file."
+                summary="$summary Could not add GH_TOKEN to $env_file."
+            fi
+            ;;
+        *) summary="$summary Left GH_TOKEN out of $env_file." ;;
+    esac
+}
+
 if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
     echo "A Claude credential is already configured in $env_file."
     echo "To keep using it, drop this task instead (press 'x' in the dashboard)."
@@ -87,6 +118,9 @@ else
     read _
     collect_token
 fi
+
+# With the Claude credential settled, offer to record a GitHub token too (no-op unless it applies).
+maybe_offer_github_token
 
 # Every route converges here: summarize what happened, then complete the task on Enter (which ends
 # the session and returns the operator to the dashboard; detaching instead — see the hint above —

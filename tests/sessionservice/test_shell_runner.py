@@ -132,6 +132,23 @@ def test_spawn_omits_env_sourcing_without_a_file() -> None:
     assert "set -a" not in command and "PANOPTICON_ENV_FILE" not in command  # no source line
 
 
+def test_spawn_exports_the_git_url_when_given() -> None:
+    # A script uses PANOPTICON_GIT_URL to tell what forge the repo lives on (e.g. offer a GH token).
+    rec = _Recorder()
+    ShellRunner("http://svc:8000", run=rec).spawn(
+        "t1", script="echo hi", git_url="https://github.com/o/r.git"
+    )
+    command = rec.calls[-1][-1]
+    assert "export PANOPTICON_GIT_URL=https://github.com/o/r.git" in command
+
+
+def test_spawn_omits_the_git_url_export_without_one() -> None:
+    rec = _Recorder()
+    ShellRunner("http://svc:8000", run=rec).spawn("t1", script="echo hi")
+    command = rec.calls[-1][-1]
+    assert "PANOPTICON_GIT_URL" not in command
+
+
 def test_spawn_reports_starting_then_awaiting() -> None:
     phases: list[LifecyclePhase] = []
     ShellRunner("http://svc:8000", run=_Recorder()).spawn(

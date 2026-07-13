@@ -250,12 +250,19 @@ class _FakeShellRunner:
         task_id: str,
         *,
         env_file: str | None = None,
+        git_url: str | None = None,
         script: str = "",
         workdir: str | None = None,
         progress: Callable[[LifecyclePhase], None] | None = None,
     ) -> str:
         self.spawned.append(
-            {"task_id": task_id, "env_file": env_file, "script": script, "workdir": workdir}
+            {
+                "task_id": task_id,
+                "env_file": env_file,
+                "git_url": git_url,
+                "script": script,
+                "workdir": workdir,
+            }
         )
         if progress is not None:
             progress(LifecyclePhase.STARTING)
@@ -308,6 +315,7 @@ def test_spawn_one_shell_workflow_runs_the_script_and_skips_docker() -> None:
     assert shell.spawned[0]["task_id"] == "t1"
     assert shell.spawned[0]["script"] == "claude setup-token"  # fetched from the workflow over REST
     assert shell.spawned[0]["env_file"] == "r1.env"  # the repo's secrets name is passed through
+    assert shell.spawned[0]["git_url"] == "https://forge/r1.git"  # the repo's forge, for detection
     # by default the script runs in the task's own directory, created empty (no clone)
     assert shell.spawned[0]["workdir"] == "/tasks/t1"
     assert made == ["/tasks/t1"]
