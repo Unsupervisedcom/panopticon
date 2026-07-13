@@ -36,7 +36,7 @@ def test_default_workflow_runner_type_is_docker() -> None:
 def test_setup_repo_is_a_shell_workflow() -> None:
     assert WF.runner_type == "shell"
     # opt-out (enabled for every repo by default) but hidden from both dashboard menus — it's
-    # launched from the repos modal's setup-token hotkey, not the pickers.
+    # launched from the repos modal's setup hotkey, not the pickers.
     assert WF.opt_in is False
     assert WF.hidden is True
 

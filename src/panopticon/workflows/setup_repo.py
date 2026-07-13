@@ -1,4 +1,5 @@
-"""The SetupRepo workflow — a **shell** workflow (no container) that mints a Claude auth token.
+"""The SetupRepo workflow — a **shell** workflow (no container) for a repo's host-side setup
+(today: minting a Claude auth token).
 
 The first example of ``runner_type = "shell"`` (ADR 0012 retired ``panopticon login``; container
 auth is now just a non-rotating ``claude setup-token`` the operator adds to a repo's env-file).
@@ -32,10 +33,13 @@ _SCRIPT = (importlib.resources.files("panopticon.workflows") / "setup_repo.sh").
 class SetupRepo(Workflow):
     """A no-container utility workflow: run ``claude setup-token`` on the host to mint a token.
 
+    A general host-side repo-setup task; today it mints a Claude auth token (``claude
+    setup-token``), and it's the natural home for other one-off setup steps a repo needs.
+
     ``runner_type = "shell"`` routes it to the session service's shell runner instead of the
     Docker one. It's opt-out (``opt_in = False``) so it's enabled for every repo by default, and
     ``hidden`` keeps this operator utility out of both dashboard menus (the repo-form workflow
-    list and the task-creation picker) — it's launched instead from the repos modal's setup-token
+    list and the task-creation picker) — it's launched instead from the repos modal's setup
     hotkey, which creates a ``setup-repo`` task for the highlighted repo.
     """
 
@@ -44,8 +48,9 @@ class SetupRepo(Workflow):
     opt_in: ClassVar[bool] = False
     hidden: ClassVar[bool] = True
     when_to_use: ClassVar[str] = (
-        "Mint a Claude auth token on the host (runs `claude setup-token` in a shell, no "
-        "container) — attach to complete the OAuth flow, then copy the token into the repo env-file."
+        "Run a repo's host-side setup in a shell (no container) — today that's minting a Claude "
+        "auth token via `claude setup-token`; attach to complete the interactive flow, then the "
+        "token lands in the repo env-file."
     )
 
     class Running(InitialState):
