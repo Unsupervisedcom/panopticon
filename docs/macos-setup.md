@@ -46,6 +46,14 @@ make build
 make start
 ```
 
+## Verifying prerequisites
+
+Run `panopticon doctor` to check that the host has everything the `quickstart`, `start` and
+`setup-repo` flows need — git, docker (and a reachable daemon), tmux, the `claude` CLI, and
+Python 3.11+. It prints a line per check and exits non-zero if any are missing, so a fresh pip
+install (`pip install panopticon-app`) can self-diagnose before the first `panopticon
+quickstart`.
+
 `make start` launches the task service and session-service runner as background tmux sessions on
 the `panopticon` tmux server, then opens the dashboard supervisor in the foreground.
 

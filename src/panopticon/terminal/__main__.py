@@ -9,7 +9,8 @@ straight to — that task's container session first, falling into the dashboard 
 the same optional task argument. `panopticon dashboard` runs the dashboard once without the attach loop;
 `panopticon tasks` lists tasks as plain text; `panopticon migrate` applies DB migrations to head
 via the bundled Alembic config. `panopticon quickstart` registers panopticon itself as a repo
-(idempotent) then starts everything.
+(idempotent) then starts everything. `panopticon doctor` checks that the host has the
+prerequisites (git, docker + a running daemon, tmux, claude, Python 3.11+) those flows need.
 """
 
 from __future__ import annotations
@@ -92,6 +93,9 @@ def main(
     mig.add_argument("alembic_args", nargs="*", default=["upgrade", "head"])
     sub.add_parser("build", help="build the base task-container image (panopticon-base)")
     sub.add_parser(
+        "doctor", help="check host prerequisites for quickstart/start/setup-repo, then exit"
+    )
+    sub.add_parser(
         "host", help="start task service + runner in background tmux sessions (no console)"
     )
     start = sub.add_parser("start", help="start everything and open the dashboard supervisor")
@@ -120,6 +124,10 @@ def main(
 
         ImageBuilder().build_base(verbose=True)
         return 0
+    elif args.command == "doctor":
+        from panopticon.terminal import doctor
+
+        return doctor.report(doctor.run_checks())
     elif args.command == "host":
         _run_migrate()
         _start_sessions()

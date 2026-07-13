@@ -41,6 +41,16 @@ def test_build_dispatches_to_image_builder() -> None:
     mock_cls.return_value.build_base.assert_called_once_with(verbose=True)
 
 
+def test_doctor_dispatches_to_the_checker_and_returns_its_code() -> None:
+    with (
+        patch("panopticon.terminal.doctor.run_checks", return_value=["sentinel"]) as mock_checks,
+        patch("panopticon.terminal.doctor.report", return_value=3) as mock_report,
+    ):
+        assert main(["doctor"]) == 3
+    mock_checks.assert_called_once_with()
+    mock_report.assert_called_once_with(["sentinel"])
+
+
 def test_host_runs_migrate_then_sessions() -> None:
     with (
         patch("panopticon.terminal.__main__._run_migrate") as mock_migrate,
