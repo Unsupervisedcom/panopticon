@@ -88,6 +88,10 @@ def main(
     # the operator picked with `t` by writing it here instead of returning it in-process.
     dash.add_argument("--switch-file", help=argparse.SUPPRESS)
     sub.add_parser("tasks", help="list tasks as plain text")
+    sub.add_parser(
+        "doctor",
+        help="preflight: verify host tools (Docker, git, tmux, claude) needed for quickstart + tasks",
+    )
     mig = sub.add_parser("migrate", help="apply DB migrations to head (or pass alembic args)")
     mig.add_argument("alembic_args", nargs="*", default=["upgrade", "head"])
     sub.add_parser("build", help="build the base task-container image (panopticon-base)")
@@ -163,7 +167,11 @@ def main(
         return 0
 
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
-    if args.command == "tasks":
+    if args.command == "doctor":
+        from panopticon.terminal.doctor import run_doctor
+
+        return run_doctor(service_url=args.service_url, list_repos=client.list_repos)
+    elif args.command == "tasks":
         for t in client.list_tasks():
             print(f"{t['id']}  {t['state']:<10}  {t['turn']:<5}  {t['slug'] or '-'}")
     elif args.command == "dashboard":

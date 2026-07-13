@@ -172,6 +172,22 @@ class LocalRunner(Runner):
             if progress is not None:
                 progress(phase)
 
+        # Pre-checks: verify dependencies before issuing docker run / tmux commands so that
+        # missing tools surface as a legible FAILED detail rather than a cryptic system error.
+        _image_to_run = image or self._image
+        try:
+            self._run(["docker", "image", "inspect", _image_to_run], check=True)
+        except (subprocess.CalledProcessError, FileNotFoundError) as err:
+            raise RuntimeError(
+                f"Image {_image_to_run!r} not found — run 'panopticon build' or 'panopticon doctor'"
+            ) from err
+        try:
+            self._run(["tmux", "-V"], check=True)
+        except (subprocess.CalledProcessError, FileNotFoundError) as err:
+            raise RuntimeError(
+                "tmux not found — install tmux (e.g. brew install tmux) or run 'panopticon doctor'"
+            ) from err
+
         # The container name doubles as the tmux session name, so stop() needs only the id.
         container = session_name(task_id)
         puid, _, pgid = self._user.partition(":")

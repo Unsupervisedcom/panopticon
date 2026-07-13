@@ -152,12 +152,21 @@ class _FakeClient:
         return {"id": task_id}
 
 
-def _spawner(client: object, runner: object, images: object = None) -> Spawner:
+_FAKE_ENV_CONTENT = "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-fake\n"
+
+
+def _spawner(
+    client: object,
+    runner: object,
+    images: object = None,
+    read_env_file: object = None,
+) -> Spawner:
     cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
     return Spawner(
         client,
         runner,
         runner_id="host-1",
+        read_env_file=read_env_file or (lambda _: _FAKE_ENV_CONTENT),  # type: ignore[arg-type]
         cache=cache,
         tasks_root="/tasks",  # type: ignore[arg-type]
         git=GitClones(run=_no_op_run),
@@ -180,6 +189,84 @@ def test_spawn_one_claims_then_spawns_a_fresh_task() -> None:
     assert runner.spawned[0]["env_file"] == "r1.env"
     assert runner.spawned[0]["image"] is None  # spike has no image layer → runner uses the base
     assert runner.spawned[0]["docker_in_docker"] is False  # no capability → unprivileged
+
+
+def _oauth_missing_phase(client: _FakeClient) -> tuple[str, str | None]:
+    """Return the (phase, detail) of the last reported lifecycle phase."""
+    _task_id, phase, detail = client.phases[-1]
+    return phase, detail
+
+
+def test_spawn_fails_fast_when_env_file_has_no_token() -> None:
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner()
+    spawner = _spawner(client, runner, read_env_file=lambda _: "OTHER=x\n")
+    with pytest.raises(RuntimeError):
+        spawner.spawn_one(
+            {
+                "id": "t1",
+                "repo_id": "r1",
+                "workflow": "spike",
+                "state": "PLANNING",
+                "claimed_by": None,
+            }
+        )
+    phase, detail = _oauth_missing_phase(client)
+    assert phase == LifecyclePhase.FAILED.value
+    assert detail is not None and "panopticon doctor" in detail
+    assert not runner.spawned  # never reached the runner
+
+
+def test_spawn_fails_fast_when_env_file_token_is_blank() -> None:
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner()
+    spawner = _spawner(client, runner, read_env_file=lambda _: "CLAUDE_CODE_OAUTH_TOKEN=\n")
+    with pytest.raises(RuntimeError):
+        spawner.spawn_one(
+            {
+                "id": "t1",
+                "repo_id": "r1",
+                "workflow": "spike",
+                "state": "PLANNING",
+                "claimed_by": None,
+            }
+        )
+    phase, _ = _oauth_missing_phase(client)
+    assert phase == LifecyclePhase.FAILED.value
+    assert not runner.spawned
+
+
+def test_spawn_fails_fast_when_env_file_is_missing() -> None:
+    def _raise(_: str) -> str:
+        raise OSError("no such file")
+
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner()
+    spawner = _spawner(client, runner, read_env_file=_raise)
+    with pytest.raises(RuntimeError):
+        spawner.spawn_one(
+            {
+                "id": "t1",
+                "repo_id": "r1",
+                "workflow": "spike",
+                "state": "PLANNING",
+                "claimed_by": None,
+            }
+        )
+    phase, detail = _oauth_missing_phase(client)
+    assert phase == LifecyclePhase.FAILED.value
+    assert detail is not None and "panopticon doctor" in detail
+
+
+def test_spawn_skips_token_check_when_repo_has_no_env_file() -> None:
+    def _boom(_: str) -> str:
+        raise AssertionError("read_env_file must not be called when the repo has no env_file")
+
+    repo_no_env: JsonObj = {"id": "r1", "git_url": "https://forge/r1.git"}  # no env_file
+    client, runner = _FakeClient(repo=repo_no_env), _FakeRunner()
+    spawner = _spawner(client, runner, read_env_file=_boom)
+    cid = spawner.spawn_one(
+        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None}
+    )
+    assert cid == "panopticon-t1"
+    assert runner.spawned  # proceeded to spawn
 
 
 def test_spawn_one_passes_initial_prompt_as_env_var() -> None:
@@ -287,6 +374,7 @@ def _shell_spawner(
         client,
         runner,
         runner_id="host-1",
+        read_env_file=lambda _: _FAKE_ENV_CONTENT,
         cache=cache,
         tasks_root="/tasks",  # type: ignore[arg-type]
         shell_runner=shell_runner,
@@ -444,6 +532,7 @@ def test_spawn_one_composes_the_workflow_image_when_it_has_a_layer() -> None:
         client,
         runner,
         runner_id="host-1",
+        read_env_file=lambda _: _FAKE_ENV_CONTENT,
         cache=cache,
         tasks_root="/tasks",  # type: ignore[arg-type]
         git=GitClones(run=_no_op_run),
@@ -480,6 +569,7 @@ def test_spawn_one_composes_workflow_then_repo_layers() -> None:
         client,
         runner,
         runner_id="host-1",
+        read_env_file=lambda _: _FAKE_ENV_CONTENT,
         cache=cache,
         tasks_root="/tasks",  # type: ignore[arg-type]
         git=GitClones(run=_no_op_run),
@@ -681,6 +771,7 @@ def test_heal_caps_respawns_then_surfaces_a_crash_looping_task() -> None:
         client,
         runner,
         runner_id="host-1",  # type: ignore[arg-type]
+        read_env_file=lambda _: _FAKE_ENV_CONTENT,
         cache=CloneCache(
             "/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None
         ),
@@ -709,6 +800,7 @@ def test_heal_resets_the_respawn_budget_after_a_survivor_window() -> None:
         client,
         runner,
         runner_id="host-1",  # type: ignore[arg-type]
+        read_env_file=lambda _: _FAKE_ENV_CONTENT,
         cache=CloneCache(
             "/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None
         ),
@@ -780,6 +872,7 @@ def test_mark_healing_skips_a_crash_looped_out_orphan() -> None:
         client,
         runner,
         runner_id="host-1",  # type: ignore[arg-type]
+        read_env_file=lambda _: _FAKE_ENV_CONTENT,
         cache=CloneCache(
             "/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None
         ),
@@ -955,6 +1048,7 @@ def test_spawn_runs_repo_hook_with_correct_args() -> None:
         client,
         runner,
         runner_id="host-1",
+        read_env_file=lambda _: _FAKE_ENV_CONTENT,
         cache=cache,
         tasks_root="/tasks",  # type: ignore[arg-type]
         git=GitClones(run=_no_op_run),
@@ -977,6 +1071,7 @@ def _cleanup_spawner(runner: _FakeRunner, *, workspace_exists: bool) -> Spawner:
         client,
         runner,
         runner_id="host-1",
+        read_env_file=lambda _: _FAKE_ENV_CONTENT,
         cache=cache,
         tasks_root="/tasks",  # type: ignore[arg-type]
         git=GitClones(run=_no_op_run),
@@ -996,6 +1091,7 @@ def test_cleanup_removes_workspace_when_terminal_and_container_gone() -> None:
         client,
         runner,
         runner_id="host-1",
+        read_env_file=lambda _: _FAKE_ENV_CONTENT,
         cache=cache,
         tasks_root="/tasks",  # type: ignore[arg-type]
         git=GitClones(run=_no_op_run),
@@ -1017,6 +1113,7 @@ def test_cleanup_waits_when_container_still_running() -> None:
         client,
         runner,
         runner_id="host-1",
+        read_env_file=lambda _: _FAKE_ENV_CONTENT,
         cache=cache,
         tasks_root="/tasks",  # type: ignore[arg-type]
         git=GitClones(run=_no_op_run),
@@ -1038,6 +1135,7 @@ def test_cleanup_is_a_no_op_for_non_terminal_task() -> None:
         client,
         runner,
         runner_id="host-1",
+        read_env_file=lambda _: _FAKE_ENV_CONTENT,
         cache=cache,
         tasks_root="/tasks",  # type: ignore[arg-type]
         git=GitClones(run=_no_op_run),
@@ -1068,6 +1166,7 @@ def test_cleanup_invokes_docker_cleanup_when_rmtree_fails() -> None:
         client,
         runner,
         runner_id="host-1",
+        read_env_file=lambda _: _FAKE_ENV_CONTENT,
         cache=cache,
         tasks_root="/tasks",  # type: ignore[arg-type]
         git=GitClones(run=_no_op_run),
@@ -1093,6 +1192,7 @@ def test_spawn_hook_failure_aborts_spawn() -> None:
         client,
         runner,
         runner_id="host-1",
+        read_env_file=lambda _: _FAKE_ENV_CONTENT,
         cache=cache,
         tasks_root="/tasks",  # type: ignore[arg-type]
         git=GitClones(run=_no_op_run),
@@ -1123,6 +1223,7 @@ def test_spawn_skips_hook_when_repo_has_no_hook_file() -> None:
         client,
         runner,
         runner_id="host-1",
+        read_env_file=lambda _: _FAKE_ENV_CONTENT,
         cache=cache,
         tasks_root="/tasks",  # type: ignore[arg-type]
         git=GitClones(run=_no_op_run),
@@ -1151,6 +1252,7 @@ def test_spawner_against_the_real_service(tmp_path: Path) -> None:
             client,
             runner,
             runner_id="host-1",  # type: ignore[arg-type]
+            read_env_file=lambda _: _FAKE_ENV_CONTENT,
             cache=CloneCache(
                 "/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None
             ),
