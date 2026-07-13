@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.resources
 import logging
+import sys
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
@@ -105,3 +106,11 @@ class ImageBuilder:
                 )
             return True
         return False
+
+
+if __name__ == "__main__":
+    # `python -m panopticon.sessionservice.images [IMAGE]` builds the base image if it's missing,
+    # from the packaged Dockerfile (no source checkout needed). Used as a shell workflow's
+    # container-fallback build step (see ShellRunner.build_base_image_command).
+    _base = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_IMAGE
+    ImageBuilder(base=_base).build_base_if_missing(verbose=True)

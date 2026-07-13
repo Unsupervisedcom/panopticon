@@ -34,7 +34,7 @@ add_summary() {
 
 # Mint a token and record the outcome in $summary. Runs `claude setup-token` via a host `claude`
 # when one is installed, else falls back to running it in the base task-container image (announced
-# explicitly, and `make build`-ing the image first if it's missing). On success, capture the minted
+# explicitly, building the image first if it's missing). On success, capture the minted
 # token and write it straight into the repo's env-file (commenting out any previous one — see
 # store_oauth_token); fall back to on-screen copy instructions when it can't be captured or there's
 # no env-file to write to. setup_token_command / base_image_present / extract_oauth_token /
@@ -53,29 +53,30 @@ collect_token() {
     fi
 
     # No host `claude` means we're taking the docker fallback — be explicit about it, and build the
-    # base image first when it's missing (best-effort; needs a source checkout + Docker on the host).
+    # base image first when it's missing (from the package's bundled Dockerfile; just needs Docker).
     if ! command -v claude >/dev/null 2>&1; then
         echo
         echo "'claude' isn't installed on this host — running 'claude setup-token' in a container"
         echo "($_ct_image) via Docker instead."
         if ! base_image_present "$_ct_image"; then
             echo
-            echo "The base image '$_ct_image' isn't built yet — building it now with 'make build'."
+            echo "The base image '$_ct_image' isn't built yet — building it now."
             echo "This can take a few minutes; the build output follows."
-            if [ -n "${PANOPTICON_REPO_ROOT:-}" ] && [ -f "$PANOPTICON_REPO_ROOT/Makefile" ]; then
-                if ! (cd "$PANOPTICON_REPO_ROOT" && make build IMAGE="$_ct_image"); then
-                    echo
-                    echo "Building '$_ct_image' failed. Build it manually ('make build') or drop this"
-                    echo "task and add a credential to $env_file yourself."
-                    add_summary "Couldn't build the base image '$_ct_image' for the container fallback."
-                    return
-                fi
-            else
+            # PANOPTICON_BUILD_BASE_CMD is injected by the shell runner: it builds the base image
+            # from the package's bundled Dockerfile (no source checkout needed — works for pip users).
+            if [ -z "${PANOPTICON_BUILD_BASE_CMD:-}" ]; then
                 echo
-                echo "Can't build it automatically here (no source checkout found). Build the base"
-                echo "image with 'make build' on the panopticon host, or drop this task and add a"
-                echo "credential to $env_file yourself (see docs/container-auth.md)."
-                add_summary "Base image '$_ct_image' missing and no source checkout to build it."
+                echo "Can't build the base image automatically here. Build it on the panopticon host"
+                echo "('panopticon build'), or drop this task and add a credential to $env_file"
+                echo "yourself (see docs/container-auth.md)."
+                add_summary "Base image '$_ct_image' missing and no build command available."
+                return
+            fi
+            if ! sh -c "$PANOPTICON_BUILD_BASE_CMD"; then
+                echo
+                echo "Building '$_ct_image' failed. Build it manually ('panopticon build') or drop"
+                echo "this task and add a credential to $env_file yourself."
+                add_summary "Couldn't build the base image '$_ct_image' for the container fallback."
                 return
             fi
             if ! base_image_present "$_ct_image"; then

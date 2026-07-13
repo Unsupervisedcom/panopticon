@@ -58,9 +58,10 @@ instructions above.
 
 If the host running the workflow has **no `claude` CLI installed**, it says so and **falls back to
 running `claude setup-token` in the base task-container image** (which ships the CLI) via Docker. If
-that image isn't built yet, it **builds it first** with `make build` (best-effort — it needs Docker
-and a source checkout of this repo on the host; on a wheel-only host it explains it can't auto-build
-and points you here). Either way the container route is announced on screen before it runs.
+that image isn't built yet, it **builds it first** from the package's bundled Dockerfile — the same
+checkout-free path the session service uses to auto-build the base image, so it works from a `pip`
+install (no repo clone needed), just Docker. The container route is announced on screen before it
+runs.
 
 ## Notes
 

@@ -3,8 +3,10 @@ the command runner is a fake that records calls. LLM-free (a shell task runs no 
 
 from __future__ import annotations
 
+import shlex
 import shutil
 import subprocess
+import sys
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -14,7 +16,7 @@ import pytest
 from panopticon.core.models import LifecyclePhase
 from panopticon.sessionservice.local_runner import DEFAULT_IMAGE
 from panopticon.sessionservice.runner import Runner
-from panopticon.sessionservice.shell_runner import ShellRunner, panopticon_repo_root
+from panopticon.sessionservice.shell_runner import ShellRunner, build_base_image_command
 
 
 class _Recorder:
@@ -142,32 +144,22 @@ def test_spawn_exports_the_base_image_for_a_container_fallback() -> None:
     assert f"export PANOPTICON_BASE_IMAGE={DEFAULT_IMAGE}" in command
 
 
-def test_spawn_exports_the_repo_root_from_a_source_checkout() -> None:
-    # Running from a source checkout (as in the test env), the runner exposes PANOPTICON_REPO_ROOT so
-    # a shell workflow can `make build` the base image on the host. It points at the repo root.
+def test_spawn_exports_a_checkout_free_base_image_build_command() -> None:
+    # The build command runs the packaged image builder with this interpreter (sys.executable), so a
+    # pip install with no source checkout can still build the base image — no `make`, no repo root.
     rec = _Recorder()
     ShellRunner("http://svc:8000", run=rec).spawn("t1", script="echo hi")
     command = rec.calls[-1][-1]
-    root = panopticon_repo_root()
-    assert root is not None  # the test suite runs from the source checkout
-    assert f"export PANOPTICON_REPO_ROOT={root}" in command
+    assert f"export PANOPTICON_BUILD_BASE_CMD={shlex.quote(build_base_image_command())}" in command
 
 
-def test_panopticon_repo_root_finds_the_makefile_root(tmp_path: Path) -> None:
-    # The root is the nearest ancestor holding BOTH a Makefile and a pyproject.toml.
-    (tmp_path / "Makefile").write_text("build:\n")
-    (tmp_path / "pyproject.toml").write_text("[project]\n")
-    nested = tmp_path / "src" / "pkg" / "sub"
-    nested.mkdir(parents=True)
-    assert panopticon_repo_root(nested) == tmp_path
-
-
-def test_panopticon_repo_root_is_none_without_a_checkout(tmp_path: Path) -> None:
-    # No Makefile+pyproject anywhere up the tree (a wheel install) → None; the workflow then can't
-    # auto-build and says so instead.
-    nested = tmp_path / "a" / "b"
-    nested.mkdir(parents=True)
-    assert panopticon_repo_root(nested) is None
+def test_build_base_image_command_uses_this_interpreter_and_the_packaged_module() -> None:
+    cmd = build_base_image_command("panopticon-base")
+    assert (
+        cmd == f"{shlex.quote(sys.executable)} -m panopticon.sessionservice.images panopticon-base"
+    )
+    # no `make` / source-checkout assumption — it drives the installed package's image builder
+    assert "make" not in cmd
 
 
 def test_spawn_exports_the_git_url_when_given() -> None:

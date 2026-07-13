@@ -197,10 +197,11 @@ def test_shell_script_falls_back_to_a_container_when_claude_is_missing() -> None
     # the fallback runs `claude setup-token` in the base image, announced explicitly to the operator
     assert "docker run --rm -it" in script
     assert "isn't installed on this host" in script
-    # best-effort auto-build of the base image when it's missing, gated on a source checkout
+    # best-effort auto-build of the base image when it's missing, via the injected build command
+    # (which builds from the packaged Dockerfile — no source checkout, so it works for pip users)
     assert "base_image_present" in script
-    assert "make build IMAGE=" in script
-    assert "PANOPTICON_REPO_ROOT" in script
+    assert "PANOPTICON_BUILD_BASE_CMD" in script
+    assert "make build" not in script  # no `make`/checkout assumption
 
 
 def test_setup_token_command_prefers_a_host_claude() -> None:
