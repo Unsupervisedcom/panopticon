@@ -10,7 +10,7 @@ service does no filesystem work, so
 the split stays correct when the runner is remote (ADR 0009). LLM-free: pure git + REST.
 
 Provisioning is **observed, not pushed** (ADR 0010): the session service spots the slug over its
-work-pull loop (`ProvisionDaemon`) and calls :meth:`Provisioner.provision`. The call is
+work-pull loop (`HostDaemon`) and calls :meth:`Provisioner.provision`. The call is
 **idempotent** — it no-ops a task with no slug yet or one already branched — so the loop can call it
 on every task it sees. There is no worktree, no symlink, and no repoint: the agent keeps working in
 the same ``/workspace``, now on its feature branch (ADR 0011 §2/§3).

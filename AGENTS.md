@@ -38,9 +38,7 @@ src/panopticon/
                    # per-repo clone cache; spawn.py = spawn-prep (clone --local the per-task
                    # checkout, mounted rw at /workspace); spawner.py = the spawn loop (claim an
                    # unclaimed task → spawn its container; prefills claude's input box with the
-                   # task memo on a first spawn); prefill.py = the detached input-box prefill
-                   # poller (mirrors cloude-cade: pipe-pane watch for ESC[?2004h → paste-buffer the
-                   # description, unsent); daemon.py = the provision-only pull loop;
+                   # task memo on a first spawn);
                    # host.py = the unified per-host daemon (spawn + provision each pass;
                    # `python -m panopticon.sessionservice.host`); `python -m panopticon.sessionservice`
                    # spawns one task
@@ -176,10 +174,6 @@ commands the Makefile wraps).
   failing task and another pins that each pass also `heal`s every task; an integration test drives
   spawn → set slug → provision against the real task service over REST (claimed + spawned, then
   branched, no re-spawn).
-- `tests/test_daemon.py` — the observe-and-provision loop + its launch: unit tests drive
-  `tick`/`run` with fakes (branch watched tasks, skip a provisioned one, isolate a failing one,
-  poll until a stop condition); integration tests over REST cover the loop (slug-set → branched →
-  no-op), the unprovisioned-only watch-set, and `run_daemon` provisioning a slugged task.
 - `tests/test_mcp.py` — the MCP server surface, exercised **in-memory** via the MCP
   client (`create_connected_server_and_client_session`) — tools mutate the task, the artifact
   resource reads back. No LLM, no HTTP (HTTP hosting is the runnable server, Slice 7a).
@@ -191,14 +185,9 @@ commands the Makefile wraps).
   entrypoint loop (fakes; no Docker/LLM), plus a `skipif` docker integration test.
 - `tests/test_spawn.py` — spawn-prep (ADR 0011): unit tests pin the `clone --local` of the
   per-task checkout and the idempotency gate (skips when the checkout already exists).
-- `tests/test_prefill.py` — the input-box prefill poller: unit tests drive `prefill_pane` with a
-  fake tmux runner + injected `sleep`/raw-log — pin the `pipe-pane`/`load-buffer`/`paste-buffer -p`
-  commands when the box becomes ready, and every best-effort give-up (empty prompt, timeout,
-  vanished session). `test_local_runner.py` covers the first-spawn gate (config-volume probe) +
-  the `PANOPTICON_NO_PREFILL` opt-out.
 - `tests/test_provisioning_acceptance.py` — Slice 7 acceptance (`skipif` no git): the host-side
-  provisioning path with **real git** — clone --local the per-task checkout → set slug → the daemon
-  branches it (`panopticon/<slug>`) + repoints origin → the task service records branch + clone path.
+  provisioning path with **real git** — clone --local the per-task checkout → set slug → the provisioner
+  branches it (`panopticon/<slug>`) → the task service records branch + clone path.
 - `tests/test_acceptance.py` — Slice 2 acceptance (`skipif` no docker/tmux): builds the base
   image and a real container connects back to an in-process task service, registers,
   heartbeats, and loses liveness on kill. No LLM.

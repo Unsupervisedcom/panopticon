@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 from panopticon.client import TaskServiceClient
 from panopticon.core.models import Repo
 from panopticon.sessionservice.clones import CloneCache
-from panopticon.sessionservice.daemon import run_daemon
+from panopticon.sessionservice.provisioner import Provisioner
 from panopticon.sessionservice.spawn import prepare_workspace
 from panopticon.taskservice.api import create_app
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
@@ -65,16 +65,10 @@ def test_provisioning_end_to_end_with_real_git(tmp_path: Path) -> None:
         assert _git(per_task, "branch", "--show-current") == "main"
         assert _git(per_task, "remote", "get-url", "origin") == str(origin)  # origin → forge at spawn-prep
 
-        # The agent sets its slug; the daemon observes it and provisions in one pass.
+        # The agent sets its slug; the provisioner branches the clone in one call.
         client.set_slug(task_id, "fix-widget")
-        passes = {"n": 0}
-
-        def until() -> bool:
-            done = passes["n"] >= 1
-            passes["n"] += 1
-            return done
-
-        run_daemon(client, tasks_root=str(clones_root), until=until, sleep=lambda _s: None)
+        provisioner = Provisioner(client, clones_root=str(clones_root))
+        provisioner.provision(client.get_task(task_id))
 
         # The per-task clone is now on the feature branch (origin already at the forge from spawn-prep).
         assert _git(per_task, "branch", "--show-current") == "panopticon/fix-widget"

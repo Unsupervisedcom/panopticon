@@ -4,8 +4,8 @@ The session service is the per-host runner. Each pass it considers the tasks the
 that are **unclaimed** and **non-terminal**, **claims** one for this host (the claim is the spawn
 gate — exactly one runner owns it; a lost race is a 409 we skip), prepares its writable per-task
 clone (`prepare_workspace`), and spawns the container via the runner with the repo's secrets + the
-``/workspace`` mount. Provisioning (slug → branch) is the sibling loop (`ProvisionDaemon`); the
-unified host daemon runs both. LLM-free.
+``/workspace`` mount. Provisioning (slug → branch) is the sibling loop in `HostDaemon`;
+the unified host daemon runs both. LLM-free.
 """
 
 from __future__ import annotations
