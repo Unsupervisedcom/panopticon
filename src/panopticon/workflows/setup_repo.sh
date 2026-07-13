@@ -32,23 +32,74 @@ add_summary() {
     fi
 }
 
-# Mint a token and record the outcome in $summary. On success, capture the minted token and write it
-# straight into the repo's env-file (commenting out any previous one — see store_oauth_token); fall
-# back to on-screen copy instructions when it can't be captured or there's no env-file to write to.
-# extract_oauth_token / store_oauth_token come from setup_repo_lib.sh (prepended by shell_script()).
+# Mint a token and record the outcome in $summary. Runs `claude setup-token` via a host `claude`
+# when one is installed, else falls back to running it in the base task-container image (announced
+# explicitly, building the image first if it's missing). On success, capture the minted
+# token and write it straight into the repo's env-file (commenting out any previous one — see
+# store_oauth_token); fall back to on-screen copy instructions when it can't be captured or there's
+# no env-file to write to. setup_token_command / base_image_present / extract_oauth_token /
+# store_oauth_token come from setup_repo_lib.sh (prepended by shell_script()).
 collect_token() {
+    _ct_image="${PANOPTICON_BASE_IMAGE:-panopticon-base}"
+    # Resolve how to run `claude setup-token`: a host `claude`, or a docker fallback in the base
+    # image. A nonzero return means neither route is available.
+    if ! _ct_cmd=$(setup_token_command "$_ct_image"); then
+        echo
+        echo "Can't mint a token: 'claude' isn't installed on this host and Docker isn't available"
+        echo "to run it in a container. Install the Claude CLI (https://claude.ai/install.sh), or drop"
+        echo "this task (press 'x' in the dashboard) and add a credential to $env_file yourself."
+        add_summary "Couldn't collect a token — no 'claude' CLI and no Docker on this host."
+        return
+    fi
+
+    # No host `claude` means we're taking the docker fallback — be explicit about it, and build the
+    # base image first when it's missing (from the package's bundled Dockerfile; just needs Docker).
+    if ! command -v claude >/dev/null 2>&1; then
+        echo
+        echo "'claude' isn't installed on this host — running 'claude setup-token' in a container"
+        echo "($_ct_image) via Docker instead."
+        if ! base_image_present "$_ct_image"; then
+            echo
+            echo "The base image '$_ct_image' isn't built yet — building it now."
+            echo "This can take a few minutes; the build output follows."
+            # PANOPTICON_BUILD_BASE_CMD is injected by the shell runner: it builds the base image
+            # from the package's bundled Dockerfile (no source checkout needed — works for pip users).
+            if [ -z "${PANOPTICON_BUILD_BASE_CMD:-}" ]; then
+                echo
+                echo "Can't build the base image automatically here. Build it on the panopticon host"
+                echo "('panopticon build'), or drop this task and add a credential to $env_file"
+                echo "yourself (see docs/container-auth.md)."
+                add_summary "Base image '$_ct_image' missing and no build command available."
+                return
+            fi
+            if ! sh -c "$PANOPTICON_BUILD_BASE_CMD"; then
+                echo
+                echo "Building '$_ct_image' failed. Build it manually ('panopticon build') or drop"
+                echo "this task and add a credential to $env_file yourself."
+                add_summary "Couldn't build the base image '$_ct_image' for the container fallback."
+                return
+            fi
+            if ! base_image_present "$_ct_image"; then
+                echo
+                echo "The base image '$_ct_image' still isn't present after building — aborting."
+                add_summary "Base image '$_ct_image' unavailable after a build attempt."
+                return
+            fi
+        fi
+    fi
+
     echo
-    echo "Running 'claude setup-token' — follow the prompts to mint a token."
+    echo "Running '$_ct_cmd' — follow the prompts to mint a token."
     echo
     umask 077
     _ct_ok=1
     _ct_token=""
     if command -v script >/dev/null 2>&1; then
         # Wrap the OAuth flow in a pty (`script`) so its interactive prompts still work, while teeing
-        # the session to a private log we read the minted token back from. `-e` returns claude's exit
-        # status; the log holds the token in plaintext, so remove it as soon as we've read it.
+        # the session to a private log we read the minted token back from. `-e` returns the command's
+        # exit status; the log holds the token in plaintext, so remove it as soon as we've read it.
         _ct_log=$(mktemp "${TMPDIR:-/tmp}/panopticon-setup-token.XXXXXX")
-        if script -q -e -c 'claude setup-token' "$_ct_log"; then
+        if script -q -e -c "$_ct_cmd" "$_ct_log"; then
             _ct_token=$(extract_oauth_token "$_ct_log")
         else
             _ct_ok=0
@@ -56,7 +107,7 @@ collect_token() {
         rm -f "$_ct_log"
     else
         # No `script` to capture with: run it directly (the operator still sees the token on screen).
-        claude setup-token || _ct_ok=0
+        eval "$_ct_cmd" || _ct_ok=0
     fi
 
     if [ "$_ct_ok" -eq 0 ]; then

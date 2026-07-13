@@ -19,12 +19,14 @@ from __future__ import annotations
 import importlib.resources
 import os
 import shlex
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
 from panopticon.core.dirs import secrets_file_path
 from panopticon.core.models import LifecyclePhase
 from panopticon.sessionservice.local_runner import (
+    DEFAULT_IMAGE,
     TMUX_SOCKET,
     CommandRunner,
     _subprocess_run,
@@ -36,6 +38,21 @@ from panopticon.sessionservice.runner import Runner
 #: task over REST (``panopticon_advance``/``_drop``/``_set_slug``/…) instead of hand-rolling curl.
 #: Loaded once at import and injected into every shell task's shell (see :meth:`ShellRunner.spawn`).
 _TASK_LIB = (importlib.resources.files("panopticon.sessionservice") / "task_lib.sh").read_text()
+
+
+def build_base_image_command() -> str:
+    """The shell command that builds the base task-container image (the ``panopticon build`` CLI).
+
+    Invokes the existing ``build`` subcommand (``panopticon.terminal.__main__``) with **this
+    process's own interpreter** (``sys.executable``) — the one the session service runs under, which
+    has the ``panopticon`` package (and its bundled ``docker/Dockerfile``) importable. Using the
+    absolute interpreter path rather than the ``panopticon`` console script means it doesn't depend
+    on the tmux pane's ``$PATH`` including a venv's ``bin/``. The build works from a **pip/wheel
+    install with no source checkout**: :class:`ImageBuilder.build_base` builds from the packaged
+    Dockerfile via ``PANOPTICON_VERSION`` (the same path the spawner uses to auto-build). A shell
+    workflow runs this as its container-fallback build step (e.g. setup-repo when the host has no
+    ``claude`` CLI)."""
+    return f"{shlex.quote(sys.executable)} -m panopticon.terminal build"
 
 
 class ShellRunner(Runner):
@@ -82,7 +99,11 @@ class ShellRunner(Runner):
         exported — so the script can drive its own lifecycle over REST (e.g. advance to COMPLETE on
         success) — and the repo's ``env_file`` secrets sourced first when given. ``git_url``, when
         given, is exported as ``PANOPTICON_GIT_URL`` so a script can tell what forge the repo lives
-        on (e.g. offer to record a GitHub token). ``env_file`` is a
+        on (e.g. offer to record a GitHub token). ``PANOPTICON_BASE_IMAGE`` (the base task-container
+        image) and ``PANOPTICON_BUILD_BASE_CMD`` (a command that builds it from the packaged
+        Dockerfile — no source checkout needed) are exported too, so a shell workflow can fall back to
+        a container (e.g. run ``claude setup-token`` in the base image, building it first if it's
+        missing). ``env_file`` is a
         **name relative to this runner's secrets dir** (ADR 0007), resolved host-locally (like
         ``LocalRunner``) so a remote runner uses its own host's secrets. The panopticon shell lib
         (``panopticon_advance``/``_drop``/…) is loaded into the shell so the script can drive its task
@@ -108,10 +129,16 @@ class ShellRunner(Runner):
             f"{self._service_url}/tasks/{task_id}/live"
             f"?container_id={session}&runner_id={self._runner_id}"
         )
+        # The base task-container image + a command to build it, for a shell workflow that needs a
+        # container fallback (e.g. setup-repo runs `claude setup-token` in the base image when the
+        # host has no `claude` CLI). The build command is the `panopticon build` CLI run with this
+        # process's interpreter, so it works from a pip install with no source checkout — not `make`.
         lines = [
             f"export PANOPTICON_SERVICE_URL={shlex.quote(self._service_url)}",
             f"export PANOPTICON_TASK_ID={shlex.quote(task_id)}",
             f"export PANOPTICON_RUNNER_ID={shlex.quote(self._runner_id)}",
+            f"export PANOPTICON_BASE_IMAGE={shlex.quote(DEFAULT_IMAGE)}",
+            f"export PANOPTICON_BUILD_BASE_CMD={shlex.quote(build_base_image_command())}",
             *([f"export PANOPTICON_GIT_URL={shlex.quote(git_url)}"] if git_url else []),
             f"curl --silent --no-buffer {shlex.quote(live_url)} >/dev/null 2>&1 &",
             "_panopticon_live_pid=$!",

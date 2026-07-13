@@ -3,8 +3,10 @@ the command runner is a fake that records calls. LLM-free (a shell task runs no 
 
 from __future__ import annotations
 
+import shlex
 import shutil
 import subprocess
+import sys
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -12,8 +14,9 @@ from pathlib import Path
 import pytest
 
 from panopticon.core.models import LifecyclePhase
+from panopticon.sessionservice.local_runner import DEFAULT_IMAGE
 from panopticon.sessionservice.runner import Runner
-from panopticon.sessionservice.shell_runner import ShellRunner
+from panopticon.sessionservice.shell_runner import ShellRunner, build_base_image_command
 
 
 class _Recorder:
@@ -130,6 +133,33 @@ def test_spawn_omits_env_sourcing_without_a_file() -> None:
     ShellRunner("http://svc:8000", run=rec).spawn("t1", script="echo hi")
     command = rec.calls[-1][-1]
     assert "set -a" not in command and "PANOPTICON_ENV_FILE" not in command  # no source line
+
+
+def test_spawn_exports_the_base_image_for_a_container_fallback() -> None:
+    # A shell workflow (e.g. setup-repo) uses PANOPTICON_BASE_IMAGE to run `claude` in a container
+    # when the host has no `claude` CLI. It's the same base image the local runner defaults to.
+    rec = _Recorder()
+    ShellRunner("http://svc:8000", run=rec).spawn("t1", script="echo hi")
+    command = rec.calls[-1][-1]
+    assert f"export PANOPTICON_BASE_IMAGE={DEFAULT_IMAGE}" in command
+
+
+def test_spawn_exports_a_checkout_free_base_image_build_command() -> None:
+    # The build command runs the packaged image builder with this interpreter (sys.executable), so a
+    # pip install with no source checkout can still build the base image — no `make`, no repo root.
+    rec = _Recorder()
+    ShellRunner("http://svc:8000", run=rec).spawn("t1", script="echo hi")
+    command = rec.calls[-1][-1]
+    assert f"export PANOPTICON_BUILD_BASE_CMD={shlex.quote(build_base_image_command())}" in command
+
+
+def test_build_base_image_command_reuses_the_build_cli_with_this_interpreter() -> None:
+    # Reuses the existing `panopticon build` subcommand, via this interpreter (sys.executable) so it
+    # doesn't depend on a venv's bin/ being on the tmux pane's PATH.
+    cmd = build_base_image_command()
+    assert cmd == f"{shlex.quote(sys.executable)} -m panopticon.terminal build"
+    # no `make` / source-checkout assumption — it drives the installed package's image builder
+    assert "make" not in cmd
 
 
 def test_spawn_exports_the_git_url_when_given() -> None:
