@@ -802,9 +802,11 @@ class EnvFileField(Widget):
 
 
 class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
-    """A modal form for a repo's fields. Submits a ``{field: value}`` dict on save (Enter
-    or Ctrl+S), or ``None`` on cancel (Escape). The text fields are strings; the privileged
-    toggle is the bool ``docker_in_docker``.
+    """A modal form for a repo's fields. On save (Enter or Ctrl+S) it hands the collected
+    ``{field: value}`` dict to ``on_submit`` (which validates + persists); if that returns an
+    error string the form shows it inline and **stays open** so invalid input isn't lost, and it
+    dismisses (with the values dict) only on success. Escape cancels, dismissing ``None``. The
+    text fields are strings; the privileged toggle is the bool ``docker_in_docker``.
 
     Two tabs: **general** (git URL, id, name, base branch, env file, privileged docker) and
     **workflows** (a per-workflow opt-in/opt-out checklist). Both tabs' values are collected
@@ -829,6 +831,7 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     #wf-scroll { height: 1fr; }
     #wf-scroll SpaceCheckbox { margin-bottom: 0; }
     #wf-desc { height: 4; border: tall $panel; padding: 0 1; color: $text-muted; margin-top: 1; }
+    #form-error { color: $error; text-align: center; }
     #form-hint { color: $text-muted; text-align: center; margin-top: 1; }
     #pane-general EnvFileField #env-file-input { margin-bottom: 0; }
     """
@@ -853,7 +856,11 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     }
 
     def __init__(
-        self, title: str, repo: JsonObj | None = None, workflows: list[dict[str, Any]] | None = None
+        self,
+        title: str,
+        repo: JsonObj | None = None,
+        workflows: list[dict[str, Any]] | None = None,
+        on_submit: Callable[[dict[str, Any]], str | None] | None = None,
     ) -> None:
         super().__init__()
         self._title = title
@@ -862,6 +869,10 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
         self._workflows = workflows or []
         self._wf_enabled: set[str] = set(self._repo.get("enabled_workflows") or [])
         self._wf_disabled: set[str] = set(self._repo.get("disabled_workflows") or [])
+        # The parent supplies this: it attempts the submission (validation + REST) and returns an
+        # error message to show inline (form stays open) or None on success (form dismisses). This
+        # is what keeps an invalid form open instead of closing it and toasting the error after.
+        self._on_submit = on_submit
 
     def _initial(self, name: str) -> str:
         """A field's pre-populated value: the repo's stored value, else (create mode only)
@@ -907,6 +918,7 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
                         yield Static("", id="wf-desc")
                     else:
                         yield Label("no workflows available")
+            yield Static("", id="form-error")
             yield Static("enter: save   esc: cancel", id="form-hint")
 
     def on_mount(self) -> None:
@@ -967,6 +979,12 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
                     disabled.append(name)
         values["enabled_workflows"] = enabled
         values["disabled_workflows"] = disabled
+        # Let the parent attempt the submission while the modal is still open: an error message
+        # is shown inline and the form stays put (so invalid input isn't lost); None means success.
+        error = self._on_submit(values) if self._on_submit else None
+        if error is not None:
+            self.query_one("#form-error", Static).update(error)
+            return
         self.dismiss(values)
 
     def action_cancel(self) -> None:
@@ -1031,12 +1049,11 @@ class ReposScreen(ModalScreen[None]):
         self.dismiss(None)
 
     def action_new_repo(self) -> None:
-        def create(values: dict[str, Any] | None) -> None:
-            if values is None:  # backed out
-                return
+        # Returns an error to show inline (the form stays open, keeping the user's input) or None
+        # on success. The form only closes when this returns None.
+        def create(values: dict[str, Any]) -> str | None:
             if not (values["id"] and values["name"] and values["git_url"]):
-                self.notify("id, name and git_url are required.", severity="warning")
-                return
+                return "id, name and git_url are required."
             try:
                 self._client.create_repo(
                     values["id"],
@@ -1049,21 +1066,20 @@ class ReposScreen(ModalScreen[None]):
                     disabled_workflows=values["disabled_workflows"],
                 )
             except httpx.HTTPStatusError as exc:
-                self.notify(f"Can't create: {_detail(exc)}", severity="error")
-                return
+                return f"Can't create: {_detail(exc)}"
             self._refresh()
+            return None
 
         workflows = self._client.list_workflows()
-        self.app.push_screen(RepoFormScreen("new repo", workflows=workflows), create)
+        self.app.push_screen(RepoFormScreen("new repo", workflows=workflows, on_submit=create))
 
     def action_edit_repo(self) -> None:
         if self._current is None:
             return
         repo_id = self._current
 
-        def save(values: dict[str, Any] | None) -> None:
-            if values is None:
-                return
+        # Returns an error to show inline (the form stays open) or None on success.
+        def save(values: dict[str, Any]) -> str | None:
             # PATCH the core fields; image_layer_file is left intact. The privileged toggle is merged
             # onto the repo's existing capabilities so other keys (if any) survive.
             capabilities = {
@@ -1082,13 +1098,15 @@ class ReposScreen(ModalScreen[None]):
                     disabled_workflows=values["disabled_workflows"],
                 )
             except httpx.HTTPStatusError as exc:
-                self.notify(f"Can't update: {_detail(exc)}", severity="error")
-                return
+                return f"Can't update: {_detail(exc)}"
             self._refresh()
+            return None
 
         workflows = self._client.list_workflows()
         self.app.push_screen(
-            RepoFormScreen(f"edit {repo_id}", repo=self._repos[repo_id], workflows=workflows), save
+            RepoFormScreen(
+                f"edit {repo_id}", repo=self._repos[repo_id], workflows=workflows, on_submit=save
+            )
         )
 
 

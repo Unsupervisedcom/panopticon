@@ -10,6 +10,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from textual.app import App
 from textual.widgets import Checkbox, DataTable, Input, Select, Static
@@ -64,6 +65,14 @@ def _raise(*args: Any, **kwargs: Any) -> Any:
     raise RuntimeError("service unavailable")
 
 
+def _http_400(detail: str) -> httpx.HTTPStatusError:
+    """A 400 HTTPStatusError carrying a ``{"detail": ...}`` body, as the task service returns for
+    a rejected repo (e.g. a non-existent env_file). `_detail(exc)` reads that message back out."""
+    request = httpx.Request("POST", "http://test/repos")
+    response = httpx.Response(400, json={"detail": detail}, request=request)
+    return httpx.HTTPStatusError(detail, request=request, response=response)
+
+
 class _FakeClient:
     def __init__(
         self,
@@ -104,6 +113,9 @@ class _FakeClient:
         self.released: list[str] = []
         self.created_repos: list[dict[str, Any]] = []
         self.updated_repos: list[tuple[str, dict[str, Any]]] = []
+        # When set, create_repo/update_repo raise a 400 carrying this detail (mimics the task
+        # service rejecting e.g. a non-existent env_file), to exercise the form's error path.
+        self.repo_error: str | None = None
         self.fetched: list[tuple[str, str]] = []  # (task_id, name) passed to get_artifact
 
     def list_tasks(self) -> list[dict[str, Any]]:
@@ -160,6 +172,8 @@ class _FakeClient:
         enabled_workflows: list[str] | None = None,
         disabled_workflows: list[str] | None = None,
     ) -> dict[str, Any]:
+        if self.repo_error is not None:
+            raise _http_400(self.repo_error)
         repo: dict[str, Any] = {
             "id": repo_id,
             "name": name,
@@ -176,6 +190,8 @@ class _FakeClient:
         return repo
 
     def update_repo(self, repo_id: str, **changes: Any) -> dict[str, Any]:
+        if self.repo_error is not None:
+            raise _http_400(self.repo_error)
         self.updated_repos.append((repo_id, changes))
         for repo in self._repos:
             if repo["id"] == repo_id:
@@ -1330,6 +1346,56 @@ async def test_repos_screen_create_requires_id_name_and_git_url() -> None:
         await pilot.press("enter")
         await pilot.pause()
         assert fake.created_repos == []  # refused; nothing created
+        # The form stays open showing the error inline (invalid input isn't lost).
+        assert isinstance(app.screen, dashboard.RepoFormScreen)
+        error = app.screen.query_one("#form-error", Static)
+        assert "required" in str(error.render())
+
+
+async def test_repos_screen_create_keeps_form_open_on_invalid_env_file() -> None:
+    """A server-rejected env_file (400) leaves the repo form open with the error shown inline,
+    rather than closing the modal and toasting the error afterward."""
+    fake = _FakeClient([], repos=[])
+    fake.repo_error = "env_file 'nope' does not exist under the secrets dir"
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        app.screen.query_one("#field-id", Input).value = "r9"
+        app.screen.query_one("#field-name", Input).value = "r9"
+        app.screen.query_one("#field-git_url", Input).value = "https://x/r9.git"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert fake.created_repos == []  # the create raised → nothing recorded
+        assert isinstance(app.screen, dashboard.RepoFormScreen)  # form still open
+        error = app.screen.query_one("#form-error", Static)
+        assert "does not exist under the secrets dir" in str(error.render())
+
+
+async def test_repos_screen_edit_keeps_form_open_on_invalid_env_file() -> None:
+    """Same for edit: a rejected PATCH keeps the edit form open with the error shown inline."""
+    fake = _FakeClient(
+        [],
+        repos=[{"id": "r1", "name": "old", "git_url": "https://x/r1.git", "default_base": "main"}],
+    )
+    fake.repo_error = "env_file 'nope' does not exist under the secrets dir"
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        app.screen.query_one("#field-name", Input).value = "new"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert fake.updated_repos == []  # the update raised → nothing recorded
+        assert isinstance(app.screen, dashboard.RepoFormScreen)  # form still open
+        error = app.screen.query_one("#form-error", Static)
+        assert "does not exist under the secrets dir" in str(error.render())
 
 
 async def test_repos_screen_edits_a_repo_via_patch() -> None:
