@@ -22,6 +22,16 @@ echo
 
 summary=""
 
+# Append clause $1 to the running $summary, space-separating it from anything already there. Each
+# step records its own outcome this way, so the order the steps run in doesn't clobber the summary.
+add_summary() {
+    if [ -n "$summary" ]; then
+        summary="$summary $1"
+    else
+        summary="$1"
+    fi
+}
+
 # Mint a token and record the outcome in $summary. On success, capture the minted token and write it
 # straight into the repo's env-file (commenting out any previous one — see store_oauth_token); fall
 # back to on-screen copy instructions when it can't be captured or there's no env-file to write to.
@@ -50,18 +60,18 @@ collect_token() {
     fi
 
     if [ "$_ct_ok" -eq 0 ]; then
-        summary="'claude setup-token' failed or was cancelled — no token was collected."
+        add_summary "'claude setup-token' failed or was cancelled — no token was collected."
     elif [ -n "$_ct_token" ] && [ -n "${PANOPTICON_ENV_FILE:-}" ] \
         && store_oauth_token "$_ct_token" "$PANOPTICON_ENV_FILE"; then
         echo
         echo "Wrote the new token to $env_file as CLAUDE_CODE_OAUTH_TOKEN (any previous one was commented out)."
-        summary="Minted a new token and wrote it to $env_file (any previous token was commented out)."
+        add_summary "Minted a new token and wrote it to $env_file (any previous token was commented out)."
     else
         # Minted, but we couldn't capture/extract it or there's no env-file configured — guide the copy.
         echo
         echo "Token minted. Copy the token shown above into $env_file as:"
         echo "    CLAUDE_CODE_OAUTH_TOKEN=<token>"
-        summary="Minted a new token — copy it into $env_file as CLAUDE_CODE_OAUTH_TOKEN."
+        add_summary "Minted a new token — copy it into $env_file as CLAUDE_CODE_OAUTH_TOKEN."
     fi
 }
 
@@ -85,15 +95,19 @@ maybe_offer_github_token() {
         [Yy]*)
             if append_env_var GH_TOKEN "$GH_TOKEN" "$PANOPTICON_ENV_FILE"; then
                 echo "Wrote GH_TOKEN to $env_file."
-                summary="$summary Also added GH_TOKEN to $env_file."
+                add_summary "Added GH_TOKEN to $env_file."
             else
                 echo "Could not write GH_TOKEN to $env_file."
-                summary="$summary Could not add GH_TOKEN to $env_file."
+                add_summary "Could not add GH_TOKEN to $env_file."
             fi
             ;;
-        *) summary="$summary Left GH_TOKEN out of $env_file." ;;
+        *) add_summary "Left GH_TOKEN out of $env_file." ;;
     esac
 }
+
+# Offer the GitHub token first — it's a quick host-side copy, before the (possibly interactive)
+# Claude credential flow below. A no-op unless it applies (see the gates in maybe_offer_github_token).
+maybe_offer_github_token
 
 if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
     echo "A Claude credential is already configured in $env_file."
@@ -103,7 +117,7 @@ if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; the
     read answer
     case "$answer" in
         [Yy]*) collect_token ;;
-        *) summary="Kept the existing credential in $env_file — nothing collected." ;;
+        *) add_summary "Kept the existing credential in $env_file — nothing collected." ;;
     esac
 else
     echo "No Claude credential found in $env_file."
@@ -118,9 +132,6 @@ else
     read _
     collect_token
 fi
-
-# With the Claude credential settled, offer to record a GitHub token too (no-op unless it applies).
-maybe_offer_github_token
 
 # Every route converges here: summarize what happened, then complete the task on Enter (which ends
 # the session and returns the operator to the dashboard; detaching instead — see the hint above —
