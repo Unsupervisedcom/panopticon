@@ -105,10 +105,6 @@ maybe_offer_github_token() {
     esac
 }
 
-# Offer the GitHub token first — it's a quick host-side copy, before the (possibly interactive)
-# Claude credential flow below. A no-op unless it applies (see the gates in maybe_offer_github_token).
-maybe_offer_github_token
-
 if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
     echo "A Claude credential is already configured in $env_file."
     echo "To keep using it, drop this task instead (press 'x' in the dashboard)."
@@ -132,6 +128,9 @@ else
     read _
     collect_token
 fi
+
+# With the Claude credential settled, offer to record a GitHub token too (no-op unless it applies).
+maybe_offer_github_token
 
 # Every route converges here: summarize what happened, then complete the task on Enter (which ends
 # the session and returns the operator to the dashboard; detaching instead — see the hint above —

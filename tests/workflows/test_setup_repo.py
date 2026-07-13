@@ -183,9 +183,9 @@ def test_shell_script_offers_the_github_token_when_missing() -> None:
     assert "env_file_has_var GH_TOKEN" in script
     # writes it via the helper
     assert "append_env_var GH_TOKEN" in script
-    # the offer runs before the Claude credential step (the call — last occurrence of the name —
-    # comes before the `claude setup-token` credential check), and before the final summary
-    assert script.rindex("maybe_offer_github_token") < script.index("${CLAUDE_CODE_OAUTH_TOKEN:-}")
+    # the offer runs after the Claude credential step (the call — last occurrence of the name —
+    # comes after the credential check) but before the final summary
+    assert script.rindex("maybe_offer_github_token") > script.index("${CLAUDE_CODE_OAUTH_TOKEN:-}")
     assert script.rindex("maybe_offer_github_token") < script.rindex('echo "Summary: $summary"')
 
 
