@@ -13,7 +13,7 @@ prefix=$(tmux show-options -gv prefix 2>/dev/null)
 [ -n "$prefix" ] || prefix="C-b"
 detach=$(tmux list-keys -T prefix 2>/dev/null | awk '$NF == "detach-client" { print $(NF - 1); exit }')
 [ -n "$detach" ] || detach="d"
-dashboard_hint="To return to the dashboard without finishing, detach: press $prefix then $detach (the task stays running)."
+dashboard_hint="To return to the dashboard without finishing, detach: press $prefix then $detach (you can resume this task any time from the dashboard)."
 
 # Show how to get back to the dashboard up front, before anything else.
 echo "$dashboard_hint"
@@ -66,7 +66,6 @@ collect_token() {
 
 if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
     echo "A Claude credential is already configured in $env_file."
-    echo "To keep using it, drop this task instead (press 'x' in the dashboard)."
     echo
     printf 'Collect a new token anyway? [y/N] '
     read answer
@@ -78,7 +77,7 @@ else
     echo "No Claude credential found in $env_file."
     echo "About to collect one with 'claude setup-token'."
     echo
-    echo "Prefer to use your own? Drop this task (press 'x' in the dashboard) and add one of"
+    echo "Prefer to use your own? Press $prefix then $detach to go to the dashbaord, drop this task using 'x' and add one of"
     echo "these to $env_file yourself:"
     echo "    CLAUDE_CODE_OAUTH_TOKEN=<token from 'claude setup-token'>"
     echo "    ANTHROPIC_API_KEY=<your Anthropic API key>"
