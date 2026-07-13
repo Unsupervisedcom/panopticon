@@ -33,12 +33,16 @@ class SetupRepo(Workflow):
     """A no-container utility workflow: run ``claude setup-token`` on the host to mint a token.
 
     ``runner_type = "shell"`` routes it to the session service's shell runner instead of the
-    Docker one. ``opt_in`` keeps this operator utility out of the picker unless a repo enables it.
+    Docker one. It's opt-out (``opt_in = False``) so it's enabled for every repo by default, and
+    ``hidden`` keeps this operator utility out of both dashboard menus (the repo-form workflow
+    list and the task-creation picker) — it's launched instead from the repos modal's setup-token
+    hotkey, which creates a ``setup-repo`` task for the highlighted repo.
     """
 
     name: ClassVar[str] = "setup-repo"
     runner_type: ClassVar[str] = "shell"
-    opt_in: ClassVar[bool] = True
+    opt_in: ClassVar[bool] = False
+    hidden: ClassVar[bool] = True
     when_to_use: ClassVar[str] = (
         "Mint a Claude auth token on the host (runs `claude setup-token` in a shell, no "
         "container) — attach to complete the OAuth flow, then copy the token into the repo env-file."

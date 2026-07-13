@@ -226,7 +226,8 @@ class TaskService:
         return sorted(self._workflows)
 
     async def list_workflow_infos(self) -> list[dict[str, str | bool]]:
-        """Each workflow's name, when_to_use description, auto_submit_memo and opt_in flags, sorted by name."""
+        """Each workflow's name, when_to_use description, auto_submit_memo and opt_in flags, sorted
+        by name. ``hidden`` workflows are omitted — this drives the repo form's enable/disable menu."""
         return [
             {
                 "name": name,
@@ -235,10 +236,13 @@ class TaskService:
                 "opt_in": self._workflows[name].opt_in,
             }
             for name in sorted(self._workflows)
+            if not self._workflows[name].hidden
         ]
 
     async def list_workflow_infos_for_repo(self, repo_id: str) -> list[dict[str, str | bool]]:
-        """Workflows visible for a repo, filtered by opt_in and the repo's workflow preferences."""
+        """Workflows visible for a repo, filtered by opt_in and the repo's workflow preferences.
+        ``hidden`` workflows are omitted — this drives the task-creation picker (a hidden workflow
+        stays creatable via the API / a dedicated hotkey; ``hidden`` is display-only, not a gate)."""
         repo = await self.get_repo(repo_id)
         return [
             {
@@ -249,6 +253,7 @@ class TaskService:
             }
             for name in sorted(self._workflows)
             if self._workflow_visible(self._workflows[name], repo)
+            and not self._workflows[name].hidden
         ]
 
     def _workflow_visible(self, workflow: Workflow, repo: Repo) -> bool:

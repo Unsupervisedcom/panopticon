@@ -1214,6 +1214,33 @@ async def test_pressing_g_opens_the_repos_screen_listing_repos() -> None:
         assert table.row_count == 1
 
 
+async def test_pressing_s_in_the_repos_screen_creates_a_setup_repo_task() -> None:
+    # The setup-repo workflow is hidden from the pickers; the repos modal's `s` hotkey is how it's
+    # launched — one setup-repo task for the highlighted repo, seeded with a memo.
+    fake = _FakeClient(
+        [_TASK],
+        repos=[
+            {
+                "id": "r1",
+                "name": "acme/widgets",
+                "git_url": "https://x/r1.git",
+                "default_base": "main",
+            }
+        ],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("s")
+        await pilot.pause()
+    assert len(fake.created) == 1
+    repo_id, workflow, memo, _ = fake.created[0]
+    assert (repo_id, workflow) == ("r1", "setup-repo")
+    assert memo is not None and "acme/widgets" in memo
+
+
 async def test_no_repos_auto_opens_the_repos_screen_on_start() -> None:
     # First-run nudge: with no repos configured, the dashboard drops straight into the repo
     # screen so the operator can add one (a task can't be created without a repo).
