@@ -132,12 +132,14 @@ def main(
         _qs.wait_for_service(args.service_url)
         env_file = _qs.ensure_secrets_file()
         git_url = _qs.detect_git_url()
-        _qs.setup_repo(
-            TaskServiceClient(httpx.Client(base_url=args.service_url)), git_url, env_file
-        )
+        qs_client = TaskServiceClient(httpx.Client(base_url=args.service_url))
+        repo_id, repo_name = _qs.setup_repo(qs_client, git_url, env_file)
+        task_id = _qs.ensure_setup_repo_task(qs_client, repo_id, repo_name)
         from panopticon.terminal.console import run_console_local
 
-        run_console_local(args.service_url)
+        # Open the console already attached to the setup-repo task so the operator lands straight
+        # in `claude setup-token`; if its shell session isn't up yet, join falls back to the dashboard.
+        run_console_local(args.service_url, client=qs_client, join=task_id)
         return 0
     elif args.command == "stop":
         import subprocess

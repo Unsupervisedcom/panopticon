@@ -103,6 +103,7 @@ from panopticon.core.dirs import ARTIFACTS_DIR
 from panopticon.core.state import TERMINAL_LABELS
 from panopticon.sessionservice.local_runner import session_name
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
+from panopticon.terminal.setup_repo_task import create_setup_repo_task
 
 
 def _make_sort_key(
@@ -1129,9 +1130,8 @@ class ReposScreen(ModalScreen[None]):
             return
         repo_id = self._current
         name = str(self._repos[repo_id].get("name", repo_id))
-        memo = f"Set up the {name} repo."
         try:
-            self._client.create_task(repo_id, "setup-repo", memo)
+            create_setup_repo_task(self._client, repo_id, name)
         except httpx.HTTPStatusError as exc:
             self.notify(f"Can't create setup-repo task: {_detail(exc)}", severity="error")
             return

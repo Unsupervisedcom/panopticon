@@ -257,9 +257,10 @@ def run_console_local(
     initial: str | None = None
     if join:
         client = client or TaskServiceClient(httpx.Client(base_url=service_url))
-        # Poll across the container's /live reconnect window: `start` may have just (re)started the
-        # runner, whose containers re-register a beat later — resolve on the first hit, ~5s ceiling.
-        initial = resolve_join(client, join, attempts=25, interval=0.2)
+        # Poll across the container's /live reconnect window: `start`/`quickstart` may have just
+        # (re)started the runner, and a freshly created task (quickstart's setup-repo) is only
+        # claimed + spawned a beat later — resolve on the first hit, ~10s ceiling.
+        initial = resolve_join(client, join, attempts=50, interval=0.2)
         if initial is None:
             print(f"no running container for task '{join}'; opening the dashboard", file=sys.stderr)
     switch_file = switch_file_path(socket)
