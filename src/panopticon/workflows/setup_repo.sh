@@ -115,18 +115,15 @@ collect_token() {
     fi
 }
 
-# Write a GH token into the env-file, or record why we couldn't — shared by both the reuse-from-env
-# and `gh auth login` paths (mirrors the Claude token's store step). $1 ok flag, $2 token, $3 the
-# source label for the summary. Goes through store_env_token, so an existing GH_TOKEN is commented
-# out and replaced just like the Claude token.
+# Write a GH token $1 into the env-file, or record why we couldn't (mirrors the Claude token's store
+# step). $2 is the source label for the summary. Goes through store_env_token, so an existing
+# GH_TOKEN is commented out and replaced just like the Claude token.
 store_gh_token() {
-    if [ "$1" -eq 0 ]; then
-        add_summary "GH_TOKEN: $3 failed or was cancelled — nothing collected."
-    elif [ -n "$2" ] && [ -n "${PANOPTICON_ENV_FILE:-}" ] \
-        && store_env_token GH_TOKEN "$2" "$PANOPTICON_ENV_FILE"; then
+    if [ -n "$1" ] && [ -n "${PANOPTICON_ENV_FILE:-}" ] \
+        && store_env_token GH_TOKEN "$1" "$PANOPTICON_ENV_FILE"; then
         echo
         echo "Wrote GH_TOKEN to $env_file (any previous one was commented out)."
-        add_summary "GH_TOKEN: wrote it to $env_file from $3 (any previous one was commented out)."
+        add_summary "GH_TOKEN: wrote it to $env_file from $2 (any previous one was commented out)."
     else
         echo
         echo "Couldn't write GH_TOKEN. Add it to $env_file yourself:"
@@ -135,31 +132,9 @@ store_gh_token() {
     fi
 }
 
-# Authenticate to GitHub with `gh auth login`, then capture the token with `gh auth token` and store
-# it — the fallback when there's no GH_TOKEN in the environment to reuse. Guarded on `gh` being
-# installed; otherwise guides the operator to add one by hand.
-collect_gh_token() {
-    if ! command -v gh >/dev/null 2>&1; then
-        echo
-        echo "The 'gh' CLI isn't installed on this host, so I can't run 'gh auth login'."
-        echo "Add a token to $env_file yourself instead:"
-        echo "    GH_TOKEN=<a GitHub token, e.g. from 'gh auth token'>"
-        add_summary "GH_TOKEN: 'gh' not installed — add GH_TOKEN to $env_file yourself."
-        return
-    fi
-    echo
-    echo "Running 'gh auth login' — follow the prompts to authenticate to GitHub."
-    echo
-    _gt_ok=1
-    gh auth login || _gt_ok=0
-    _gt_token=""
-    [ "$_gt_ok" -eq 1 ] && _gt_token=$(gh auth token 2>/dev/null)
-    store_gh_token "$_gt_ok" "$_gt_token" "'gh auth login'"
-}
-
-# Get a GH_TOKEN into the env-file for a GitHub repo: reuse one already in the environment if the
-# operator has it (the shell runner inherits the host env — the fast path), else authenticate with
-# `gh auth login`.
+# Get a GH_TOKEN into the env-file for a GitHub repo by reusing one already in the environment (the
+# shell runner inherits the host env). When there's none to reuse, guide the operator to add one by
+# hand — we don't mint one here.
 setup_gh_token() {
     if [ -n "${GH_TOKEN:-}" ]; then
         echo "A GH_TOKEN is set in your environment. Adding it to $env_file lets task containers use"
@@ -169,21 +144,14 @@ setup_gh_token() {
         read gh_answer
         case "$gh_answer" in
             [Nn]*) add_summary "GH_TOKEN: skipped — add GH_TOKEN to $env_file yourself." ;;
-            *) store_gh_token 1 "$GH_TOKEN" "your environment" ;;
+            *) store_gh_token "$GH_TOKEN" "your environment" ;;
         esac
     else
         echo "No GH_TOKEN in your environment — a GitHub repo needs one to push and open PRs."
-        echo
-        echo "Prefer to use your own? Press $prefix then $detach to go to the dashboard, drop this task using 'x' and add"
+        echo "Add one to $env_file yourself (press $prefix then $detach to go to the dashboard, drop"
+        echo "this task using 'x', and add):"
         echo "    GH_TOKEN=<a GitHub token>"
-        echo "to $env_file yourself."
-        echo
-        printf 'Authenticate to GitHub with gh now? [Y/n] '
-        read gh_answer
-        case "$gh_answer" in
-            [Nn]*) add_summary "GH_TOKEN: skipped — add GH_TOKEN to $env_file yourself." ;;
-            *) collect_gh_token ;;
-        esac
+        add_summary "GH_TOKEN: none in your environment — add GH_TOKEN to $env_file yourself."
     fi
 }
 

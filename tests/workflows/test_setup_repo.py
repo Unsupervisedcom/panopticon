@@ -187,10 +187,9 @@ def test_shell_script_sets_up_the_github_token_for_github_repos() -> None:
     script = WF.shell_script()
     # gated on the repo being a GitHub remote (local checkouts skip the whole GH step)
     assert "is_github_url" in script and "PANOPTICON_GIT_URL" in script
-    # reuses a GH_TOKEN from the environment when present, else authenticates with `gh auth login`
+    # reuses a GH_TOKEN already in the environment — it does not mint one (no interactive gh auth)
     assert "GH_TOKEN" in script
-    assert "gh auth login" in script and "gh auth token" in script
-    assert "command -v gh" in script  # graceful when `gh` isn't installed
+    assert "gh auth login" not in script and "gh auth token" not in script
     # writes it via the shared helper (so an existing GH_TOKEN is commented out + replaced), and
     # offers to replace one already in the env-file
     assert "store_env_token GH_TOKEN" in script
