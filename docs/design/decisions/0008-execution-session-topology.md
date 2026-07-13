@@ -125,4 +125,4 @@ starting and supervising the host-process daemons is our responsibility (§ open
 - GOALS.md — Milestone 2 (separate planner/implementer containers per task) motivates tmux
   living outside the agent container; Milestone 5 (remote execution) as per-machine runners.
 - Process supervision, runner registration, and inter-process auth belong in
-  `docs/ARCHITECTURE.md`.
+  `docs/design/ARCHITECTURE.md`.

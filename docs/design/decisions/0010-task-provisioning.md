@@ -11,7 +11,7 @@ A task's branch + worktree are named from its **slug** (`panopticon/<slug>`), an
 planned. So at container start there is no slug, hence no worktree; the agent needs *something*
 to read while planning, and must end up working *in* the worktree once it exists.
 
-The pieces exist but aren't wired (docs/BACKLOG.md): `core/git.py` (`GitWorktrees`),
+The pieces exist but aren't wired (docs/design/BACKLOG.md): `core/git.py` (`GitWorktrees`),
 `Workflow.provision`, and `TaskService.provision_task`. Two problems block wiring them as-is:
 
 1. **`provision_task` runs `git worktree` on the task service's host.** Fine while everything is
@@ -143,4 +143,4 @@ container restarts, not just within one container's life.
 - ADR 0007 — the per-repo creds volume (distinct from the per-task worktree and config location).
 - PR #41 — container-local `CLAUDE_CONFIG_DIR`; §5 here closes its cross-restart `--continue` gap.
 - ARCHITECTURE §8.3 (slug decided in-container), §9 (slug → worktree → provisioning);
-  docs/BACKLOG.md "wire provisioning into the lifecycle".
+  docs/design/BACKLOG.md "wire provisioning into the lifecycle".

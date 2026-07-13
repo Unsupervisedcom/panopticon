@@ -221,4 +221,4 @@ future use case demands it (e.g. untrusted or multi-tenant operation).
   layers via its provisioning extension point.
 - ADR 0006 — the task service that loads workflows (path-based registration) and drives
   their lifecycle.
-- The workflow interface's concrete interface and spec format belong in `docs/ARCHITECTURE.md`.
+- The workflow interface's concrete interface and spec format belong in `docs/design/ARCHITECTURE.md`.

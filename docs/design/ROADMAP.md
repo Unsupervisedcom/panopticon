@@ -1,7 +1,7 @@
 # Roadmap
 
-Vertical slices toward the milestones in `docs/GOALS.md`, grounded in
-`docs/ARCHITECTURE.md` and the ADRs. Each slice is **independently shippable and
+Vertical slices toward the milestones in `docs/design/GOALS.md`, grounded in
+`docs/design/ARCHITECTURE.md` and the ADRs. Each slice is **independently shippable and
 verifiable** — a thin path through multiple components, not a horizontal layer.
 
 Two principles guide the ordering:
@@ -17,8 +17,8 @@ Two principles guide the ordering:
   commands, conventions, and module pointers that slice introduces — so the operating manual
   grows with the code instead of being written up front and drifting;
 - extends the **golden state-machine harness** / tests to cover what it added;
-- keeps the ADRs and `docs/ARCHITECTURE.md` current if the slice changes a decision;
-- **logs incidental findings to [`docs/BACKLOG.md`](BACKLOG.md)** rather than expanding the
+- keeps the ADRs and `docs/design/ARCHITECTURE.md` current if the slice changes a decision;
+- **logs incidental findings to [`docs/design/BACKLOG.md`](BACKLOG.md)** rather than expanding the
   slice's scope to handle them.
 
 Milestone 1 (parity + a free-form workflow + per-repo secrets) is decomposed into slices

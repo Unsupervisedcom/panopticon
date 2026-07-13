@@ -73,5 +73,5 @@ contents.
 - Concurrent-refresh race / forced `/login`: claude-code issues #24317, #54443, #27933, #56339.
 - No list/revoke tooling: #48373. Revoke-all leaves tokens valid for days: #43801.
 - Docs: `claude setup-token`, `CLAUDE_CODE_OAUTH_TOKEN`, auth precedence (authentication.md).
-- In-repo: [`docs/decisions/0007-secret-store.md`](0007-secret-store.md) (amended by this ADR);
+- In-repo: [`docs/design/decisions/0007-secret-store.md`](0007-secret-store.md) (amended by this ADR);
   [`docs/container-auth.md`](../container-auth.md) (the operator how-to).
