@@ -111,7 +111,7 @@ def test_skips_a_shell_workflow_task_which_has_no_clone() -> None:
     shell_task = {
         "id": "t1",
         "repo_id": "r1",
-        "workflow": "setup-token",
+        "workflow": "setup-repo",
         "slug": "mint",
         "provisioned": False,
     }

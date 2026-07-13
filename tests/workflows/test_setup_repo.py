@@ -1,13 +1,13 @@
-"""The SetupToken workflow is a valid shell workflow: a single RUNNING state that advances to
+"""The SetupRepo workflow is a valid shell workflow: a single RUNNING state that advances to
 COMPLETE, run as a host shell script rather than a task container."""
 
 from __future__ import annotations
 
 from panopticon.core import Actor
 from panopticon.core.workflow import Workflow
-from panopticon.workflows import SetupToken
+from panopticon.workflows import SetupRepo
 
-WF = SetupToken()
+WF = SetupRepo()
 
 
 def test_default_workflow_runner_type_is_docker() -> None:
@@ -15,12 +15,12 @@ def test_default_workflow_runner_type_is_docker() -> None:
     assert Workflow.runner_type == "docker"
 
 
-def test_setup_token_is_a_shell_workflow() -> None:
+def test_setup_repo_is_a_shell_workflow() -> None:
     assert WF.runner_type == "shell"
     assert WF.opt_in is True  # an operator utility, hidden from the picker unless enabled
 
 
-def test_setup_token_needs_no_clone_and_no_workdir_override() -> None:
+def test_setup_repo_needs_no_clone_and_no_workdir_override() -> None:
     # It mints a token, so it doesn't touch repo code — runs in an empty task dir at the default spot.
     assert WF.clone_repo is False
     assert WF.shell_workdir is None
@@ -30,7 +30,7 @@ def test_starts_running_with_user_turn() -> None:
     task = WF.start_task("t1", "r1", at="2026-07-11T00:00:00Z")
     assert task.state == "RUNNING"
     assert task.turn is Actor.USER  # initial state
-    assert task.workflow == "setup-token"
+    assert task.workflow == "setup-repo"
 
 
 def test_running_advances_to_complete() -> None:
@@ -44,7 +44,7 @@ def test_running_has_no_responsibilities() -> None:
     assert list(WF.responsibilities("RUNNING")) == []
 
 
-def test_shell_script_runs_setup_token_and_advances() -> None:
+def test_shell_script_runs_setup_repo_and_advances() -> None:
     script = WF.shell_script()
     assert "claude setup-token" in script
     # completes the task via the panopticon shell lib (loaded by the shell runner), not raw curl
