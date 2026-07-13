@@ -1082,6 +1082,47 @@ def test_cleanup_invokes_docker_cleanup_when_rmtree_fails() -> None:
     assert rmtree_calls == 2
 
 
+def test_cleanup_unknown_workflow_releases_claim_and_cleans_workspace() -> None:
+    """A terminal claimed task whose workflow name is no longer in the registry must not poison
+    the host tick. cleanup() should release the claim and remove the workspace without raising,
+    because WorkflowExecutions falls back to docker for unknown workflows (4xx)."""
+    removed: list[str] = []
+    releases: list[str] = []
+
+    class _ClientWith400Execution(_FakeClient):
+        def workflow_execution(self, name: str) -> JsonObj:
+            request = httpx.Request("GET", f"http://svc/workflows/{name}/execution")
+            raise httpx.HTTPStatusError(
+                "unknown workflow",
+                request=request,
+                response=httpx.Response(400, request=request),
+            )
+
+        def release(self, task_id: str) -> JsonObj:
+            releases.append(task_id)
+            return {"id": task_id}
+
+    runner = _FakeRunner(running=False)
+    client = _ClientWith400Execution(repo=_REPO)
+    cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
+    spawner = Spawner(
+        client,
+        runner,
+        runner_id="host-1",
+        cache=cache,
+        tasks_root="/tasks",  # type: ignore[arg-type]
+        git=GitClones(run=_no_op_run),
+        images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        makedirs=lambda _p: None,
+        exists=lambda _p: True,
+        rmtree=removed.append,
+    )
+    task = {"id": "t1", "workflow": "parity", "state": "COMPLETE", "claimed_by": "host-1"}
+    spawner.cleanup(task)  # must not raise
+    assert releases == ["t1"]  # claim drained
+    assert removed == ["/tasks/t1"]  # workspace cleaned
+
+
 def test_spawn_hook_failure_aborts_spawn() -> None:
     def _boom(hook_file: str, task_id: str, repo_name: str, workspace: str) -> None:
         raise RuntimeError("hook exited 1")
