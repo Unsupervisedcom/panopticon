@@ -38,6 +38,23 @@ from panopticon.sessionservice.runner import Runner
 _TASK_LIB = (importlib.resources.files("panopticon.sessionservice") / "task_lib.sh").read_text()
 
 
+def _minify_shell(script: str) -> str:
+    """Drop whole-line comments and blank lines from an assembled shell command.
+
+    tmux sends a whole ``new-session`` command (including the pane's shell command) to its server
+    over ``imsg``, which caps a single message at ``MAX_IMSGSIZE`` (16 KiB). A richly commented
+    workflow script plus the task lib and env-file can push the assembled command past that, and
+    then ``new-session`` fails outright (before the script even runs) — so we strip the parts that
+    are pure bulk at runtime. Only lines that are **entirely** a comment (optional leading whitespace
+    then ``#``) or blank are removed, so trailing/inline comments and every line of code are left
+    untouched; the source files keep their comments. Panopticon's shell assets don't put ``#`` lines
+    inside heredocs (where this would be wrong) — keep it that way.
+    """
+    return "\n".join(
+        line for line in script.splitlines() if line.strip() and not line.lstrip().startswith("#")
+    )
+
+
 class ShellRunner(Runner):
     """Runs a shell workflow's script in a host tmux session (one host, no container)."""
 
@@ -130,7 +147,8 @@ class ShellRunner(Runner):
             lines.append(f"export PANOPTICON_ENV_FILE={quoted}")
             lines.append(f"[ -f {quoted} ] && {{ set -a; . {quoted}; set +a; }}")
         lines.append(script)
-        command = "\n".join(lines)
+        # Strip comments/blank lines so the assembled command stays under tmux's 16 KiB imsg cap.
+        command = _minify_shell("\n".join(lines))
         # Clear any stale session first so a respawn is idempotent (no-op when none exists).
         self._run(self._tmux("kill-session", "-t", session), check=False)
         _report(LifecyclePhase.STARTING)

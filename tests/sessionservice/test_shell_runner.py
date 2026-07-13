@@ -13,7 +13,7 @@ import pytest
 
 from panopticon.core.models import LifecyclePhase
 from panopticon.sessionservice.runner import Runner
-from panopticon.sessionservice.shell_runner import ShellRunner
+from panopticon.sessionservice.shell_runner import ShellRunner, _minify_shell
 
 
 class _Recorder:
@@ -162,6 +162,47 @@ def test_spawn_omits_the_repo_name_export_without_one() -> None:
     ShellRunner("http://svc:8000", run=rec).spawn("t1", script="echo hi")
     command = rec.calls[-1][-1]
     assert "PANOPTICON_REPO_NAME" not in command
+
+
+def test_minify_shell_drops_full_line_comments_and_blanks_only() -> None:
+    src = "\n".join(
+        [
+            "# a full-line comment",
+            "  # indented comment",
+            "",
+            "   ",
+            "export FOO=bar",
+            "run --flag  # trailing comment stays (mid-line #)",
+            'echo "# not a comment inside a string"',
+        ]
+    )
+    out = _minify_shell(src)
+    assert out.splitlines() == [
+        "export FOO=bar",
+        "run --flag  # trailing comment stays (mid-line #)",
+        'echo "# not a comment inside a string"',
+    ]
+
+
+def test_spawn_command_strips_comments_and_stays_under_the_imsg_cap() -> None:
+    # tmux sends the whole new-session command to its server over imsg (16 KiB cap); a heavily
+    # commented workflow script + the task lib can exceed it and fail the spawn, so the assembled
+    # command drops whole-line comments/blanks. The real setup-repo script is the motivating case.
+    from panopticon.workflows import SetupRepo
+
+    rec = _Recorder()
+    ShellRunner("http://svc:8000", run=rec).spawn(
+        "t1",
+        script=SetupRepo().shell_script(),
+        git_url="https://github.com/o/r.git",
+        repo_name="o/r",
+    )
+    command = rec.calls[-1][-1]
+    # no whole-line comments survive, but the code (functions, exports) does
+    assert not [ln for ln in command.splitlines() if ln.lstrip().startswith("#")]
+    assert "store_env_token" in command and "panopticon_advance()" in command
+    # comfortably under tmux's MAX_IMSGSIZE, so new-session won't reject it
+    assert len(command.encode()) < 16384
 
 
 def test_spawn_reports_starting_then_awaiting() -> None:
