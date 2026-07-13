@@ -58,6 +58,33 @@ env_file_has_var() {
     [ -f "$2" ] && grep -qE "^[[:space:]]*$1=" "$2"
 }
 
+# Create env-file $1 as an empty private (0600) file (making its parent dir) when it doesn't already
+# exist; a no-op when it does. Used when switching a repo to a fresh repo-specific credentials file:
+# the file must exist before the task service will point the repo at it (it validates env_file
+# exists). Returns nonzero if it can't be created.
+ensure_private_env_file() {
+    _epef_file=$1
+    [ -n "$_epef_file" ] || return 1
+    umask 077
+    mkdir -p "$(dirname "$_epef_file")" || return 1
+    [ -f "$_epef_file" ] || : > "$_epef_file" || return 1
+    chmod 600 "$_epef_file" 2>/dev/null || true
+}
+
+# Point repo $2's env_file at name $3 via the task service at $1 (PATCH /repos/<id>). The name is
+# relative to the secrets dir (ADR 0007); the file must already exist (the service validates it —
+# see ensure_private_env_file). Returns curl's exit status (nonzero on an HTTP error). Needs `curl`.
+set_repo_env_file() {
+    _sref_url=$1
+    _sref_id=$2
+    _sref_name=$3
+    [ -n "$_sref_url" ] && [ -n "$_sref_id" ] || return 1
+    curl --silent --show-error --fail --request PATCH \
+        "$_sref_url/repos/$_sref_id" \
+        --header "Content-Type: application/json" \
+        --data "{\"env_file\": \"$_sref_name\"}" >/dev/null
+}
+
 # Append `$1=$2` to env-file $3, creating it (and its parent dir) private (0600) if needed. Adds a
 # separating newline first when the file is non-empty and its last byte isn't one, so the appended
 # line always stands alone. Only ever called when the var is absent (see env_file_has_var), so it

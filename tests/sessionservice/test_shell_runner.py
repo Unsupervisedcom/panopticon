@@ -149,6 +149,21 @@ def test_spawn_omits_the_git_url_export_without_one() -> None:
     assert "PANOPTICON_GIT_URL" not in command
 
 
+def test_spawn_exports_the_repo_id_when_given() -> None:
+    # A script uses PANOPTICON_REPO_ID to act on the repo record over REST (e.g. repoint env_file).
+    rec = _Recorder()
+    ShellRunner("http://svc:8000", run=rec).spawn("t1", script="echo hi", repo_id="r1")
+    command = rec.calls[-1][-1]
+    assert "export PANOPTICON_REPO_ID=r1" in command
+
+
+def test_spawn_omits_the_repo_id_export_without_one() -> None:
+    rec = _Recorder()
+    ShellRunner("http://svc:8000", run=rec).spawn("t1", script="echo hi")
+    command = rec.calls[-1][-1]
+    assert "PANOPTICON_REPO_ID" not in command
+
+
 def test_spawn_reports_starting_then_awaiting() -> None:
     phases: list[LifecyclePhase] = []
     ShellRunner("http://svc:8000", run=_Recorder()).spawn(

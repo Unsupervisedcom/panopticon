@@ -68,6 +68,7 @@ class ShellRunner(Runner):
         *,
         env_file: str | None = None,
         git_url: str | None = None,
+        repo_id: str | None = None,
         script: str = "",
         workdir: str | None = None,
         progress: Callable[[LifecyclePhase], None] | None = None,
@@ -82,7 +83,9 @@ class ShellRunner(Runner):
         exported — so the script can drive its own lifecycle over REST (e.g. advance to COMPLETE on
         success) — and the repo's ``env_file`` secrets sourced first when given. ``git_url``, when
         given, is exported as ``PANOPTICON_GIT_URL`` so a script can tell what forge the repo lives
-        on (e.g. offer to record a GitHub token). ``env_file`` is a
+        on (e.g. offer to record a GitHub token). ``repo_id``, when given, is exported as
+        ``PANOPTICON_REPO_ID`` so a script can act on the repo record over REST (e.g. repoint its
+        ``env_file``). ``env_file`` is a
         **name relative to this runner's secrets dir** (ADR 0007), resolved host-locally (like
         ``LocalRunner``) so a remote runner uses its own host's secrets. The panopticon shell lib
         (``panopticon_advance``/``_drop``/…) is loaded into the shell so the script can drive its task
@@ -113,6 +116,7 @@ class ShellRunner(Runner):
             f"export PANOPTICON_TASK_ID={shlex.quote(task_id)}",
             f"export PANOPTICON_RUNNER_ID={shlex.quote(self._runner_id)}",
             *([f"export PANOPTICON_GIT_URL={shlex.quote(git_url)}"] if git_url else []),
+            *([f"export PANOPTICON_REPO_ID={shlex.quote(repo_id)}"] if repo_id else []),
             f"curl --silent --no-buffer {shlex.quote(live_url)} >/dev/null 2>&1 &",
             "_panopticon_live_pid=$!",
             "trap 'kill $_panopticon_live_pid 2>/dev/null' EXIT",

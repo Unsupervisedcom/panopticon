@@ -32,6 +32,59 @@ add_summary() {
     fi
 }
 
+# The shared secrets file quickstart registers a repo with (see ensure_secrets_file) — every repo on
+# it draws from the same credentials. A repo can instead have its own <repo>.env, isolating it.
+_SHARED_ENV_FILE="panopticon.env"
+
+# While the repo is still on the shared secrets file, offer to give it its own <repo>.env instead,
+# before we collect a token — so this repo's credential lands in an isolated file rather than the
+# shared one. The repo *begins* on the shared file (quickstart registers it that way) and only moves
+# when the operator picks the repo-specific option here; any other answer keeps the shared file.
+# Needs PANOPTICON_REPO_ID (the repo to repoint) and PANOPTICON_ENV_FILE (the current, absolute,
+# shared-file path). ensure_private_env_file / set_repo_env_file come from setup_repo_lib.sh.
+maybe_choose_env_file() {
+    [ -n "${PANOPTICON_REPO_ID:-}" ] || return 0
+    [ -n "${PANOPTICON_ENV_FILE:-}" ] || return 0
+    _mce_dir=$(dirname "$PANOPTICON_ENV_FILE")
+    _mce_cur=$(basename "$PANOPTICON_ENV_FILE")
+    # Only offer while the repo is on the shared file; one already on its own file keeps it.
+    [ "$_mce_cur" = "$_SHARED_ENV_FILE" ] || return 0
+    _mce_repo_file="${PANOPTICON_REPO_ID}.env"
+    # Nothing to choose when the repo-specific name would just be the shared file again (the
+    # panopticon repo itself, whose id makes <repo>.env == panopticon.env).
+    [ "$_mce_repo_file" != "$_SHARED_ENV_FILE" ] || return 0
+    echo
+    echo "This repo is using the shared credentials file ($_mce_cur), which every repo on the shared"
+    echo "file draws from. You can keep it, or give this repo its own file ($_mce_repo_file) so its"
+    echo "Claude/GitHub credentials are isolated from other repos'."
+    echo
+    printf 'Use the [s]hared file or a [r]epo-specific one? [S/r] '
+    read env_answer
+    case "$env_answer" in
+        [Rr]*)
+            _mce_path="$_mce_dir/$_mce_repo_file"
+            # Create the file first (the task service won't point the repo at a missing file), then
+            # repoint the repo record so future task containers source it too.
+            if ensure_private_env_file "$_mce_path" \
+                && set_repo_env_file "$PANOPTICON_SERVICE_URL" "$PANOPTICON_REPO_ID" "$_mce_repo_file"; then
+                # Retarget the rest of the script at the new file, and forget the shared file's
+                # already-sourced credentials so the check below reflects the (empty) repo file.
+                PANOPTICON_ENV_FILE="$_mce_path"
+                export PANOPTICON_ENV_FILE
+                env_file="$PANOPTICON_ENV_FILE"
+                unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY
+                [ -f "$_mce_path" ] && { set -a; . "$_mce_path"; set +a; }
+                echo "Gave this repo its own credentials file: $env_file."
+                add_summary "Gave the repo its own credentials file ($_mce_repo_file)."
+            else
+                echo "Could not switch to a repo-specific file; keeping the shared one ($_mce_cur)."
+                add_summary "Kept the shared credentials file ($_mce_cur) — the switch failed."
+            fi
+            ;;
+        *) add_summary "Kept the shared credentials file ($_mce_cur)." ;;
+    esac
+}
+
 # Mint a token and record the outcome in $summary. On success, capture the minted token and write it
 # straight into the repo's env-file (commenting out any previous one — see store_oauth_token); fall
 # back to on-screen copy instructions when it can't be captured or there's no env-file to write to.
@@ -104,6 +157,10 @@ maybe_offer_github_token() {
         *) add_summary "Left GH_TOKEN out of $env_file." ;;
     esac
 }
+
+# Before touching credentials, let the operator move this repo off the shared file onto its own
+# (no-op unless it's still on the shared file); a repo-specific choice retargets $env_file below.
+maybe_choose_env_file
 
 if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
     echo "A Claude credential is already configured in $env_file."
