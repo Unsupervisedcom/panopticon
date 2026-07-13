@@ -11,8 +11,6 @@ import argparse
 import os
 from collections.abc import Sequence
 
-import httpx
-
 from panopticon.client import TaskServiceClient
 from panopticon.core.dirs import CLONE_CACHE_DIR, TASKS_DIR
 from panopticon.core.git import GitClones
@@ -47,7 +45,7 @@ def main(
     migrate_session_dirs(CLONE_CACHE_DIR, TASKS_DIR)
 
     # Look up the task's repo to inject that repo's secrets (ADR 0007), scoped to this task.
-    client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
+    client = client or TaskServiceClient.from_url(args.service_url)
     repo = client.get_repo(client.get_task(args.task_id)["repo_id"])
 
     # Spawn-prep (ADR 0011): give the task a writable per-task clone, mounted at /workspace.

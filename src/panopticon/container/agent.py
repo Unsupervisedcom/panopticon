@@ -21,8 +21,6 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-import httpx
-
 from panopticon.client import TaskServiceClient
 from panopticon.container.config import update_json_config
 from panopticon.container.hooks import write_settings
@@ -188,13 +186,9 @@ def _stop_container() -> None:  # pragma: no cover - signals the real container'
     os.kill(1, signal.SIGTERM)
 
 
-def _default_client(service_url: str) -> TaskServiceClient:
-    return TaskServiceClient(httpx.Client(base_url=service_url))
-
-
 def main(
     *,
-    client_factory: Callable[[str], TaskServiceClient] = _default_client,
+    client_factory: Callable[[str], TaskServiceClient] = TaskServiceClient.from_url,
     home: Path | None = None,
     launch: Callable[[Path], None] = _run_claude,
     on_exit: Callable[[], None] = _stop_container,

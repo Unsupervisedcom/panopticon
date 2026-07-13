@@ -118,13 +118,9 @@ def _until_signalled() -> Callable[[], bool]:
     return lambda: not stopped
 
 
-def _make_client(service_url: str) -> TaskServiceClient:
-    return TaskServiceClient(httpx.Client(base_url=service_url))
-
-
 def main(
     *,
-    client_factory: Callable[[str], TaskServiceClient] = _make_client,
+    client_factory: Callable[[str], TaskServiceClient] = TaskServiceClient.from_url,
     running: Callable[[], bool] | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:

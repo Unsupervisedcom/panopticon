@@ -231,7 +231,7 @@ def main(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
     migrate_session_dirs(CLONE_CACHE_DIR, TASKS_DIR)
-    client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
+    client = client or TaskServiceClient.from_url(args.service_url)
     runner = LocalRunner(args.container_service_url, image=args.image, runner_id=args.runner_id)
     # A shell workflow runs directly on the host (no container), so it reaches the task service at
     # the host's own view (--service-url), not the in-container host.docker.internal address.

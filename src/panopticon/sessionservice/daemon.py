@@ -25,8 +25,6 @@ import os
 import time
 from collections.abc import Callable, Iterable
 
-import httpx
-
 from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.dirs import TASKS_DIR
 from panopticon.core.git import GitClones
@@ -134,7 +132,7 @@ def main(
     )
     parser.add_argument("--interval", type=float, default=2.0, help="poll interval, seconds")
     args = parser.parse_args(argv)
-    client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
+    client = client or TaskServiceClient.from_url(args.service_url)
     run_daemon(client, tasks_root=TASKS_DIR, interval=args.interval)
 
 

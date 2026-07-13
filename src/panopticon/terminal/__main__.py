@@ -20,8 +20,6 @@ import os
 from collections.abc import Sequence
 from pathlib import Path
 
-import httpx
-
 from panopticon.client import TaskServiceClient
 
 DEFAULT_SERVICE_URL = "http://localhost:8000"
@@ -132,9 +130,7 @@ def main(
         _qs.wait_for_service(args.service_url)
         env_file = _qs.ensure_secrets_file()
         git_url = _qs.detect_git_url()
-        _qs.setup_repo(
-            TaskServiceClient(httpx.Client(base_url=args.service_url)), git_url, env_file
-        )
+        _qs.setup_repo(TaskServiceClient.from_url(args.service_url), git_url, env_file)
         from panopticon.terminal.console import run_console_local
 
         run_console_local(args.service_url)
@@ -160,7 +156,7 @@ def main(
             )
         return 0
 
-    client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
+    client = client or TaskServiceClient.from_url(args.service_url)
     if args.command == "tasks":
         for t in client.list_tasks():
             print(f"{t['id']}  {t['state']:<10}  {t['turn']:<5}  {t['slug'] or '-'}")
