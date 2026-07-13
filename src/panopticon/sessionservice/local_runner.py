@@ -96,7 +96,9 @@ def _subprocess_run(
     ):  # inherit streams: TTY attachment (interactive) or visible build output (verbose)
         subprocess.run(list(args), check=check, env=full_env)
         return ""
-    return subprocess.run(list(args), check=check, capture_output=True, text=True, env=full_env).stdout
+    return subprocess.run(
+        list(args), check=check, capture_output=True, text=True, env=full_env
+    ).stdout
 
 
 def _invoking_user() -> str:

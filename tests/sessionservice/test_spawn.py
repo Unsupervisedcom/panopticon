@@ -11,7 +11,9 @@ from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.spawn import _parse_env_file, cleanup_workspace, prepare_workspace
 
 
-def _recording_runner() -> tuple[list[list[str]], list[dict[str, object] | None], Callable[..., str]]:
+def _recording_runner() -> tuple[
+    list[list[str]], list[dict[str, object] | None], Callable[..., str]
+]:
     calls: list[list[str]] = []
     envs: list[dict[str, object] | None] = []
 
@@ -255,9 +257,7 @@ def test_prepare_passes_no_env_when_repo_has_no_env_file() -> None:
 
 def test_parse_env_file(tmp_path: Path) -> None:
     env_file = tmp_path / "secrets.env"
-    env_file.write_text(
-        "# comment\n\nGH_TOKEN=ghp_abc123\nANTHROPIC_API_KEY=sk-ant=rest\n"
-    )
+    env_file.write_text("# comment\n\nGH_TOKEN=ghp_abc123\nANTHROPIC_API_KEY=sk-ant=rest\n")
     result = _parse_env_file(str(env_file))
     assert result == {
         "GH_TOKEN": "ghp_abc123",

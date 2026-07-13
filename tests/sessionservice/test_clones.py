@@ -18,7 +18,9 @@ class _Recorder:
         self.calls: list[list[str]] = []
         self.envs: list[dict[str, str] | None] = []
 
-    def __call__(self, args: Sequence[str], *, check: bool = True, env: dict[str, str] | None = None) -> str:
+    def __call__(
+        self, args: Sequence[str], *, check: bool = True, env: dict[str, str] | None = None
+    ) -> str:
         self.calls.append(list(args))
         self.envs.append(env)
         return ""

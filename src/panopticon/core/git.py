@@ -41,7 +41,9 @@ def _subprocess_run(
     args: Sequence[str], *, check: bool = True, env: Mapping[str, str] | None = None
 ) -> str:
     full_env = {**os.environ, **env} if env else None
-    return subprocess.run(list(args), check=check, capture_output=True, text=True, env=full_env).stdout
+    return subprocess.run(
+        list(args), check=check, capture_output=True, text=True, env=full_env
+    ).stdout
 
 
 def branch_name(slug: str) -> str:
