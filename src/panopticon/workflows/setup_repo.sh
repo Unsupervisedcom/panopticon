@@ -83,7 +83,7 @@ else
     echo "    CLAUDE_CODE_OAUTH_TOKEN=<token from 'claude setup-token'>"
     echo "    ANTHROPIC_API_KEY=<your Anthropic API key>"
     echo
-    printf "Press Enter to collect a token now (or detach — %s then %s — and drop the task to add your own). " "$prefix" "$detach"
+    printf 'Press Enter to collect a token now. '
     read _
     collect_token
 fi
