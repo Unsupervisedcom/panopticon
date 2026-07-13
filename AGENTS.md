@@ -20,7 +20,7 @@ src/panopticon/
   core/            # domain models, state classes, the Workflow interface (the state
                    # machine: resolution, queries, start_task/apply_transition),
                    # store & artifact interfaces — pure, no I/O EXCEPT git.py (local
-                   # branch/worktree ops; LLM-free, behind an injectable command-runner)
+                   # branch naming + per-task clone ops; LLM-free, behind an injectable command-runner)
   workflows/       # built-in Workflow subclasses (Spike seed; GithubPeerReviewed [formerly Parity]
                    # = cloude-cade lifecycle; GithubSelfReviewed = same, sans the peer-review state,
                    # the user self-reviews; both share the GithubForgeWorkflow base = gh tool/layer/skills;
@@ -151,9 +151,8 @@ commands the Makefile wraps).
 - `tests/test_discovery.py` — workflow discovery (Slice 8): the built-in package + an optional
   path are scanned for `Workflow` subclasses; a dropped-in module registers with no core change;
   underscored/non-workflow files are ignored; duplicate names are rejected.
-- `tests/test_git.py` — local git ops: unit tests pin the emitted `git` commands and slug-gating
-  for `GitWorktrees` and the per-task-clone ops `GitClones` (clone/branch/set-origin, ADR 0011);
-  a `skipif` integration test creates a real worktree.
+- `tests/test_git.py` — local git ops: unit tests pin the emitted `git` commands for `GitClones`
+  (clone/branch/set-origin, ADR 0011) and `branch_name`.
 - `tests/test_provisioner.py` — host-side provisioning (ADR 0011): unit tests pin the emitted
   `git` (branch the per-task clone + point origin at the forge) and the slug/already-branched
   gating (fakes), plus an end-to-end pass against the real task service over REST proving the
@@ -303,7 +302,7 @@ commands the Makefile wraps).
   writes `Task.branch`/`Task.clone` (the clone path), slug-gated, a pure recorded-fact write
   touching no filesystem. `Task.provisioned` (computed: branch recorded) is what the provisioner
   and the daemon's watch-set gate on. `core/git.py` `GitClones` is the LLM-free primitive the
-  session service drives (`GitWorktrees` remains for non-task local-git use).
+  session service drives.
 - **Task service** — the deterministic control plane (sole DB authority).
 - **Session service / runner** — spawns task containers (stubbed for now).
 - **Terminal controller** — the user-facing CLI/dashboard (Slice 3).

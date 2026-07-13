@@ -594,10 +594,8 @@ class TaskService:
         is remote (ADR 0009). Slug-gated: the branch is named from the slug, so we refuse to
         record before one is set.
 
-        This is a pure recorded-fact write — it does **not** run ``Workflow.provision``. ADR 0010
-        §1 moves provisioning's host-touching work to the session service and leaves the
-        host-side-vs-recorded-fact split of that hook an open question; until it's designed (and a
-        workflow needs it), ``Workflow.provision`` stays a declared seam, unwired here.
+        This is a pure recorded-fact write — the host-side provisioning work is done by the
+        session service (ADR 0010/0011).
         """
         task = await self.get_task(task_id)
         if task.slug is None:
