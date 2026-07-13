@@ -155,7 +155,7 @@ def main(
     env = os.environ
     actor, event = args[0], (args[1] if len(args) == 2 else None)
     task_id = env["PANOPTICON_TASK_ID"]
-    client = client or TaskServiceClient(httpx.Client(base_url=env["PANOPTICON_SERVICE_URL"]))
+    client = client or TaskServiceClient.from_url(env["PANOPTICON_SERVICE_URL"])
     # `stop` (Stop): the agent's turn just ended. Read the payload once — it carries the transcript
     # path and the background_tasks list. Record cumulative token usage, then decide the turn: don't
     # hand it back while a background task is still running, since the task's completion re-invokes
