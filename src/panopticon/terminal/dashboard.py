@@ -1136,6 +1136,7 @@ class ReposScreen(ModalScreen[None]):
             self.notify(f"Can't create setup-repo task: {_detail(exc)}", severity="error")
             return
         self.notify(f"Created setup-repo task for {name}.")
+        self.dismiss(None)  # back to the task view, where the new task shows up
 
 
 def _detail(exc: httpx.HTTPStatusError) -> str:

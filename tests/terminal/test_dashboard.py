@@ -1235,6 +1235,8 @@ async def test_pressing_s_in_the_repos_screen_creates_a_setup_repo_task() -> Non
         await pilot.pause()
         await pilot.press("s")
         await pilot.pause()
+        # creating the task dismisses the repos modal, dropping back to the task view
+        assert not isinstance(app.screen, dashboard.ReposScreen)
     assert len(fake.created) == 1
     repo_id, workflow, memo, _ = fake.created[0]
     assert (repo_id, workflow) == ("r1", "setup-repo")
