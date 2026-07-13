@@ -747,7 +747,7 @@ class EnvFileField(Widget):
     """
 
     DEFAULT_CSS = """
-    EnvFileField { margin-bottom: 1; }
+    EnvFileField { margin-bottom: 1; height: auto; }
     EnvFileField #env-file-input { margin-top: 1; }
     """
 

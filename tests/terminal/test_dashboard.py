@@ -1743,6 +1743,41 @@ async def test_env_file_field_custom_absolute_path_normalized_to_name(
         assert ef.env_file_value == "r1.env"
 
 
+@pytest.mark.asyncio
+async def test_env_file_field_custom_input_draws_a_bottom_border(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The revealed custom-path input renders a full box — including its bottom border row.
+
+    Regression: ``EnvFileField`` (a bare ``Widget``) had no explicit height, so it expanded to
+    ``1fr`` and Textual's compositor clipped the last child's ``tall`` bottom-border row. Sizing
+    the field to its content (``height: auto``) fixes it."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    fake = _FakeClient(
+        [], repos=[{"id": "r1", "name": "x", "git_url": "https://x/r.git", "default_base": "main"}]
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test(size=(90, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        ef = app.screen.query_one("#field-env_file", dashboard.EnvFileField)
+        ef.query_one("#env-file-select", Select).value = ef._CUSTOM
+        await pilot.pause()
+        await pilot.pause()
+        inp = ef.query_one("#env-file-input", Input)
+        # Read the composited screen and check the input's bottom-border row (the last row of its
+        # region) is actually painted with the ``tall`` bottom-border glyph.
+        rows = [
+            "".join(seg.text for seg in strip) for strip in app.screen._compositor.render_strips()
+        ]
+        region = inp.region
+        bottom_row = rows[region.y + region.height - 1]
+        assert "▁" in bottom_row[region.x : region.x + region.width]
+
+
 def _record_popen(monkeypatch: Any) -> list[list[str]]:
     """Capture `subprocess.Popen` argv (the host-open call) without launching anything."""
     calls: list[list[str]] = []
