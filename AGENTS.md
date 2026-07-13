@@ -1,8 +1,8 @@
 # CLAUDE.md — operating manual
 
-Guidance for agents working in this repo. The full design lives on the **`design-docs`**
-branch (GOALS, PARITY, ARCHITECTURE, ROADMAP, ADRs 0001–0008). This file grows one slice
-at a time (see ROADMAP "Definition of done — every slice").
+Guidance for agents working in this repo. The full design lives under **`docs/design/`**
+(GOALS, PARITY, ARCHITECTURE, ROADMAP, ADRs `docs/design/decisions/`). This file grows one
+slice at a time (see ROADMAP "Definition of done — every slice").
 
 ## The one rule that matters most: the determinism invariant
 

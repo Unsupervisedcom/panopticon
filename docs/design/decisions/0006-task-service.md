@@ -89,4 +89,4 @@ guidance to keep the core's boundaries transport-friendly.
 - GOALS.md — Milestone 4 (web dashboard) and Milestone 5 (remote execution) build on the
   service's client/server seam.
 - The concrete API surface, transport, and the service's relationship to the
-  execution-backend interface belong in `docs/ARCHITECTURE.md`.
+  execution-backend interface belong in `docs/design/ARCHITECTURE.md`.

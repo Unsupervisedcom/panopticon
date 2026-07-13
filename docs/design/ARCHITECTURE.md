@@ -1,9 +1,9 @@
 # Architecture
 
-This document turns the decisions in `docs/decisions/` (ADRs 0001–0008) into a concrete
+This document turns the decisions in `docs/design/decisions/` (ADRs 0001–0008) into a concrete
 component design: the three-role topology, the interfaces and their adapters, the workflow
 model, the data model, and the end-to-end task lifecycle. The cloude-cade prototype is the
-spec-by-example (`docs/PARITY.md`); the milestones (`docs/GOALS.md`) are the trajectory.
+spec-by-example (`docs/design/PARITY.md`); the milestones (`docs/design/GOALS.md`) are the trajectory.
 
 Read the ADRs for *why*; read this for *what* and *how it fits together*.
 
@@ -316,7 +316,7 @@ may invoke an LLM; `core/`, `taskservice/`, `sessionservice/`, `terminal/` may n
 
 ## 13. Cross-cutting open questions (carried from the ADRs)
 
-Questions resolved in M1 slices are removed. The table in `docs/ROADMAP.md` maps each
+Questions resolved in M1 slices are removed. The table in `docs/design/ROADMAP.md` maps each
 question to the slice that resolved it.
 
 - **Inter-process auth & transport** — trivial on one host; deferred to a later M5 hardening

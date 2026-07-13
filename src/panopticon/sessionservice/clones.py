@@ -9,7 +9,7 @@ injectable command-runner, so it's unit-testable without a real remote, and LLM-
 branch current for read-only planning, then returns the clone path either way — so the daemon's
 pull loop can call it for every task it provisions.
 
-Concurrency across a repo's tasks, disk accounting, and GC are deferred (docs/BACKLOG.md);
+Concurrency across a repo's tasks, disk accounting, and GC are deferred (docs/design/BACKLOG.md);
 M1 is single-host, one clone reused serially.
 """
 

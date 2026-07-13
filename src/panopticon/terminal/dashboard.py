@@ -50,7 +50,7 @@ The dashboard does not attach to tmux itself: on `t` it calls ``on_switch`` (the
 supervisor, ADR 0009 §6, records the chosen session and detaches this client) and **keeps
 running**, so when the supervisor re-attaches after the operator detaches the task, it is the
 same live dashboard — cursor and all. Network calls are synchronous (small, local); moving them
-to Textual workers is a refinement (docs/BACKLOG.md).
+to Textual workers is a refinement (docs/design/BACKLOG.md).
 """
 
 from __future__ import annotations
