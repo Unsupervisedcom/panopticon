@@ -15,6 +15,10 @@ detach=$(tmux list-keys -T prefix 2>/dev/null | awk '$NF == "detach-client" { pr
 [ -n "$detach" ] || detach="d"
 dashboard_hint="To return to the dashboard without finishing, detach: press $prefix then $detach (the task stays running)."
 
+# Show how to get back to the dashboard up front, before anything else.
+echo "$dashboard_hint"
+echo
+
 summary=""
 
 # Mint a token and record the outcome in $summary.
@@ -56,12 +60,12 @@ else
     collect_token
 fi
 
-# Every route converges here: summarize what happened, show how to leave without finishing, then
-# complete the task on Enter (which ends the session and returns the operator to the dashboard).
+# Every route converges here: summarize what happened, then complete the task on Enter (which ends
+# the session and returns the operator to the dashboard; detaching instead — see the hint above —
+# leaves it running).
 echo
 echo "Summary: $summary"
 echo
-echo "$dashboard_hint"
 printf 'Press Enter to complete this task and return to the dashboard. '
 read _
 # panopticon_advance is provided by the panopticon shell lib (loaded by the session service).

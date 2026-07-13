@@ -62,11 +62,17 @@ def test_shell_script_checks_for_an_existing_credential_and_guides_the_operator(
     assert "detach-client" in script and "show-options -gv prefix" in script
 
 
+def test_shell_script_shows_the_dashboard_hint_first() -> None:
+    script = WF.shell_script()
+    # the return-to-dashboard hint is echoed up front, before the credential check / any prompts
+    assert 'echo "$dashboard_hint"' in script
+    assert script.index('echo "$dashboard_hint"') < script.index("CLAUDE_CODE_OAUTH_TOKEN")
+
+
 def test_shell_script_converges_on_a_summary_and_completes_on_a_final_enter() -> None:
     script = WF.shell_script()
-    # every route ends with a summary + the unconditional dashboard hint + a complete-on-Enter prompt
+    # every route ends with a summary + a complete-on-Enter prompt
     assert "Summary:" in script
-    assert 'echo "$dashboard_hint"' in script  # the hint is shown unconditionally at the end
     assert "Press Enter to complete this task and return to the dashboard" in script
     # the completion (panopticon_advance) is the final action — after the credential-check branches,
     # run on any route — not gated on `claude setup-token` succeeding
