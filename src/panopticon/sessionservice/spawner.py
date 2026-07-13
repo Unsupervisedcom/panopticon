@@ -258,6 +258,7 @@ class Spawner:
         return self._shell_runner.spawn(
             task_id,
             env_file=repo.get("env_file"),  # per-repo secrets, sourced into the shell (ADR 0007)
+            git_url=repo.get("git_url"),  # the repo's forge — lets a script detect a GitHub remote
             script=spec["script"],
             workdir=workdir,
             progress=lambda phase: self._report(task_id, phase),  # STARTING then AWAITING

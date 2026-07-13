@@ -172,6 +172,74 @@ def test_store_oauth_token_keeps_an_already_commented_out_token(tmp_path: Path) 
     assert "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-NEW" in lines
 
 
+def test_shell_script_offers_the_github_token_when_missing() -> None:
+    script = WF.shell_script()
+    # the offer step is defined and run before the final summary converges
+    assert "maybe_offer_github_token" in script
+    # gated on: repo on GitHub (PANOPTICON_GIT_URL), a GH_TOKEN in the env, and it not already in file
+    assert "PANOPTICON_GIT_URL" in script
+    assert "is_github_url" in script
+    assert "GH_TOKEN" in script
+    assert "env_file_has_var GH_TOKEN" in script
+    # writes it via the helper
+    assert "append_env_var GH_TOKEN" in script
+    # the offer runs after the Claude credential step (the call — last occurrence of the name —
+    # comes after the credential check) but before the final summary
+    assert script.rindex("maybe_offer_github_token") > script.index("${CLAUDE_CODE_OAUTH_TOKEN:-}")
+    assert script.rindex("maybe_offer_github_token") < script.rindex('echo "Summary: $summary"')
+
+
+def test_is_github_url_matches_https_and_ssh_remotes() -> None:
+    # Both stored forms of a github.com remote are detected; other URLs (and empty) are not.
+    out = _sh(
+        "for u in https://github.com/o/r.git git@github.com:o/r.git "
+        "https://gitlab.com/o/r.git https://github.example.com/o/r.git ''; do "
+        'if is_github_url "$u"; then echo "yes:$u"; else echo "no:$u"; fi; done'
+    )
+    lines = out.split()
+    assert lines == [
+        "yes:https://github.com/o/r.git",
+        "yes:git@github.com:o/r.git",
+        "no:https://gitlab.com/o/r.git",
+        "no:https://github.example.com/o/r.git",
+        "no:",
+    ]
+
+
+def test_env_file_has_var_detects_only_active_lines(tmp_path: Path) -> None:
+    env_file = tmp_path / "repo.env"
+    env_file.write_text("ANTHROPIC_API_KEY=key-123\n# GH_TOKEN=commented\n")
+    q = shlex.quote(str(env_file))
+    # a commented line doesn't count as present
+    assert _sh(f"env_file_has_var GH_TOKEN {q} && echo present || echo absent").strip() == "absent"
+    # an active line does
+    env_file.write_text("GH_TOKEN=ghp_active\n")
+    assert _sh(f"env_file_has_var GH_TOKEN {q} && echo present || echo absent").strip() == "present"
+    # a missing file is absent (not an error)
+    missing = shlex.quote(str(tmp_path / "nope.env"))
+    assert (
+        _sh(f"env_file_has_var GH_TOKEN {missing} && echo present || echo absent").strip()
+        == "absent"
+    )
+
+
+def test_append_env_var_appends_privately(tmp_path: Path) -> None:
+    # A file whose last line has no trailing newline: the helper adds a separator so the line stands
+    # alone, keeps the prior content, and leaves the file private (0600).
+    env_file = tmp_path / "repo.env"
+    env_file.write_text("ANTHROPIC_API_KEY=key-123")  # no trailing newline
+    _sh(f"append_env_var GH_TOKEN ghp_tok {shlex.quote(str(env_file))}")
+    assert env_file.read_text() == "ANTHROPIC_API_KEY=key-123\nGH_TOKEN=ghp_tok\n"
+    assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
+
+
+def test_append_env_var_creates_a_private_file(tmp_path: Path) -> None:
+    env_file = tmp_path / "secrets" / "repo.env"  # parent dir does not exist yet
+    _sh(f"append_env_var GH_TOKEN ghp_tok {shlex.quote(str(env_file))}")
+    assert env_file.read_text() == "GH_TOKEN=ghp_tok\n"
+    assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
+
+
 def test_docker_workflows_have_no_shell_script_and_default_knobs() -> None:
     from panopticon.workflows import Spike
 

@@ -1,6 +1,7 @@
 # Collect a Claude auth token (`claude setup-token`) for the repo's env-file. Run by the session
 # service in a host tmux session (no container); ShellRunner sources the repo's env-file first, so an
-# already-configured credential shows up as an env var, and exports PANOPTICON_ENV_FILE (its path).
+# already-configured credential shows up as an env var, and exports PANOPTICON_ENV_FILE (its path)
+# and PANOPTICON_GIT_URL (the repo's remote, used to detect a GitHub forge below).
 #
 # Whatever route the operator takes, the script converges on a summary + a prompt to press Enter,
 # which completes the task and returns them to the dashboard.
@@ -20,6 +21,16 @@ echo "$dashboard_hint"
 echo
 
 summary=""
+
+# Append clause $1 to the running $summary, space-separating it from anything already there. Each
+# step records its own outcome this way, so the order the steps run in doesn't clobber the summary.
+add_summary() {
+    if [ -n "$summary" ]; then
+        summary="$summary $1"
+    else
+        summary="$1"
+    fi
+}
 
 # Mint a token and record the outcome in $summary. On success, capture the minted token and write it
 # straight into the repo's env-file (commenting out any previous one — see store_oauth_token); fall
@@ -49,19 +60,49 @@ collect_token() {
     fi
 
     if [ "$_ct_ok" -eq 0 ]; then
-        summary="'claude setup-token' failed or was cancelled — no token was collected."
+        add_summary "'claude setup-token' failed or was cancelled — no token was collected."
     elif [ -n "$_ct_token" ] && [ -n "${PANOPTICON_ENV_FILE:-}" ] \
         && store_oauth_token "$_ct_token" "$PANOPTICON_ENV_FILE"; then
         echo
         echo "Wrote the new token to $env_file as CLAUDE_CODE_OAUTH_TOKEN (any previous one was commented out)."
-        summary="Minted a new token and wrote it to $env_file (any previous token was commented out)."
+        add_summary "Minted a new token and wrote it to $env_file (any previous token was commented out)."
     else
         # Minted, but we couldn't capture/extract it or there's no env-file configured — guide the copy.
         echo
         echo "Token minted. Copy the token shown above into $env_file as:"
         echo "    CLAUDE_CODE_OAUTH_TOKEN=<token>"
-        summary="Minted a new token — copy it into $env_file as CLAUDE_CODE_OAUTH_TOKEN."
+        add_summary "Minted a new token — copy it into $env_file as CLAUDE_CODE_OAUTH_TOKEN."
     fi
+}
+
+# Offer to record a GitHub token in the repo's env-file, but only when it's both wanted and missing:
+# the repo is hosted on GitHub (PANOPTICON_GIT_URL), a GH_TOKEN is present in the environment (e.g.
+# the operator's own shell — the shell runner inherits the host env), and the env-file doesn't
+# already carry an active GH_TOKEN line. Records the outcome in $summary. is_github_url /
+# env_file_has_var / append_env_var come from setup_repo_lib.sh (prepended by shell_script()).
+maybe_offer_github_token() {
+    is_github_url "${PANOPTICON_GIT_URL:-}" || return 0
+    [ -n "${GH_TOKEN:-}" ] || return 0
+    [ -n "${PANOPTICON_ENV_FILE:-}" ] || return 0
+    ! env_file_has_var GH_TOKEN "$PANOPTICON_ENV_FILE" || return 0
+    echo
+    echo "This repo is hosted on GitHub and a GH_TOKEN is set in your environment, but $env_file"
+    echo "has no GH_TOKEN. Adding it lets task containers use 'gh' and push over HTTPS."
+    echo
+    printf 'Add GH_TOKEN to %s? [y/N] ' "$env_file"
+    read gh_answer
+    case "$gh_answer" in
+        [Yy]*)
+            if append_env_var GH_TOKEN "$GH_TOKEN" "$PANOPTICON_ENV_FILE"; then
+                echo "Wrote GH_TOKEN to $env_file."
+                add_summary "Added GH_TOKEN to $env_file."
+            else
+                echo "Could not write GH_TOKEN to $env_file."
+                add_summary "Could not add GH_TOKEN to $env_file."
+            fi
+            ;;
+        *) add_summary "Left GH_TOKEN out of $env_file." ;;
+    esac
 }
 
 if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
@@ -72,7 +113,7 @@ if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; the
     read answer
     case "$answer" in
         [Yy]*) collect_token ;;
-        *) summary="Kept the existing credential in $env_file — nothing collected." ;;
+        *) add_summary "Kept the existing credential in $env_file — nothing collected." ;;
     esac
 else
     echo "No Claude credential found in $env_file."
@@ -87,6 +128,9 @@ else
     read _
     collect_token
 fi
+
+# With the Claude credential settled, offer to record a GitHub token too (no-op unless it applies).
+maybe_offer_github_token
 
 # Every route converges here: summarize what happened, then complete the task on Enter (which ends
 # the session and returns the operator to the dashboard; detaching instead — see the hint above —

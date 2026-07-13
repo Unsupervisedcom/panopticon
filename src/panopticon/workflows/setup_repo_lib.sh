@@ -41,3 +41,38 @@ store_oauth_token() {
     }
     chmod 600 "$_sot_file" 2>/dev/null || true
 }
+
+# True when URL $1 names github.com as its host, in either form the repo's `git_url` is stored:
+# HTTPS (`https://github.com/owner/repo.git`) or SSH (`git@github.com:owner/repo.git`). An empty or
+# non-GitHub URL (incl. a GitHub Enterprise host) returns nonzero.
+is_github_url() {
+    case "$1" in
+        *github.com/*|*github.com:*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# True when env-file $2 exists and holds an *active* (uncommented) `$1=` assignment. A commented
+# (`# $1=…`) line or a missing file returns nonzero — matching store_oauth_token's notion of active.
+env_file_has_var() {
+    [ -f "$2" ] && grep -qE "^[[:space:]]*$1=" "$2"
+}
+
+# Append `$1=$2` to env-file $3, creating it (and its parent dir) private (0600) if needed. Adds a
+# separating newline first when the file is non-empty and its last byte isn't one, so the appended
+# line always stands alone. Only ever called when the var is absent (see env_file_has_var), so it
+# needs no comment-out logic. Returns nonzero if it can't be written.
+append_env_var() {
+    _aev_var=$1
+    _aev_val=$2
+    _aev_file=$3
+    [ -n "$_aev_file" ] || return 1
+    umask 077
+    mkdir -p "$(dirname "$_aev_file")" || return 1
+    # `$(…)` strips trailing newlines, so a non-empty result means the last byte isn't a newline.
+    if [ -s "$_aev_file" ] && [ -n "$(tail -c 1 "$_aev_file")" ]; then
+        printf '\n' >> "$_aev_file" || return 1
+    fi
+    printf '%s=%s\n' "$_aev_var" "$_aev_val" >> "$_aev_file" || return 1
+    chmod 600 "$_aev_file" 2>/dev/null || true
+}
