@@ -38,6 +38,7 @@ include = [
   "src/panopticon/docker/entrypoint.sh",
   "src/panopticon/sessionservice/task_lib.sh",
   "src/panopticon/workflows/setup_token.sh",
+  "src/panopticon/workflows/setup_token_lib.sh",
 ]
 
 [tool.pytest.ini_options]

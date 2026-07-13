@@ -5,8 +5,9 @@ Every task runs `claude` inside its container. The agent authenticates from a
 `env_file`** at spawn (ADR 0007 / ADR 0012). You provide that token once per repo; it is long-lived
 and non-rotating, so it survives concurrent tasks and respawns (no ~8h re-login cliff).
 
-panopticon does **not** mint or store the token for you — there is no `login` command. You obtain it
-with the `claude` CLI and place it in the repo's env-file yourself.
+You can do this by hand (mint with the `claude` CLI, drop the token into the env-file — below), or
+run the **`setup-token` workflow**, which does both on the host for you (see *The `setup-token`
+workflow* below). There is no `login` command.
 
 ## One-time setup per account
 
@@ -44,6 +45,17 @@ with the `claude` CLI and place it in the repo's env-file yourself.
 
 That's it — new task containers for that repo now authenticate from the token.
 
+## The `setup-token` workflow
+
+To skip the manual copy, enable the **`setup-token`** workflow on the repo and start a task on it.
+It runs on the host (no container — `runner_type = "shell"`), attaches you to a shell where it runs
+`claude setup-token`, and on a successful mint **writes the token straight into the repo's env-file**
+as `CLAUDE_CODE_OAUTH_TOKEN=…` (creating the file `0600` if needed). If a token is already present,
+the previous line is **commented out** (kept as a record, not deleted) and any placeholder stub
+(`# CLAUDE_CODE_OAUTH_TOKEN =`) is removed; other lines (`ANTHROPIC_API_KEY`, …) are untouched. When
+it can't capture the token (or the repo has no `env_file`), it falls back to printing the copy-it-in
+instructions above.
+
 ## Notes
 
 - **The env-file lives on the host that spawns the container.** Because `env_file` is stored as a
@@ -55,7 +67,8 @@ That's it — new task containers for that repo now authenticate from the token.
   unintentionally, since the API key wins.
 - **Already-running tasks** keep their old token until they respawn. After editing the env-file,
   respawn a live task from the dashboard (`R`) to pick up the new value.
-- **Rotating/revoking.** To replace a token, mint a new one and overwrite the env-file line.
+- **Rotating/revoking.** To replace a token, mint a new one and overwrite the env-file line (or
+  re-run the `setup-token` workflow, which comments out the old line and appends the new one).
   Per-token revocation isn't available upstream (account-level "revoke all" can take time to
   propagate), so treat a leak as "mint a replacement + monitor usage in the Console," and keep the
   env-file tightly held.

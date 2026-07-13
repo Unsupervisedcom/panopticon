@@ -21,18 +21,46 @@ echo
 
 summary=""
 
-# Mint a token and record the outcome in $summary.
+# Mint a token and record the outcome in $summary. On success, capture the minted token and write it
+# straight into the repo's env-file (commenting out any previous one — see store_oauth_token); fall
+# back to on-screen copy instructions when it can't be captured or there's no env-file to write to.
+# extract_oauth_token / store_oauth_token come from setup_token_lib.sh (prepended by shell_script()).
 collect_token() {
     echo
     echo "Running 'claude setup-token' — follow the prompts to mint a token."
     echo
-    if claude setup-token; then
+    umask 077
+    _ct_ok=1
+    _ct_token=""
+    if command -v script >/dev/null 2>&1; then
+        # Wrap the OAuth flow in a pty (`script`) so its interactive prompts still work, while teeing
+        # the session to a private log we read the minted token back from. `-e` returns claude's exit
+        # status; the log holds the token in plaintext, so remove it as soon as we've read it.
+        _ct_log=$(mktemp "${TMPDIR:-/tmp}/panopticon-setup-token.XXXXXX")
+        if script -q -e -c 'claude setup-token' "$_ct_log"; then
+            _ct_token=$(extract_oauth_token "$_ct_log")
+        else
+            _ct_ok=0
+        fi
+        rm -f "$_ct_log"
+    else
+        # No `script` to capture with: run it directly (the operator still sees the token on screen).
+        claude setup-token || _ct_ok=0
+    fi
+
+    if [ "$_ct_ok" -eq 0 ]; then
+        summary="'claude setup-token' failed or was cancelled — no token was collected."
+    elif [ -n "$_ct_token" ] && [ -n "${PANOPTICON_ENV_FILE:-}" ] \
+        && store_oauth_token "$_ct_token" "$PANOPTICON_ENV_FILE"; then
+        echo
+        echo "Wrote the new token to $env_file as CLAUDE_CODE_OAUTH_TOKEN (any previous one was commented out)."
+        summary="Minted a new token and wrote it to $env_file (any previous token was commented out)."
+    else
+        # Minted, but we couldn't capture/extract it or there's no env-file configured — guide the copy.
         echo
         echo "Token minted. Copy the token shown above into $env_file as:"
         echo "    CLAUDE_CODE_OAUTH_TOKEN=<token>"
         summary="Minted a new token — copy it into $env_file as CLAUDE_CODE_OAUTH_TOKEN."
-    else
-        summary="'claude setup-token' failed or was cancelled — no token was collected."
     fi
 }
 

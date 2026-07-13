@@ -22,7 +22,10 @@ from panopticon.core.state import Complete, InitialState
 from panopticon.core.workflow import Workflow
 
 #: The shell script the workflow runs, kept in a sibling ``setup_token.sh`` so it's edited (and
-#: shell-linted) as a real script rather than a Python string. Read once at import.
+#: shell-linted) as a real script rather than a Python string. Its sourceable helpers live in
+#: ``setup_token_lib.sh`` (prepended, so they're defined before the interactive flow calls them —
+#: and unit-testable in isolation). Read once at import.
+_LIB = (importlib.resources.files("panopticon.workflows") / "setup_token_lib.sh").read_text()
 _SCRIPT = (importlib.resources.files("panopticon.workflows") / "setup_token.sh").read_text()
 
 
@@ -56,4 +59,4 @@ class SetupToken(Workflow):
         script checks for an existing credential, optionally collects a new one, and — whatever route
         the operator takes — ends with a summary and a prompt to press Enter, which advances the task
         to COMPLETE over REST and returns them to the dashboard."""
-        return _SCRIPT
+        return f"{_LIB}\n{_SCRIPT}"
