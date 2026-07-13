@@ -11,3 +11,13 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+
+# Panopticon runtime state / secrets
+panopticon.db
+*.token
+*.log
+
+# Node tooling (one-off)
+node_modules/
+package.json
+package-lock.json
