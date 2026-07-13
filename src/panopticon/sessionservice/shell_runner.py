@@ -40,17 +40,19 @@ from panopticon.sessionservice.runner import Runner
 _TASK_LIB = (importlib.resources.files("panopticon.sessionservice") / "task_lib.sh").read_text()
 
 
-def build_base_image_command(image: str = DEFAULT_IMAGE) -> str:
-    """The shell command that builds the base task-container ``image`` if it's missing.
+def build_base_image_command() -> str:
+    """The shell command that builds the base task-container image (the ``panopticon build`` CLI).
 
-    Runs :mod:`panopticon.sessionservice.images` as a module with **this process's own interpreter**
-    (``sys.executable``) — the one the session service runs under, which has the ``panopticon``
-    package (and its bundled ``docker/Dockerfile``) importable. So the build works from a **pip/wheel
-    install with no source checkout**, not just a dev checkout: :class:`ImageBuilder` builds the base
-    from the packaged Dockerfile via ``PANOPTICON_VERSION`` (the same path the spawner uses to
-    auto-build). A shell workflow runs this as its container-fallback build step (e.g. setup-repo
-    when the host has no ``claude`` CLI)."""
-    return f"{shlex.quote(sys.executable)} -m panopticon.sessionservice.images {shlex.quote(image)}"
+    Invokes the existing ``build`` subcommand (``panopticon.terminal.__main__``) with **this
+    process's own interpreter** (``sys.executable``) — the one the session service runs under, which
+    has the ``panopticon`` package (and its bundled ``docker/Dockerfile``) importable. Using the
+    absolute interpreter path rather than the ``panopticon`` console script means it doesn't depend
+    on the tmux pane's ``$PATH`` including a venv's ``bin/``. The build works from a **pip/wheel
+    install with no source checkout**: :class:`ImageBuilder.build_base` builds from the packaged
+    Dockerfile via ``PANOPTICON_VERSION`` (the same path the spawner uses to auto-build). A shell
+    workflow runs this as its container-fallback build step (e.g. setup-repo when the host has no
+    ``claude`` CLI)."""
+    return f"{shlex.quote(sys.executable)} -m panopticon.terminal build"
 
 
 class ShellRunner(Runner):
@@ -129,7 +131,7 @@ class ShellRunner(Runner):
         )
         # The base task-container image + a command to build it, for a shell workflow that needs a
         # container fallback (e.g. setup-repo runs `claude setup-token` in the base image when the
-        # host has no `claude` CLI). The build command runs the packaged image builder with this
+        # host has no `claude` CLI). The build command is the `panopticon build` CLI run with this
         # process's interpreter, so it works from a pip install with no source checkout — not `make`.
         lines = [
             f"export PANOPTICON_SERVICE_URL={shlex.quote(self._service_url)}",

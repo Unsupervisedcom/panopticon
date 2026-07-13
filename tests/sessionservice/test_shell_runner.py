@@ -153,11 +153,11 @@ def test_spawn_exports_a_checkout_free_base_image_build_command() -> None:
     assert f"export PANOPTICON_BUILD_BASE_CMD={shlex.quote(build_base_image_command())}" in command
 
 
-def test_build_base_image_command_uses_this_interpreter_and_the_packaged_module() -> None:
-    cmd = build_base_image_command("panopticon-base")
-    assert (
-        cmd == f"{shlex.quote(sys.executable)} -m panopticon.sessionservice.images panopticon-base"
-    )
+def test_build_base_image_command_reuses_the_build_cli_with_this_interpreter() -> None:
+    # Reuses the existing `panopticon build` subcommand, via this interpreter (sys.executable) so it
+    # doesn't depend on a venv's bin/ being on the tmux pane's PATH.
+    cmd = build_base_image_command()
+    assert cmd == f"{shlex.quote(sys.executable)} -m panopticon.terminal build"
     # no `make` / source-checkout assumption — it drives the installed package's image builder
     assert "make" not in cmd
 
