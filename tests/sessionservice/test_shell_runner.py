@@ -149,6 +149,21 @@ def test_spawn_omits_the_git_url_export_without_one() -> None:
     assert "PANOPTICON_GIT_URL" not in command
 
 
+def test_spawn_exports_the_repo_name_when_given() -> None:
+    # A script uses PANOPTICON_REPO_NAME to label the repo in its summary.
+    rec = _Recorder()
+    ShellRunner("http://svc:8000", run=rec).spawn("t1", script="echo hi", repo_name="acme/widget")
+    command = rec.calls[-1][-1]
+    assert "export PANOPTICON_REPO_NAME=acme/widget" in command
+
+
+def test_spawn_omits_the_repo_name_export_without_one() -> None:
+    rec = _Recorder()
+    ShellRunner("http://svc:8000", run=rec).spawn("t1", script="echo hi")
+    command = rec.calls[-1][-1]
+    assert "PANOPTICON_REPO_NAME" not in command
+
+
 def test_spawn_reports_starting_then_awaiting() -> None:
     phases: list[LifecyclePhase] = []
     ShellRunner("http://svc:8000", run=_Recorder()).spawn(
