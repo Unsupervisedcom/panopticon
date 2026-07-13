@@ -12,6 +12,7 @@ import pytest
 from panopticon.terminal.doctor import (
     CommandRunner,
     check_base_image,
+    check_claude,
     check_docker,
     check_git,
     check_repo_env_file,
@@ -42,18 +43,22 @@ class _FakeRunner:
         return self._outputs.get(key, "")
 
 
-#: A runner where every host tool (docker/git/tmux) is present — the all-green baseline.
+#: A runner where every host tool (docker/git/tmux/claude) is present — the all-green baseline.
 def _healthy_runner() -> _FakeRunner:
-    return _FakeRunner(outputs={
-        "docker": "Server: Docker Desktop",
-        "git": "git version 2.43.0",
-        "tmux": "tmux 3.3a",
-    })
+    return _FakeRunner(
+        outputs={
+            "docker": "Server: Docker Desktop",
+            "git": "git version 2.43.0",
+            "tmux": "tmux 3.3a",
+            "claude": "1.2.3 (Claude Code)",
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
 # check_docker
 # ---------------------------------------------------------------------------
+
 
 def test_check_docker_ok() -> None:
     runner = _FakeRunner(outputs={"docker": "Server: Docker Desktop\nversion: 24.0"})
@@ -103,6 +108,7 @@ def test_check_docker_linux_ok_without_desktop_in_output() -> None:
 # check_git
 # ---------------------------------------------------------------------------
 
+
 def test_check_git_ok() -> None:
     runner = _FakeRunner(outputs={"git": "git version 2.43.0"})
     result = check_git(run=runner)
@@ -120,8 +126,31 @@ def test_check_git_fail_not_installed() -> None:
 
 
 # ---------------------------------------------------------------------------
+# check_claude — the host tool setup-repo / quickstart execs (`claude setup-token`)
+# ---------------------------------------------------------------------------
+
+
+def test_check_claude_ok() -> None:
+    runner = _FakeRunner(outputs={"claude": "1.2.3 (Claude Code)"})
+    result = check_claude(run=runner)
+    assert result.status == "OK"
+    assert "1.2.3" in result.message
+    assert runner.calls[0] == ["claude", "--version"]
+
+
+def test_check_claude_fail_not_installed() -> None:
+    runner = _FakeRunner(failures={"claude"})
+    result = check_claude(run=runner)
+    assert result.status == "FAIL"
+    # Names why it's needed (setup-repo/quickstart) and how to install it.
+    assert "setup-repo" in result.message or "quickstart" in result.message
+    assert "claude.ai/install.sh" in (result.remediation or "")
+
+
+# ---------------------------------------------------------------------------
 # check_tmux
 # ---------------------------------------------------------------------------
+
 
 def test_check_tmux_ok() -> None:
     runner = _FakeRunner(outputs={"tmux": "tmux 3.3a"})
@@ -142,6 +171,7 @@ def test_check_tmux_fail_not_installed() -> None:
 # ---------------------------------------------------------------------------
 # check_base_image
 # ---------------------------------------------------------------------------
+
 
 def test_check_base_image_ok() -> None:
     runner = _FakeRunner(outputs={"docker": '[{"Id": "sha256:abc"}]'})
@@ -172,6 +202,7 @@ def test_check_base_image_warn_called_process_error() -> None:
 # ---------------------------------------------------------------------------
 # check_task_service
 # ---------------------------------------------------------------------------
+
 
 def test_check_task_service_ok() -> None:
     result = check_task_service(service_url="http://svc:8000", http_get=lambda _: 200)
@@ -245,82 +276,86 @@ def test_check_repo_env_file_ok_anthropic_api_key() -> None:
     assert "ANTHROPIC_API_KEY" in results[0].message
 
 
-def test_check_repo_env_file_fail_missing_file() -> None:
+def test_check_repo_env_file_warn_missing_file() -> None:
+    # A missing env_file is WARN, not FAIL: quickstart/setup-repo creates it.
     def _raise(_: str) -> str:
         raise OSError("not found")
 
     results = check_repo_env_file(_make_repo(), read_file=_raise, file_mode=lambda _: 0o600)
     assert len(results) == 1
-    assert results[0].status == "FAIL"
+    assert results[0].status == "WARN"
     assert "not found" in results[0].message
+    assert "quickstart" in (results[0].remediation or "")
 
 
-def test_check_repo_env_file_fail_group_or_other_access() -> None:
+def test_check_repo_env_file_warn_group_or_other_access() -> None:
+    # quickstart writes the secrets file at the default mode (~0644), so a loose mode is a WARN
+    # heads-up (with a chmod remediation), not a FAIL that would red-flag a quickstarted machine.
     content = f"CLAUDE_CODE_OAUTH_TOKEN={_GOOD_OAUTH_TOKEN}\n"
     results = check_repo_env_file(
         _make_repo(),
         read_file=lambda _: content,
         file_mode=lambda _: 0o644,
     )
-    mode_fails = [r for r in results if r.status == "FAIL"]
-    assert mode_fails, "expected a FAIL for group/other-readable env_file"
-    assert "644" in mode_fails[0].message
-    assert "chmod" in (mode_fails[0].remediation or "")
+    mode_warns = [r for r in results if r.status == "WARN"]
+    assert mode_warns, "expected a WARN for group/other-readable env_file"
+    assert "644" in mode_warns[0].message
+    assert "chmod" in (mode_warns[0].remediation or "")
+    assert [r for r in results if r.status == "FAIL"] == []
 
 
 def test_check_repo_env_file_ok_stricter_owner_only_mode() -> None:
-    # A stricter-than-0600 file (e.g. 0400, owner-read-only) has no group/other bits → not a FAIL.
+    # A stricter-than-0600 file (e.g. 0400, owner-read-only) has no group/other bits → no warning.
     content = f"CLAUDE_CODE_OAUTH_TOKEN={_GOOD_OAUTH_TOKEN}\n"
     results = check_repo_env_file(
         _make_repo(),
         read_file=lambda _: content,
         file_mode=lambda _: 0o400,
     )
-    assert [r for r in results if r.status == "FAIL"] == []
+    assert [r for r in results if r.status in ("FAIL", "WARN")] == []
     assert results[-1].status == "OK"
 
 
-def test_check_repo_env_file_fail_no_token() -> None:
+def test_check_repo_env_file_warn_no_token() -> None:
+    # No token yet is the normal state before setup-repo mints one → WARN, not FAIL.
     content = "OTHER_KEY=some_value\n"
     results = check_repo_env_file(
         _make_repo(),
         read_file=lambda _: content,
         file_mode=lambda _: 0o600,
     )
-    fails = [r for r in results if r.status == "FAIL"]
-    assert fails
-    assert "CLAUDE_CODE_OAUTH_TOKEN" in fails[0].message or "ANTHROPIC_API_KEY" in fails[0].message
+    warns = [r for r in results if r.status == "WARN"]
+    assert warns
+    assert [r for r in results if r.status == "FAIL"] == []
+    assert "setup-repo" in (warns[0].remediation or "")
 
 
-def test_check_repo_env_file_fail_blank_token() -> None:
+def test_check_repo_env_file_warn_blank_token() -> None:
     content = "CLAUDE_CODE_OAUTH_TOKEN=\n"
     results = check_repo_env_file(
         _make_repo(),
         read_file=lambda _: content,
         file_mode=lambda _: 0o600,
     )
-    fails = [r for r in results if r.status == "FAIL"]
-    assert fails
+    assert [r for r in results if r.status == "WARN"]
+    assert [r for r in results if r.status == "FAIL"] == []
 
 
-def test_check_repo_env_file_fail_bad_shape() -> None:
+def test_check_repo_env_file_warn_bad_shape() -> None:
     content = "CLAUDE_CODE_OAUTH_TOKEN=wrong-prefix-token\n"
     results = check_repo_env_file(
         _make_repo(),
         read_file=lambda _: content,
         file_mode=lambda _: 0o600,
     )
-    fails = [r for r in results if r.status == "FAIL"]
-    assert fails
-    assert "shape" in fails[0].message.lower() or "unrecognised" in fails[0].message.lower()
+    warns = [r for r in results if r.status == "WARN"]
+    assert warns
+    assert [r for r in results if r.status == "FAIL"] == []
+    assert "shape" in warns[0].message.lower() or "unrecognised" in warns[0].message.lower()
 
 
 def test_check_repo_env_file_comments_and_blanks_ignored() -> None:
-    content = (
-        "# this is a comment\n"
-        "\n"
-        f"CLAUDE_CODE_OAUTH_TOKEN={_GOOD_OAUTH_TOKEN}\n"
-    )
+    content = f"# this is a comment\n\nCLAUDE_CODE_OAUTH_TOKEN={_GOOD_OAUTH_TOKEN}\n"
     results = check_repo_env_file(
         _make_repo(),
         read_file=lambda _: content,
@@ -333,6 +368,7 @@ def test_check_repo_env_file_comments_and_blanks_ignored() -> None:
 # run_doctor — exit codes and repo-listing
 # ---------------------------------------------------------------------------
 
+
 def _run_doctor(
     *,
     runner: CommandRunner,
@@ -344,7 +380,7 @@ def _run_doctor(
 ) -> int:
     return run_doctor(
         service_url="http://svc:8000",
-        list_repos=list_repos or (lambda: []),  # type: ignore[arg-type]
+        list_repos=list_repos or (list),  # type: ignore[arg-type]
         run=runner,
         read_file=read_file or (lambda _: ""),  # type: ignore[arg-type]
         file_mode=file_mode or (lambda _: 0o600),  # type: ignore[arg-type]
@@ -364,11 +400,13 @@ def test_run_doctor_returns_1_when_any_fail(capsys: pytest.CaptureFixture[str]) 
 
 
 def test_run_doctor_returns_0_with_only_warns(capsys: pytest.CaptureFixture[str]) -> None:
-    runner = _FakeRunner(outputs={
-        "docker": "Server: Docker Engine",  # no "Desktop" on darwin → WARN
-        "git": "git version 2.43.0",
-        "tmux": "tmux 3.3a",
-    })
+    runner = _FakeRunner(
+        outputs={
+            "docker": "Server: Docker Engine",  # no "Desktop" on darwin → WARN
+            "git": "git version 2.43.0",
+            "tmux": "tmux 3.3a",
+        }
+    )
     code = _run_doctor(runner=runner, platform="darwin")
     assert code == 0
 
@@ -402,7 +440,12 @@ class _NoBaseImageRunner:
 
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
-        self._outputs = {"docker": "Server: Docker Desktop", "git": "git version 2.43.0", "tmux": "tmux 3.3a"}
+        self._outputs = {
+            "docker": "Server: Docker Desktop",
+            "git": "git version 2.43.0",
+            "tmux": "tmux 3.3a",
+            "claude": "1.2.3 (Claude Code)",
+        }
 
     def __call__(self, args: Sequence[str], *, check: bool = True) -> str:
         self.calls.append(list(args))
@@ -431,11 +474,26 @@ def test_run_doctor_fresh_machine_before_first_start_exits_0(
 
 def test_run_doctor_missing_prerequisite_fails(capsys: pytest.CaptureFixture[str]) -> None:
     # A genuinely missing host tool (git here) is the only thing that FAILs → exit 1.
-    runner = _FakeRunner(outputs={"docker": "Server: Docker Desktop", "tmux": "tmux 3.3a"}, failures={"git"})
+    runner = _FakeRunner(
+        outputs={"docker": "Server: Docker Desktop", "tmux": "tmux 3.3a", "claude": "1.2.3"},
+        failures={"git"},
+    )
     code = _run_doctor(runner=runner, http_get=lambda _: 0)
     assert code == 1
     out = capsys.readouterr().out
     assert "prerequisite check(s) FAILED" in out
+
+
+def test_run_doctor_missing_claude_fails(capsys: pytest.CaptureFixture[str]) -> None:
+    # setup-repo execs `claude setup-token` on the host, so a missing claude blocks quickstart → FAIL.
+    runner = _FakeRunner(
+        outputs={"docker": "Server: Docker Desktop", "git": "git 2.43", "tmux": "tmux 3.3a"},
+        failures={"claude"},
+    )
+    code = _run_doctor(runner=runner, http_get=lambda _: 200)
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "claude CLI not found" in out
 
 
 def test_run_doctor_survives_list_repos_error_when_service_up(
@@ -457,4 +515,5 @@ def test_run_doctor_emits_expected_host_tool_commands() -> None:
     assert ["docker", "info"] in runner.calls
     assert ["git", "--version"] in runner.calls
     assert ["tmux", "-V"] in runner.calls
+    assert ["claude", "--version"] in runner.calls
     assert ["docker", "image", "inspect", "panopticon-base"] in runner.calls

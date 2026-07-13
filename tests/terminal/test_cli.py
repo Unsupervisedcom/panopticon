@@ -73,3 +73,15 @@ def test_start_runs_migrate_sessions_then_console() -> None:
     mock_migrate.assert_called_once_with()
     mock_sessions.assert_called_once_with()
     mock_console.assert_called_once()
+    assert mock_console.call_args.kwargs["join"] is None  # no task → nothing to join
+
+
+def test_start_with_a_task_arg_joins_it() -> None:
+    # `panopticon start <task>` threads the task ref through to the console as `join=`.
+    with (
+        patch("panopticon.terminal.__main__._run_migrate"),
+        patch("panopticon.terminal.__main__._start_sessions"),
+        patch("panopticon.terminal.console.run_console_local") as mock_console,
+    ):
+        assert main(["start", "fix-login"]) == 0
+    assert mock_console.call_args.kwargs["join"] == "fix-login"

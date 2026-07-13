@@ -25,12 +25,7 @@ def validate_segment(segment: str) -> None:
 
     Dotfile names (e.g. ``.babysit-ci-state.json``) are valid — only the bare directory
     sentinels are forbidden."""
-    if (
-        not segment
-        or "/" in segment
-        or "\\" in segment
-        or segment in (".", "..")
-    ):
+    if not segment or "/" in segment or "\\" in segment or segment in (".", ".."):
         raise InvalidArtifactName(f"invalid artifact segment: {segment!r}")
 
 

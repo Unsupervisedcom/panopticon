@@ -10,23 +10,24 @@ import threading
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from textual.app import App
-from textual.widgets import Checkbox, DataTable, Input, Static
+from textual.widgets import Checkbox, DataTable, Input, Select, Static
 
 from panopticon.terminal import dashboard
 from panopticon.terminal.dashboard import (
+    _ENSEMBLE_KEY_PREFIX,
     Dashboard,
     SpaceCheckbox,
-    _ENSEMBLE_KEY_PREFIX,
     _dim,
     _group_by_governor,
     _group_section,
+    _make_sort_key,
     _matches,
     _repo_cell,
     _short_tokens,
     _slug_cell,
-    _sort_key,
     _status_cell,
     _turn_cell,
     render_detail,
@@ -43,11 +44,16 @@ _TASK: dict[str, Any] = {
     "history": [
         {
             "at": "2026-06-22T10:00:00+00:00",
-            "from_state": None, "to_state": "PLAN", "trigger": "start", "responsibilities": [],
+            "from_state": None,
+            "to_state": "PLAN",
+            "trigger": "start",
+            "responsibilities": [],
         },
         {
             "at": "2026-06-22T11:00:00+00:00",
-            "from_state": "PLAN", "to_state": "WORKING", "trigger": "advance",
+            "from_state": "PLAN",
+            "to_state": "WORKING",
+            "trigger": "advance",
             "responsibilities": [{"key": "tests-pass", "status": "pending"}],
         },
     ],
@@ -57,6 +63,14 @@ _TASK: dict[str, Any] = {
 def _raise(*args: Any, **kwargs: Any) -> Any:
     """Stand in for a failing REST call (e.g. a down service)."""
     raise RuntimeError("service unavailable")
+
+
+def _http_400(detail: str) -> httpx.HTTPStatusError:
+    """A 400 HTTPStatusError carrying a ``{"detail": ...}`` body, as the task service returns for
+    a rejected repo (e.g. a non-existent env_file). `_detail(exc)` reads that message back out."""
+    request = httpx.Request("POST", "http://test/repos")
+    response = httpx.Response(400, json={"detail": detail}, request=request)
+    return httpx.HTTPStatusError(detail, request=request, response=response)
 
 
 class _FakeClient:
@@ -99,6 +113,9 @@ class _FakeClient:
         self.released: list[str] = []
         self.created_repos: list[dict[str, Any]] = []
         self.updated_repos: list[tuple[str, dict[str, Any]]] = []
+        # When set, create_repo/update_repo raise a 400 carrying this detail (mimics the task
+        # service rejecting e.g. a non-existent env_file), to exercise the form's error path.
+        self.repo_error: str | None = None
         self.fetched: list[tuple[str, str]] = []  # (task_id, name) passed to get_artifact
 
     def list_tasks(self) -> list[dict[str, Any]]:
@@ -144,14 +161,24 @@ class _FakeClient:
         return self._repos
 
     def create_repo(
-        self, repo_id: str, name: str, git_url: str, default_base: str = "main",
-        *, env_file: str | None = None,
+        self,
+        repo_id: str,
+        name: str,
+        git_url: str,
+        default_base: str = "main",
+        *,
+        env_file: str | None = None,
         capabilities: dict[str, Any] | None = None,
         enabled_workflows: list[str] | None = None,
         disabled_workflows: list[str] | None = None,
     ) -> dict[str, Any]:
+        if self.repo_error is not None:
+            raise _http_400(self.repo_error)
         repo: dict[str, Any] = {
-            "id": repo_id, "name": name, "git_url": git_url, "default_base": default_base,
+            "id": repo_id,
+            "name": name,
+            "git_url": git_url,
+            "default_base": default_base,
             "env_file": env_file,
             "enabled_workflows": enabled_workflows or [],
             "disabled_workflows": disabled_workflows or [],
@@ -163,6 +190,8 @@ class _FakeClient:
         return repo
 
     def update_repo(self, repo_id: str, **changes: Any) -> dict[str, Any]:
+        if self.repo_error is not None:
+            raise _http_400(self.repo_error)
         self.updated_repos.append((repo_id, changes))
         for repo in self._repos:
             if repo["id"] == repo_id:
@@ -236,10 +265,15 @@ def test_render_detail_shows_the_url() -> None:
 
 def test_render_detail_is_plain_text_with_brackets_literal() -> None:
     # The detail must be plain (the caller wraps it in Text and renders literally) — never markup.
-    task = {**_TASK, "memo": "do [the thing]",
-            "lifecycle_detail": "docker run ['--add-host', '--privileged']"}
+    task = {
+        **_TASK,
+        "memo": "do [the thing]",
+        "lifecycle_detail": "docker run ['--add-host', '--privileged']",
+    }
     out = render_detail({**task, "container_status": "failed"})
-    assert "['--add-host', '--privileged']" in out and "[the thing]" in out  # brackets kept verbatim
+    assert (
+        "['--add-host', '--privileged']" in out and "[the thing]" in out
+    )  # brackets kept verbatim
 
 
 async def test_dashboard_detail_survives_a_bracketed_lifecycle_detail() -> None:
@@ -256,7 +290,9 @@ async def test_dashboard_detail_survives_a_bracketed_lifecycle_detail() -> None:
         await pilot.pause()
         await pilot.press("d")  # open the detail pane to trigger the fetch
         await pilot.pause()
-        assert "--add-host" in str(app.query_one("#detail", Static).render())  # rendered, didn't crash
+        assert "--add-host" in str(
+            app.query_one("#detail", Static).render()
+        )  # rendered, didn't crash
 
 
 def test_render_detail_shows_the_tokens_used() -> None:
@@ -327,21 +363,50 @@ async def test_pressing_d_toggles_the_detail_pane() -> None:
         assert not app._detail_visible and detail.styles.display == "none"
 
 
-async def test_tasks_are_sorted_live_then_user_then_slug() -> None:
-    # The order: (1) non-terminal above terminal, (2) turn priority differs by group — active tasks
-    # surface the user's turn first (operator action needed), terminal tasks surface the agent's turn
-    # first (just finished); (3) most recently updated first, (4) slug (then id) as the stable tiebreaker.
-    # Here all tasks share the same updated_at (None → 0.0), so slug is the effective tiebreaker.
+async def test_tasks_are_sorted_active_then_terminal_in_creation_order() -> None:
+    # Active tasks: user turn first (operator action needed), then by created_at descending.
+    # Terminal tasks: agent turn first (task just finished), then by updated_at descending.
+    # In this fixture t-active-1 is user-turn, so it leads despite being the oldest.
     tasks = [
-        # terminal tasks — sink below all live work; agent-turn rises to top of this section.
-        {**_TASK, "id": "t-done", "slug": "done", "state": "COMPLETE", "turn": "user"},
-        {**_TASK, "id": "t-drop", "slug": "drop", "state": "DROPPED", "turn": "agent"},
-        # live agent-turn tasks — below the user-turn ones, sorted by slug.
-        {**_TASK, "id": "t-agent-b", "slug": "bravo", "turn": "agent"},
-        {**_TASK, "id": "t-agent-a", "slug": "alpha", "turn": "agent"},
-        # live user-turn tasks — at the very top, sorted by slug.
-        {**_TASK, "id": "t-user-b", "slug": "zebra", "turn": "user"},
-        {**_TASK, "id": "t-user-a", "slug": "mango", "turn": "user"},
+        {
+            **_TASK,
+            "id": "t-term-2",
+            "slug": "done",
+            "state": "COMPLETE",
+            "turn": "user",
+            "created_at": "2026-06-01T01:00:00",
+            "updated_at": "2026-06-01T02:00:00",
+        },
+        {
+            **_TASK,
+            "id": "t-term-1",
+            "slug": "drop",
+            "state": "DROPPED",
+            "turn": "agent",
+            "created_at": "2026-06-01T02:00:00",
+            "updated_at": "2026-06-01T03:00:00",
+        },
+        {
+            **_TASK,
+            "id": "t-active-3",
+            "slug": "charlie",
+            "turn": "agent",
+            "created_at": "2026-06-01T03:00:00",
+        },
+        {
+            **_TASK,
+            "id": "t-active-1",
+            "slug": "alpha",
+            "turn": "user",
+            "created_at": "2026-06-01T01:00:00",
+        },
+        {
+            **_TASK,
+            "id": "t-active-2",
+            "slug": "bravo",
+            "turn": "agent",
+            "created_at": "2026-06-01T02:00:00",
+        },
     ]
     app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
@@ -349,27 +414,42 @@ async def test_tasks_are_sorted_live_then_user_then_slug() -> None:
         table = app.query_one("#tasks", DataTable)
         keys = [str(k.value) for k in table.rows]
         assert keys == [
-            "t-user-a", "t-user-b",    # live, user's turn, slug order
-            "t-agent-a", "t-agent-b",  # live, agent's turn, slug order
-            "t-drop", "t-done",        # terminal: agent-turn first (just finished), then user-turn
+            "t-active-1",
+            "t-active-3",
+            "t-active-2",  # active: user turn first, then newest created_at first
+            "t-term-1",
+            "t-term-2",  # terminal: newest updated_at first (t-term-1 updated 03:00 > 02:00)
         ]
 
 
-async def test_sort_uses_recency_within_tier() -> None:
-    # Within the same (terminal, turn) tier, more recently updated tasks sort first.
+async def test_sort_uses_creation_order_within_section() -> None:
+    # Within the same turn-priority tier, created_at descending is the primary sort (newest first).
+    # Falls back to updated_at when created_at is absent (pre-migration rows).
     tasks = [
-        {**_TASK, "id": "t-old", "slug": "alpha", "turn": "user", "updated_at": "2026-06-01T00:00:00"},
-        {**_TASK, "id": "t-new", "slug": "zebra", "turn": "user", "updated_at": "2026-06-25T00:00:00"},
+        {
+            **_TASK,
+            "id": "t-old",
+            "slug": "zebra",
+            "turn": "user",
+            "created_at": "2026-06-01T00:00:00",
+        },
+        {
+            **_TASK,
+            "id": "t-new",
+            "slug": "alpha",
+            "turn": "user",
+            "created_at": "2026-06-25T00:00:00",
+        },
     ]
     app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
         order = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
-        assert order == ["t-new", "t-old"]  # newer first, despite "zebra" > "alpha"
+        assert order == ["t-new", "t-old"]  # newer first, despite "alpha" < "zebra"
 
 
-async def test_sort_breaks_ties_on_slug() -> None:
-    # Same terminal-ness, turn, and updated_at → fall back to slug (then id) for a stable order.
+async def test_sort_breaks_ties_on_id() -> None:
+    # Same terminal-ness and created_at → fall back to id for a stable order.
     tasks = [
         {**_TASK, "id": "t2", "slug": "zebra", "turn": "user"},
         {**_TASK, "id": "t1", "slug": "alpha", "turn": "user"},
@@ -378,7 +458,7 @@ async def test_sort_breaks_ties_on_slug() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         order = [str(k.value) for k in app.query_one("#tasks", DataTable).rows]
-        assert order == ["t1", "t2"]  # alpha < zebra
+        assert order == ["t1", "t2"]  # t1 < t2 by id
 
 
 # -- active/terminal dim styling ---------------------------------------------------
@@ -425,6 +505,7 @@ async def test_active_only_rows_not_faded() -> None:
 def test_dim_helper_str_and_text() -> None:
     # _dim on a plain str or a Rich Text both produce a Text whose sole span is "dim".
     from rich.text import Text
+
     result = _dim("hello")
     assert result.plain == "hello"
     assert result._spans and result._spans[0].style == "dim"
@@ -452,7 +533,9 @@ async def test_dashboard_refreshes_when_the_feed_signals_a_change() -> None:
     # No wall-clock timer: the long-poll worker redraws the table when the change feed reports a
     # task changed — exactly once per change, and the rebuild reflects the new snapshot.
     fake = _FakeClient([])
-    app = Dashboard(fake, refresh_interval=0.05)  # short long-poll wait so idle polls cycle fast  # type: ignore[arg-type]
+    app = Dashboard(
+        fake, refresh_interval=0.05
+    )  # short long-poll wait so idle polls cycle fast  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
@@ -469,7 +552,9 @@ async def test_dashboard_does_not_refresh_while_the_feed_is_idle() -> None:
     # A quiet feed (no change signalled) drives no rebuild, however many long-poll cycles elapse —
     # the old fixed-interval timer would have redrawn regardless.
     fake = _FakeClient([_TASK])
-    app = Dashboard(fake, refresh_interval=0.02)  # fast idle polls, but nothing changes  # type: ignore[arg-type]
+    app = Dashboard(
+        fake, refresh_interval=0.02
+    )  # fast idle polls, but nothing changes  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
         builds = fake.list_tasks_calls  # first paint only
@@ -506,10 +591,11 @@ async def test_dashboard_with_no_tasks() -> None:
 
 async def test_pressing_t_signals_the_pick_and_keeps_the_dashboard_running() -> None:
     # The dashboard records the pick via on_switch (the supervisor detaches + attaches the task)
-    # and stays alive, so returning lands on this same live dashboard (ADR 0009 §6).
+    # and stays alive, so returning lands on this same live dashboard (ADR 0009 §6). A `live` task
+    # is attachable; the session name is derived (`panopticon-<id>`), not read from a registration.
     picked: list[tuple[str, str | None]] = []
-    regs = {"task-abcdef0123": [{"container_id": "panopticon-task-abcdef0123"}]}
-    app = Dashboard(_FakeClient([_TASK], regs), on_switch=lambda s, h=None: picked.append((s, h)))
+    task = {**_TASK, "container_status": "live"}
+    app = Dashboard(_FakeClient([task]), on_switch=lambda s, h=None: picked.append((s, h)))
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("t")
@@ -519,9 +605,26 @@ async def test_pressing_t_signals_the_pick_and_keeps_the_dashboard_running() -> 
         assert app.is_running  # did NOT exit — the dashboard session persists
 
 
-async def test_pressing_t_with_no_running_container_does_not_signal() -> None:
+async def test_pressing_t_attaches_a_shell_task_with_no_registration() -> None:
+    # A shell workflow task runs no agent, so it never registers; its host tmux session *is* its
+    # liveness and it sits at `awaiting` for its whole run. `t` must still reach it — keyed off the
+    # composed status, not a registration lookup — attaching to the same derived session name.
     picked: list[tuple[str, str | None]] = []
-    app = Dashboard(_FakeClient([_TASK], {}), on_switch=lambda s, h=None: picked.append((s, h)))
+    task = {**_TASK, "container_status": "awaiting"}
+    app = Dashboard(_FakeClient([task]), on_switch=lambda s, h=None: picked.append((s, h)))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("t")
+        await pilot.pause()
+        assert picked == [("panopticon-task-abcdef0123", None)]
+        assert app.is_running
+
+
+async def test_pressing_t_with_no_running_session_does_not_signal() -> None:
+    # No attachable session (here: no `container_status` at all → not in _ATTACHABLE_STATUSES):
+    # report and stay on the dashboard rather than attach to nothing.
+    picked: list[tuple[str, str | None]] = []
+    app = Dashboard(_FakeClient([_TASK]), on_switch=lambda s, h=None: picked.append((s, h)))
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("t")
@@ -586,7 +689,9 @@ async def test_pressing_u_with_no_runner_session_does_nothing() -> None:
 
 async def test_pressing_n_creates_a_task_via_repo_workflow_then_memo() -> None:
     fake = _FakeClient(
-        [], repos=["r1", "r2"], workflows=[{"name": "spike", "when_to_use": "", "auto_submit_memo": False}]
+        [],
+        repos=["r1", "r2"],
+        workflows=[{"name": "spike", "when_to_use": "", "auto_submit_memo": False}],
     )
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
@@ -606,7 +711,9 @@ async def test_pressing_n_creates_a_task_via_repo_workflow_then_memo() -> None:
 
 async def test_pressing_n_with_a_blank_memo_creates_with_none() -> None:
     fake = _FakeClient(
-        [], repos=["r1"], workflows=[{"name": "spike", "when_to_use": "", "auto_submit_memo": False}]
+        [],
+        repos=["r1"],
+        workflows=[{"name": "spike", "when_to_use": "", "auto_submit_memo": False}],
     )
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
@@ -624,7 +731,9 @@ async def test_pressing_n_with_a_blank_memo_creates_with_none() -> None:
 
 async def test_pressing_n_auto_submits_memo_as_initial_prompt_when_workflow_opts_in() -> None:
     fake = _FakeClient(
-        [], repos=["r1"], workflows=[{"name": "github-self-reviewed", "when_to_use": "", "auto_submit_memo": True}]
+        [],
+        repos=["r1"],
+        workflows=[{"name": "github-self-reviewed", "when_to_use": "", "auto_submit_memo": True}],
     )
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
@@ -649,7 +758,9 @@ async def test_memo_ctrl_g_opens_editor_and_updates_textarea(monkeypatch: Any) -
     # Patch App.suspend to a no-op context manager so the action runs normally in tests.
     monkeypatch.setattr(App, "suspend", lambda self: contextlib.nullcontext())
     fake = _FakeClient(
-        [], repos=["r1"], workflows=[{"name": "spike", "when_to_use": "", "auto_submit_memo": False}]
+        [],
+        repos=["r1"],
+        workflows=[{"name": "spike", "when_to_use": "", "auto_submit_memo": False}],
     )
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
@@ -674,7 +785,9 @@ async def test_memo_textarea_expands_for_multiline_content(monkeypatch: Any) -> 
     monkeypatch.setattr(dashboard, "_edit_with_editor", lambda text: three_lines)
     monkeypatch.setattr(App, "suspend", lambda self: contextlib.nullcontext())
     fake = _FakeClient(
-        [], repos=["r1"], workflows=[{"name": "spike", "when_to_use": "", "auto_submit_memo": False}]
+        [],
+        repos=["r1"],
+        workflows=[{"name": "spike", "when_to_use": "", "auto_submit_memo": False}],
     )
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
@@ -815,9 +928,9 @@ async def test_task_counter_shows_agent_versus_active_counts() -> None:
     # pause() lets Footer's _bindings_ready recompose fire so #task-counter is mounted;
     # a second action_refresh() then populates it with the correct counts.
     tasks = [
-        {**_TASK, "id": "t-agent", "slug": "a1", "state": "WORKING",  "turn": "agent"},
-        {**_TASK, "id": "t-user",  "slug": "u1", "state": "PLANNING", "turn": "user"},
-        {**_TASK, "id": "t-done",  "slug": "d1", "state": "COMPLETE", "turn": "agent"},
+        {**_TASK, "id": "t-agent", "slug": "a1", "state": "WORKING", "turn": "agent"},
+        {**_TASK, "id": "t-user", "slug": "u1", "state": "PLANNING", "turn": "user"},
+        {**_TASK, "id": "t-done", "slug": "d1", "state": "COMPLETE", "turn": "agent"},
     ]
     app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
@@ -825,7 +938,7 @@ async def test_task_counter_shows_agent_versus_active_counts() -> None:
         app.action_refresh()  # Footer is now ready; refresh to populate the counter
         await pilot.pause()
         text = str(app.query_one("#task-counter", Static).render())
-        assert "1/2" in text   # 1 agent-turn, 2 total active (COMPLETE excluded)
+        assert "1/2" in text  # 1 agent-turn, 2 total active (COMPLETE excluded)
         assert "agent" in text
 
 
@@ -898,10 +1011,13 @@ def test_slug_cell_combines_slug_and_memo() -> None:
 def test_memo_textarea_height_logic() -> None:
     # on_text_area_changed sets styles.height = min(line_count, MAX_LINES); verify the formula.
     from panopticon.terminal.dashboard import MemoTextArea
+
     assert max(1, len("".splitlines())) == 1
     assert max(1, len("one line".splitlines())) == 1
     assert max(1, len("a\nb\nc".splitlines())) == 3
-    assert min(max(1, len(("\n" * 15).splitlines())), MemoTextArea.MAX_LINES) == MemoTextArea.MAX_LINES
+    assert (
+        min(max(1, len(("\n" * 15).splitlines())), MemoTextArea.MAX_LINES) == MemoTextArea.MAX_LINES
+    )
 
 
 def test_slug_cell_is_text_so_brackets_arent_eaten_as_markup() -> None:
@@ -915,7 +1031,13 @@ def test_slug_cell_is_text_so_brackets_arent_eaten_as_markup() -> None:
 
 
 _FIX = {**_TASK, "id": "t-fix", "slug": "fix-widget", "state": "WORKING", "workflow": "spike"}
-_DEP = {**_TASK, "id": "t-dep", "slug": "deploy-api", "state": "PLANNING", "workflow": "github-self-reviewed"}
+_DEP = {
+    **_TASK,
+    "id": "t-dep",
+    "slug": "deploy-api",
+    "state": "PLANNING",
+    "workflow": "github-self-reviewed",
+}
 
 
 async def test_pressing_slash_filters_the_task_list_as_you_type() -> None:
@@ -1071,8 +1193,17 @@ def test_repo_name_from_git_url(url: str, expected: str) -> None:
 
 
 async def test_pressing_g_opens_the_repos_screen_listing_repos() -> None:
-    fake = _FakeClient([], repos=[{"id": "r1", "name": "acme/widgets", "git_url": "https://x/r1.git",
-                                   "default_base": "main"}])
+    fake = _FakeClient(
+        [],
+        repos=[
+            {
+                "id": "r1",
+                "name": "acme/widgets",
+                "git_url": "https://x/r1.git",
+                "default_base": "main",
+            }
+        ],
+    )
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -1081,6 +1212,35 @@ async def test_pressing_g_opens_the_repos_screen_listing_repos() -> None:
         assert isinstance(app.screen, dashboard.ReposScreen)
         table = app.screen.query_one("#repos", DataTable)
         assert table.row_count == 1
+
+
+async def test_pressing_s_in_the_repos_screen_creates_a_setup_repo_task() -> None:
+    # The setup-repo workflow is hidden from the pickers; the repos modal's `s` hotkey is how it's
+    # launched — one setup-repo task for the highlighted repo, seeded with a memo.
+    fake = _FakeClient(
+        [_TASK],
+        repos=[
+            {
+                "id": "r1",
+                "name": "acme/widgets",
+                "git_url": "https://x/r1.git",
+                "default_base": "main",
+            }
+        ],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("s")
+        await pilot.pause()
+        # creating the task dismisses the repos modal, dropping back to the task view
+        assert not isinstance(app.screen, dashboard.ReposScreen)
+    assert len(fake.created) == 1
+    repo_id, workflow, memo, _ = fake.created[0]
+    assert (repo_id, workflow) == ("r1", "setup-repo")
+    assert memo is not None and "acme/widgets" in memo
 
 
 async def test_no_repos_auto_opens_the_repos_screen_on_start() -> None:
@@ -1125,10 +1285,16 @@ async def test_repos_screen_creates_a_repo_autofilling_from_the_git_url() -> Non
         await pilot.press("enter")  # submit the form
         await pilot.pause()
         assert fake.created_repos == [
-            {"id": "widgets", "name": "widgets", "git_url": "git@github.com:acme/widgets.git",
-             "default_base": "main", "env_file": None,
-             "enabled_workflows": [], "disabled_workflows": [],
-             "capabilities": {"docker_in_docker": False}}
+            {
+                "id": "widgets",
+                "name": "widgets",
+                "git_url": "git@github.com:acme/widgets.git",
+                "default_base": "main",
+                "env_file": None,
+                "enabled_workflows": [],
+                "disabled_workflows": [],
+                "capabilities": {"docker_in_docker": False},
+            }
         ]
 
 
@@ -1148,10 +1314,16 @@ async def test_repo_form_autofill_only_fills_blank_fields() -> None:
         await pilot.pause()
         # id/name keep the user's values — pre-typed fields are never clobbered by autofill.
         assert fake.created_repos == [
-            {"id": "r9", "name": "acme/new", "git_url": "https://x/widgets.git",
-             "default_base": "main", "env_file": None,
-             "enabled_workflows": [], "disabled_workflows": [],
-             "capabilities": {"docker_in_docker": False}}
+            {
+                "id": "r9",
+                "name": "acme/new",
+                "git_url": "https://x/widgets.git",
+                "default_base": "main",
+                "env_file": None,
+                "enabled_workflows": [],
+                "disabled_workflows": [],
+                "capabilities": {"docker_in_docker": False},
+            }
         ]
 
 
@@ -1188,8 +1360,12 @@ async def test_repo_form_autofills_on_git_url_blur() -> None:
 
 
 async def test_repo_form_edit_mode_does_not_autofill_blank_fields() -> None:
-    fake = _FakeClient([], repos=[{"id": "r1", "name": "", "git_url": "https://x/widgets.git",
-                                   "default_base": "main"}])
+    fake = _FakeClient(
+        [],
+        repos=[
+            {"id": "r1", "name": "", "git_url": "https://x/widgets.git", "default_base": "main"}
+        ],
+    )
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -1217,11 +1393,63 @@ async def test_repos_screen_create_requires_id_name_and_git_url() -> None:
         await pilot.press("enter")
         await pilot.pause()
         assert fake.created_repos == []  # refused; nothing created
+        # The form stays open showing the error inline (invalid input isn't lost).
+        assert isinstance(app.screen, dashboard.RepoFormScreen)
+        error = app.screen.query_one("#form-error", Static)
+        assert "required" in str(error.render())
+
+
+async def test_repos_screen_create_keeps_form_open_on_invalid_env_file() -> None:
+    """A server-rejected env_file (400) leaves the repo form open with the error shown inline,
+    rather than closing the modal and toasting the error afterward."""
+    fake = _FakeClient([], repos=[])
+    fake.repo_error = "env_file 'nope' does not exist under the secrets dir"
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        app.screen.query_one("#field-id", Input).value = "r9"
+        app.screen.query_one("#field-name", Input).value = "r9"
+        app.screen.query_one("#field-git_url", Input).value = "https://x/r9.git"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert fake.created_repos == []  # the create raised → nothing recorded
+        assert isinstance(app.screen, dashboard.RepoFormScreen)  # form still open
+        error = app.screen.query_one("#form-error", Static)
+        assert "does not exist under the secrets dir" in str(error.render())
+
+
+async def test_repos_screen_edit_keeps_form_open_on_invalid_env_file() -> None:
+    """Same for edit: a rejected PATCH keeps the edit form open with the error shown inline."""
+    fake = _FakeClient(
+        [],
+        repos=[{"id": "r1", "name": "old", "git_url": "https://x/r1.git", "default_base": "main"}],
+    )
+    fake.repo_error = "env_file 'nope' does not exist under the secrets dir"
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        app.screen.query_one("#field-name", Input).value = "new"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert fake.updated_repos == []  # the update raised → nothing recorded
+        assert isinstance(app.screen, dashboard.RepoFormScreen)  # form still open
+        error = app.screen.query_one("#form-error", Static)
+        assert "does not exist under the secrets dir" in str(error.render())
 
 
 async def test_repos_screen_edits_a_repo_via_patch() -> None:
-    fake = _FakeClient([], repos=[{"id": "r1", "name": "old", "git_url": "https://x/r1.git",
-                                   "default_base": "main"}])
+    fake = _FakeClient(
+        [],
+        repos=[{"id": "r1", "name": "old", "git_url": "https://x/r1.git", "default_base": "main"}],
+    )
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -1237,18 +1465,31 @@ async def test_repos_screen_edits_a_repo_via_patch() -> None:
         # image_layer_file is left untouched. The checkbox is unchecked → docker_in_docker=False.
         # No workflows were passed to the form so enabled/disabled lists are empty.
         assert fake.updated_repos == [
-            ("r1", {"name": "new", "git_url": "https://x/r1.git", "default_base": "main",
+            (
+                "r1",
+                {
+                    "name": "new",
+                    "git_url": "https://x/r1.git",
+                    "default_base": "main",
                     "env_file": None,
                     "capabilities": {"docker_in_docker": False},
-                    "enabled_workflows": [], "disabled_workflows": []})
+                    "enabled_workflows": [],
+                    "disabled_workflows": [],
+                },
+            )
         ]
 
 
 async def test_repo_form_workflows_tab_pre_populates_from_repo() -> None:
     """The workflows tab in the repo form pre-populates checkboxes from the repo's stored prefs."""
-    existing = {"id": "r1", "name": "old", "git_url": "https://x/r1.git", "default_base": "main",
-                "enabled_workflows": ["github-self-reviewed"],
-                "disabled_workflows": ["orchestrator"]}
+    existing = {
+        "id": "r1",
+        "name": "old",
+        "git_url": "https://x/r1.git",
+        "default_base": "main",
+        "enabled_workflows": ["github-self-reviewed"],
+        "disabled_workflows": ["orchestrator"],
+    }
     workflows = [
         {"name": "spike", "when_to_use": "free-form", "opt_in": False},
         {"name": "github-self-reviewed", "when_to_use": "self-reviewed", "opt_in": True},
@@ -1277,8 +1518,14 @@ async def test_repo_form_workflows_tab_pre_populates_from_repo() -> None:
 
 async def test_repo_form_workflows_tab_toggles_save_with_form() -> None:
     """Toggling workflow checkboxes and saving the form captures them in the update call."""
-    existing = {"id": "r1", "name": "old", "git_url": "https://x/r1.git", "default_base": "main",
-                "enabled_workflows": [], "disabled_workflows": []}
+    existing = {
+        "id": "r1",
+        "name": "old",
+        "git_url": "https://x/r1.git",
+        "default_base": "main",
+        "enabled_workflows": [],
+        "disabled_workflows": [],
+    }
     workflows = [
         {"name": "spike", "when_to_use": "free-form", "opt_in": False},
         {"name": "github-peer-reviewed", "when_to_use": "review workflow", "opt_in": True},
@@ -1311,7 +1558,9 @@ async def test_repos_screen_creates_a_repo_with_privileged_docker_enabled() -> N
         await pilot.press("n")
         await pilot.pause()
         app.screen.query_one("#field-git_url", Input).value = "https://x/widgets.git"
-        app.screen.query_one("#field-docker_in_docker", Checkbox).value = True  # toggle privileged on
+        app.screen.query_one(
+            "#field-docker_in_docker", Checkbox
+        ).value = True  # toggle privileged on
         await pilot.press("enter")
         await pilot.pause()
         # The toggle maps to capabilities.docker_in_docker, which drives the runner's --privileged.
@@ -1319,9 +1568,18 @@ async def test_repos_screen_creates_a_repo_with_privileged_docker_enabled() -> N
 
 
 async def test_repos_screen_edit_toggles_privileged_on_merging_existing_capabilities() -> None:
-    fake = _FakeClient([], repos=[{"id": "r1", "name": "old", "git_url": "https://x/r1.git",
-                                   "default_base": "main",
-                                   "capabilities": {"some_other_cap": True}}])
+    fake = _FakeClient(
+        [],
+        repos=[
+            {
+                "id": "r1",
+                "name": "old",
+                "git_url": "https://x/r1.git",
+                "default_base": "main",
+                "capabilities": {"some_other_cap": True},
+            }
+        ],
+    )
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -1339,9 +1597,18 @@ async def test_repos_screen_edit_toggles_privileged_on_merging_existing_capabili
 
 
 async def test_repo_form_prechecks_the_toggle_for_a_privileged_repo() -> None:
-    fake = _FakeClient([], repos=[{"id": "r1", "name": "old", "git_url": "https://x/r1.git",
-                                   "default_base": "main",
-                                   "capabilities": {"docker_in_docker": True}}])
+    fake = _FakeClient(
+        [],
+        repos=[
+            {
+                "id": "r1",
+                "name": "old",
+                "git_url": "https://x/r1.git",
+                "default_base": "main",
+                "capabilities": {"docker_in_docker": True},
+            }
+        ],
+    )
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -1397,11 +1664,14 @@ async def test_repo_form_space_toggles_the_checkbox_without_saving() -> None:
 
 
 @pytest.mark.asyncio
-async def test_env_file_field_blank_when_no_known_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_env_file_field_blank_when_no_known_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """EnvFileField returns '' and shows nothing selected when secrets dir is absent."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    fake = _FakeClient([], repos=[{"id": "r1", "name": "x", "git_url": "https://x/r.git",
-                                   "default_base": "main"}])
+    fake = _FakeClient(
+        [], repos=[{"id": "r1", "name": "x", "git_url": "https://x/r.git", "default_base": "main"}]
+    )
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -1414,15 +1684,26 @@ async def test_env_file_field_blank_when_no_known_files(tmp_path: Path, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_env_file_field_pre_selects_known_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """EnvFileField pre-selects an existing env_file that lives in the secrets dir."""
+async def test_env_file_field_pre_selects_known_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EnvFileField pre-selects an existing env_file by its name (relative to the secrets dir)."""
     cfg = tmp_path / "config" / "panopticon" / "secrets"
     cfg.mkdir(parents=True)
-    env_path = str(cfg / "r1.env")
     (cfg / "r1.env").write_text("CLAUDE_CODE_OAUTH_TOKEN=tok")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    fake = _FakeClient([], repos=[{"id": "r1", "name": "x", "git_url": "https://x/r.git",
-                                   "default_base": "main", "env_file": env_path}])
+    fake = _FakeClient(
+        [],
+        repos=[
+            {
+                "id": "r1",
+                "name": "x",
+                "git_url": "https://x/r.git",
+                "default_base": "main",
+                "env_file": "r1.env",
+            }
+        ],
+    )
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -1431,16 +1712,28 @@ async def test_env_file_field_pre_selects_known_file(tmp_path: Path, monkeypatch
         await pilot.press("e")
         await pilot.pause()
         ef = app.screen.query_one("#field-env_file", dashboard.EnvFileField)
-        assert ef.env_file_value == env_path
+        assert ef.env_file_value == "r1.env"
 
 
 @pytest.mark.asyncio
-async def test_env_file_field_custom_path_pre_populates_input(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """EnvFileField shows the custom input pre-populated when stored path isn't in secrets dir."""
+async def test_env_file_field_custom_path_pre_populates_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EnvFileField shows the custom input pre-populated when the stored name isn't a known file."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    custom = "/some/other/path/r1.env"
-    fake = _FakeClient([], repos=[{"id": "r1", "name": "x", "git_url": "https://x/r.git",
-                                   "default_base": "main", "env_file": custom}])
+    custom = "other.env"  # a relative name with no matching file in the (absent) secrets dir
+    fake = _FakeClient(
+        [],
+        repos=[
+            {
+                "id": "r1",
+                "name": "x",
+                "git_url": "https://x/r.git",
+                "default_base": "main",
+                "env_file": custom,
+            }
+        ],
+    )
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -1455,10 +1748,71 @@ async def test_env_file_field_custom_path_pre_populates_input(tmp_path: Path, mo
         assert inp.display is True
 
 
+@pytest.mark.asyncio
+async def test_env_file_field_custom_absolute_path_normalized_to_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A custom absolute path is normalized to a bare name (resolved per-runner at launch)."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    fake = _FakeClient(
+        [], repos=[{"id": "r1", "name": "x", "git_url": "https://x/r.git", "default_base": "main"}]
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        ef = app.screen.query_one("#field-env_file", dashboard.EnvFileField)
+        sel = ef.query_one("#env-file-select", Select)
+        sel.value = ef._CUSTOM
+        await pilot.pause()
+        ef.query_one("#env-file-input", Input).value = "/some/other/path/r1.env"
+        assert ef.env_file_value == "r1.env"
+
+
+@pytest.mark.asyncio
+async def test_env_file_field_custom_input_draws_a_bottom_border(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The revealed custom-path input renders a full box — including its bottom border row.
+
+    Regression: ``EnvFileField`` (a bare ``Widget``) had no explicit height, so it expanded to
+    ``1fr`` and Textual's compositor clipped the last child's ``tall`` bottom-border row. Sizing
+    the field to its content (``height: auto``) fixes it."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    fake = _FakeClient(
+        [], repos=[{"id": "r1", "name": "x", "git_url": "https://x/r.git", "default_base": "main"}]
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test(size=(90, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        ef = app.screen.query_one("#field-env_file", dashboard.EnvFileField)
+        ef.query_one("#env-file-select", Select).value = ef._CUSTOM
+        await pilot.pause()
+        await pilot.pause()
+        inp = ef.query_one("#env-file-input", Input)
+        # Read the composited screen and check the input's bottom-border row (the last row of its
+        # region) is actually painted with the ``tall`` bottom-border glyph.
+        rows = [
+            "".join(seg.text for seg in strip) for strip in app.screen._compositor.render_strips()
+        ]
+        region = inp.region
+        bottom_row = rows[region.y + region.height - 1]
+        assert "▁" in bottom_row[region.x : region.x + region.width]
+
+
 def _record_popen(monkeypatch: Any) -> list[list[str]]:
     """Capture `subprocess.Popen` argv (the host-open call) without launching anything."""
     calls: list[list[str]] = []
-    monkeypatch.setattr(dashboard.subprocess, "Popen", lambda argv, *a, **k: calls.append(list(argv)))
+    monkeypatch.setattr(
+        dashboard.subprocess, "Popen", lambda argv, *a, **k: calls.append(list(argv))
+    )
     return calls
 
 
@@ -1533,9 +1887,7 @@ async def test_pressing_e_opens_a_locally_present_artifact_in_place(
         assert fake.fetched == []  # no REST fetch — opened the local file
 
 
-async def test_e_warns_when_the_artifact_is_not_local(
-    monkeypatch: Any, tmp_path: Path
-) -> None:
+async def test_e_warns_when_the_artifact_is_not_local(monkeypatch: Any, tmp_path: Path) -> None:
     # No co-located file → warn and do nothing (no silent REST fallback).
     calls = _record_popen(monkeypatch)
     fake = _FakeClient([_TASK], artifacts={_TASK["id"]: ["plan.md"]})
@@ -1590,7 +1942,7 @@ def test_footer_shows_only_the_essential_keys() -> None:
     shown = {b.key for b in Dashboard.BINDINGS if b.show}
     hidden = {b.key for b in Dashboard.BINDINGS if not b.show}
     assert shown == {"t", "n", "x", "/", "d", "question_mark", "q"}
-    assert hidden == {"r", "R", "p", "g", "a", "s", "u", "y", "Y", "escape"}
+    assert hidden == {"o", "r", "R", "p", "g", "a", "s", "u", "y", "Y", "escape"}
 
 
 def test_bindings_and_help_derive_from_the_single_hotkey_table() -> None:
@@ -1664,13 +2016,26 @@ def test_group_by_governor_governed_task_appears_after_governor() -> None:
 
 
 def test_group_by_governor_governed_before_governor_in_sort_still_groups() -> None:
-    # Governed slug sorts before the governor, but it must still appear AFTER the governor.
-    governor = {**_TASK, "id": "gov", "slug": "zoo", "governor_task_id": None}
-    governed = {**_TASK, "id": "wrk", "slug": "alpha", "governor_task_id": "gov"}
-    sorted_tasks = sorted([governor, governed], key=_sort_key)
-    assert sorted_tasks[0]["id"] == "wrk"  # governed sorts first alphabetically
+    # When the governed task has a later created_at than its governor, it sorts first by
+    # creation order (newest-first) — but _group_by_governor must still place it AFTER the governor.
+    governor = {
+        **_TASK,
+        "id": "gov",
+        "slug": "zoo",
+        "governor_task_id": None,
+        "created_at": "2026-06-01T01:00:00",
+    }
+    governed = {
+        **_TASK,
+        "id": "aaa",
+        "slug": "alpha",
+        "governor_task_id": "gov",
+        "created_at": "2026-06-01T02:00:00",
+    }
+    sorted_tasks = sorted([governor, governed], key=_make_sort_key())
+    assert sorted_tasks[0]["id"] == "aaa"  # governed created later → sorts first
     active, terminal = _group_by_governor(sorted_tasks)
-    assert [(t["id"], p) for t, p in active] == [("gov", ""), ("wrk", "└─ ")]
+    assert [(t["id"], p) for t, p in active] == [("gov", ""), ("aaa", "└─ ")]
     assert terminal == []
 
 
@@ -1684,9 +2049,21 @@ def test_group_by_governor_governor_not_in_list_behaves_as_root() -> None:
 def test_group_by_governor_terminal_governed_follows_active_governor() -> None:
     # A governed task in COMPLETE state is pulled into the active section when its governor
     # is still active, so it nests under the governor above the divider.
-    governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None, "state": "WORKING"}
-    governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov", "state": "COMPLETE"}
-    sorted_tasks = sorted([governor, governed], key=_sort_key)
+    governor = {
+        **_TASK,
+        "id": "gov",
+        "slug": "orchestrator",
+        "governor_task_id": None,
+        "state": "WORKING",
+    }
+    governed = {
+        **_TASK,
+        "id": "wrk",
+        "slug": "worker",
+        "governor_task_id": "gov",
+        "state": "COMPLETE",
+    }
+    sorted_tasks = sorted([governor, governed], key=_make_sort_key())
     active, terminal = _group_by_governor(sorted_tasks)
     assert [(t["id"], p) for t, p in active] == [("gov", ""), ("wrk", "└─ ")]
     assert terminal == []
@@ -1705,7 +2082,7 @@ def test_group_by_governor_multiple_governed_tasks_in_sort_order() -> None:
     governor = {**_TASK, "id": "gov", "slug": "orch", "governor_task_id": None}
     w1 = {**_TASK, "id": "w1", "slug": "alpha", "governor_task_id": "gov"}
     w2 = {**_TASK, "id": "w2", "slug": "bravo", "governor_task_id": "gov"}
-    sorted_tasks = sorted([governor, w1, w2], key=_sort_key)
+    sorted_tasks = sorted([governor, w1, w2], key=_make_sort_key())
     active, terminal = _group_by_governor(sorted_tasks)
     assert [(t["id"], p) for t, p in active] == [("gov", ""), ("w1", "├─ "), ("w2", "└─ ")]
     assert terminal == []
@@ -1717,7 +2094,7 @@ def test_group_by_governor_tree_connectors_nested() -> None:
     c1 = {**_TASK, "id": "c1", "slug": "child-1", "governor_task_id": "gov"}
     gc = {**_TASK, "id": "gc", "slug": "grand", "governor_task_id": "c1"}
     c2 = {**_TASK, "id": "c2", "slug": "child-2", "governor_task_id": "gov"}
-    sorted_tasks = sorted([gov, c1, gc, c2], key=_sort_key)
+    sorted_tasks = sorted([gov, c1, gc, c2], key=_make_sort_key())
     active, terminal = _group_by_governor(sorted_tasks)
     assert [(t["id"], p) for t, p in active] == [
         ("gov", ""),
@@ -1730,9 +2107,9 @@ def test_group_by_governor_tree_connectors_nested() -> None:
 
 def test_slug_cell_prefix_tree_connectors() -> None:
     task = {**_TASK, "slug": "worker", "memo": None}
-    assert _slug_cell(task).plain == "worker"             # no prefix (root)
-    assert _slug_cell(task, "├─ ").plain == "├─ worker"   # non-last child
-    assert _slug_cell(task, "└─ ").plain == "└─ worker"   # last child
+    assert _slug_cell(task).plain == "worker"  # no prefix (root)
+    assert _slug_cell(task, "├─ ").plain == "├─ worker"  # non-last child
+    assert _slug_cell(task, "└─ ").plain == "└─ worker"  # last child
     assert _slug_cell(task, "│  └─ ").plain == "│  └─ worker"  # nested
 
 
@@ -1743,40 +2120,59 @@ def test_slug_cell_prefix_with_memo() -> None:
 
 async def test_governed_task_appears_under_governor_in_dashboard() -> None:
     # Governor and governed both active; governed follows governor with a tree connector.
+    # Governors start collapsed — expand before checking the child row.
     governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
     governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov"}
     app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
+        table.move_cursor(row=table.get_row_index("gov"))
+        await pilot.press("enter")  # expand the ensemble
+        await pilot.pause()
         order = [str(k.value) for k in table.rows]
         assert order == ["gov", "wrk"]
         gov_row = table.get_row("gov")
         wrk_row = table.get_row("wrk")
-        assert gov_row[4].plain == "orchestrator"        # slug column (index 4) — no prefix
-        assert wrk_row[4].plain == "└─ worker"           # last (only) child gets └─
+        assert gov_row[4].plain == "orchestrator"  # slug column (index 4) — no prefix
+        assert wrk_row[4].plain == "└─ worker"  # last (only) child gets └─
 
 
 async def test_active_governor_keeps_terminal_child_in_active_section() -> None:
     # Regression: a terminal governed task whose governor is still active must stay in the
     # active section (above the terminal section), not below it.
+    # Governors start collapsed — expand before checking the child row's position and styling.
     governor = {
-        **_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None,
+        **_TASK,
+        "id": "gov",
+        "slug": "orchestrator",
+        "governor_task_id": None,
         "state": "WORKING",
     }
     governed = {
-        **_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov",
-        "state": "COMPLETE", "turn": "agent",
+        **_TASK,
+        "id": "wrk",
+        "slug": "worker",
+        "governor_task_id": "gov",
+        "state": "COMPLETE",
+        "turn": "agent",
     }
     other_done = {
-        **_TASK, "id": "done", "slug": "other", "governor_task_id": None,
-        "state": "COMPLETE", "turn": "agent",
+        **_TASK,
+        "id": "done",
+        "slug": "other",
+        "governor_task_id": None,
+        "state": "COMPLETE",
+        "turn": "agent",
     }
-    tasks = sorted([governor, governed, other_done], key=_sort_key)
+    tasks = sorted([governor, governed, other_done], key=_make_sort_key())
     app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
+        table.move_cursor(row=table.get_row_index("gov"))
+        await pilot.press("enter")  # expand the ensemble
+        await pilot.pause()
         keys = [str(k.value) for k in table.rows]
         # Governor and its terminal child are in the active section (above "done").
         assert keys.index("gov") < keys.index("done")
@@ -1839,8 +2235,11 @@ def test_ensemble_connector_inherits_parent_continuation() -> None:
     rows = [(r["id"] if not r.get("_ensemble") else "__ensemble__", p) for r, p in result]
     assert rows == [
         ("root", ""),
-        ("mid", "└─ "),   # mid is last (and only) child of root → └─
-        ("__ensemble__", "   └─ "),  # ensemble is child of mid; mid is last child → "   " continuation
+        ("mid", "└─ "),  # mid is last (and only) child of root → └─
+        (
+            "__ensemble__",
+            "   └─ ",
+        ),  # ensemble is child of mid; mid is last child → "   " continuation
     ]
 
 
@@ -1859,22 +2258,15 @@ def test_matches_always_passes_ensemble_rows() -> None:
 
 
 async def test_enter_on_governor_collapses_to_ensemble_row() -> None:
-    # Pressing Enter on a governing task replaces its children with an ensemble row.
+    # Governors start collapsed — the ensemble row is present on startup without pressing Enter.
     governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
     governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov"}
     app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
-        # Initial state: both rows present.
-        assert "gov" in [str(k.value) for k in table.rows]
-        assert "wrk" in [str(k.value) for k in table.rows]
-        # Move to the governor row and press Enter.
-        table.move_cursor(row=table.get_row_index("gov"))
-        await pilot.press("enter")
-        await pilot.pause()
         keys = [str(k.value) for k in table.rows]
-        # Governor is still there; worker is gone; ensemble sentinel is present.
+        # Initial state: governor present, child hidden behind ensemble sentinel.
         assert "gov" in keys
         assert "wrk" not in keys
         assert f"{_ENSEMBLE_KEY_PREFIX}gov" in keys
@@ -1884,7 +2276,7 @@ async def test_enter_on_governor_collapses_to_ensemble_row() -> None:
 
 
 async def test_enter_again_on_governor_expands_ensemble() -> None:
-    # Pressing Enter twice returns to the fully-expanded tree.
+    # Governors start collapsed; Enter toggles: first press expands, second press collapses again.
     governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
     governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov"}
     app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
@@ -1892,16 +2284,17 @@ async def test_enter_again_on_governor_expands_ensemble() -> None:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
         table.move_cursor(row=table.get_row_index("gov"))
-        # First Enter → collapse.
+        # First Enter → expand (starts collapsed).
         await pilot.press("enter")
         await pilot.pause()
-        assert f"{_ENSEMBLE_KEY_PREFIX}gov" in [str(k.value) for k in table.rows]
-        # Second Enter → expand.
+        assert "wrk" in [str(k.value) for k in table.rows]
+        assert f"{_ENSEMBLE_KEY_PREFIX}gov" not in [str(k.value) for k in table.rows]
+        # Second Enter → collapse again.
         await pilot.press("enter")
         await pilot.pause()
         keys = [str(k.value) for k in table.rows]
-        assert "wrk" in keys
-        assert f"{_ENSEMBLE_KEY_PREFIX}gov" not in keys
+        assert "wrk" not in keys
+        assert f"{_ENSEMBLE_KEY_PREFIX}gov" in keys
 
 
 async def test_enter_on_non_governor_does_nothing() -> None:
@@ -1921,19 +2314,15 @@ async def test_enter_on_non_governor_does_nothing() -> None:
 
 
 async def test_search_expands_collapsed_ensembles_to_reach_their_children() -> None:
-    # A collapsed governor hides its children behind a "..." placeholder. A search must
-    # still reach those children — the ensemble expands for the query, then the operator's
-    # collapse state is restored once the query is cleared.
+    # Governors start collapsed — a search must still reach children hidden behind "...".
+    # The ensemble expands for the query; the collapse state is restored once the query is cleared.
     governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
     governed = {**_TASK, "id": "wrk", "slug": "worker-bee", "governor_task_id": "gov"}
     app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
-        # Collapse the governor: the child is now behind a "..." placeholder.
-        table.move_cursor(row=table.get_row_index("gov"))
-        await pilot.press("enter")
-        await pilot.pause()
+        # Initial state: child hidden behind ensemble placeholder (collapsed on startup).
         assert f"{_ENSEMBLE_KEY_PREFIX}gov" in [str(k.value) for k in table.rows]
         assert "wrk" not in [str(k.value) for k in table.rows]
         # Search for the collapsed child: it surfaces as a real row, no placeholder.
@@ -2000,6 +2389,7 @@ async def test_search_shows_all_ancestors_when_deep_child_matches() -> None:
 
 # -- multi-runner column -----------------------------------------------------------
 
+
 def _col_labels(table: DataTable) -> list[str]:
     return [str(c.label) for c in table.columns.values()]
 
@@ -2041,8 +2431,10 @@ async def test_runner_column_appears_for_multiple_runners() -> None:
 
 async def test_runner_column_appears_dynamically() -> None:
     # Start with one runner → no column. Feed refresh adds a second runner → column appears.
-    fake = _FakeClient([{**_TASK, "id": "t-a", "runner_host": "host-a"}],  # type: ignore[arg-type]
-                       runners=[{"id": "r1", "host": "host-a"}])
+    fake = _FakeClient(
+        [{**_TASK, "id": "t-a", "runner_host": "host-a"}],  # type: ignore[arg-type]
+        runners=[{"id": "r1", "host": "host-a"}],
+    )
     app = Dashboard(fake, refresh_interval=0.05)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -2061,8 +2453,10 @@ async def test_runner_column_appears_dynamically() -> None:
 async def test_runner_column_disappears_dynamically() -> None:
     # Start with two runners → column shown. Feed refresh drops to one → column gone.
     fake = _FakeClient(  # type: ignore[arg-type]
-        [{**_TASK, "id": "t-a", "runner_host": "host-a"},
-         {**_TASK, "id": "t-b", "runner_host": "host-b"}],
+        [
+            {**_TASK, "id": "t-a", "runner_host": "host-a"},
+            {**_TASK, "id": "t-b", "runner_host": "host-b"},
+        ],
         runners=[{"id": "r1", "host": "host-a"}, {"id": "r2", "host": "host-b"}],
     )
     app = Dashboard(fake, refresh_interval=0.05)  # type: ignore[arg-type]
@@ -2099,6 +2493,7 @@ async def test_runner_cell_is_dimmed_for_terminal_tasks() -> None:
 
 # -- vim-style hjkl navigation ------------------------------------------------------
 
+
 async def test_pressing_jk_moves_the_task_table_cursor_like_arrow_keys() -> None:
     other = {**_TASK, "id": "task-second9999", "slug": "other"}
     app = Dashboard(_FakeClient([_TASK, other]))  # type: ignore[arg-type]
@@ -2113,32 +2508,141 @@ async def test_pressing_jk_moves_the_task_table_cursor_like_arrow_keys() -> None
         assert app._current == _TASK["id"]
 
 
+def _collapsed_ensemble_app() -> Dashboard:
+    # A collapsed governor's ensemble row sits between two real rows.
+    # created_at controls order (newest first): gov (03:00) > wrk (02:00) > zzz-extra (01:00).
+    governor = {
+        **_TASK,
+        "id": "gov",
+        "slug": "orchestrator",
+        "governor_task_id": None,
+        "created_at": "2026-06-01T03:00:00",
+    }
+    governed = {
+        **_TASK,
+        "id": "wrk",
+        "slug": "worker",
+        "governor_task_id": "gov",
+        "created_at": "2026-06-01T02:00:00",
+    }
+    extra = {
+        **_TASK,
+        "id": "zzz-extra",
+        "slug": "zzz-extra",
+        "governor_task_id": None,
+        "created_at": "2026-06-01T01:00:00",
+    }
+    return Dashboard(_FakeClient([governor, governed, extra]))  # type: ignore[arg-type]
+
+
 async def test_pressing_j_skips_the_ensemble_row_like_the_down_arrow() -> None:
-    # A collapsed governor's ensemble row sits between two real rows; `j` must step past it the
-    # same way `down` already does (Dashboard.on_data_table_row_highlighted), not land on it.
-    governor = {**_TASK, "id": "gov", "slug": "orchestrator", "governor_task_id": None}
-    governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov"}
-    extra = {**_TASK, "id": "extra", "slug": "zzz-extra", "governor_task_id": None}
-    app = Dashboard(_FakeClient([governor, governed, extra]))  # type: ignore[arg-type]
+    # A collapsed governor's ensemble row sits between two real rows; `j` must step straight past
+    # it (_VimDataTable.action_cursor_down skips the sentinel), landing on the next real row.
+    app = _collapsed_ensemble_app()
     async with app.run_test() as pilot:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
+        # Collapse gov's ensemble directly, then rebuild — the Enter-key collapse path is covered
+        # by test_enter_on_governor_collapses_to_ensemble_row; here we exercise the j/k skip over
+        # the resulting sentinel row without coupling to key/focus event timing.
+        app._collapsed.add("gov")
+        app.action_refresh()
+        await pilot.pause()
+        row_keys = [str(k.value) for k in table.rows]
+        assert row_keys == ["gov", f"{dashboard._ENSEMBLE_KEY_PREFIX}gov", "zzz-extra"]
         table.move_cursor(row=table.get_row_index("gov"))
-        await pilot.press("enter")  # collapse: gov, ensemble(gov), extra
         await pilot.pause()
-        await pilot.press("j")  # from gov, steps over the ensemble row onto extra
+        await pilot.press("j")  # from gov, steps over the ensemble row onto zzz-extra
         await pilot.pause()
-        assert app._current == "extra"
+        assert app._current == "zzz-extra"
         await pilot.press("k")  # and back up, over the ensemble row, onto gov
         await pilot.pause()
         assert app._current == "gov"
 
 
+async def test_arrow_keys_skip_the_ensemble_row_like_j_and_k() -> None:
+    # The default arrow keys route through the same overridden cursor actions as j/k, so they
+    # must skip the sentinel identically.
+    app = _collapsed_ensemble_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        app._collapsed.add("gov")
+        app.action_refresh()
+        await pilot.pause()
+        table.move_cursor(row=table.get_row_index("gov"))
+        await pilot.pause()
+        await pilot.press("down")
+        await pilot.pause()
+        assert app._current == "zzz-extra"
+        await pilot.press("up")
+        await pilot.pause()
+        assert app._current == "gov"
+
+
+async def test_navigating_over_an_ensemble_row_never_selects_the_sentinel() -> None:
+    # The reported bug: the sentinel was briefly selected mid-traversal. The cursor must never
+    # land on it, so _current is never the ensemble key at any observed step.
+    app = _collapsed_ensemble_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        app._collapsed.add("gov")
+        app.action_refresh()
+        await pilot.pause()
+        sentinel = f"{dashboard._ENSEMBLE_KEY_PREFIX}gov"
+        table.move_cursor(row=table.get_row_index("gov"))
+        await pilot.pause()
+        assert app._current != sentinel
+        for key in ("j", "j", "k", "k"):
+            await pilot.press(key)
+            await pilot.pause()
+            assert app._current != sentinel
+        # The cursor row is a real row too — never the sentinel.
+        assert str(table.ordered_rows[table.cursor_row].key.value) != sentinel
+
+
+async def test_ensemble_row_as_the_last_row_is_not_landed_on() -> None:
+    # When a collapsed ensemble is the last navigable row, pressing down keeps the cursor on the
+    # real row above it rather than clamping onto the sentinel.
+    governor = {
+        **_TASK,
+        "id": "gov",
+        "slug": "orchestrator",
+        "governor_task_id": None,
+        "created_at": "2026-06-01T02:00:00",
+    }
+    governed = {
+        **_TASK,
+        "id": "wrk",
+        "slug": "worker",
+        "governor_task_id": "gov",
+        "created_at": "2026-06-01T01:00:00",
+    }
+    app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        app._collapsed.add("gov")
+        app.action_refresh()
+        await pilot.pause()
+        row_keys = [str(k.value) for k in table.rows]
+        assert row_keys == ["gov", f"{dashboard._ENSEMBLE_KEY_PREFIX}gov"]
+        table.move_cursor(row=table.get_row_index("gov"))
+        await pilot.pause()
+        await pilot.press("j")  # nothing real below the sentinel — stay on gov
+        await pilot.pause()
+        assert app._current == "gov"
+
+
 async def test_pressing_jk_navigates_the_repos_table() -> None:
-    fake = _FakeClient([], repos=[
-        {"id": "r1", "name": "r1", "git_url": "", "default_base": "main"},
-        {"id": "r2", "name": "r2", "git_url": "", "default_base": "main"},
-    ])
+    fake = _FakeClient(
+        [],
+        repos=[
+            {"id": "r1", "name": "r1", "git_url": "", "default_base": "main"},
+            {"id": "r2", "name": "r2", "git_url": "", "default_base": "main"},
+        ],
+    )
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -2157,7 +2661,9 @@ async def test_pressing_jk_navigates_the_repos_table() -> None:
 async def test_pressing_j_then_enter_picks_the_second_option_in_a_picker() -> None:
     # Proves `j` actually moves the OptionList highlight (not just that Enter still works).
     fake = _FakeClient(
-        [], repos=["r1", "r2"], workflows=[{"name": "spike", "when_to_use": "", "auto_submit_memo": False}]
+        [],
+        repos=["r1", "r2"],
+        workflows=[{"name": "spike", "when_to_use": "", "auto_submit_memo": False}],
     )
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:

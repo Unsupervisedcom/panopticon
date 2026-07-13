@@ -1,19 +1,27 @@
-"""``panopticon doctor`` — preflight self-check, meant to run *before* the first ``panopticon
-start`` on a fresh pip-installed host.
+"""``panopticon doctor`` — preflight self-check, meant to run *before* the first
+``panopticon quickstart`` / ``panopticon start`` on a fresh pip-installed host.
+
+Its yardstick is: **can ``panopticon quickstart`` and the ``setup-repo`` workflow succeed here?**
+Quickstart starts the services, registers the repo, and opens a ``setup-repo`` task — a *shell*
+workflow the session service runs on the host (no container) that execs ``claude setup-token`` in
+a tmux session to mint the operator's Claude token. So the host tools that flow needs are the
+prerequisites doctor enforces.
 
 It separates two kinds of check:
 
-* **Host prerequisites** — Docker, git, tmux — external tools you must install yourself. A
-  missing one is a hard **FAIL** (doctor exits non-zero): panopticon can't run without it.
-* **Setup status** — the ``panopticon-base`` image and the task service — things panopticon
-  provisions for you. Before first start neither exists yet, so their absence is a non-fatal
-  **WARN** heads-up (the base image is auto-built on first spawn; the service is started by
-  ``panopticon start``), never a FAIL. When the service *is* up, per-repo env-file tokens are
-  checked too.
+* **Host prerequisites** — Docker, git, tmux, and the ``claude`` CLI — external tools you install
+  yourself. A missing one is a hard **FAIL** (doctor exits non-zero): quickstart/setup-repo (or the
+  task containers that follow) can't run without it. ``claude`` in particular is what
+  ``setup-repo`` execs on the host, so quickstart's final step needs it present.
+* **Setup status** — the ``panopticon-base`` image, the task service, and per-repo tokens — things
+  quickstart/first-start **provision for you**. Before first start none exist yet (the base image
+  is auto-built on first spawn; the service is started by ``panopticon start``; the token is what
+  ``setup-repo`` mints), so their absence is a non-fatal **WARN** heads-up, never a FAIL — doctor
+  must not red-flag a machine that has simply not run quickstart yet.
 
-So a fresh machine with Docker/git/tmux installed passes (exit 0) with a short "here's what
-happens at first start" list, and only a genuinely missing prerequisite fails. Remediations are
-phrased for a pip install (``panopticon build`` / ``panopticon start``, not ``make`` targets).
+So a fresh machine with Docker/git/tmux/claude installed passes (exit 0) with a short "here's what
+quickstart will do" list, and only a genuinely missing host tool fails. Remediations are phrased
+for a pip install (``panopticon quickstart`` / ``panopticon build``, not ``make`` targets).
 Injectable command-runner and filesystem callables for testability. LLM-free.
 """
 
@@ -114,6 +122,25 @@ def check_git(*, run: CommandRunner) -> CheckResult:
     return CheckResult(status="OK", name="git", message=version or "git present")
 
 
+def check_claude(*, run: CommandRunner) -> CheckResult:
+    """Verify the ``claude`` CLI is installed on the host.
+
+    The ``setup-repo`` workflow (which ``panopticon quickstart`` opens) is a *shell* workflow the
+    session service runs on the host — it execs ``claude setup-token`` to mint the operator's token.
+    Without ``claude`` on the host, that final quickstart step fails, so this is a prerequisite.
+    """
+    try:
+        version = run(["claude", "--version"]).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return CheckResult(
+            status="FAIL",
+            name="claude CLI",
+            message="claude CLI not found (needed by 'setup-repo' / 'panopticon quickstart')",
+            remediation="Install Claude Code: curl --fail --silent --show-error --location https://claude.ai/install.sh | bash",
+        )
+    return CheckResult(status="OK", name="claude CLI", message=version or "claude present")
+
+
 def check_tmux(*, run: CommandRunner) -> CheckResult:
     """Verify tmux is installed — ``panopticon start`` runs services and task panes under tmux."""
     try:
@@ -181,7 +208,14 @@ def check_repo_env_file(
     read_file: Callable[[str], str],
     file_mode: Callable[[str], int],
 ) -> list[CheckResult]:
-    """Check a repo's env_file: present, owner-only mode, contains a recognisable auth token."""
+    """Check a repo's env_file: present, owner-only mode, contains a recognisable auth token.
+
+    All findings are **WARN**, never FAIL: the token is what ``setup-repo`` mints, so a missing or
+    still-templated token is the normal state of a freshly-quickstarted repo (quickstart writes the
+    template; the operator runs ``setup-repo`` to fill it). Doctor surfaces the pending step rather
+    than failing the machine over it — enforcement lives at spawn time (the spawner FAILs a
+    container task whose token is missing, see ``spawner._check_env_file_token``).
+    """
     env_file: str | None = repo.get("env_file")
     if not env_file:
         return []  # no env_file configured — skip
@@ -193,22 +227,26 @@ def check_repo_env_file(
     try:
         content = read_file(env_file)
     except OSError:
-        return [CheckResult(
-            status="FAIL",
-            name=check_name,
-            message=f"env_file not found: {env_file}",
-            remediation=f"Create {env_file} with CLAUDE_CODE_OAUTH_TOKEN=<your-token>",
-        )]
+        return [
+            CheckResult(
+                status="WARN",
+                name=check_name,
+                message=f"env_file not found yet: {env_file}",
+                remediation="Run 'panopticon quickstart' (or the dashboard 's' hotkey) to set the repo up",
+            )
+        ]
 
     try:
         mode = file_mode(env_file)
         if mode & 0o077:  # any group/other access — the file carries secrets
-            results.append(CheckResult(
-                status="FAIL",
-                name=check_name,
-                message=f"env_file mode is {oct(mode)}, expected owner-only (no group/other access): {env_file}",
-                remediation=f"Run: chmod 600 {env_file}",
-            ))
+            results.append(
+                CheckResult(
+                    status="WARN",
+                    name=check_name,
+                    message=f"env_file mode is {oct(mode)}, not owner-only (group/other can read secrets): {env_file}",
+                    remediation=f"Tighten it: chmod 600 {env_file}",
+                )
+            )
     except OSError:
         pass
 
@@ -232,26 +270,32 @@ def check_repo_env_file(
                 bad_shape.append(key)
 
     if good:
-        results.append(CheckResult(
-            status="OK",
-            name=check_name,
-            message=f"{good[0]} present and well-formed in {env_file}",
-        ))
+        results.append(
+            CheckResult(
+                status="OK",
+                name=check_name,
+                message=f"{good[0]} present and well-formed in {env_file}",
+            )
+        )
     elif bad_shape:
         for key in bad_shape:
-            results.append(CheckResult(
-                status="FAIL",
-                name=check_name,
-                message=f"{key} has an unrecognised shape in {env_file}",
-                remediation=f"Expected prefix {_TOKEN_PATTERNS[key].pattern!r} — regenerate your token",
-            ))
+            results.append(
+                CheckResult(
+                    status="WARN",
+                    name=check_name,
+                    message=f"{key} has an unrecognised shape in {env_file}",
+                    remediation=f"Expected prefix {_TOKEN_PATTERNS[key].pattern!r} — re-run 'setup-repo' to re-mint it",
+                )
+            )
     else:
-        results.append(CheckResult(
-            status="FAIL",
-            name=check_name,
-            message=f"No CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY found in {env_file}",
-            remediation=f"Add CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-... to {env_file}",
-        ))
+        results.append(
+            CheckResult(
+                status="WARN",
+                name=check_name,
+                message=f"No CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY set yet in {env_file}",
+                remediation="Run 'setup-repo' (dashboard 's' hotkey) to mint one via 'claude setup-token'",
+            )
+        )
 
     return results
 
@@ -273,13 +317,14 @@ def run_doctor(
     rather than crashing on an eager fetch. Before the first ``panopticon start`` the service is
     down by definition, so that offline case is doctor's headline use.
 
-    Only host-prerequisite FAILs (Docker/git/tmux) set a non-zero exit; a not-yet-provisioned
-    base image or task service is a WARN, so a fresh-but-ready machine exits 0.
+    Only host-prerequisite FAILs (Docker/git/tmux/claude) set a non-zero exit; a not-yet-provisioned
+    base image, task service, or repo token is a WARN, so a fresh-but-ready machine exits 0.
     """
     results: list[CheckResult] = [
         check_docker(run=run, platform=platform),
         check_git(run=run),
         check_tmux(run=run),
+        check_claude(run=run),
         check_base_image(run=run),
     ]
     service_result = check_task_service(service_url=service_url, http_get=http_get)
@@ -289,20 +334,24 @@ def run_doctor(
         try:
             repos = list_repos()
         except Exception as exc:
-            results.append(CheckResult(
-                status="WARN",
-                name="Repos",
-                message=f"Could not list repos: {exc}",
-            ))
+            results.append(
+                CheckResult(
+                    status="WARN",
+                    name="Repos",
+                    message=f"Could not list repos: {exc}",
+                )
+            )
             repos = []
         for repo in repos:
             results.extend(check_repo_env_file(repo, read_file=read_file, file_mode=file_mode))
     else:
-        results.append(CheckResult(
-            status="WARN",
-            name="Repos",
-            message="Skipped per-repo token checks — task service not running yet",
-        ))
+        results.append(
+            CheckResult(
+                status="WARN",
+                name="Repos",
+                message="Skipped per-repo token checks — task service not running yet",
+            )
+        )
 
     _STATUS_LABEL: dict[CheckStatus, str] = {"OK": "[OK]  ", "WARN": "[WARN]", "FAIL": "[FAIL]"}
     for r in results:
@@ -314,11 +363,15 @@ def run_doctor(
 
     fails = sum(1 for r in results if r.status == "FAIL")
     if fails:
-        print(f"\n{fails} prerequisite check(s) FAILED — install the missing tool(s) above, then re-run.")
+        print(
+            f"\n{fails} prerequisite check(s) FAILED — install the missing tool(s) above, then re-run."
+        )
         return 1
     warns = sum(1 for r in results if r.status == "WARN")
     if warns:
-        print(f"\nHost prerequisites OK. {warns} item(s) not provisioned yet — expected before your first 'panopticon start'.")
+        print(
+            f"\nHost prerequisites OK. {warns} item(s) not provisioned yet — expected before your first 'panopticon start'."
+        )
     else:
         print("\nAll checks passed.")
     return 0

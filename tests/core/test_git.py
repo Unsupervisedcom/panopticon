@@ -24,7 +24,10 @@ class _Recorder:
 
 def test_naming_is_slug_derived() -> None:
     assert branch_name("fix-the-widget") == "panopticon/fix-the-widget"
-    assert worktree_path("/wt/", "r1", "panopticon/fix-the-widget") == "/wt/r1/panopticon/fix-the-widget"
+    assert (
+        worktree_path("/wt/", "r1", "panopticon/fix-the-widget")
+        == "/wt/r1/panopticon/fix-the-widget"
+    )
 
 
 def test_create_emits_worktree_add_and_returns_branch_and_path() -> None:
@@ -33,10 +36,17 @@ def test_create_emits_worktree_add_and_returns_branch_and_path() -> None:
         repo_path="/repos/r1", worktrees_root="/wt", repo_id="r1", slug="fix-it", base="main"
     )
     assert wt == Worktree(branch="panopticon/fix-it", path="/wt/r1/panopticon/fix-it")
-    (cmd, _), = rec.calls
+    ((cmd, _),) = rec.calls
     assert cmd == [
-        "git", "-C", "/repos/r1", "worktree", "add",
-        "-b", "panopticon/fix-it", "/wt/r1/panopticon/fix-it", "main",
+        "git",
+        "-C",
+        "/repos/r1",
+        "worktree",
+        "add",
+        "-b",
+        "panopticon/fix-it",
+        "/wt/r1/panopticon/fix-it",
+        "main",
     ]
 
 
@@ -54,7 +64,10 @@ def test_remove_force_tier_and_idempotent() -> None:
     git = GitWorktrees(run=rec)
     git.remove(repo_path="/r", worktree_path="/wt/r1/panopticon/fix-it")
     git.remove(repo_path="/r", worktree_path="/wt/r1/panopticon/fix-it", force=True)
-    assert rec.calls[0] == (["git", "-C", "/r", "worktree", "remove", "/wt/r1/panopticon/fix-it"], False)
+    assert rec.calls[0] == (
+        ["git", "-C", "/r", "worktree", "remove", "/wt/r1/panopticon/fix-it"],
+        False,
+    )
     assert rec.calls[1][0][-1] == "--force"
     assert rec.calls[1][1] is False  # idempotent: never raises on an already-gone worktree
 
@@ -74,7 +87,15 @@ def test_create_branch_and_set_origin() -> None:
     git.create_branch(repo_path="/tasks/t1", branch="panopticon/fix-it")
     git.set_origin(repo_path="/tasks/t1", url="https://forge/r1.git")
     assert rec.calls[0][0] == ["git", "-C", "/tasks/t1", "checkout", "-b", "panopticon/fix-it"]
-    assert rec.calls[1][0] == ["git", "-C", "/tasks/t1", "remote", "set-url", "origin", "https://forge/r1.git"]
+    assert rec.calls[1][0] == [
+        "git",
+        "-C",
+        "/tasks/t1",
+        "remote",
+        "set-url",
+        "origin",
+        "https://forge/r1.git",
+    ]
 
 
 # -- integration: a real git repo ---------------------------------------------------
@@ -94,11 +115,17 @@ def test_create_and_remove_a_real_worktree(tmp_path: Path) -> None:
 
     git = GitWorktrees()
     wt = git.create(
-        repo_path=str(repo), worktrees_root=str(tmp_path / "wt"), repo_id="r1", slug="fix-it", base="main"
+        repo_path=str(repo),
+        worktrees_root=str(tmp_path / "wt"),
+        repo_id="r1",
+        slug="fix-it",
+        base="main",
     )
     assert Path(wt.path).is_dir()
     branches = subprocess.run(
-        ["git", "-C", str(repo), "branch", "--list", "panopticon/fix-it"], capture_output=True, text=True
+        ["git", "-C", str(repo), "branch", "--list", "panopticon/fix-it"],
+        capture_output=True,
+        text=True,
     ).stdout
     assert "panopticon/fix-it" in branches
 

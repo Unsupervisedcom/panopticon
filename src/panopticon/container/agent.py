@@ -115,6 +115,7 @@ def _claude_argv(
     *,
     initial_prompt: str | None = None,
     turn: str | None = None,
+    starting_model: str | None = None,
 ) -> list[str]:
     """`claude` argv, resuming the project's most recent conversation if one exists.
 
@@ -132,6 +133,9 @@ def _claude_argv(
     the ``initial_prompt`` is omitted — the agent is already mid-task. When the resumed session is
     the agent's turn (``turn == "agent"``), :data:`INTERRUPT_PROMPT` is appended instead so the
     agent automatically picks up where it left off rather than waiting for user input.
+
+    ``starting_model`` (e.g. ``"opus"``) is passed as ``--model`` on the **first run only** — on
+    resume claude uses whichever model the conversation was already using.
     """
     argv = ["claude", "--dangerously-skip-permissions"]
     overview = config_dir / WORKFLOW_OVERVIEW_FILE
@@ -145,8 +149,15 @@ def _claude_argv(
         argv.append("--continue")
         if turn == "agent":
             argv.append(INTERRUPT_PROMPT)  # positional: auto-resume after container restart
-    elif initial_prompt:
-        argv.append(initial_prompt)  # positional: claude sends this as the agent's first message
+    else:
+        if (
+            starting_model
+        ):  # first run only — on resume claude uses the conversation's existing model
+            argv += ["--model", starting_model]
+        if initial_prompt:
+            argv.append(
+                initial_prompt
+            )  # positional: claude sends this as the agent's first message
     return argv
 
 
@@ -158,7 +169,14 @@ def _run_claude(config_dir: Path) -> None:  # pragma: no cover - real LLM; skipi
     surface ``tmux attach`` reaches)."""
     initial_prompt = os.environ.get("PANOPTICON_INITIAL_PROMPT") or None
     turn = os.environ.get("PANOPTICON_TASK_TURN") or None
-    argv = _claude_argv(config_dir, Path.cwd(), initial_prompt=initial_prompt, turn=turn)
+    starting_model = os.environ.get("PANOPTICON_STARTING_MODEL") or None
+    argv = _claude_argv(
+        config_dir,
+        Path.cwd(),
+        initial_prompt=initial_prompt,
+        turn=turn,
+        starting_model=starting_model,
+    )
     subprocess.run(argv, env={**os.environ, "CLAUDE_CONFIG_DIR": str(config_dir)})
 
 
@@ -206,7 +224,9 @@ def main(
     render_operations(client, task_id, config_dir.parent)  # advance/drop/… as slash-commands
     write_settings(config_dir.parent)  # turn-flip hooks → <home>/.claude/settings.json
     write_mcp_config(config_dir, service_url)  # point claude at the task service's MCP server
-    write_workflow_overview(config_dir, client.workflow_overview(task_id))  # → system prompt (the map)
+    write_workflow_overview(
+        config_dir, client.workflow_overview(task_id)
+    )  # → system prompt (the map)
     trust_workspace(config_dir, Path.cwd())  # pre-accept the trust dialog (no operator to)
     launch(config_dir)  # the agent runs until it exits...
     on_exit()  # ...then stop the container (task → down → respawn)

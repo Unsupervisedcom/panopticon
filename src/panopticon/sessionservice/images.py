@@ -38,7 +38,9 @@ class ImageBuilder:
         self._base = base
         self._run = run
 
-    def build(self, workflow: str, repo_id: str, layers: Sequence[str], *, verbose: bool = False) -> str:
+    def build(
+        self, workflow: str, repo_id: str, layers: Sequence[str], *, verbose: bool = False
+    ) -> str:
         """Compose base → ``layers`` and `docker build` it; return the image tag.
 
         ``verbose`` streams docker build output to the caller's stdout/stderr (visible in the
@@ -54,14 +56,21 @@ class ImageBuilder:
         """Build the base image unconditionally from the bundled Dockerfile."""
         import panopticon
         import panopticon.docker as _docker_pkg
+
         dockerfile_ref = importlib.resources.files(_docker_pkg) / "Dockerfile"
         with importlib.resources.as_file(dockerfile_ref) as dockerfile_path:
             self._run(
-                ["docker", "build",
-                 "--tag", self._base,
-                 "--build-arg", f"PANOPTICON_VERSION={panopticon.__version__}",
-                 "--file", str(dockerfile_path),
-                 str(dockerfile_path.parent)],
+                [
+                    "docker",
+                    "build",
+                    "--tag",
+                    self._base,
+                    "--build-arg",
+                    f"PANOPTICON_VERSION={panopticon.__version__}",
+                    "--file",
+                    str(dockerfile_path),
+                    str(dockerfile_path.parent),
+                ],
                 verbose=verbose,
             )
 
@@ -72,21 +81,26 @@ class ImageBuilder:
         builds it using the Dockerfile bundled with the installed package
         (``panopticon.docker``). Returns ``True`` if a build was triggered, ``False`` if
         the image was already present."""
-        result = self._run(
-            ["docker", "image", "inspect", self._base], check=False
-        )
+        result = self._run(["docker", "image", "inspect", self._base], check=False)
         if result.strip() in ("", "[]"):
             _log.warning("base image %r not found — building automatically", self._base)
             import panopticon
             import panopticon.docker as _docker_pkg
+
             dockerfile_ref = importlib.resources.files(_docker_pkg) / "Dockerfile"
             with importlib.resources.as_file(dockerfile_ref) as dockerfile_path:
                 self._run(
-                    ["docker", "build",
-                     "--tag", self._base,
-                     "--build-arg", f"PANOPTICON_VERSION={panopticon.__version__}",
-                     "--file", str(dockerfile_path),
-                     str(dockerfile_path.parent)],
+                    [
+                        "docker",
+                        "build",
+                        "--tag",
+                        self._base,
+                        "--build-arg",
+                        f"PANOPTICON_VERSION={panopticon.__version__}",
+                        "--file",
+                        str(dockerfile_path),
+                        str(dockerfile_path.parent),
+                    ],
                     verbose=verbose,
                 )
             return True

@@ -24,7 +24,14 @@ class _Recorder:
         self.calls: list[tuple[list[str], bool]] = []
         self.interactive: list[bool] = []
 
-    def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False, verbose: bool = False) -> str:
+    def __call__(
+        self,
+        args: Sequence[str],
+        *,
+        check: bool = True,
+        interactive: bool = False,
+        verbose: bool = False,
+    ) -> str:
         self.calls.append((list(args), check))
         self.interactive.append(interactive)
         return ""
@@ -41,16 +48,18 @@ def test_spawn_runs_detached_container_then_tmux_pane_execing_in() -> None:
     container_id = runner.spawn("t1")
 
     assert container_id == "panopticon-t1"
-    (_inspect, _), (_tmux_v, _), (kill_session, _), (rm, _), (docker_run, _), (tmux_new, _) = rec.calls
-    # pre-checks before the stale cleanup
-    assert _inspect == ["docker", "image", "inspect", "img:1"]
-    assert _tmux_v == ["tmux", "-V"]
+    # spawn pre-checks the image + tmux before touching anything (fail-fast, legible FAILED).
+    (inspect, _), (tmux_v, _), (kill_session, _), (rm, _), (docker_run, _), (tmux_new, _) = (
+        rec.calls
+    )
+    assert inspect == ["docker", "image", "inspect", "img:1"]
+    assert tmux_v == ["tmux", "-V"]
     # clear any stale tmux session first (idempotent — no-op when nothing exists)
     assert kill_session == ["tmux", "-L", "panopticon", "kill-session", "-t", "panopticon-t1"]
     assert rm == ["docker", "rm", "--force", "panopticon-t1"]  # then clear a stale container
     assert docker_run[:3] == ["docker", "run", "--detach"]
     assert docker_run[-1] == "img:1"  # the image is the final positional arg (its entrypoint runs)
-    assert ["--name", "panopticon-t1"] == docker_run[3:5]
+    assert docker_run[3:5] == ["--name", "panopticon-t1"]
     assert "PANOPTICON_SERVICE_URL=http://svc:8000" in docker_run
     assert "PANOPTICON_TASK_ID=t1" in docker_run
     assert "PANOPTICON_CONTAINER_ID=panopticon-t1" in docker_run
@@ -63,8 +72,16 @@ def test_spawn_runs_detached_container_then_tmux_pane_execing_in() -> None:
     assert tmux_new[tmux_new.index("-s") + 1] == "panopticon-t1"
     # the pane execs in as the unprivileged `panopticon` user (so the agent's whoami isn't root)
     assert tmux_new[-10:] == [
-        "docker", "exec", "--interactive", "--tty", "--user", "panopticon", "panopticon-t1",
-        "python", "-m", "panopticon.container.agent",
+        "docker",
+        "exec",
+        "--interactive",
+        "--tty",
+        "--user",
+        "panopticon",
+        "panopticon-t1",
+        "python",
+        "-m",
+        "panopticon.container.agent",
     ]
 
 
@@ -83,7 +100,14 @@ class _ReturningRecorder(_Recorder):
         super().__init__()
         self._output = output
 
-    def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False, verbose: bool = False) -> str:
+    def __call__(
+        self,
+        args: Sequence[str],
+        *,
+        check: bool = True,
+        interactive: bool = False,
+        verbose: bool = False,
+    ) -> str:
         super().__call__(args, check=check, interactive=interactive)
         return self._output
 
@@ -92,7 +116,7 @@ def test_is_running_queries_docker_ps_by_container_name() -> None:
     rec = _ReturningRecorder("panopticon-t1\n")
     runner = LocalRunner("http://svc:8000", run=rec)
     assert runner.is_running("t1") is True
-    (ps, check), = rec.calls
+    ((ps, check),) = rec.calls
     assert ps == ["docker", "ps", "--filter", "name=^panopticon-t1$", "--format", "{{.Names}}"]
     assert check is False  # tolerate a daemon hiccup rather than raise
 
@@ -106,9 +130,11 @@ def test_has_session_lists_the_tmux_server_and_matches_the_session_name() -> Non
     rec = _ReturningRecorder("panopticon-t1\npanopticon-t2\n")  # two sessions on the server
     runner = LocalRunner("http://svc:8000", run=rec)
     assert runner.has_session("t1") is True
-    (ls, check), = rec.calls
+    ((ls, check),) = rec.calls
     assert ls == ["tmux", "-L", "panopticon", "list-sessions", "-F", "#{session_name}"]
-    assert check is False  # an empty list (or no server at all) just means "no session", not an error
+    assert (
+        check is False
+    )  # an empty list (or no server at all) just means "no session", not an error
 
 
 def test_has_session_is_false_when_the_session_is_absent() -> None:
@@ -155,17 +181,27 @@ def test_spawn_with_docker_in_docker_runs_privileged_and_flags_the_entrypoint() 
 
 def test_extra_env_is_forwarded() -> None:
     rec = _Recorder()
-    LocalRunner("http://svc", extra_env={"PANOPTICON_RECONNECT_BACKOFF": "0.5"}, run=rec).spawn("t1")
+    LocalRunner("http://svc", extra_env={"PANOPTICON_RECONNECT_BACKOFF": "0.5"}, run=rec).spawn(
+        "t1"
+    )
     assert "PANOPTICON_RECONNECT_BACKOFF=0.5" in rec.calls[4][0]
 
 
-def test_spawn_injects_repo_env_file() -> None:
+def test_spawn_resolves_env_file_against_the_runners_secrets_dir() -> None:
+    # env_file is a name relative to this runner's secrets dir (ADR 0007 / remote runners), so the
+    # runner resolves it host-locally rather than trusting an absolute path from another host.
     rec = _Recorder()
-    LocalRunner("http://svc", run=rec).spawn(
-        "t1", env_file="/secrets/r1.env"
-    )
+    LocalRunner("http://svc", secrets_dir="/host/secrets", run=rec).spawn("t1", env_file="r1.env")
     docker_run = rec.calls[4][0]
-    assert docker_run[docker_run.index("--env-file") + 1] == "/secrets/r1.env"
+    assert docker_run[docker_run.index("--env-file") + 1] == "/host/secrets/r1.env"
+
+
+def test_spawn_rejects_env_file_name_escaping_the_secrets_dir() -> None:
+    rec = _Recorder()
+    with pytest.raises(ValueError):
+        LocalRunner("http://svc", secrets_dir="/host/secrets", run=rec).spawn(
+            "t1", env_file="../evil.env"
+        )
 
 
 def test_spawn_omits_secret_flags_when_repo_has_none() -> None:
@@ -221,8 +257,50 @@ def test_spawn_uses_the_composed_image_when_given_else_the_base() -> None:
     runner.spawn("t1")  # no override → base
     assert rec.calls[4][0][-1] == "panopticon-base"
     runner.spawn("t2", image="panopticon-github-peer-reviewed-r1")  # composed image (ADR 0005)
-    # each spawn emits 6 calls (inspect, tmux-v, kill-session, rm, run, tmux); t2's docker run is calls[10]
+    # each spawn emits 6 calls (image inspect, tmux -V, kill-session, rm, run, tmux); t2's docker
+    # run is calls[10] (6 for t1 + the 4th call of t2's block)
     assert rec.calls[10][0][-1] == "panopticon-github-peer-reviewed-r1"
+
+
+class _FailOnCmd:
+    """Records calls but raises FileNotFoundError for a command whose first token(s) match."""
+
+    def __init__(self, fail_prefix: list[str]) -> None:
+        self.calls: list[tuple[list[str], bool]] = []
+        self._fail_prefix = fail_prefix
+
+    def __call__(
+        self,
+        args: Sequence[str],
+        *,
+        check: bool = True,
+        interactive: bool = False,
+        verbose: bool = False,
+    ) -> str:
+        self.calls.append((list(args), check))
+        if list(args[: len(self._fail_prefix)]) == self._fail_prefix:
+            raise FileNotFoundError(" ".join(self._fail_prefix))
+        return ""
+
+
+def test_spawn_fails_fast_when_base_image_is_missing() -> None:
+    rec = _FailOnCmd(["docker", "image", "inspect"])
+    runner = LocalRunner("http://svc", image="img:1", run=rec)
+    with pytest.raises(RuntimeError) as exc:
+        runner.spawn("t1")
+    assert "not found" in str(exc.value)
+    assert "panopticon build" in str(exc.value) or "panopticon doctor" in str(exc.value)
+    # never issued docker run / tmux new-session
+    assert not any(c[:2] == ["docker", "run"] for c, _ in rec.calls)
+
+
+def test_spawn_fails_fast_when_tmux_is_missing() -> None:
+    rec = _FailOnCmd(["tmux", "-V"])
+    runner = LocalRunner("http://svc", image="img:1", run=rec)
+    with pytest.raises(RuntimeError) as exc:
+        runner.spawn("t1")
+    assert "tmux not found" in str(exc.value)
+    assert "panopticon doctor" in str(exc.value)
 
 
 def test_stop_kills_session_and_force_removes_container_idempotently() -> None:
@@ -234,62 +312,37 @@ def test_stop_kills_session_and_force_removes_container_idempotently() -> None:
 
 def test_delete_workspace_contents_runs_root_container_to_empty_directory() -> None:
     rec = _Recorder()
-    LocalRunner("http://svc", image="panopticon-base", run=rec).delete_workspace_contents("/tasks/t1")
-    assert rec.calls == [(
-        [
-            "docker", "run", "--rm",
-            "--entrypoint", "/bin/sh",
-            "--volume", "/tasks/t1:/cleanup",
-            "panopticon-base",
-            "-c", "find /cleanup -mindepth 1 -delete",
-        ],
-        True,
-    )]
+    LocalRunner("http://svc", image="panopticon-base", run=rec).delete_workspace_contents(
+        "/tasks/t1"
+    )
+    assert rec.calls == [
+        (
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--entrypoint",
+                "/bin/sh",
+                "--volume",
+                "/tasks/t1:/cleanup",
+                "panopticon-base",
+                "-c",
+                "find /cleanup -mindepth 1 -delete",
+            ],
+            True,
+        )
+    ]
 
 
 def test_tmux_socket_can_be_overridden() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", tmux_socket="panopt", run=rec).spawn("t1")
-    assert rec.calls[5][0][:4] == ["tmux", "-L", "panopt", "new-session"]  # inspect, tmux-v, kill-session, rm, run, tmux
-
-
-# -- fail-fast pre-checks -----------------------------------------------------------
-
-class _FailOnCmd(_Recorder):
-    """A recorder that raises FileNotFoundError when a specific command is called."""
-
-    def __init__(self, fail_cmd: str) -> None:
-        super().__init__()
-        self._fail_cmd = fail_cmd
-
-    def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False, verbose: bool = False) -> str:
-        if args and args[0] == self._fail_cmd:
-            raise FileNotFoundError(f"{self._fail_cmd}: command not found")
-        return super().__call__(args, check=check, interactive=interactive, verbose=verbose)
-
-
-def test_spawn_fails_fast_when_base_image_is_missing() -> None:
-    runner = LocalRunner("http://svc", image="panopticon-base", run=_FailOnCmd("docker"))
-    with pytest.raises(RuntimeError, match="panopticon-base"):
-        runner.spawn("t1")
-
-
-def test_spawn_fails_fast_when_tmux_is_missing() -> None:
-    class _NoTmux(_Recorder):
-        def __call__(self, args: Sequence[str], *, check: bool = True, interactive: bool = False, verbose: bool = False) -> str:
-            if args and args[0] == "tmux" and len(args) == 2 and args[1] == "-V":
-                raise FileNotFoundError("tmux: command not found")
-            return super().__call__(args, check=check, interactive=interactive, verbose=verbose)
-
-    runner = LocalRunner("http://svc", run=_NoTmux())
-    with pytest.raises(RuntimeError, match="tmux"):
-        runner.spawn("t1")
-
-
-def test_spawn_fail_fast_error_mentions_panopticon_doctor() -> None:
-    runner = LocalRunner("http://svc", image="panopticon-base", run=_FailOnCmd("docker"))
-    with pytest.raises(RuntimeError, match="panopticon doctor"):
-        runner.spawn("t1")
+    assert rec.calls[5][0][:4] == [
+        "tmux",
+        "-L",
+        "panopt",
+        "new-session",
+    ]  # image inspect, tmux -V, kill-session, rm, run, tmux
 
 
 # -- integration: real docker + tmux ------------------------------------------------
@@ -298,9 +351,10 @@ _HAVE_DOCKER_TMUX = bool(shutil.which("docker") and shutil.which("tmux"))
 
 
 def _docker_running() -> bool:
-    return _HAVE_DOCKER_TMUX and subprocess.run(
-        ["docker", "info"], capture_output=True
-    ).returncode == 0
+    return (
+        _HAVE_DOCKER_TMUX
+        and subprocess.run(["docker", "info"], capture_output=True).returncode == 0
+    )
 
 
 @pytest.mark.skipif(not _docker_running(), reason="needs a working docker daemon + tmux")
@@ -311,7 +365,9 @@ def test_spawn_and_stop_real_container_and_session() -> None:
         ["docker", "build", "--tag", image, "-"],
         # a `panopticon` user so the agent pane's `docker exec --user panopticon` resolves
         input='FROM alpine\nRUN adduser -D -u 1000 panopticon\nENTRYPOINT ["sleep", "3600"]\n',
-        text=True, check=True, capture_output=True,
+        text=True,
+        check=True,
+        capture_output=True,
     )
     runner = LocalRunner(
         "http://unused", image=image, runner_id="itest", agent_command=["sh"], tmux_socket=socket
@@ -323,21 +379,28 @@ def test_spawn_and_stop_real_container_and_session() -> None:
         for _ in range(50):  # `docker run -d` returns once running; poll defensively
             running = subprocess.run(
                 ["docker", "inspect", "--format", "{{.State.Running}}", cid],
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             ).stdout.strip()
             if running == "true":
                 break
             time.sleep(0.1)
         assert running == "true"
-        assert subprocess.run(
-            ["tmux", "-L", socket, "has-session", "-t", cid], capture_output=True
-        ).returncode == 0
+        assert (
+            subprocess.run(
+                ["tmux", "-L", socket, "has-session", "-t", cid], capture_output=True
+            ).returncode
+            == 0
+        )
 
         runner.stop(cid)
         assert subprocess.run(["docker", "inspect", cid], capture_output=True).returncode != 0
-        assert subprocess.run(
-            ["tmux", "-L", socket, "has-session", "-t", cid], capture_output=True
-        ).returncode != 0
+        assert (
+            subprocess.run(
+                ["tmux", "-L", socket, "has-session", "-t", cid], capture_output=True
+            ).returncode
+            != 0
+        )
     finally:
         subprocess.run(["docker", "rm", "--force", cid], capture_output=True)
         subprocess.run(["tmux", "-L", socket, "kill-server"], capture_output=True)
@@ -360,21 +423,23 @@ class _FakeClient:
 def test_cli_preps_the_workspace_then_spawns_with_secrets_and_mount(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import panopticon.core.dirs as dirs_mod
     from panopticon.sessionservice import __main__ as cli
     from panopticon.sessionservice.__main__ import main as cli_main
 
     rec = _Recorder()
-    fake = _FakeClient(
-        {"id": "r1", "git_url": "https://forge/r1.git", "env_file": "/secrets/r1.env"}
-    )
+    fake = _FakeClient({"id": "r1", "git_url": "https://forge/r1.git", "env_file": "r1.env"})
     # The clone cache and per-task clones roots are the base-dir defaults (no per-path flags); the
     # defaults are import-time constants, so point them at tmp dirs by patching them in place.
     cache_root, tasks_root = tmp_path / "cache", tmp_path / "tasks"
     monkeypatch.setattr(cli, "CLONE_CACHE_DIR", str(cache_root))
     monkeypatch.setattr(cli, "TASKS_DIR", str(tasks_root))
+    # The runner resolves the repo's env_file *name* against this host's secrets dir (ADR 0007).
+    monkeypatch.setattr(dirs_mod, "user_config_dir", lambda: tmp_path)
     cid = cli_main(
         ["t1", "--service-url", "http://svc:9", "--image", "img:2"],
-        run=rec, client=fake,  # type: ignore[arg-type]
+        run=rec,
+        client=fake,  # type: ignore[arg-type]
     )
     assert cid == "panopticon-t1"
     cmds = [c for c, _ in rec.calls]
@@ -383,5 +448,7 @@ def test_cli_preps_the_workspace_then_spawns_with_secrets_and_mount(
     docker_run = next(c for c in cmds if c[:2] == ["docker", "run"])
     assert "PANOPTICON_SERVICE_URL=http://svc:9" in docker_run
     assert docker_run[-1] == "img:2"
-    assert docker_run[docker_run.index("--env-file") + 1] == "/secrets/r1.env"  # repo's secrets
+    assert docker_run[docker_run.index("--env-file") + 1] == str(
+        tmp_path / "secrets" / "r1.env"
+    )  # repo's secrets
     assert f"{tasks_root}/t1:/workspace" in docker_run  # the per-task clone mounted as /workspace

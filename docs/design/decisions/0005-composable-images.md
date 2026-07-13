@@ -86,4 +86,4 @@ Supporting decisions:
 - ADR 0006 — the task service / execution flow that selects and runs the composed image.
 - GOALS.md — Milestone 3 (other CLIs) and Milestone 5 (remote execution).
 - The build orchestration, image naming, and storage/registry strategy belong in
-  `docs/ARCHITECTURE.md` and the (future) execution-backend interface.
+  `docs/design/ARCHITECTURE.md` and the (future) execution-backend interface.

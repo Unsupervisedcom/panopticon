@@ -1,6 +1,6 @@
 # panopticon — dev tasks. Thin wrappers over `uv`/`docker`; see CLAUDE.md for details.
 .DEFAULT_GOAL := help
-.PHONY: help sync test typecheck check serve dashboard host start stop build clean migrate migrate-revision doctor
+.PHONY: help sync test typecheck lint format lint-check check serve dashboard host start stop build clean migrate migrate-revision doctor
 
 #: The base task-container image (ADR 0005 base layer); must match DEFAULT_IMAGE.
 IMAGE ?= panopticon-base
@@ -17,7 +17,18 @@ test:  ## Run the test suite
 typecheck:  ## Type-check (mypy, strict)
 	uv run mypy --package panopticon
 
-check: typecheck test  ## Type-check + tests (what CI runs)
+lint:  ## Lint (ruff check) and auto-format (ruff format)
+	uv run ruff check --fix
+	uv run ruff format
+
+format:  ## Format the code (ruff format)
+	uv run ruff format
+
+lint-check:  ## Lint + format check, read-only (what CI runs)
+	uv run ruff check
+	uv run ruff format --check
+
+check: lint-check typecheck test  ## Lint + type-check + tests (what CI runs)
 
 migrate:  ## Apply DB migrations up to head (uses $PANOPTICON_DB; default ~/.local/share/panopticon/panopticon.db)
 	uv run panopticon migrate
@@ -47,7 +58,7 @@ build:  ## Build the base task-container image (override with IMAGE=)
 	uv build --wheel --out-dir src/panopticon/docker/
 	docker build \
 	  --tag $(IMAGE) \
-	  --build-arg PANOPTICON_WHEEL=$(shell ls -1 src/panopticon/docker/panopticon_app*.whl | xargs -n1 basename) \
+	  --build-arg PANOPTICON_WHEEL=$$(ls -1 src/panopticon/docker/panopticon_app*.whl | xargs -n1 basename) \
 	  --file src/panopticon/docker/Dockerfile \
 	  src/panopticon/docker/
 	rm --force src/panopticon/docker/panopticon_app*.whl

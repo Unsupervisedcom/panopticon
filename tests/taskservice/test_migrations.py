@@ -13,9 +13,9 @@ and this test will hold the line. No LLM, no network.
 from __future__ import annotations
 
 import importlib.resources
+from pathlib import Path
 from typing import Any
 
-import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect
@@ -48,7 +48,11 @@ def _schema_snapshot(db_url: str) -> dict[str, Any]:
             }
             pk = sorted(insp.get_pk_constraint(table)["constrained_columns"])
             fks = sorted(
-                (tuple(fk["constrained_columns"]), fk["referred_table"], tuple(fk["referred_columns"]))
+                (
+                    tuple(fk["constrained_columns"]),
+                    fk["referred_table"],
+                    tuple(fk["referred_columns"]),
+                )
                 for fk in insp.get_foreign_keys(table)
             )
             snapshot[table] = {"columns": columns, "pk": pk, "fks": fks}
@@ -81,6 +85,34 @@ def test_migrations_roundtrip(tmp_path: Path) -> None:
 
     command.upgrade(cfg, "head")  # and it's idempotent enough to re-apply cleanly
     assert set(_schema_snapshot(url)) == {"repo", "task", "history", "responsibility"}
+
+
+def test_relativize_env_file_migration_strips_to_basename(tmp_path: Path) -> None:
+    """The env_file relativize migration converts stored absolute paths to their basename (a
+    name relative to the secrets dir), and leaves an already-relative value untouched."""
+    from sqlalchemy import text
+
+    url = f"sqlite:///{tmp_path / 'data.db'}"
+    cfg = _alembic_config(url)
+    command.upgrade(cfg, "faf3403c8b56")  # the revision just before the relativize migration
+
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO repo (id, name, git_url, default_base, env_file) VALUES "
+                "('r1', 'r1', 'https://x/r1.git', 'main', '/home/a/.config/panopticon/secrets/r1.env'), "
+                "('r2', 'r2', 'https://x/r2.git', 'main', 'r2.env'), "
+                "('r3', 'r3', 'https://x/r3.git', 'main', NULL)"
+            )
+        )
+
+    command.upgrade(cfg, "8a9ab3fe49b5")
+
+    with engine.connect() as conn:
+        rows = dict(conn.execute(text("SELECT id, env_file FROM repo")).fetchall())
+    engine.dispose()
+    assert rows == {"r1": "r1.env", "r2": "r2.env", "r3": None}
 
 
 def test_single_head() -> None:

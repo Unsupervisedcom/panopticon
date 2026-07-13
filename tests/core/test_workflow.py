@@ -77,6 +77,15 @@ def test_start_task_records_initial_prompt() -> None:
     assert task.initial_prompt == "review your plan"
 
 
+def test_start_task_seeds_starting_model_from_default_model() -> None:
+    task = WF.start_task("t1", "r1", at="t0")
+    assert task.starting_model == WF.default_model
+
+
+def test_workflow_default_model_is_opus() -> None:
+    assert WF.default_model == "opus"
+
+
 # -- resolution: string + class refs, inherited DROPPED -----------------------------
 
 
@@ -394,3 +403,31 @@ def test_opt_in_does_not_bleed_across_subclasses() -> None:
 
     assert A.opt_in is True
     assert B.opt_in is False
+
+
+# -- hidden class var ---------------------------------------------------------------
+
+
+def test_hidden_defaults_to_false() -> None:
+    assert GatedWorkflow.hidden is False
+
+
+def test_hidden_can_be_overridden_to_true() -> None:
+    class HiddenWorkflow(GatedWorkflow):
+        name = "hidden-wf"
+        hidden = True
+
+    assert HiddenWorkflow.hidden is True
+    assert HiddenWorkflow().hidden is True
+
+
+def test_hidden_does_not_bleed_across_subclasses() -> None:
+    class A(GatedWorkflow):
+        name = "hidden-a"
+        hidden = True
+
+    class B(GatedWorkflow):
+        name = "hidden-b"
+
+    assert A.hidden is True
+    assert B.hidden is False

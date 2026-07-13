@@ -1,5 +1,5 @@
 """The terminal CLI (`panopticon`). The shared REST client it uses is covered in
-test_client.py; the dashboard in test_dashboard.py."""
+test_client.py; the dashboard in test_dashboard.py. Quickstart helpers are in test_quickstart.py."""
 
 from __future__ import annotations
 
@@ -29,11 +29,18 @@ def test_dashboard_under_supervisor_wires_the_switch_hooks(monkeypatch: pytest.M
 
     seen: dict[str, Any] = {}
     monkeypatch.setattr(
-        dashboard, "run",
-        lambda _c, *, on_switch=None, on_service=None, on_runner=None, artifacts_root=None: seen.update(on_switch=on_switch, on_service=on_service, on_runner=on_runner),
+        dashboard,
+        "run",
+        lambda _c, *, on_switch=None, on_service=None, on_runner=None, artifacts_root=None: (
+            seen.update(on_switch=on_switch, on_service=on_service, on_runner=on_runner)
+        ),
     )
     cli.main(["dashboard", "--switch-file", "/tmp/x"], client=_FakeClient())  # type: ignore[arg-type]
-    assert seen["on_switch"] is not None and seen["on_service"] is not None and seen["on_runner"] is not None
+    assert (
+        seen["on_switch"] is not None
+        and seen["on_service"] is not None
+        and seen["on_runner"] is not None
+    )
 
 
 def test_standalone_dashboard_has_no_switch_hooks(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -41,8 +48,53 @@ def test_standalone_dashboard_has_no_switch_hooks(monkeypatch: pytest.MonkeyPatc
 
     seen: dict[str, Any] = {}
     monkeypatch.setattr(
-        dashboard, "run",
-        lambda _c, *, on_switch=None, on_service=None, on_runner=None, artifacts_root=None: seen.update(on_switch=on_switch, on_service=on_service, on_runner=on_runner),
+        dashboard,
+        "run",
+        lambda _c, *, on_switch=None, on_service=None, on_runner=None, artifacts_root=None: (
+            seen.update(on_switch=on_switch, on_service=on_service, on_runner=on_runner)
+        ),
     )
     cli.main(["dashboard"], client=_FakeClient())  # type: ignore[arg-type]
     assert seen["on_switch"] is None and seen["on_service"] is None and seen["on_runner"] is None
+
+
+def test_quickstart_invokes_all_steps(monkeypatch: pytest.MonkeyPatch) -> None:
+    from panopticon.terminal import console
+    from panopticon.terminal import quickstart as qs
+
+    calls: list[str] = []
+
+    monkeypatch.setattr(cli, "_run_migrate", lambda: calls.append("migrate"))
+    monkeypatch.setattr(cli, "_start_sessions", lambda: calls.append("sessions"))
+    monkeypatch.setattr(qs, "wait_for_service", lambda url, **kw: calls.append("wait"))
+    monkeypatch.setattr(qs, "ensure_secrets_file", lambda: (calls.append("secrets"), "/tmp/env")[1])
+    monkeypatch.setattr(qs, "detect_git_url", lambda: (calls.append("git_url"), "https://x.git")[1])
+    monkeypatch.setattr(
+        qs, "setup_repo", lambda c, g, e: (calls.append("setup"), ("repo1", "acme/repo1"))[1]
+    )
+    monkeypatch.setattr(
+        qs,
+        "ensure_setup_repo_task",
+        lambda c, repo_id, name: (calls.append("token-task"), "task1")[1],
+    )
+    joined: dict[str, object] = {}
+    monkeypatch.setattr(
+        console,
+        "run_console_local",
+        lambda url, **kw: (calls.append("console"), joined.update(kw))[0],
+    )
+
+    rc = cli.main(["quickstart"])
+    assert rc == 0
+    assert calls == [
+        "migrate",
+        "sessions",
+        "wait",
+        "secrets",
+        "git_url",
+        "setup",
+        "token-task",
+        "console",
+    ]
+    # The console opens attached to the setup-repo task.
+    assert joined["join"] == "task1"

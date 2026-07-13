@@ -81,4 +81,4 @@ A task is **structured record (DB) + a set of file-backed artifacts**.
 - ADR 0002 — substitutable dashboard; the dashboard is one *consumer* of the artifact
   store, alongside MCP and direct filesystem access.
 - The artifact-store interface, the id→path→URI resolver, and the consistency/concurrency
-  policy belong in `docs/ARCHITECTURE.md`.
+  policy belong in `docs/design/ARCHITECTURE.md`.

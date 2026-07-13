@@ -19,7 +19,7 @@ from panopticon.core.models import Skill
 # agent passes this verbatim. (Identity is a container-side fact; ARCHITECTURE §8.3.)
 def _task_id_note(task_id: str) -> str:
     return (
-        f"\nThis is task `{task_id}` — pass `task_id=\"{task_id}\"` to every panopticon MCP tool "
+        f'\nThis is task `{task_id}` — pass `task_id="{task_id}"` to every panopticon MCP tool '
         f"you call here.\n"
     )
 
@@ -38,7 +38,7 @@ def render_operation(name: str, target_state: str, task_id: str) -> str:
     return (
         f"---\ndescription: Apply the workflow's '{name}' operation.\n---\n"
         f"Apply this workflow's `{name}` operation — it moves the task to **{target_state}**. "
-        f"Invoke it with the `apply_operation` tool (`operation=\"{name}\"`, `task_id=\"{task_id}\"`); "
+        f'Invoke it with the `apply_operation` tool (`operation="{name}"`, `task_id="{task_id}"`); '
         f"don't edit the state directly. It's gated on the current state's responsibilities and "
         f"starts a new turn.\n"
     )

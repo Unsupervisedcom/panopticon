@@ -22,7 +22,9 @@ from panopticon.workflows import Spike
 
 @pytest.fixture
 def client(tmp_path: Path) -> Iterator[TaskServiceClient]:
-    service = TaskService(SqlAlchemyStore("sqlite://"), {"spike": Spike()}, FilesystemArtifactStore(tmp_path))
+    service = TaskService(
+        SqlAlchemyStore("sqlite://"), {"spike": Spike()}, FilesystemArtifactStore(tmp_path)
+    )
     asyncio.run(service.init())
     asyncio.run(service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://x/r1.git")))
     with TestClient(create_app(service)) as http:
@@ -87,12 +89,20 @@ def test_create_repo_over_rest(client: TaskServiceClient) -> None:
     assert {r["id"] for r in client.list_repos()} == {"r1", "r2"}
 
 
-def test_create_repo_with_secret_references(client: TaskServiceClient) -> None:
+def test_create_repo_with_secret_references(
+    client: TaskServiceClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # env_file is a name under the secrets dir (#291), validated to exist on create (ADR 0007).
+    monkeypatch.setenv("PANOPTICON_CONFIG", str(tmp_path))
+    (tmp_path / "secrets").mkdir()
+    (tmp_path / "secrets" / "r3.env").write_text("ANTHROPIC_API_KEY=sk-test\n")
     repo = client.create_repo(
-        "r3", "acme/svc", "https://x/r3.git",
-        env_file="/secrets/r3.env",
+        "r3",
+        "acme/svc",
+        "https://x/r3.git",
+        env_file="r3.env",
     )
-    assert repo["env_file"] == "/secrets/r3.env"
+    assert repo["env_file"] == "r3.env"
 
 
 def test_update_repo_patches_only_sent_fields(client: TaskServiceClient) -> None:
@@ -106,8 +116,7 @@ def test_update_repo_patches_only_sent_fields(client: TaskServiceClient) -> None
 
 def test_create_repo_carries_capabilities(client: TaskServiceClient) -> None:
     # The dashboard's privileged-docker toggle creates a repo with docker_in_docker set.
-    client.create_repo("r6", "svc", "https://x/r6.git",
-                       capabilities={"docker_in_docker": True})
+    client.create_repo("r6", "svc", "https://x/r6.git", capabilities={"docker_in_docker": True})
     assert client.get_repo("r6")["capabilities"] == {"docker_in_docker": True}  # persisted
 
 
@@ -115,8 +124,13 @@ def test_update_repo_preserves_image_layer_and_capabilities(client: TaskServiceC
     # POST the full repo (incl. extras), then PATCH only a core field: the extras must survive.
     client._http.post(  # the client's create_repo doesn't carry image_layer_file; go raw for the seed
         "/repos",
-        json={"id": "r5", "name": "svc", "git_url": "https://x/r5.git",
-              "image_layer_file": "r5.layer", "capabilities": {"docker_in_docker": True}},
+        json={
+            "id": "r5",
+            "name": "svc",
+            "git_url": "https://x/r5.git",
+            "image_layer_file": "r5.layer",
+            "capabilities": {"docker_in_docker": True},
+        },
     ).raise_for_status()
     client.update_repo("r5", name="svc-2")
     got = client.get_repo("r5")

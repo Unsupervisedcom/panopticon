@@ -38,7 +38,9 @@ class _FakeClient:
         self.slug = slug
         return {"slug": slug}
 
-    def live(self, task_id: str, *, container_id: str, runner_id: str | None = None) -> Iterator[None]:
+    def live(
+        self, task_id: str, *, container_id: str, runner_id: str | None = None
+    ) -> Iterator[None]:
         self.calls.append("live")
         self.live_connections += 1
         self.containers.append(container_id)

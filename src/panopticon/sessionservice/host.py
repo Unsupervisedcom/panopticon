@@ -37,9 +37,11 @@ from panopticon.core.dirs import CLONE_CACHE_DIR, TASKS_DIR
 from panopticon.core.git import GitClones
 from panopticon.sessionservice._migration import migrate_session_dirs
 from panopticon.sessionservice.clones import CloneCache
+from panopticon.sessionservice.executions import WorkflowExecutions
 from panopticon.sessionservice.images import ImageBuilder
 from panopticon.sessionservice.local_runner import DEFAULT_IMAGE, LocalRunner
 from panopticon.sessionservice.provisioner import Provisioner
+from panopticon.sessionservice.shell_runner import ShellRunner
 from panopticon.sessionservice.spawner import Spawner
 
 _log = logging.getLogger(__name__)
@@ -167,6 +169,7 @@ def run_host(
     tasks_root: str,
     cache: CloneCache,
     git: GitClones,
+    shell_runner: ShellRunner | None = None,
     images: ImageBuilder | None = None,
     makedirs: Callable[[str], None] = lambda p: Path(p).mkdir(parents=True, exist_ok=True),
     interval: float = 2.0,
@@ -174,15 +177,26 @@ def run_host(
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
     """Wire the spawner + provisioner over a shared per-task-clone root and run the host loop."""
+    executions = WorkflowExecutions(client)  # one shared "how is this workflow run" cache for both
     spawner = Spawner(
-        client, runner, runner_id=runner_id, cache=cache, tasks_root=tasks_root, git=git, images=images,
+        client,
+        runner,
+        runner_id=runner_id,
+        cache=cache,
+        tasks_root=tasks_root,
+        shell_runner=shell_runner,
+        executions=executions,
+        git=git,
+        images=images,
         makedirs=makedirs,
     )
-    provisioner = Provisioner(client, clones_root=tasks_root, git=git)
+    provisioner = Provisioner(client, clones_root=tasks_root, git=git, executions=executions)
     HostDaemon(client, spawner, provisioner, interval=interval, sleep=sleep).run(until=until)
 
 
-def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = None) -> None:  # pragma: no cover - thin wiring + endless loop
+def main(
+    argv: list[str] | None = None, *, client: TaskServiceClient | None = None
+) -> None:  # pragma: no cover - thin wiring + endless loop
     parser = argparse.ArgumentParser(
         prog="python -m panopticon.sessionservice.host",
         description="Per-host session service: spawn tasks + provision them (ADR 0008/0011).",
@@ -194,7 +208,9 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
     )
     parser.add_argument(
         "--container-service-url",
-        default=os.environ.get("PANOPTICON_CONTAINER_SERVICE_URL", "http://host.docker.internal:8000"),
+        default=os.environ.get(
+            "PANOPTICON_CONTAINER_SERVICE_URL", "http://host.docker.internal:8000"
+        ),
         help="task service URL spawned containers call back to (the in-container view)",
     )
     parser.add_argument("--runner-id", default=os.environ.get("PANOPTICON_RUNNER_ID", "local"))
@@ -205,14 +221,21 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
     )
     parser.add_argument("--image", default=DEFAULT_IMAGE)
     parser.add_argument(
-        "--interval", type=float, default=2.0,
+        "--interval",
+        type=float,
+        default=2.0,
         help="change-feed long-poll wait, seconds (the keepalive ceiling between blocking calls)",
     )
     args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
     migrate_session_dirs(CLONE_CACHE_DIR, TASKS_DIR)
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
     runner = LocalRunner(args.container_service_url, image=args.image, runner_id=args.runner_id)
+    # A shell workflow runs directly on the host (no container), so it reaches the task service at
+    # the host's own view (--service-url), not the in-container host.docker.internal address.
+    shell_runner = ShellRunner(args.service_url, runner_id=args.runner_id)
     # Hold this host's liveness connection for the daemon's whole life, alongside the spawn/provision
     # loop, so the control plane knows the host is alive (and can reclaim its claims when it isn't).
     # A daemon thread: it dies with the process, dropping the connection (a clean deregister).
@@ -224,10 +247,16 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
     )
     liveness.start()
     run_host(
-        client, runner,
-        runner_id=args.runner_id, tasks_root=TASKS_DIR,
-        cache=CloneCache(CLONE_CACHE_DIR), git=GitClones(),
-        images=ImageBuilder(base=args.image),  # compose workflow layers onto the same base (ADR 0005)
+        client,
+        runner,
+        runner_id=args.runner_id,
+        tasks_root=TASKS_DIR,
+        cache=CloneCache(CLONE_CACHE_DIR),
+        git=GitClones(),
+        shell_runner=shell_runner,
+        images=ImageBuilder(
+            base=args.image
+        ),  # compose workflow layers onto the same base (ADR 0005)
         interval=args.interval,
     )
 

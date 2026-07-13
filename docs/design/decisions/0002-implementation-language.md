@@ -66,4 +66,4 @@ To keep this real (not aspirational):
 - ADR 0001 (task store) — same interface-and-adapters pattern: core depends on **interfaces**
   (store for storage, presentation for UI); concrete adapters (SQLite, Textual) are
   replaceable.
-- The core/presentation split and the interface contracts belong in `docs/ARCHITECTURE.md`.
+- The core/presentation split and the interface contracts belong in `docs/design/ARCHITECTURE.md`.

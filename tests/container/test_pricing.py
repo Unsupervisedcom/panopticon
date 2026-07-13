@@ -1,7 +1,5 @@
 """Unit tests for the cost-weighted token pricing module."""
 
-import pytest
-
 from panopticon.container import pricing
 
 
@@ -28,18 +26,28 @@ def test_tier_weights_falls_back_to_default_for_unknown_model() -> None:
 def test_cost_weighted_tokens_applies_weights() -> None:
     # line 1 from test_hooks.py fixture: input=100, output=50, cache_write=10, cache_read=5
     # 100×1.0 + 50×5.0 + 10×1.25 + 5×0.1 = 100 + 250 + 12.5 + 0.5 = 363
-    assert pricing.cost_weighted_tokens(
-        {"input_tokens": 100, "output_tokens": 50,
-         "cache_creation_input_tokens": 10, "cache_read_input_tokens": 5}
-    ) == 363
+    assert (
+        pricing.cost_weighted_tokens(
+            {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_creation_input_tokens": 10,
+                "cache_read_input_tokens": 5,
+            }
+        )
+        == 363
+    )
 
 
 def test_cost_weighted_tokens_second_fixture_line() -> None:
     # line 2: input=200, output=20, cache_read=300
     # 200×1.0 + 20×5.0 + 300×0.1 = 200 + 100 + 30 = 330
-    assert pricing.cost_weighted_tokens(
-        {"input_tokens": 200, "output_tokens": 20, "cache_read_input_tokens": 300}
-    ) == 330
+    assert (
+        pricing.cost_weighted_tokens(
+            {"input_tokens": 200, "output_tokens": 20, "cache_read_input_tokens": 300}
+        )
+        == 330
+    )
 
 
 def test_cost_weighted_tokens_missing_keys_are_zero() -> None:

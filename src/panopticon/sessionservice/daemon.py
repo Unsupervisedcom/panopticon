@@ -119,7 +119,9 @@ def run_daemon(
     daemon.run(until=until)
 
 
-def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = None) -> None:  # pragma: no cover - thin wiring + endless loop
+def main(
+    argv: list[str] | None = None, *, client: TaskServiceClient | None = None
+) -> None:  # pragma: no cover - thin wiring + endless loop
     """``python -m panopticon.sessionservice.daemon`` — watch this host's tasks and provision them."""
     parser = argparse.ArgumentParser(
         prog="python -m panopticon.sessionservice.daemon",
