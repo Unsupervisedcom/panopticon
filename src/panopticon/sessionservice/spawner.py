@@ -429,11 +429,19 @@ class Spawner:
         Self-gates on two conditions so calling this on every task each pass is safe:
         the task must be terminal (COMPLETE/DROPPED) **and** the container must no longer
         be running — so we never delete a workspace while the agent is still active, and
-        we don't need to force-stop anything."""
+        we don't need to force-stop anything.
+
+        Also releases a lingering claim (best-effort) before cleaning the workspace. In the
+        normal flow the container agent releases its own claim on exit; this catches the case
+        where it didn't (e.g. a crash, or a workflow that was renamed/removed before the
+        container could clean up)."""
         if task["state"] not in TERMINAL_LABELS:
             return
         if self._runner_for(task).is_running(task["id"]):
             return  # container/session still up — wait for it to exit naturally
+        if task.get("claimed_by") == self._runner_id:
+            with contextlib.suppress(httpx.HTTPError):
+                self._client.release(task["id"])
         cleanup_workspace(
             task["id"],
             self._tasks_root,
