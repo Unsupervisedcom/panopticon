@@ -28,6 +28,7 @@ distinct from the actor so the bare question hooks (`hook user` / `hook agent`) 
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -131,10 +132,8 @@ def _report_tokens(client: TaskServiceClient, task_id: str, payload: dict[str, A
     transcript = payload.get("transcript_path")
     if not isinstance(transcript, str):
         return
-    try:
+    with contextlib.suppress(httpx.HTTPError):
         client.set_tokens_used(task_id, session_tokens(transcript))
-    except httpx.HTTPError:
-        pass
 
 
 def main(
@@ -144,8 +143,14 @@ def main(
     stdin: TextIO | None = None,
 ) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    if not 1 <= len(args) <= 2 or args[0] not in ("user", "agent") or args[1:] not in ([], ["prompt"], ["stop"]):
-        print("usage: python -m panopticon.container.hook <user|agent> [prompt|stop]", file=sys.stderr)
+    if (
+        not 1 <= len(args) <= 2
+        or args[0] not in ("user", "agent")
+        or args[1:] not in ([], ["prompt"], ["stop"])
+    ):
+        print(
+            "usage: python -m panopticon.container.hook <user|agent> [prompt|stop]", file=sys.stderr
+        )
         return 2
     env = os.environ
     actor, event = args[0], (args[1] if len(args) == 2 else None)

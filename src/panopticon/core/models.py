@@ -162,8 +162,11 @@ class Repo:
     """A repository tasks operate on.
 
     Holds a *reference* to its per-repo secrets (ADR 0007), never the values: ``env_file`` is a
-    host path to an env-file of API-key-style secrets, injected into the task container at launch
-    (the runner), so secrets stay out of the DB, artifacts, and image layers.
+    **name relative to the secrets dir** (``$PANOPTICON_CONFIG/secrets``) naming an env-file of
+    API-key-style secrets, injected into the task container at launch (``--env-file``), so secrets
+    stay out of the DB, artifacts, and image layers. The runner resolves it against its **own**
+    host's secrets dir, so a remote runner uses its own secrets and the value stays host-agnostic;
+    the file's content never crosses the wire.
 
     ``image_layer_file`` *references* the repo's Dockerfile fragment (ADR 0005's repo tier): a file
     name resolved relative to the task service's layers directory, not inline content. The task
@@ -269,10 +272,18 @@ class Task:
     #: actual). The GithubForge workflows and the orchestrator record it when producing the plan.
     #: ``None`` until estimated.
     token_estimate: int | None = None
+    #: The model the agent should start with — e.g. ``"opus"``. Seeded from
+    #: :attr:`~panopticon.core.workflow.Workflow.default_model` when the task is created;
+    #: injected as ``PANOPTICON_STARTING_MODEL`` at spawn so the agent can pass ``--model``
+    #: to ``claude`` on first launch. ``None`` means no model preference (claude picks its default).
+    starting_model: str | None = None
     #: The task that *governs* (oversees) this one — its ``id``. Set by the orchestrator on the
     #: tasks it creates so the relationship is recorded; also settable manually via
     #: :meth:`TaskService.set_governor`. ``None`` for ungoverned tasks.
     governor_task_id: str | None = None
+    #: ISO-8601 timestamp when the task was created, stamped once at creation and never changed.
+    #: ``None`` only for tasks created before this field was introduced.
+    created_at: str | None = None
     #: ISO-8601 timestamp of the last mutation (any field change or history update), stamped by
     #: the task service. ``None`` only for tasks created before this field was introduced.
     updated_at: str | None = None

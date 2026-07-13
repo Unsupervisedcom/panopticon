@@ -41,7 +41,11 @@ class ResponsibilitiesNotMet(Exception):
 def _nested_states(workflow_cls: type) -> Iterator[type[BaseState]]:
     """Yield the state classes nested in a workflow class, in definition order."""
     for value in vars(workflow_cls).values():
-        if isinstance(value, type) and issubclass(value, BaseState) and value not in _ABSTRACT_BASES:
+        if (
+            isinstance(value, type)
+            and issubclass(value, BaseState)
+            and value not in _ABSTRACT_BASES
+        ):
             yield value
 
 
@@ -93,6 +97,28 @@ class Workflow(ABC):
     #: lists it in ``disabled_workflows``; ``True`` = opt-in, hidden unless the repo lists it
     #: in ``enabled_workflows``.
     opt_in: ClassVar[bool] = False
+    #: The model the agent starts with when working on tasks created by this workflow. Seeded onto
+    #: :attr:`~panopticon.core.models.Task.starting_model` at task creation; the runner injects it
+    #: so ``claude --model`` is set on first launch. Defaults to ``"opus"`` for all built-in
+    #: workflows; override per-workflow to change the default.
+    default_model: ClassVar[str] = "opus"
+    #: How this workflow's tasks are executed by the session service. ``"docker"`` (default)
+    #: spawns the base → workflow → repo container image and runs the in-container agent (the
+    #: determinism invariant — LLM calls happen there). ``"shell"`` runs :meth:`shell_script`
+    #: directly in a host tmux session with **no container** and no agent. Both run in the task's
+    #: own directory (``<tasks_root>/<task_id>``); a docker task always gets the repo cloned there,
+    #: a shell task only if :attr:`clone_repo`. Use ``"shell"`` for short operator utilities that
+    #: just need a host shell (e.g. minting an auth token). The runner picks the backend off this flag.
+    runner_type: ClassVar[str] = "docker"
+    #: Whether to ``git clone --local`` the repo into the task directory before the task runs.
+    #: A ``"docker"`` task always clones (it mounts the checkout at ``/workspace``), so this only
+    #: governs a ``"shell"`` task: default ``False`` (an empty task dir — the common case for a
+    #: utility that doesn't touch repo code), set ``True`` when the script needs the checkout.
+    clone_repo: ClassVar[bool] = False
+    #: A ``"shell"`` workflow's start directory, overriding the default (the task's own directory).
+    #: ``None`` (default) runs in the task dir; set an absolute path for a workflow that operates
+    #: somewhere else (e.g. the operator's home). Ignored for ``"docker"`` (which works in ``/workspace``).
+    shell_workdir: ClassVar[str | None] = None
 
     # -- build / validate (the resolution pass; answers "why not a free function?") -----
 
@@ -124,9 +150,7 @@ class Workflow(ABC):
         def label_of(target: type[BaseState] | str) -> str:
             if isinstance(target, str):
                 if target not in by_label:
-                    raise InvalidWorkflow(
-                        f"{self.name!r}: reference to unknown state {target!r}"
-                    )
+                    raise InvalidWorkflow(f"{self.name!r}: reference to unknown state {target!r}")
                 return target
             if not (isinstance(target, type) and issubclass(target, BaseState)):
                 raise InvalidWorkflow(f"{self.name!r}: invalid transition target {target!r}")
@@ -146,7 +170,10 @@ class Workflow(ABC):
             states[label] = cls
             transitions[label] = dests
 
-        operations = {label: self._resolve_operations(cls, transitions[label]) for label, cls in states.items()}
+        operations = {
+            label: self._resolve_operations(cls, transitions[label])
+            for label, cls in states.items()
+        }
 
         initial = label_of(self.initial)
         if not issubclass(states[initial], InitialState):
@@ -155,7 +182,9 @@ class Workflow(ABC):
             )
         if "DROPPED" not in states:  # guaranteed by the built-in; assert the invariant
             raise InvalidWorkflow(f"{self.name!r}: a DROPPED terminal state is required")
-        return _Graph(states=states, transitions=transitions, operations=operations, initial=initial)
+        return _Graph(
+            states=states, transitions=transitions, operations=operations, initial=initial
+        )
 
     def _resolve_operations(self, cls: type[BaseState], dests: frozenset[str]) -> dict[str, str]:
         """The named core operations available from one state (verb -> dest label).
@@ -284,7 +313,16 @@ class Workflow(ABC):
     def image_layer(self) -> str:
         """The workflow's Docker image layer (ADR 0005): a Dockerfile fragment appended on top of
         the base image with what this workflow's skills need (e.g. `gh` for forge). Default none;
-        the runner composes base → workflow → repo into the task's image."""
+        the runner composes base → workflow → repo into the task's image. Ignored when
+        :attr:`runner_type` is ``"shell"`` (there is no image)."""
+        return ""
+
+    def shell_script(self) -> str:
+        """The shell script a ``runner_type = "shell"`` workflow runs (in a host tmux session, no
+        container). The session service injects ``PANOPTICON_SERVICE_URL`` and
+        ``PANOPTICON_TASK_ID`` into the environment, so the script can drive its own lifecycle over
+        REST (e.g. ``POST $PANOPTICON_SERVICE_URL/tasks/$PANOPTICON_TASK_ID/operations/advance`` on
+        success). Empty for a ``"docker"`` workflow; a shell workflow overrides it."""
         return ""
 
     # -- agent-facing briefing (the "where am I" prose; LLM-free string building) --------
@@ -328,7 +366,9 @@ class Workflow(ABC):
                 else "The user will advance to the next state."
             )
             if responsibilities:
-                lines.append(f"{i}. **{label}** — {lead}You must meet these responsibilities before ending your turn — mark each as met the moment you complete it:")
+                lines.append(
+                    f"{i}. **{label}** — {lead}You must meet these responsibilities before ending your turn — mark each as met the moment you complete it:"
+                )
                 lines += [f"   - {r.key}: {r.description}" for r in responsibilities]
                 lines.append(f"   {advance}")
             else:
@@ -383,7 +423,10 @@ class Workflow(ABC):
 
         responsibilities = list(task.current_entry.responsibilities)
         if responsibilities:
-            lines += ["", "This phase's responsibilities (resolve each one as you complete it — don't wait until the end of your turn to mark them all):"]
+            lines += [
+                "",
+                "This phase's responsibilities (resolve each one as you complete it — don't wait until the end of your turn to mark them all):",
+            ]
             lines += [f"- [{r.status.value}] {r.key}: {r.description}" for r in responsibilities]
 
         target = self.operations(label).get("advance")
@@ -395,7 +438,9 @@ class Workflow(ABC):
                     f"when to advance (→ {target}). Don't advance on your own."
                 )
             else:
-                lines.append(f"When these are met, advance the task yourself (the `advance` operation → {target}).")
+                lines.append(
+                    f"When these are met, advance the task yourself (the `advance` operation → {target})."
+                )
 
         extras = list(await self._briefing_extras(task, artifacts=artifacts))
         if extras:
@@ -468,6 +513,7 @@ class Workflow(ABC):
             turn=self.turn_on_enter(state),
             memo=memo,
             initial_prompt=initial_prompt,
+            starting_model=self.default_model,
             history=[
                 HistoryEntry(
                     at=at,
@@ -529,7 +575,9 @@ class Workflow(ABC):
         self._state_class(to_state)  # validate the target exists
         return self._enter(task, to_state, at=at, trigger=trigger, note=note)
 
-    def _enter(self, task: Task, to_state: str, *, at: str, trigger: str | None, note: str | None) -> Task:
+    def _enter(
+        self, task: Task, to_state: str, *, at: str, trigger: str | None, note: str | None
+    ) -> Task:
         """Append the entry for ``to_state`` (seeding its promises) and recompute state + turn."""
         task.history.append(
             HistoryEntry(

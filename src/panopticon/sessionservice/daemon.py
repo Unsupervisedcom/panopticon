@@ -28,14 +28,11 @@ from collections.abc import Callable, Iterable
 import httpx
 
 from panopticon.client import JsonObj, TaskServiceClient
+from panopticon.core.dirs import TASKS_DIR
 from panopticon.core.git import GitClones
 from panopticon.sessionservice.provisioner import Provisioner
 
 _log = logging.getLogger(__name__)
-
-#: Per-task clones root (matches the spawn entrypoint's ``--tasks-root``); each task's clone is
-#: ``<tasks_root>/<task_id>`` (ADR 0011).
-DEFAULT_TASKS_ROOT = os.path.expanduser("~/.panopticon/tasks")
 
 
 class ProvisionDaemon:
@@ -122,7 +119,9 @@ def run_daemon(
     daemon.run(until=until)
 
 
-def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = None) -> None:  # pragma: no cover - thin wiring + endless loop
+def main(
+    argv: list[str] | None = None, *, client: TaskServiceClient | None = None
+) -> None:  # pragma: no cover - thin wiring + endless loop
     """``python -m panopticon.sessionservice.daemon`` — watch this host's tasks and provision them."""
     parser = argparse.ArgumentParser(
         prog="python -m panopticon.sessionservice.daemon",
@@ -133,11 +132,10 @@ def main(argv: list[str] | None = None, *, client: TaskServiceClient | None = No
         default=os.environ.get("PANOPTICON_SERVICE_URL", "http://localhost:8000"),
         help="task service URL to pull task state from",
     )
-    parser.add_argument("--tasks-root", default=os.environ.get("PANOPTICON_TASKS_ROOT", DEFAULT_TASKS_ROOT))
     parser.add_argument("--interval", type=float, default=2.0, help="poll interval, seconds")
     args = parser.parse_args(argv)
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
-    run_daemon(client, tasks_root=args.tasks_root, interval=args.interval)
+    run_daemon(client, tasks_root=TASKS_DIR, interval=args.interval)
 
 
 if __name__ == "__main__":  # pragma: no cover

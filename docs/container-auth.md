@@ -22,7 +22,8 @@ with the `claude` CLI and place it in the repo's env-file yourself.
    same token works for every repo; minting another does not invalidate it, so you can roll out a
    renewal gradually.
 
-2. **Add it to the repo's env-file.** Each repo has an `env_file` — a host path to a file of
+2. **Add it to the repo's env-file.** Each repo has an `env_file` — a **name relative to the secrets
+   dir** (`~/.config/panopticon/secrets/`, or `$PANOPTICON_CONFIG/secrets`) naming a file of
    `KEY=value` lines that the runner injects into the task container (`--env-file`). Add (or update)
    one line:
 
@@ -31,22 +32,24 @@ with the `claude` CLI and place it in the repo's env-file yourself.
    ```
 
    Keep the file `0600` and out of version control. If the repo has no `env_file` yet, create one
-   (e.g. `~/.panopticon/secrets/<repo>.env`) and set the repo's `env_file` to that path — in the
-   dashboard's repo form, or via the API:
+   under the secrets dir (e.g. `~/.config/panopticon/secrets/<repo>.env`) and set the repo's
+   `env_file` to its **name** (`<repo>.env`) — in the dashboard's repo form (which accepts an
+   absolute or relative path and normalizes it to a name), or via the API:
 
    ```sh
    curl -X PATCH "$PANOPTICON_SERVICE_URL/repos/<repo-id>" \
      -H 'content-type: application/json' \
-     -d '{"env_file": "/home/you/.panopticon/secrets/<repo>.env"}'
+     -d '{"env_file": "<repo>.env"}'
    ```
 
 That's it — new task containers for that repo now authenticate from the token.
 
 ## Notes
 
-- **The env-file lives on the host that spawns the container.** With a single host (M1) that's the
-  same machine you minted on. With remote runners (M5), distribute the env-file to each runner host
-  alongside the repo's other secrets.
+- **The env-file lives on the host that spawns the container.** Because `env_file` is stored as a
+  bare name resolved against each runner's own `~/.config/panopticon/secrets/`, the same repo record
+  works across hosts: with a single host (M1) that's the machine you minted on; with remote runners
+  (M5), place a same-named env-file under each runner host's secrets dir.
 - **`ANTHROPIC_API_KEY` overrides `CLAUDE_CODE_OAUTH_TOKEN`.** If a repo needs to burst past the
   subscription rate limit, put an `ANTHROPIC_API_KEY` in the same env-file — but don't set both
   unintentionally, since the API key wins.

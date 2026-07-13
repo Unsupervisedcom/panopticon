@@ -11,11 +11,3 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-
-# Local dev runtime state — the task service's default on-disk SQLite (+ SQLite WAL
-# sidecars) and artifacts dir (see taskservice/__main__.py DEFAULT_DB / DEFAULT_ARTIFACTS).
-# Real deployments point PANOPTICON_DB / PANOPTICON_ARTIFACTS elsewhere.
-panopticon.db
-panopticon.db-shm
-panopticon.db-wal
-/artifacts/

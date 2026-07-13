@@ -10,8 +10,10 @@ unified host daemon runs both. LLM-free.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+import shutil
 import subprocess
 import time
 from collections.abc import Callable
@@ -23,9 +25,11 @@ from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.models import ContainerStatus, LifecyclePhase
 from panopticon.core.state import TERMINAL_LABELS
 from panopticon.sessionservice.clones import CloneCache
+from panopticon.sessionservice.executions import WorkflowExecutions
 from panopticon.sessionservice.images import ImageBuilder
 from panopticon.sessionservice.local_runner import LocalRunner
-from panopticon.sessionservice.spawn import _parse_env_file, prepare_workspace
+from panopticon.sessionservice.shell_runner import ShellRunner
+from panopticon.sessionservice.spawn import _parse_env_file, cleanup_workspace, prepare_workspace
 
 _log = logging.getLogger(__name__)
 
@@ -87,18 +91,28 @@ class Spawner:
         runner_id: str,
         cache: CloneCache,
         tasks_root: str,
+        shell_runner: ShellRunner | None = None,
+        executions: WorkflowExecutions | None = None,
         git: object | None = None,
         images: ImageBuilder | None = None,
         run_hook: Callable[[str, str, str, str], None] | None = None,
         makedirs: Callable[[str], None] = lambda p: Path(p).mkdir(parents=True, exist_ok=True),
         parse_env: Callable[[str], dict[str, str]] = _parse_env_file,
+        exists: Callable[[str], bool] = os.path.isdir,
+        rmtree: Callable[[str], None] = shutil.rmtree,
+        docker_cleanup: Callable[[str], None] | None = None,
         now: Callable[[], float] = time.monotonic,
         max_respawns: int = MAX_RESPAWNS,
         respawn_reset: float = RESPAWN_RESET_SECONDS,
     ) -> None:
         self._client = client
         self._runner = runner
+        self._shell_runner = shell_runner
         self._runner_id = runner_id
+        #: The cached "how is this workflow run" lookup (runner_type + shell details), shared with the
+        #: provisioner so both agree on which tasks are shell. The per-pass calls (reconcile/cleanup/
+        #: heal) go through it, so it must not re-hit the service each time.
+        self._executions = executions or WorkflowExecutions(client)
         self._cache = cache
         self._tasks_root = tasks_root
         self._git = git
@@ -106,6 +120,11 @@ class Spawner:
         self._run_hook = run_hook or _run_repo_hook
         self._makedirs = makedirs
         self._parse_env = parse_env
+        self._exists = exists
+        self._rmtree = rmtree
+        self._docker_cleanup = (
+            docker_cleanup if docker_cleanup is not None else runner.delete_workspace_contents
+        )
         self._now = now
         self._max_respawns = max_respawns
         self._respawn_reset = respawn_reset
@@ -135,9 +154,10 @@ class Spawner:
         return self._spawn(task)
 
     def _spawn(self, task: JsonObj) -> str:
-        """Prepare the workspace, compose the image, and spawn the container for an **already
-        claimed** task — the body shared by :meth:`spawn_one` (after it wins the claim) and
-        :meth:`heal` (respawning an orphan this runner already holds).
+        """Spawn the execution backend for an **already claimed** task — the body shared by
+        :meth:`spawn_one` (after it wins the claim) and :meth:`heal` (respawning an orphan this
+        runner already holds). Routes on the workflow's ``runner_type``: a ``"shell"`` workflow runs
+        its script in a host tmux session (no clone, no image); otherwise the Docker container path.
 
         Reports each phase (``CLAIMING`` → … → ``AWAITING``); a step raising is reported as
         ``FAILED`` (with the error) before re-raising, so the host daemon's per-task isolation still
@@ -147,31 +167,114 @@ class Spawner:
             _log.info("task %s: claiming", task_id)
             self._report(task_id, LifecyclePhase.CLAIMING)
             repo = self._client.get_repo(task["repo_id"])
-            _log.info("task %s: preparing workspace (repo=%s)", task_id, repo.get("name", repo["id"]))
-            self._report(task_id, LifecyclePhase.PREPARING)
-            workspace = prepare_workspace(
-                task_id, repo, cache=self._cache, tasks_root=self._tasks_root, git=self._git,  # type: ignore[arg-type]
-                makedirs=self._makedirs, parse_env=self._parse_env,
-            )
-            if hook_file := repo.get("hook_file"):
-                self._run_hook(hook_file, task_id, repo["name"], workspace)
-            _log.info("task %s: building image (workflow=%s, repo=%s)", task_id, task["workflow"], repo.get("name", repo["id"]))
-            self._report(task_id, LifecyclePhase.BUILDING)
-            self._images.build_base_if_missing(verbose=True)
-            image = self._compose_image(task["workflow"], repo)
-            return self._runner.spawn(
-                task_id,
-                env_file=repo.get("env_file"),
-                workspace=workspace,
-                image=image,
-                docker_in_docker=bool((repo.get("capabilities") or {}).get("docker_in_docker")),
-                initial_prompt=task.get("initial_prompt"),  # passed as a CLI arg to claude on the first run
-                turn=task.get("turn"),  # agent's turn → INTERRUPT_PROMPT on respawn
-                progress=lambda phase: self._report(task_id, phase),  # STARTING then AWAITING
-            )
+            if self._executions.is_shell(task["workflow"]):
+                return self._spawn_shell(task, repo)
+            return self._spawn_container(task, repo)
         except Exception as exc:
             self._report(task_id, LifecyclePhase.FAILED, detail=str(exc))
             raise
+
+    def _prepare_task_dir(self, task: JsonObj, repo: JsonObj, *, clone: bool) -> str:
+        """The task's working directory (``<tasks_root>/<task_id>``) — shared by both backends.
+
+        With ``clone`` it's a per-task ``git clone --local`` of the repo with ``origin`` pointed at
+        the forge (:func:`prepare_workspace`, idempotent); otherwise just an empty directory. Reports
+        ``PREPARING`` either way (it's the "readying the workspace" step). Returns the path."""
+        task_id = task["id"]
+        _log.info(
+            "task %s: preparing workspace (repo=%s, clone=%s)",
+            task_id,
+            repo.get("name", repo["id"]),
+            clone,
+        )
+        self._report(task_id, LifecyclePhase.PREPARING)
+        if clone:
+            return prepare_workspace(
+                task_id,
+                repo,
+                cache=self._cache,
+                tasks_root=self._tasks_root,
+                git=self._git,  # type: ignore[arg-type]
+                makedirs=self._makedirs,
+                parse_env=self._parse_env,
+            )
+        workdir = f"{self._tasks_root}/{task_id}"
+        self._makedirs(workdir)
+        return workdir
+
+    def _spawn_container(self, task: JsonObj, repo: JsonObj) -> str:
+        """The Docker path: clone the per-task workspace, compose base → workflow → repo, and spawn
+        the container (reports ``PREPARING`` → ``BUILDING`` → ``STARTING`` → ``AWAITING``)."""
+        task_id = task["id"]
+        workspace = self._prepare_task_dir(
+            task, repo, clone=True
+        )  # a container always mounts a checkout
+        if hook_file := repo.get("hook_file"):
+            self._run_hook(hook_file, task_id, repo["name"], workspace)
+        _log.info(
+            "task %s: building image (workflow=%s, repo=%s)",
+            task_id,
+            task["workflow"],
+            repo.get("name", repo["id"]),
+        )
+        self._report(task_id, LifecyclePhase.BUILDING)
+        self._images.build_base_if_missing(verbose=True)
+        image = self._compose_image(task["workflow"], repo)
+        return self._runner.spawn(
+            task_id,
+            env_file=repo.get("env_file"),
+            workspace=workspace,
+            image=image,
+            docker_in_docker=bool((repo.get("capabilities") or {}).get("docker_in_docker")),
+            initial_prompt=task.get(
+                "initial_prompt"
+            ),  # passed as a CLI arg to claude on the first run
+            turn=task.get("turn"),  # agent's turn → INTERRUPT_PROMPT on respawn
+            starting_model=task.get(
+                "starting_model"
+            ),  # model selection passed to claude --model on first launch
+            progress=lambda phase: self._report(task_id, phase),  # STARTING then AWAITING
+        )
+
+    def _spawn_shell(self, task: JsonObj, repo: JsonObj) -> str:
+        """The shell path: run the workflow's ``shell_script`` in a host tmux session — no image, no
+        agent (reports ``PREPARING`` → ``STARTING`` → ``AWAITING``, skipping ``BUILDING``).
+
+        Shares the same task directory as a container task (:meth:`_prepare_task_dir`): empty by
+        default, or a repo clone when the workflow sets ``clone_repo``. The script starts there unless
+        the workflow overrides it with an explicit ``shell_workdir``. Cleaned up with the rest when the
+        task finishes (:meth:`cleanup`)."""
+        task_id = task["id"]
+        if self._shell_runner is None:
+            raise RuntimeError(
+                f"task {task_id!r} uses shell workflow {task['workflow']!r} but this runner has no shell runner"
+            )
+        spec = self._executions.spec(task["workflow"])
+        task_dir = self._prepare_task_dir(task, repo, clone=bool(spec["clone_repo"]))
+        workdir = spec["workdir"] or task_dir  # the workflow's override, else the task's own dir
+        _log.info(
+            "task %s: starting shell session (workflow=%s, workdir=%s)",
+            task_id,
+            task["workflow"],
+            workdir,
+        )
+        return self._shell_runner.spawn(
+            task_id,
+            env_file=repo.get("env_file"),  # per-repo secrets, sourced into the shell (ADR 0007)
+            script=spec["script"],
+            workdir=workdir,
+            progress=lambda phase: self._report(task_id, phase),  # STARTING then AWAITING
+        )
+
+    def _runner_for(self, task: JsonObj) -> LocalRunner | ShellRunner:
+        """The runner that owns ``task``'s session — the shell runner for a shell workflow (when one
+        is configured), else the Docker runner. Lets the liveness probes (``is_running`` /
+        ``has_session``) in :meth:`reconcile`, :meth:`cleanup`, :meth:`startup_reclaim` and
+        :meth:`_is_orphan` check the right backend. Tasks without a ``workflow`` key (some internal
+        callers) fall back to the Docker runner."""
+        if self._shell_runner is not None and self._executions.is_shell(task.get("workflow")):
+            return self._shell_runner
+        return self._runner
 
     def _report(self, task_id: str, phase: LifecyclePhase, detail: str | None = None) -> None:
         """Push a spawn phase for ``task_id`` to the task service (best-effort: a reporting blip must
@@ -182,10 +285,8 @@ class Spawner:
             _log.info("task %s: awaiting registration", task_id)
         elif phase == LifecyclePhase.FAILED:
             _log.error("task %s: spawn failed — %s", task_id, detail)
-        try:
+        with contextlib.suppress(httpx.HTTPError):
             self._client.report_lifecycle(task_id, self._runner_id, phase.value, detail)
-        except httpx.HTTPError:
-            pass
 
     def reconcile(self, task: JsonObj) -> None:
         """Reconcile a task this runner claims into the right lifecycle status (down-detection).
@@ -199,19 +300,22 @@ class Spawner:
             return  # not ours (or unclaimed) — spawn_one handles the unclaimed case
         if task.get("container_status") not in _IN_PROGRESS:
             return  # live / down / failed / queued / disconnected — nothing to reconcile
-        if self._runner.is_running(task["id"]):
-            return  # container present, just not registered yet — still coming up
+        if self._runner_for(task).is_running(task["id"]):
+            return  # container/session present, just not registered yet — still coming up
         self._client.clear_lifecycle(task["id"])  # container gone → composes `down`
 
     def _is_orphan(self, task: JsonObj) -> bool:
         """Whether ``task`` is an orphan **this** runner should self-heal: claimed by us,
         non-terminal, and with no tmux session (the make-stop case — see :meth:`heal`). The
-        session probe is last so the cheap claim/terminal checks short-circuit it."""
-        return (
-            task.get("claimed_by") == self._runner_id
-            and task["state"] not in TERMINAL_LABELS
-            and not self._runner.has_session(task["id"])
-        )
+        session probe is last so the cheap claim/terminal checks short-circuit it.
+
+        Shell tasks are never orphans: their script exiting is natural completion (or an
+        operator cancelling), not a crash to respawn — so re-running it would be wrong."""
+        if task.get("claimed_by") != self._runner_id or task["state"] in TERMINAL_LABELS:
+            return False
+        if self._executions.is_shell(task.get("workflow")):
+            return False
+        return not self._runner.has_session(task["id"])
 
     def _respawn_count(self, task_id: str, now: float) -> int:
         """The task's respawn count for the crash-loop guard, with the survivor-window reset applied
@@ -275,11 +379,14 @@ class Spawner:
         if count >= self._max_respawns:
             _log.error(
                 "task %s keeps losing its tmux session (%d respawns) — leaving it for attention",
-                task_id, count,
+                task_id,
+                count,
             )
             return None
         self._respawns[task_id] = (count + 1, now)
-        _log.warning("self-healing orphaned task %s (no tmux session) — respawn %d", task_id, count + 1)
+        _log.warning(
+            "self-healing orphaned task %s (no tmux session) — respawn %d", task_id, count + 1
+        )
         return self._spawn(task)
 
     def startup_reclaim(self, tasks: list[JsonObj]) -> None:
@@ -299,18 +406,43 @@ class Spawner:
         Best-effort per task: a failed release is silently skipped — :meth:`heal` picks it
         up on the next tick, fast but functional. Called once by
         :meth:`~panopticon.sessionservice.host.HostDaemon.run` on the first successful task
-        fetch."""
+        fetch.
+
+        Shell tasks are left claimed: releasing one would let :meth:`spawn_one` re-run its script
+        (the unclaimed-spawn path), but a shell script is run **once** — its exit is completion, not
+        a crash to recover (the same reason :meth:`_is_orphan`/:meth:`heal` skip them). A shell task
+        whose session is gone reconciles to ``down`` for the operator to drop or respawn explicitly."""
         for task in tasks:
             if task.get("claimed_by") != self._runner_id:
                 continue
             if task["state"] in TERMINAL_LABELS:
                 continue
-            if self._runner.is_running(task["id"]):
+            if self._executions.is_shell(task.get("workflow")):
+                continue  # never auto-respawn a shell task — leave it claimed (reconciles to `down`)
+            if self._runner_for(task).is_running(task["id"]):
                 continue  # container survived (runner-only crash) — keep claim, heal handles it
-            try:
+            # best-effort — heal() picks up unclaimed tasks that failed to release
+            with contextlib.suppress(httpx.HTTPError):
                 self._client.release(task["id"])
-            except httpx.HTTPError:
-                pass  # best-effort — heal() picks up unclaimed tasks that failed to release
+
+    def cleanup(self, task: JsonObj) -> None:
+        """Remove the per-task workspace once a terminal task's container has exited.
+
+        Self-gates on two conditions so calling this on every task each pass is safe:
+        the task must be terminal (COMPLETE/DROPPED) **and** the container must no longer
+        be running — so we never delete a workspace while the agent is still active, and
+        we don't need to force-stop anything."""
+        if task["state"] not in TERMINAL_LABELS:
+            return
+        if self._runner_for(task).is_running(task["id"]):
+            return  # container/session still up — wait for it to exit naturally
+        cleanup_workspace(
+            task["id"],
+            self._tasks_root,
+            exists=self._exists,
+            rmtree=self._rmtree,
+            docker_cleanup=self._docker_cleanup,
+        )
 
     def _compose_image(self, workflow: str, repo: JsonObj) -> str | None:
         """Compose the task's image (base → workflow → repo layers, ADR 0005) and return its tag;

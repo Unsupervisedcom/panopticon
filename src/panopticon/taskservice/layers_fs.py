@@ -13,10 +13,6 @@ from pathlib import Path
 
 from panopticon.core.layers import InvalidLayerName, LayerStore
 
-#: Default layers-store root. Shared so the task service resolves one location from a single
-#: source rather than copied literals.
-DEFAULT_LAYERS = "./layers"
-
 
 class FilesystemLayerStore(LayerStore):
     """Read layer files as plain files under a root directory."""

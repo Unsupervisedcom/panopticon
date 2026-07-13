@@ -42,7 +42,9 @@ def settings() -> dict[str, Any]:
         # (briefing on the prompt hook, token report on stop) — the bare question hooks pass none.
         command = f"{HOOK_COMMAND} {actor}" + (f" {event}" if event else "")
         entry: dict[str, Any] = {"hooks": [{"type": "command", "command": command}]}
-        if matcher is not None:  # PreToolUse/PostToolUse are tool-scoped; Stop/UserPromptSubmit aren't
+        if (
+            matcher is not None
+        ):  # PreToolUse/PostToolUse are tool-scoped; Stop/UserPromptSubmit aren't
             entry["matcher"] = matcher
         return entry
 
