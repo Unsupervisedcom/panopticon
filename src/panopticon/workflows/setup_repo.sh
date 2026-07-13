@@ -34,7 +34,7 @@ add_summary() {
 
 # The shared secrets file quickstart registers a repo with (see ensure_secrets_file) — every repo on
 # it draws from the same credentials. A repo can instead have its own <repo>.env, isolating it.
-_SHARED_ENV_FILE="panopticon.env"
+_SHARED_ENV_FILE="shared.env"
 
 # While the repo is still on the shared secrets file, offer to give it its own <repo>.env instead,
 # before we collect a token — so this repo's credential lands in an isolated file rather than the
@@ -50,8 +50,8 @@ maybe_choose_env_file() {
     # Only offer while the repo is on the shared file; one already on its own file keeps it.
     [ "$_mce_cur" = "$_SHARED_ENV_FILE" ] || return 0
     _mce_repo_file="${PANOPTICON_REPO_ID}.env"
-    # Nothing to choose when the repo-specific name would just be the shared file again (the
-    # panopticon repo itself, whose id makes <repo>.env == panopticon.env).
+    # Nothing to choose when the repo-specific name would just be the shared file again (a repo
+    # whose id makes <repo>.env == shared.env, i.e. one literally named "shared").
     [ "$_mce_repo_file" != "$_SHARED_ENV_FILE" ] || return 0
     echo
     echo "This repo is using the shared credentials file ($_mce_cur), which every repo on the shared"

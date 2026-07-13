@@ -195,9 +195,9 @@ def test_shell_script_offers_a_repo_specific_env_file_when_on_the_shared_one() -
     # what the minted token lands in) — anchor on the flow's credential *check*.
     assert "maybe_choose_env_file" in script
     assert script.rindex("maybe_choose_env_file") < script.index("${CLAUDE_CODE_OAUTH_TOKEN:-}")
-    # gated on the repo id + the repo still being on the shared secrets file (panopticon.env)
+    # gated on the repo id + the repo still being on the shared secrets file (shared.env)
     assert "PANOPTICON_REPO_ID" in script
-    assert 'panopticon.env"' in script  # the shared-file name it gates on / offers to replace
+    assert 'shared.env"' in script  # the shared-file name it gates on / offers to replace
     # creates the repo-specific file, then repoints the repo record over REST via the helpers
     assert "ensure_private_env_file" in script
     assert "set_repo_env_file" in script
