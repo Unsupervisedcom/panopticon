@@ -97,6 +97,13 @@ class Workflow(ABC):
     #: lists it in ``disabled_workflows``; ``True`` = opt-in, hidden unless the repo lists it
     #: in ``enabled_workflows``.
     opt_in: ClassVar[bool] = False
+    #: When ``True``, this workflow is omitted from **both** dashboard menus — the repo form's
+    #: enable/disable-workflows list and the task-creation workflow picker. It stays creatable
+    #: (e.g. via a dedicated dashboard hotkey or the API): ``hidden`` is purely a **display**
+    #: filter and does *not* affect the task service's ``_workflow_visible`` / ``create_task``
+    #: gate. Use it for operator utilities that shouldn't clutter the pickers but are launched
+    #: some other way. Default ``False`` (shown in the menus).
+    hidden: ClassVar[bool] = False
     #: The model the agent starts with when working on tasks created by this workflow. Seeded onto
     #: :attr:`~panopticon.core.models.Task.starting_model` at task creation; the runner injects it
     #: so ``claude --model`` is set on first launch. Defaults to ``"opus"`` for all built-in
