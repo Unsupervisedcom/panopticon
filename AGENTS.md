@@ -26,7 +26,7 @@ src/panopticon/
                    # the user self-reviews; both share the GithubForgeWorkflow base = gh tool/layer/skills;
                    # Orchestrator = an agent that creates + pre-plans other tasks, `orchestrates=True`
                    # gating the create/list MCP tools to it, ready-to-approve via the spawn-task skill;
-                   # SetupToken = a `runner_type="shell"` workflow — no container, the session service runs
+                   # SetupRepo = a `runner_type="shell"` workflow — no container, the session service runs
                    # its shell_script in a host tmux session (here: `claude setup-token`)) +
                    # discovery.py = scan the package + an optional path for Workflow subclasses
                    # (the registry build_app runs on; drop a module in → registered, ADR 0004)

@@ -1,6 +1,6 @@
-# Helpers for the setup-token workflow's script, kept in a sourceable file (no side effects at load)
+# Helpers for the setup-repo workflow's script, kept in a sourceable file (no side effects at load)
 # so they can be unit-tested in isolation. The ShellRunner runs `shell_script()` = this lib +
-# setup_token.sh concatenated, so these functions are defined before the interactive flow calls
+# setup_repo.sh concatenated, so these functions are defined before the interactive flow calls
 # them. POSIX sh; needs `grep`, `sed`, `mktemp`.
 
 # Print the last Claude OAuth token (sk-ant-oat01-…) found in capture file $1, or nothing. Robust to

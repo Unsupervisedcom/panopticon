@@ -6,7 +6,7 @@ Every task runs `claude` inside its container. The agent authenticates from a
 and non-rotating, so it survives concurrent tasks and respawns (no ~8h re-login cliff).
 
 You can do this by hand (mint with the `claude` CLI, drop the token into the env-file — below), or
-run the **`setup-token` workflow**, which does both on the host for you (see *The `setup-token`
+run the **`setup-repo` workflow**, which does both on the host for you (see *The `setup-repo`
 workflow* below). There is no `login` command.
 
 ## One-time setup per account
@@ -45,9 +45,9 @@ workflow* below). There is no `login` command.
 
 That's it — new task containers for that repo now authenticate from the token.
 
-## The `setup-token` workflow
+## The `setup-repo` workflow
 
-To skip the manual copy, enable the **`setup-token`** workflow on the repo and start a task on it.
+To skip the manual copy, enable the **`setup-repo`** workflow on the repo and start a task on it.
 It runs on the host (no container — `runner_type = "shell"`), attaches you to a shell where it runs
 `claude setup-token`, and on a successful mint **writes the token straight into the repo's env-file**
 as `CLAUDE_CODE_OAUTH_TOKEN=…` (creating the file `0600` if needed). If a token is already present,
@@ -68,7 +68,7 @@ instructions above.
 - **Already-running tasks** keep their old token until they respawn. After editing the env-file,
   respawn a live task from the dashboard (`R`) to pick up the new value.
 - **Rotating/revoking.** To replace a token, mint a new one and overwrite the env-file line (or
-  re-run the `setup-token` workflow, which comments out the old line and appends the new one).
+  re-run the `setup-repo` workflow, which comments out the old line and appends the new one).
   Per-token revocation isn't available upstream (account-level "revoke all" can take time to
   propagate), so treat a leak as "mint a replacement + monitor usage in the Console," and keep the
   env-file tightly held.

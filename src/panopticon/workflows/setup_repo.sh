@@ -24,7 +24,7 @@ summary=""
 # Mint a token and record the outcome in $summary. On success, capture the minted token and write it
 # straight into the repo's env-file (commenting out any previous one — see store_oauth_token); fall
 # back to on-screen copy instructions when it can't be captured or there's no env-file to write to.
-# extract_oauth_token / store_oauth_token come from setup_token_lib.sh (prepended by shell_script()).
+# extract_oauth_token / store_oauth_token come from setup_repo_lib.sh (prepended by shell_script()).
 collect_token() {
     echo
     echo "Running 'claude setup-token' — follow the prompts to mint a token."

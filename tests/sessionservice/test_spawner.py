@@ -292,7 +292,7 @@ def _shell_spawner(
 _SHELL_TASK: JsonObj = {
     "id": "t1",
     "repo_id": "r1",
-    "workflow": "setup-token",
+    "workflow": "setup-repo",
     "state": "RUNNING",
     "claimed_by": None,
 }
@@ -362,7 +362,7 @@ def test_heal_never_respawns_a_shell_task() -> None:
             {
                 "id": "t1",
                 "repo_id": "r1",
-                "workflow": "setup-token",
+                "workflow": "setup-repo",
                 "state": "RUNNING",
                 "claimed_by": "host-1",
             }
@@ -381,7 +381,7 @@ def test_startup_reclaim_keeps_a_shell_task_claimed_so_it_is_not_re_run() -> Non
         {
             "id": "t1",
             "repo_id": "r1",
-            "workflow": "setup-token",
+            "workflow": "setup-repo",
             "state": "RUNNING",
             "claimed_by": "host-1",
         }
@@ -398,7 +398,7 @@ def test_reconcile_probes_the_shell_session_not_docker() -> None:
     _shell_spawner(client, runner, shell).reconcile(
         {
             "id": "t1",
-            "workflow": "setup-token",
+            "workflow": "setup-repo",
             "claimed_by": "host-1",
             "container_status": "awaiting",
             "state": "RUNNING",
