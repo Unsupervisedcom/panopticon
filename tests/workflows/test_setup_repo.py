@@ -35,7 +35,10 @@ def test_default_workflow_runner_type_is_docker() -> None:
 
 def test_setup_repo_is_a_shell_workflow() -> None:
     assert WF.runner_type == "shell"
-    assert WF.opt_in is True  # an operator utility, hidden from the picker unless enabled
+    # opt-out (enabled for every repo by default) but hidden from both dashboard menus — it's
+    # launched from the repos modal's setup hotkey, not the pickers.
+    assert WF.opt_in is False
+    assert WF.hidden is True
 
 
 def test_setup_repo_needs_no_clone_and_no_workdir_override() -> None:

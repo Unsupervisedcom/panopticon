@@ -1011,6 +1011,7 @@ class ReposScreen(ModalScreen[None]):
     BINDINGS = [
         ("n", "new_repo", "New repo"),
         ("e", "edit_repo", "Edit repo"),
+        ("s", "setup_repo", "Setup repo"),
         ("escape", "close", "Close"),
     ]
 
@@ -1022,7 +1023,7 @@ class ReposScreen(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="repos-box"):
-            yield Label("repos — n: new   e: edit   esc: close")
+            yield Label("repos — n: new   e: edit   s: setup   esc: close")
             yield _VimDataTable(id="repos")
 
     def on_mount(self) -> None:
@@ -1117,6 +1118,25 @@ class ReposScreen(ModalScreen[None]):
                 f"edit {repo_id}", repo=self._repos[repo_id], workflows=workflows, on_submit=save
             )
         )
+
+    def action_setup_repo(self) -> None:
+        """`s`: run host-side setup for the highlighted repo — create a `setup-repo` task.
+
+        The `setup-repo` workflow is hidden from the pickers, so this is how it's launched: one
+        task, seeded with a memo, on the repo under the cursor."""
+        if self._current is None:
+            self.notify("Highlight a repo first.", severity="warning")
+            return
+        repo_id = self._current
+        name = str(self._repos[repo_id].get("name", repo_id))
+        memo = f"Set up the {name} repo."
+        try:
+            self._client.create_task(repo_id, "setup-repo", memo)
+        except httpx.HTTPStatusError as exc:
+            self.notify(f"Can't create setup-repo task: {_detail(exc)}", severity="error")
+            return
+        self.notify(f"Created setup-repo task for {name}.")
+        self.dismiss(None)  # back to the task view, where the new task shows up
 
 
 def _detail(exc: httpx.HTTPStatusError) -> str:

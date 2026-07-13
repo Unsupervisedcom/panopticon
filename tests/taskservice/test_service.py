@@ -24,7 +24,7 @@ from panopticon.taskservice.service import (
     UnknownWorkflow,
 )
 from panopticon.taskservice.store_sqlalchemy import SqlAlchemyStore
-from panopticon.workflows import GithubPeerReviewed, Orchestrator, Spike
+from panopticon.workflows import GithubPeerReviewed, Orchestrator, SetupRepo, Spike
 
 
 async def make_service(tmp_path: Path) -> TaskService:
@@ -36,6 +36,7 @@ async def make_service(tmp_path: Path) -> TaskService:
             "spike": Spike(),
             "github-peer-reviewed": GithubPeerReviewed(),
             "orchestrator": Orchestrator(),
+            "setup-repo": SetupRepo(),  # opt-out but hidden from the pickers
         },
         FilesystemArtifactStore(tmp_path),
         clock=lambda: next(times),
@@ -149,6 +150,19 @@ async def test_list_workflow_infos_for_repo_shows_opt_in_and_filters(tmp_path: P
     # All infos carry opt_in and auto_submit_memo
     assert all("opt_in" in w for w in infos)
     assert all("auto_submit_memo" in w for w in infos)
+
+
+async def test_hidden_workflow_absent_from_both_menus_but_still_creatable(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    # setup-repo is hidden → excluded from the repo-form menu (all workflows) and the
+    # task-creation picker (repo-filtered), even though it's opt-out (visible to the create gate).
+    assert "setup-repo" not in {w["name"] for w in await svc.list_workflow_infos()}
+    assert "setup-repo" not in {w["name"] for w in await svc.list_workflow_infos_for_repo("r1")}
+    # sanity: a non-hidden opt-out workflow is still present in the all-workflows menu
+    assert "spike" in {w["name"] for w in await svc.list_workflow_infos()}
+    # hidden is display-only — the workflow stays creatable (e.g. via the repos-modal hotkey)
+    task = await svc.create_task("r1", "setup-repo")
+    assert task.workflow == "setup-repo"
 
 
 async def test_list_workflow_infos_for_repo_hides_disabled_opt_out(tmp_path: Path) -> None:
