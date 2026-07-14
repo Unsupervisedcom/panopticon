@@ -252,6 +252,7 @@ class _FakeShellRunner:
         env_file: str | None = None,
         git_url: str | None = None,
         repo_id: str | None = None,
+        repo_name: str | None = None,
         script: str = "",
         workdir: str | None = None,
         progress: Callable[[LifecyclePhase], None] | None = None,
@@ -262,6 +263,7 @@ class _FakeShellRunner:
                 "env_file": env_file,
                 "git_url": git_url,
                 "repo_id": repo_id,
+                "repo_name": repo_name,
                 "script": script,
                 "workdir": workdir,
             }
@@ -308,7 +310,8 @@ _SHELL_TASK: JsonObj = {
 
 
 def test_spawn_one_shell_workflow_runs_the_script_and_skips_docker() -> None:
-    client = _FakeClient(repo=_REPO, runner_type="shell", shell_script="claude setup-token")
+    repo = {**_REPO, "name": "acme/widget"}
+    client = _FakeClient(repo=repo, runner_type="shell", shell_script="claude setup-token")
     runner, shell = _FakeRunner(), _FakeShellRunner()
     made: list[str] = []
     cid = _shell_spawner(client, runner, shell, made).spawn_one(dict(_SHELL_TASK))
@@ -319,6 +322,7 @@ def test_spawn_one_shell_workflow_runs_the_script_and_skips_docker() -> None:
     assert shell.spawned[0]["env_file"] == "r1.env"  # the repo's secrets name is passed through
     assert shell.spawned[0]["git_url"] == "https://forge/r1.git"  # the repo's forge, for detection
     assert shell.spawned[0]["repo_id"] == "r1"  # the repo id, so a script can repoint its env_file
+    assert shell.spawned[0]["repo_name"] == "acme/widget"  # the repo's label, for the summary
     # by default the script runs in the task's own directory, created empty (no clone)
     assert shell.spawned[0]["workdir"] == "/tasks/t1"
     assert made == ["/tasks/t1"]
@@ -1083,6 +1087,47 @@ def test_cleanup_invokes_docker_cleanup_when_rmtree_fails() -> None:
     spawner.cleanup({"id": "t1", "state": "COMPLETE"})
     assert docker_called == ["/tasks/t1"]
     assert rmtree_calls == 2
+
+
+def test_cleanup_unknown_workflow_releases_claim_and_cleans_workspace() -> None:
+    """A terminal claimed task whose workflow name is no longer in the registry must not poison
+    the host tick. cleanup() should release the claim and remove the workspace without raising,
+    because WorkflowExecutions falls back to docker for unknown workflows (4xx)."""
+    removed: list[str] = []
+    releases: list[str] = []
+
+    class _ClientWith400Execution(_FakeClient):
+        def workflow_execution(self, name: str) -> JsonObj:
+            request = httpx.Request("GET", f"http://svc/workflows/{name}/execution")
+            raise httpx.HTTPStatusError(
+                "unknown workflow",
+                request=request,
+                response=httpx.Response(400, request=request),
+            )
+
+        def release(self, task_id: str) -> JsonObj:
+            releases.append(task_id)
+            return {"id": task_id}
+
+    runner = _FakeRunner(running=False)
+    client = _ClientWith400Execution(repo=_REPO)
+    cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
+    spawner = Spawner(
+        client,
+        runner,
+        runner_id="host-1",
+        cache=cache,
+        tasks_root="/tasks",  # type: ignore[arg-type]
+        git=GitClones(run=_no_op_run),
+        images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        makedirs=lambda _p: None,
+        exists=lambda _p: True,
+        rmtree=removed.append,
+    )
+    task = {"id": "t1", "workflow": "parity", "state": "COMPLETE", "claimed_by": "host-1"}
+    spawner.cleanup(task)  # must not raise
+    assert releases == ["t1"]  # claim drained
+    assert removed == ["/tasks/t1"]  # workspace cleaned
 
 
 def test_spawn_hook_failure_aborts_spawn() -> None:

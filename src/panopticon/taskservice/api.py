@@ -364,7 +364,7 @@ def create_app(service: TaskService) -> FastAPI:
         async with mcp.session_manager.run():
             yield
 
-    app = FastAPI(title="panopticon task service", version="0.0.1", lifespan=lifespan)
+    app = FastAPI(title="panopticon task service", version="0.0.2", lifespan=lifespan)
 
     # The block-until-change feed: a store mutation bumps the version + wakes parked GET /tasks
     # long-polls (the seam the daemons/dashboard migrate onto, replacing their interval re-polls).

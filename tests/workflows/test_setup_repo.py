@@ -15,8 +15,9 @@ from panopticon.workflows import SetupRepo
 
 WF = SetupRepo()
 
-# The sourceable helpers (extract_oauth_token / store_oauth_token) the functional tests exercise in a
-# real `sh`, no LLM — the token is a literal fixture, `claude`/`script` are never invoked.
+# The sourceable helpers (extract_oauth_token / store_env_token / repo_source_label / …) the
+# functional tests exercise in a real `sh`, no LLM — the token is a literal fixture, `claude`/`gh`/
+# `script` are never invoked.
 _LIB = (importlib.resources.files("panopticon.workflows") / "setup_repo_lib.sh").read_text()
 
 
@@ -74,13 +75,24 @@ def test_shell_script_runs_setup_repo_and_advances() -> None:
 
 def test_shell_script_checks_for_an_existing_credential_and_guides_the_operator() -> None:
     script = WF.shell_script()
-    # branches on an already-configured credential (env-file sourced by the shell runner)
+    # branches on an already-configured credential, checked against the **env-file** (not the sourced
+    # env) so a host-only token isn't mis-reported as configured
     assert "CLAUDE_CODE_OAUTH_TOKEN" in script and "ANTHROPIC_API_KEY" in script
+    assert "env_file_has_var CLAUDE_CODE_OAUTH_TOKEN" in script
     assert "$PANOPTICON_ENV_FILE" in script or "PANOPTICON_ENV_FILE" in script  # names the env-file
-    # tells the operator they can drop the task instead (dashboard 'x')
-    assert "'x'" in script and "drop" in script.lower()
     # detects/falls back to the tmux detach binding to get back to the dashboard
     assert "detach-client" in script and "show-options -gv prefix" in script
+
+
+def test_shell_script_opens_with_the_credentials_goal_intro() -> None:
+    script = WF.shell_script()
+    # begins by explaining what happens and that the operator stays in control: task containers use
+    # per-repo credentials (not the operator's own session), and they can opt out.
+    assert "per-repo credentials" in script
+    assert "not your" in script and "personal session" in script
+    assert "set up your own secrets by editing" in script
+    # the intro comes before the dashboard hint and any prompts
+    assert script.index("per-repo credentials") < script.index('echo "$dashboard_hint"')
 
 
 def test_shell_script_shows_the_dashboard_hint_first() -> None:
@@ -97,11 +109,11 @@ def test_shell_script_captures_and_writes_the_minted_token() -> None:
     script = WF.shell_script()
     # captures the interactive `claude setup-token` in a pty so its output can be read back
     assert "script -q -e -c 'claude setup-token'" in script
-    # extracts the minted token and stores it in the repo's env-file via the helpers
+    # extracts the minted token and stores it via the shared, var-parameterized helper (the DRY
+    # primitive both the Claude token and GH_TOKEN write through)
     assert "extract_oauth_token" in script
-    assert "store_oauth_token" in script and "PANOPTICON_ENV_FILE" in script
-    # comments out an existing active token, and drops a placeholder comment stub
-    assert "# CLAUDE_CODE_OAUTH_TOKEN=" in script  # the sed replacement that comments it out
+    assert "store_env_token CLAUDE_CODE_OAUTH_TOKEN" in script and "PANOPTICON_ENV_FILE" in script
+    # the helper comments out an existing active line and drops a placeholder comment stub
     assert "grep -vE" in script  # the filter that removes the placeholder stub
     # still falls back to on-screen copy guidance when it can't capture/write
     assert "Copy the token shown above into" in script
@@ -172,37 +184,65 @@ def test_store_oauth_token_keeps_an_already_commented_out_token(tmp_path: Path) 
     assert "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-NEW" in lines
 
 
-def test_shell_script_offers_the_github_token_when_missing() -> None:
+def test_shell_script_summarizes_the_repo_and_setup_up_front() -> None:
     script = WF.shell_script()
-    # the offer step is defined and run before the final summary converges
-    assert "maybe_offer_github_token" in script
-    # gated on: repo on GitHub (PANOPTICON_GIT_URL), a GH_TOKEN in the env, and it not already in file
-    assert "PANOPTICON_GIT_URL" in script
-    assert "is_github_url" in script
+    # opens with two bulleted lists: what we know about the repo (name + source), and what setting it
+    # up entails, driven by the repo env vars the shell runner injects and the source classification.
+    assert "This repo:" in script and "To set up:" in script
+    assert "PANOPTICON_REPO_NAME" in script and "PANOPTICON_GIT_URL" in script
+    assert "repo_source_label" in script
+    assert "Claude credential" in script and "GH_TOKEN" in script
+
+
+def test_shell_script_sets_up_the_github_token_for_github_repos() -> None:
+    script = WF.shell_script()
+    # gated on the repo being a GitHub remote (local checkouts skip the whole GH step)
+    assert "is_github_url" in script and "PANOPTICON_GIT_URL" in script
+    # adopts a GH_TOKEN from the environment or lets the operator paste one — it does not mint one
     assert "GH_TOKEN" in script
+    assert "gh auth login" not in script and "gh auth token" not in script
+    # writes it via the shared store_token → store_env_token (existing GH_TOKEN commented out +
+    # replaced), and only offers to adopt one that isn't already the env-file's own
+    assert "store_token GH_TOKEN" in script
     assert "env_file_has_var GH_TOKEN" in script
-    # writes it via the helper
-    assert "append_env_var GH_TOKEN" in script
-    # the offer runs after the Claude credential step (the call — last occurrence of the name —
-    # comes after the credential check) but before the final summary
-    assert script.rindex("maybe_offer_github_token") > script.index("${CLAUDE_CODE_OAUTH_TOKEN:-}")
-    assert script.rindex("maybe_offer_github_token") < script.rindex('echo "Summary: $summary"')
+    # the GH step runs after the Claude credential step but before the final summary
+    assert script.rindex("setup_gh_token") > script.index("claude_configured")
+    assert script.rindex("setup_gh_token") < script.rindex('echo "Summary:"')
+
+
+def test_shell_script_offers_adopt_paste_and_default_no_consent() -> None:
+    script = WF.shell_script()
+    # each credential can be adopted from the operator's env or pasted inline (fast path for an
+    # already-authenticated operator — no cancel-and-restart)
+    assert "Paste a Claude token" in script and "Paste a GitHub token" in script
+    # adoption confirms *which* token via a masked tail, and every prompt is default-No (no [Y/n])
+    assert "mask_last4" in script
+    assert "[Y/n]" not in script
+    # the Claude token can be adopted from a host-env var too (symmetric with GH)
+    assert "setup_claude_token" in script
+
+
+def test_shell_script_closing_summary_is_bulleted() -> None:
+    script = WF.shell_script()
+    # each step records its outcome as a bullet; the closing summary prints them
+    assert "add_summary" in script
+    assert 'summary="  • ' in script  # bullet-prefixed accumulation
 
 
 def test_shell_script_offers_a_repo_specific_env_file_when_on_the_shared_one() -> None:
     script = WF.shell_script()
-    # the choice step is defined and runs before the credential check (so the retargeted file is
-    # what the minted token lands in) — anchor on the flow's credential *check*.
+    # the choice step is defined and *called* before the flow works out what's already configured
+    # (claude_configured) — so the retargeted file is what those checks and every later step act on.
     assert "maybe_choose_env_file" in script
-    assert script.rindex("maybe_choose_env_file") < script.index("${CLAUDE_CODE_OAUTH_TOKEN:-}")
+    assert script.rindex("maybe_choose_env_file") < script.index("claude_configured")
     # gated on the repo id + the repo still being on the shared secrets file (shared.env)
     assert "PANOPTICON_REPO_ID" in script
     assert 'shared.env"' in script  # the shared-file name it gates on / offers to replace
     # creates the repo-specific file, then repoints the repo record over REST via the helpers
     assert "ensure_private_env_file" in script
     assert "set_repo_env_file" in script
-    # forgets the shared file's already-sourced credentials so the check reflects the repo file
-    assert "unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY" in script
+    # retargets PANOPTICON_ENV_FILE so the token lands in the repo-specific file
+    assert "export PANOPTICON_ENV_FILE" in script
 
 
 def test_ensure_private_env_file_creates_an_empty_private_file(tmp_path: Path) -> None:
@@ -262,21 +302,57 @@ def test_env_file_has_var_detects_only_active_lines(tmp_path: Path) -> None:
     )
 
 
-def test_append_env_var_appends_privately(tmp_path: Path) -> None:
-    # A file whose last line has no trailing newline: the helper adds a separator so the line stands
-    # alone, keeps the prior content, and leaves the file private (0600).
+def test_store_env_token_is_generic_over_the_var_name(tmp_path: Path) -> None:
+    # The shared primitive works for any var (here GH_TOKEN), mirroring the Claude-token behaviour:
+    # comment out the active line, drop the placeholder stub, append the new one, leave others alone.
     env_file = tmp_path / "repo.env"
+    env_file.write_text(
+        "GH_TOKEN=ghp_OLD\n"
+        "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-KEEP\n"
+        "# GH_TOKEN =\n"  # a placeholder stub to be removed
+        "# a note we keep\n"
+    )
+    _sh(f"store_env_token GH_TOKEN ghp_NEW {shlex.quote(str(env_file))}")
+    lines = env_file.read_text().splitlines()
+
+    assert "# GH_TOKEN=ghp_OLD" in lines  # previous active token preserved but commented out
+    assert "# GH_TOKEN =" not in lines  # placeholder stub gone
+    # an unrelated var (the Claude token) and comments are untouched
+    assert "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-KEEP" in lines
+    assert "# a note we keep" in lines
+    # exactly one *active* GH_TOKEN line, and it's the new one
+    assert [ln for ln in lines if ln.startswith("GH_TOKEN=")] == ["GH_TOKEN=ghp_NEW"]
+    # holds a live credential — kept private (0600)
+    assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
+
+
+def test_store_env_token_separates_the_new_line_without_a_trailing_newline(tmp_path: Path) -> None:
+    # A file whose last line lacks a trailing newline still gets the appended line on its own line.
+    env_file = tmp_path / "secrets" / "repo.env"  # parent dir does not exist yet
+    env_file.parent.mkdir()
     env_file.write_text("ANTHROPIC_API_KEY=key-123")  # no trailing newline
-    _sh(f"append_env_var GH_TOKEN ghp_tok {shlex.quote(str(env_file))}")
+    _sh(f"store_env_token GH_TOKEN ghp_tok {shlex.quote(str(env_file))}")
     assert env_file.read_text() == "ANTHROPIC_API_KEY=key-123\nGH_TOKEN=ghp_tok\n"
     assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
 
 
-def test_append_env_var_creates_a_private_file(tmp_path: Path) -> None:
-    env_file = tmp_path / "secrets" / "repo.env"  # parent dir does not exist yet
-    _sh(f"append_env_var GH_TOKEN ghp_tok {shlex.quote(str(env_file))}")
-    assert env_file.read_text() == "GH_TOKEN=ghp_tok\n"
-    assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
+def test_repo_source_label_classifies_local_github_and_other() -> None:
+    # Drives the opening summary's "Source:" line and the GH_TOKEN gating.
+    assert _sh("repo_source_label https://github.com/acme/widget.git").strip() == "GitHub remote"
+    assert _sh("repo_source_label git@github.com:acme/widget.git").strip() == "GitHub remote"
+    assert _sh("repo_source_label /home/me/src/widget").strip() == "local checkout"
+    assert _sh("repo_source_label file:///srv/widget").strip() == "local checkout"
+    assert _sh("repo_source_label https://gitlab.com/x/y.git").strip() == "remote"
+    assert _sh("repo_source_label ''").strip() == "unknown"
+
+
+def test_mask_last4_reveals_only_the_tail() -> None:
+    # Consent prompts show which token without exposing it: the last 4 chars, or nothing when short.
+    assert _sh("mask_last4 sk-ant-oat01-abcdWXYZ").strip() == "...WXYZ"
+    assert _sh("mask_last4 ghp_1234").strip() == "...1234"  # 8 chars → last 4
+    assert _sh("mask_last4 abcd").strip() == "..."  # exactly 4 → nothing safe to reveal
+    assert _sh("mask_last4 ab").strip() == "..."
+    assert _sh("mask_last4 ''").strip() == "..."
 
 
 def test_docker_workflows_have_no_shell_script_and_default_knobs() -> None:

@@ -59,11 +59,13 @@ def test_standalone_dashboard_has_no_switch_hooks(monkeypatch: pytest.MonkeyPatc
 
 
 def test_quickstart_invokes_all_steps(monkeypatch: pytest.MonkeyPatch) -> None:
-    from panopticon.terminal import console
+    from panopticon.terminal import console, doctor
     from panopticon.terminal import quickstart as qs
 
     calls: list[str] = []
 
+    monkeypatch.setattr(doctor, "run_checks", list)
+    monkeypatch.setattr(doctor, "report", lambda results: (calls.append("doctor"), 0)[1])
     monkeypatch.setattr(cli, "_run_migrate", lambda: calls.append("migrate"))
     monkeypatch.setattr(cli, "_start_sessions", lambda: calls.append("sessions"))
     monkeypatch.setattr(qs, "wait_for_service", lambda url, **kw: calls.append("wait"))
@@ -86,7 +88,9 @@ def test_quickstart_invokes_all_steps(monkeypatch: pytest.MonkeyPatch) -> None:
 
     rc = cli.main(["quickstart"])
     assert rc == 0
+    # Doctor runs first, before any side effects.
     assert calls == [
+        "doctor",
         "migrate",
         "sessions",
         "wait",
@@ -98,3 +102,20 @@ def test_quickstart_invokes_all_steps(monkeypatch: pytest.MonkeyPatch) -> None:
     ]
     # The console opens attached to the setup-repo task.
     assert joined["join"] == "task1"
+
+
+def test_quickstart_aborts_when_doctor_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    from panopticon.terminal import console, doctor
+
+    calls: list[str] = []
+
+    monkeypatch.setattr(doctor, "run_checks", list)
+    monkeypatch.setattr(doctor, "report", lambda results: 1)
+    monkeypatch.setattr(cli, "_run_migrate", lambda: calls.append("migrate"))
+    monkeypatch.setattr(cli, "_start_sessions", lambda: calls.append("sessions"))
+    monkeypatch.setattr(console, "run_console_local", lambda url, **kw: calls.append("console"))
+
+    rc = cli.main(["quickstart"])
+    assert rc == 1
+    # A failing doctor aborts before migrations, sessions, or the console.
+    assert calls == []
