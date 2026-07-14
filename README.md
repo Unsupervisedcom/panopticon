@@ -32,9 +32,10 @@ shells out to a few host tools. You need:
 - The **`claude` CLI** — first-time setup runs `claude setup-token` on the host to mint the
   Claude auth token each agent uses inside its container
 
-After installing (below), run `panopticon doctor` to check all of these at once — it prints a
-`✓`/`✗` line per prerequisite and exits non-zero if anything is missing. On macOS, see
-[`docs/macos-setup.md`](docs/macos-setup.md) for host setup notes.
+`panopticon quickstart` (below) checks all of these before it does anything, and you can run
+`panopticon doctor` on its own any time — both print a `✓`/`✗` line per prerequisite and exit
+non-zero if anything is missing. On macOS, see [`docs/macos-setup.md`](docs/macos-setup.md) for
+host setup notes.
 
 ## Install
 
@@ -62,11 +63,11 @@ something to try it against.
 
 ```sh
 cd ~/code/my-project   # the repo you want agents to work on
-panopticon doctor      # verify host prerequisites (git, docker, tmux, claude)
 panopticon quickstart  # first-time setup, then open the dashboard
 ```
 
-`panopticon quickstart` is the one-command first-time setup. It applies the database schema
+`panopticon quickstart` is the one-command first-time setup. It first runs the `doctor`
+host-prerequisite check and aborts if anything is missing, then applies the database schema
 (creating `~/.local/share/panopticon/panopticon.db`), starts the task service, runner, and
 dashboard supervisor on the `tmux -L panopticon` server, registers the repo you run it in, and
 opens the console **already attached to a `setup-repo` task** — where you run `claude
