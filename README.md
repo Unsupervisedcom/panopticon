@@ -62,7 +62,7 @@ panopticon quickstart  # first-time setup, then open the dashboard
 ```
 
 `panopticon quickstart` checks your prerequisites, brings the stack up, registers the repo
-you're in, and drops you into a `setup-repo` task; run `claude setup-token` there to mint your
+you're in, and drops you into a `setup-repo` task; it will walk you through minting a repo specific
 Claude token (saved to the repo's env-file). Then you create tasks and watch your fleet from the
 dashboard.
 
