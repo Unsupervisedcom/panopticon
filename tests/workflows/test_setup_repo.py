@@ -75,24 +75,24 @@ def test_shell_script_runs_setup_repo_and_advances() -> None:
 
 def test_shell_script_checks_for_an_existing_credential_and_guides_the_operator() -> None:
     script = WF.shell_script()
-    # branches on an already-configured credential (env-file sourced by the shell runner)
+    # branches on an already-configured credential, checked against the **env-file** (not the sourced
+    # env) so a host-only token isn't mis-reported as configured
     assert "CLAUDE_CODE_OAUTH_TOKEN" in script and "ANTHROPIC_API_KEY" in script
+    assert "env_file_has_var CLAUDE_CODE_OAUTH_TOKEN" in script
     assert "$PANOPTICON_ENV_FILE" in script or "PANOPTICON_ENV_FILE" in script  # names the env-file
-    # tells the operator they can drop the task instead (dashboard 'x')
-    assert "'x'" in script and "drop" in script.lower()
     # detects/falls back to the tmux detach binding to get back to the dashboard
     assert "detach-client" in script and "show-options -gv prefix" in script
 
 
 def test_shell_script_opens_with_the_credentials_goal_intro() -> None:
     script = WF.shell_script()
-    # begins by stating the goal: persistent credentials for Claude to use inside containers, so the
-    # agent runs on its own dedicated credentials instead of the operator's.
-    assert "persistent credentials" in script
-    assert "task containers" in script
-    assert "instead of hijacking yours" in script
+    # begins by explaining what happens and that the operator stays in control: task containers use
+    # per-repo credentials (not the operator's own session), and they can opt out.
+    assert "per-repo credentials" in script
+    assert "not your" in script and "personal session" in script
+    assert "set up your own secrets by editing" in script
     # the intro comes before the dashboard hint and any prompts
-    assert script.index("persistent credentials") < script.index('echo "$dashboard_hint"')
+    assert script.index("per-repo credentials") < script.index('echo "$dashboard_hint"')
 
 
 def test_shell_script_shows_the_dashboard_hint_first() -> None:
@@ -198,16 +198,28 @@ def test_shell_script_sets_up_the_github_token_for_github_repos() -> None:
     script = WF.shell_script()
     # gated on the repo being a GitHub remote (local checkouts skip the whole GH step)
     assert "is_github_url" in script and "PANOPTICON_GIT_URL" in script
-    # reuses a GH_TOKEN already in the environment — it does not mint one (no interactive gh auth)
+    # adopts a GH_TOKEN from the environment or lets the operator paste one — it does not mint one
     assert "GH_TOKEN" in script
     assert "gh auth login" not in script and "gh auth token" not in script
-    # writes it via the shared helper (so an existing GH_TOKEN is commented out + replaced), and
-    # offers to replace one already in the env-file
-    assert "store_env_token GH_TOKEN" in script
+    # writes it via the shared store_token → store_env_token (existing GH_TOKEN commented out +
+    # replaced), and only offers to adopt one that isn't already the env-file's own
+    assert "store_token GH_TOKEN" in script
     assert "env_file_has_var GH_TOKEN" in script
     # the GH step runs after the Claude credential step but before the final summary
-    assert script.rindex("setup_gh_token") > script.index("${CLAUDE_CODE_OAUTH_TOKEN:-}")
+    assert script.rindex("setup_gh_token") > script.index("claude_configured")
     assert script.rindex("setup_gh_token") < script.rindex('echo "Summary:"')
+
+
+def test_shell_script_offers_adopt_paste_and_default_no_consent() -> None:
+    script = WF.shell_script()
+    # each credential can be adopted from the operator's env or pasted inline (fast path for an
+    # already-authenticated operator — no cancel-and-restart)
+    assert "Paste a Claude token" in script and "Paste a GitHub token" in script
+    # adoption confirms *which* token via a masked tail, and every prompt is default-No (no [Y/n])
+    assert "mask_last4" in script
+    assert "[Y/n]" not in script
+    # the Claude token can be adopted from a host-env var too (symmetric with GH)
+    assert "setup_claude_token" in script
 
 
 def test_shell_script_closing_summary_is_bulleted() -> None:
@@ -293,6 +305,15 @@ def test_repo_source_label_classifies_local_github_and_other() -> None:
     assert _sh("repo_source_label file:///srv/widget").strip() == "local checkout"
     assert _sh("repo_source_label https://gitlab.com/x/y.git").strip() == "remote"
     assert _sh("repo_source_label ''").strip() == "unknown"
+
+
+def test_mask_last4_reveals_only_the_tail() -> None:
+    # Consent prompts show which token without exposing it: the last 4 chars, or nothing when short.
+    assert _sh("mask_last4 sk-ant-oat01-abcdWXYZ").strip() == "...WXYZ"
+    assert _sh("mask_last4 ghp_1234").strip() == "...1234"  # 8 chars → last 4
+    assert _sh("mask_last4 abcd").strip() == "..."  # exactly 4 → nothing safe to reveal
+    assert _sh("mask_last4 ab").strip() == "..."
+    assert _sh("mask_last4 ''").strip() == "..."
 
 
 def test_docker_workflows_have_no_shell_script_and_default_knobs() -> None:

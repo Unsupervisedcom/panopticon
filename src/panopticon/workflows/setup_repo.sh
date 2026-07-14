@@ -1,12 +1,12 @@
-# Guide the operator through a repo's host-side setup: mint a Claude auth token (`claude
-# setup-token`) and — for a GitHub repo — record a `GH_TOKEN`, writing each into the repo's env-file.
-# Run by the session service in a host tmux session (no container); ShellRunner sources the repo's
-# env-file first (so an already-configured credential shows up as an env var) and exports
-# PANOPTICON_ENV_FILE (its path), PANOPTICON_GIT_URL (the repo's remote, used to detect a GitHub
-# forge below), and PANOPTICON_REPO_NAME (the repo's label, for the summary).
+# Set up a repo's per-repo credentials for task containers: a Claude token, and — for a GitHub repo —
+# a GH_TOKEN, written into the repo's env-file. Run by the session service in a host tmux session (no
+# container); ShellRunner sources the repo's env-file first (so a configured credential shows up as
+# an env var) and exports PANOPTICON_ENV_FILE (its path), PANOPTICON_GIT_URL (the repo's remote, used
+# to detect a GitHub forge below), and PANOPTICON_REPO_NAME (the repo's label, for the summary).
 #
-# Whatever route the operator takes, the script converges on a bulleted summary + a prompt to press
-# Enter, which completes the task and returns them to the dashboard.
+# Each credential can be adopted from the operator's own environment, pasted, or (for Claude) minted
+# with `claude setup-token`. Whatever route the operator takes, the script converges on a bulleted
+# summary + a prompt to press Enter, which completes the task and returns them to the dashboard.
 
 env_file="${PANOPTICON_ENV_FILE:-the repo's env-file}"
 repo_name="${PANOPTICON_REPO_NAME:-this repo}"
@@ -21,22 +21,25 @@ detach=$(tmux list-keys -T prefix 2>/dev/null | awk '$NF == "detach-client" { pr
 [ -n "$detach" ] || detach="d"
 dashboard_hint="To return to the dashboard without finishing, detach: press $prefix then $detach (you can resume this task any time from the dashboard)."
 
-# Open with the goal: collect persistent, container-scoped credentials so the agent runs on its own,
-# not the operator's.
-echo "Setting up '$repo_name'. The goal is to collect persistent credentials — a Claude token, and a"
-echo "GH_TOKEN for GitHub repos — and store them in the repo's env-file, so Claude can use them inside"
-echo "task containers. This gives the agent its own dedicated credentials instead of hijacking yours."
+# Open by explaining what this does and that the operator stays in control — task containers get
+# per-repo tokens from the env-file (not the operator's own session), and they can opt out entirely.
+echo "Setting up '$repo_name'. Task containers use per-repo credentials from this repo's env-file — a"
+echo "Claude token, and a GH_TOKEN for GitHub repos — so the agent runs on its own tokens, not your"
+echo "personal session. You can skip this and set up your own secrets by editing $env_file yourself."
 echo
 
 # Show how to get back to the dashboard, up front before any prompts.
 echo "$dashboard_hint"
 echo
 
-# Work out what's already configured and what setting this repo up entails. The Claude credential is
-# always needed (the agent runs `claude` regardless); a GH_TOKEN is only needed for a GitHub remote
-# (a local checkout has nothing to push). "Configured" means the env-file already carries it.
+# Work out what's already set up and what this repo needs. The Claude credential is always needed
+# (the agent runs `claude` regardless); a GH_TOKEN is only needed for a GitHub remote (a local
+# checkout has nothing to push). "Configured" means the **env-file** carries it — the only thing the
+# container sees (it's launched with `--env-file`, not the host env), so a token that lives only in
+# the operator's shell doesn't count as done.
 claude_configured=0
-if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+if env_file_has_var CLAUDE_CODE_OAUTH_TOKEN "${PANOPTICON_ENV_FILE:-}" \
+    || env_file_has_var ANTHROPIC_API_KEY "${PANOPTICON_ENV_FILE:-}"; then
     claude_configured=1
 fi
 gh_needed=0
@@ -53,13 +56,13 @@ echo "  • Source: $repo_label"
 echo
 echo "To set up:"
 if [ "$claude_configured" -eq 1 ]; then
-    echo "  • Claude credential — already configured"
+    echo "  • Claude credential — already in $env_file"
 else
     echo "  • Claude credential — needed"
 fi
 if [ "$gh_needed" -eq 1 ]; then
     if [ "$gh_configured" -eq 1 ]; then
-        echo "  • GH_TOKEN — already configured"
+        echo "  • GH_TOKEN — already in $env_file"
     else
         echo "  • GH_TOKEN — needed (GitHub repo)"
     fi
@@ -79,11 +82,27 @@ add_summary() {
     fi
 }
 
-# Mint a Claude token and record the outcome. On success, capture the minted token and write it
-# straight into the repo's env-file (commenting out any previous one — see store_env_token); fall
-# back to on-screen copy instructions when it can't be captured or there's no env-file to write to.
-# extract_oauth_token / store_env_token come from setup_repo_lib.sh (prepended by shell_script()).
-collect_token() {
+# Write token $2 for var $1 into the env-file, echoing + summarizing the outcome. $3 is the source
+# label, $4 the credential label for the summary. Goes through store_env_token, so any existing value
+# is commented out and replaced. The shared write step for every path (adopt / paste / mint).
+store_token() {
+    if [ -n "$2" ] && [ -n "${PANOPTICON_ENV_FILE:-}" ] \
+        && store_env_token "$1" "$2" "$PANOPTICON_ENV_FILE"; then
+        echo
+        echo "Wrote $1 to $env_file (any previous one was commented out)."
+        add_summary "$4: wrote $1 to $env_file from $3 (any previous one was commented out)."
+    else
+        echo
+        echo "Couldn't write $1. Add it to $env_file yourself."
+        add_summary "$4: couldn't write it — add $1 to $env_file yourself."
+    fi
+}
+
+# Mint a Claude token with `claude setup-token` and store it — the leaf used when the operator has no
+# token to adopt or paste. On success, capture the minted token and write it into the env-file; fall
+# back to on-screen copy instructions when it can't be captured. extract_oauth_token / store_env_token
+# come from setup_repo_lib.sh (prepended by shell_script()).
+mint_claude_token() {
     echo
     echo "Running 'claude setup-token' — follow the prompts to mint a token."
     echo
@@ -107,14 +126,14 @@ collect_token() {
     fi
 
     if [ "$_ct_ok" -eq 0 ]; then
-        add_summary "Claude credential: 'claude setup-token' failed or was cancelled — nothing collected."
+        add_summary "Claude credential: 'claude setup-token' failed or was cancelled — nothing set up."
     elif [ -n "$_ct_token" ] && [ -n "${PANOPTICON_ENV_FILE:-}" ] \
         && store_env_token CLAUDE_CODE_OAUTH_TOKEN "$_ct_token" "$PANOPTICON_ENV_FILE"; then
         echo
         echo "Wrote the new token to $env_file as CLAUDE_CODE_OAUTH_TOKEN (any previous one was commented out)."
         add_summary "Claude credential: minted a new token and wrote it to $env_file (any previous one was commented out)."
     else
-        # Minted, but we couldn't capture/extract it or there's no env-file configured — guide the copy.
+        # Minted, but we couldn't capture/extract it or there's no env-file — guide the copy.
         echo
         echo "Token minted. Copy the token shown above into $env_file as:"
         echo "    CLAUDE_CODE_OAUTH_TOKEN=<token>"
@@ -122,81 +141,99 @@ collect_token() {
     fi
 }
 
-# Write a GH token $1 into the env-file, or record why we couldn't (mirrors the Claude token's store
-# step). $2 is the source label for the summary. Goes through store_env_token, so an existing
-# GH_TOKEN is commented out and replaced just like the Claude token.
-store_gh_token() {
-    if [ -n "$1" ] && [ -n "${PANOPTICON_ENV_FILE:-}" ] \
-        && store_env_token GH_TOKEN "$1" "$PANOPTICON_ENV_FILE"; then
-        echo
-        echo "Wrote GH_TOKEN to $env_file (any previous one was commented out)."
-        add_summary "GH_TOKEN: wrote it to $env_file from $2 (any previous one was commented out)."
+# Set up the Claude credential: offer to adopt a token from the operator's own environment (fast path
+# for an already-authenticated operator — masked for consent, default-No), else let them paste one,
+# else mint a fresh one with `claude setup-token`. Only offers to adopt a var that isn't already the
+# env-file's own (so replacing a configured token goes straight to paste/mint).
+setup_claude_token() {
+    _sct_var=""
+    _sct_val=""
+    if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] \
+        && ! env_file_has_var CLAUDE_CODE_OAUTH_TOKEN "${PANOPTICON_ENV_FILE:-}"; then
+        _sct_var=CLAUDE_CODE_OAUTH_TOKEN
+        _sct_val=$CLAUDE_CODE_OAUTH_TOKEN
+    elif [ -n "${ANTHROPIC_API_KEY:-}" ] \
+        && ! env_file_has_var ANTHROPIC_API_KEY "${PANOPTICON_ENV_FILE:-}"; then
+        _sct_var=ANTHROPIC_API_KEY
+        _sct_val=$ANTHROPIC_API_KEY
+    fi
+    if [ -n "$_sct_val" ]; then
+        echo "A $_sct_var is set in your environment (ending $(mask_last4 "$_sct_val"))."
+        printf 'Add it to %s for task containers to use? [y/N] ' "$env_file"
+        read answer
+        case "$answer" in
+            [Yy]*)
+                store_token "$_sct_var" "$_sct_val" "your environment" "Claude credential"
+                return
+                ;;
+        esac
+    fi
+    echo
+    echo "Paste a Claude token to store it (a CLAUDE_CODE_OAUTH_TOKEN or an ANTHROPIC_API_KEY),"
+    echo "or press Enter to mint one with 'claude setup-token'."
+    printf '> '
+    read pasted
+    if [ -n "$pasted" ]; then
+        _pv=CLAUDE_CODE_OAUTH_TOKEN
+        case "$pasted" in sk-ant-api*) _pv=ANTHROPIC_API_KEY ;; esac
+        store_token "$_pv" "$pasted" "the token you pasted" "Claude credential"
     else
-        echo
-        echo "Couldn't write GH_TOKEN. Add it to $env_file yourself:"
-        echo "    GH_TOKEN=<a GitHub token>"
-        add_summary "GH_TOKEN: couldn't write it — add GH_TOKEN to $env_file yourself."
+        mint_claude_token
     fi
 }
 
-# Get a GH_TOKEN into the env-file for a GitHub repo by reusing one already in the environment (the
-# shell runner inherits the host env). When there's none to reuse, guide the operator to add one by
-# hand — we don't mint one here.
+# Set up the GH_TOKEN for a GitHub repo: adopt one from the operator's environment (masked, default-No)
+# if present and not already the env-file's own, else let them paste one, else skip (guide them to add
+# it themselves). We don't mint a GitHub token here.
 setup_gh_token() {
-    if [ -n "${GH_TOKEN:-}" ]; then
-        echo "A GH_TOKEN is set in your environment. Adding it to $env_file lets task containers use"
-        echo "'gh' and push over HTTPS."
-        echo
-        printf 'Add the GH_TOKEN from your environment to %s? [Y/n] ' "$env_file"
+    if [ -n "${GH_TOKEN:-}" ] && ! env_file_has_var GH_TOKEN "${PANOPTICON_ENV_FILE:-}"; then
+        echo "A GH_TOKEN is set in your environment (ending $(mask_last4 "$GH_TOKEN"))."
+        echo "Adding it to $env_file lets task containers use 'gh' and push over HTTPS."
+        printf 'Add it to %s? [y/N] ' "$env_file"
         read gh_answer
         case "$gh_answer" in
-            [Nn]*) add_summary "GH_TOKEN: skipped — add GH_TOKEN to $env_file yourself." ;;
-            *) store_gh_token "$GH_TOKEN" "your environment" ;;
+            [Yy]*)
+                store_token GH_TOKEN "$GH_TOKEN" "your environment" "GH_TOKEN"
+                return
+                ;;
         esac
+    fi
+    echo
+    echo "Paste a GitHub token to store it, or press Enter to skip (add GH_TOKEN to $env_file yourself)."
+    printf '> '
+    read pasted
+    if [ -n "$pasted" ]; then
+        store_token GH_TOKEN "$pasted" "the token you pasted" "GH_TOKEN"
     else
-        echo "No GH_TOKEN in your environment — a GitHub repo needs one to push and open PRs."
-        echo "Add one to $env_file yourself (press $prefix then $detach to go to the dashboard, drop"
-        echo "this task using 'x', and add):"
-        echo "    GH_TOKEN=<a GitHub token>"
-        add_summary "GH_TOKEN: none in your environment — add GH_TOKEN to $env_file yourself."
+        add_summary "GH_TOKEN: none set up — add GH_TOKEN to $env_file yourself."
     fi
 }
 
 # --- Claude credential -------------------------------------------------------------------------
 if [ "$claude_configured" -eq 1 ]; then
-    echo "A Claude credential is already configured in $env_file."
+    echo "A Claude credential is already set in $env_file."
     echo
-    printf 'Collect a new token anyway? [y/N] '
+    printf 'Replace it? [y/N] '
     read answer
     case "$answer" in
-        [Yy]*) collect_token ;;
-        *) add_summary "Claude credential: kept the existing one in $env_file — nothing collected." ;;
+        [Yy]*) setup_claude_token ;;
+        *) add_summary "Claude credential: kept the existing one in $env_file." ;;
     esac
 else
-    echo "No Claude credential found in $env_file."
-    echo "About to collect one with 'claude setup-token'."
-    echo
-    echo "Prefer to use your own? Press $prefix then $detach to go to the dashboard, drop this task using 'x' and add one of"
-    echo "these to $env_file yourself:"
-    echo "    CLAUDE_CODE_OAUTH_TOKEN=<token from 'claude setup-token'>"
-    echo "    ANTHROPIC_API_KEY=<your Anthropic API key>"
-    echo
-    printf 'Press Enter to collect a token now. '
-    read _
-    collect_token
+    setup_claude_token
 fi
 
 # --- GH_TOKEN (GitHub repos only) --------------------------------------------------------------
 if [ "$gh_needed" -eq 1 ]; then
     echo
     if [ "$gh_configured" -eq 1 ]; then
-        echo "A GH_TOKEN is already configured in $env_file."
+        echo "A GH_TOKEN is already set in $env_file."
         echo
         printf 'Replace it? [y/N] '
         read answer
         case "$answer" in
             [Yy]*) setup_gh_token ;;
-            *) add_summary "GH_TOKEN: kept the existing one in $env_file — nothing collected." ;;
+            *) add_summary "GH_TOKEN: kept the existing one in $env_file." ;;
         esac
     else
         setup_gh_token
@@ -211,7 +248,7 @@ echo "Summary:"
 if [ -n "$summary" ]; then
     echo "$summary"
 else
-    echo "  • Nothing to do — everything was already configured."
+    echo "  • Nothing to do — everything was already set up."
 fi
 echo
 printf 'Press Enter to complete this task and return to the dashboard. '

@@ -90,3 +90,14 @@ repo_source_label() {
 env_file_has_var() {
     [ -f "$2" ] && grep -qE "^[[:space:]]*$1=" "$2"
 }
+
+# Print a masked tail of secret $1 for a consent prompt — the last 4 characters, e.g. `...a1b2`, so
+# the operator can confirm *which* token without it being shown in full. A value of 4 chars or fewer
+# collapses to just `...` (nothing safe to reveal).
+mask_last4() {
+    if [ "${#1}" -gt 4 ]; then
+        printf '...%s' "$(printf '%s' "$1" | tail -c 4)"
+    else
+        printf '...'
+    fi
+}
