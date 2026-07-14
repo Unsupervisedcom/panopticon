@@ -21,7 +21,14 @@ detach=$(tmux list-keys -T prefix 2>/dev/null | awk '$NF == "detach-client" { pr
 [ -n "$detach" ] || detach="d"
 dashboard_hint="To return to the dashboard without finishing, detach: press $prefix then $detach (you can resume this task any time from the dashboard)."
 
-# Show how to get back to the dashboard up front, before anything else.
+# Open with the goal: collect persistent, container-scoped credentials so the agent runs on its own,
+# not the operator's.
+echo "Setting up '$repo_name'. The goal is to collect persistent credentials — a Claude token, and a"
+echo "GH_TOKEN for GitHub repos — and store them in the repo's env-file, so Claude can use them inside"
+echo "task containers. This gives the agent its own dedicated credentials instead of hijacking yours."
+echo
+
+# Show how to get back to the dashboard, up front before any prompts.
 echo "$dashboard_hint"
 echo
 

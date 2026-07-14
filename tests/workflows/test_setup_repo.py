@@ -84,6 +84,17 @@ def test_shell_script_checks_for_an_existing_credential_and_guides_the_operator(
     assert "detach-client" in script and "show-options -gv prefix" in script
 
 
+def test_shell_script_opens_with_the_credentials_goal_intro() -> None:
+    script = WF.shell_script()
+    # begins by stating the goal: persistent credentials for Claude to use inside containers, so the
+    # agent runs on its own dedicated credentials instead of the operator's.
+    assert "persistent credentials" in script
+    assert "task containers" in script
+    assert "instead of hijacking yours" in script
+    # the intro comes before the dashboard hint and any prompts
+    assert script.index("persistent credentials") < script.index('echo "$dashboard_hint"')
+
+
 def test_shell_script_shows_the_dashboard_hint_first() -> None:
     script = WF.shell_script()
     # the return-to-dashboard hint is echoed up front, before the credential check / any prompts.
