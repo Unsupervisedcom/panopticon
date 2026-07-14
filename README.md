@@ -75,8 +75,9 @@ panopticon quickstart  # first-time setup, then open the dashboard
 5. opens the console **attached to a `setup-repo` task**, where you run `claude setup-token` to
    mint your Claude auth token (written into the repo's env-file).
 
-From there you create tasks and watch your fleet; `panopticon stop` tears it all down (task
-containers and the `-L panopticon` server).
+From there you create tasks and watch your fleet. Quitting the dashboard leaves the task
+service, runner, and containers running in the background; run `panopticon stop` when you're
+done to tear it all down (task containers and the `-L panopticon` server).
 
 ## Configuration
 
