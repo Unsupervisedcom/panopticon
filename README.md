@@ -88,11 +88,13 @@ On the dashboard:
    and read its logs, then detach with your `tmux` prefix + `d` to drop back to the dashboard.
 3. **Respond when it needs you.** The `turn` column shows whether the agent is working or waiting
    on you; when it wants a decision (like approving its plan), the turn flips to you. Press `t` to
-   attach to that agent's session, steer or approve, then detach (your `tmux` prefix + `d`) to drop
+   attach to that agent's session and steer it. To sign off and move the task to its next stage,
+   run **`/advance`** in that session — it's how you approve the plan (`PLANNING → ITERATING`) and,
+   later, the finished change (`ITERATING → MERGING`). Detach (your `tmux` prefix + `d`) to drop
    back to the dashboard.
 4. **Review what ships.** For `github-peer-reviewed` the agent opens a PR — press `p` to open it
    in your browser; for `local-git-self-reviewed` it commits to the task branch for you to diff
-   locally. Either way nothing lands until you approve — you own what ships.
+   locally. Either way nothing lands until you `/advance` it — you own what ships.
 
 Changed your mind about a task? Press `x` to drop the highlighted one — it moves to a terminal
 *dropped* state and the runner cleans up its container and workspace.
