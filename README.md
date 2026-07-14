@@ -25,7 +25,7 @@ Panopticon runs the control plane on your host and each agent in its own contain
 shells out to a few host tools. You need:
 
 - **Python 3.11+**
-- **Docker**, with the daemon running — each agent works in its own container
+- **Docker**, with the daemon running
 - **tmux** — the dashboard, console supervisor, and task sessions run on a dedicated
   `tmux -L panopticon` server
 - **git** — the session service clones a per-task workspace for each agent
@@ -57,22 +57,25 @@ import are both **`panopticon`**.
 ## Quickstart
 
 Run `panopticon quickstart` **from inside the repo you want agents to work on** — it registers
-whatever repo you're in as the target for your tasks. Just kicking the tires? Run it anywhere
-outside a git checkout and it falls back to registering the panopticon repo itself, so you have
-something to try it against.
+whatever repo you're in as the target for your tasks. Just kicking the tires? Run it outside a
+git checkout and it registers Panopticon's own repo as a throwaway target, so you have something
+to try it against.
 
 ```sh
 cd ~/code/my-project   # the repo you want agents to work on
 panopticon quickstart  # first-time setup, then open the dashboard
 ```
 
-`panopticon quickstart` is the one-command first-time setup. It first runs the `doctor`
-host-prerequisite check and aborts if anything is missing, then applies the database schema
-(creating `~/.local/share/panopticon/panopticon.db`), starts the task service, runner, and
-dashboard supervisor on the `tmux -L panopticon` server, registers the repo you run it in, and
-opens the console **already attached to a `setup-repo` task** — where you run `claude
-setup-token` to mint your Claude auth token (it's written into the repo's env-file). From the
-dashboard you create tasks and watch your fleet; `panopticon stop` tears everything down (task
+`panopticon quickstart` is the one-command first-time setup. In order, it:
+
+1. runs the `doctor` host-prerequisite check (and aborts if anything's missing);
+2. applies the database schema (creating `~/.local/share/panopticon/panopticon.db`);
+3. starts the task service, runner, and dashboard supervisor on the `tmux -L panopticon` server;
+4. registers the repo you ran it in; and
+5. opens the console **attached to a `setup-repo` task**, where you run `claude setup-token` to
+   mint your Claude auth token (written into the repo's env-file).
+
+From there you create tasks and watch your fleet; `panopticon stop` tears it all down (task
 containers and the `-L panopticon` server).
 
 ## Configuration
@@ -84,7 +87,7 @@ variable (resolution is `$PANOPTICON_*` → `$XDG_*_HOME/panopticon` → the def
 |---|---|---|
 | Database | `~/.local/share/panopticon/panopticon.db` | `PANOPTICON_DB` (or `PANOPTICON_DATA`) |
 | Artifacts + per-task clones | `~/.local/share/panopticon/` | `PANOPTICON_DATA` |
-| Layers, secrets, workflows | `~/.config/panopticon/` | `PANOPTICON_CONFIG`, `--workflows-path` |
+| Layers, secrets, workflows | `~/.config/panopticon/` | `PANOPTICON_CONFIG` (workflows also via the `--workflows-path` flag) |
 | Per-repo clone cache | `~/.cache/panopticon/repos/` | `PANOPTICON_CACHE` |
 
 For the container auth token in detail, see [`docs/container-auth.md`](docs/container-auth.md).
