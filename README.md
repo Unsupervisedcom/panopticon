@@ -66,18 +66,14 @@ cd ~/code/my-project   # the repo you want agents to work on
 panopticon quickstart  # first-time setup, then open the dashboard
 ```
 
-`panopticon quickstart` is the one-command first-time setup. In order, it:
+`panopticon quickstart` checks your prerequisites, brings the stack up, registers the repo
+you're in, and drops you into a `setup-repo` task — run `claude setup-token` there to mint your
+Claude token (saved to the repo's env-file). Then you create tasks and watch your fleet from the
+dashboard.
 
-1. runs the `doctor` host-prerequisite check (and aborts if anything's missing);
-2. applies the database schema (creating `~/.local/share/panopticon/panopticon.db`);
-3. starts the task service, runner, and dashboard supervisor on the `tmux -L panopticon` server;
-4. registers the repo you ran it in; and
-5. opens the console **attached to a `setup-repo` task**, where you run `claude setup-token` to
-   mint your Claude auth token (written into the repo's env-file).
-
-From there you create tasks and watch your fleet. Quitting the dashboard leaves the task
-service, runner, and containers running in the background; run `panopticon stop` when you're
-done to tear it all down (task containers and the `-L panopticon` server).
+**What it puts on your machine:** a SQLite DB under `~/.local/share/panopticon/`, and background
+services on a dedicated `tmux -L panopticon` server (they keep running after you quit the
+dashboard, so `tmux ls` won't show them). `panopticon stop` removes it all.
 
 ## Configuration
 
