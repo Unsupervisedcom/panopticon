@@ -77,18 +77,22 @@ dashboard, so `tmux ls` won't show them). `panopticon stop` removes it all.
 
 ## Your first task
 
-With the dashboard up and `claude setup-token` done, run one task end to end:
+On the dashboard:
 
-1. **Create it.** Press `n`, pick the repo and a workflow — start with `github-self-reviewed`
-   (the agent opens a PR you approve) — and describe the work in a sentence or two.
-2. **Watch it start.** The task appears in the dashboard and its `container` column moves
-   `queued → … → live` as the runner spawns its container and the agent begins on its own branch.
+1. **Create it.** Press `n`, pick the repo and a workflow — `github-peer-reviewed` (opens a PR
+   to merge) or `local-git-self-reviewed` (stays on local git, no GitHub needed) — and describe
+   the work in a sentence or two.
+2. **Watch it start.** The task's `container` column moves `queued → … → live` as the runner
+   spawns its container and the agent begins on its own branch. To follow the spawn, press `u` to
+   jump to the runner (session-service) session and read its logs, then detach with your `tmux`
+   prefix + `d` to drop back to the dashboard.
 3. **Respond when it needs you.** The `turn` column shows whether the agent is working or waiting
    on you; when it wants a decision (like approving its plan), the turn flips to you. Press `t` to
    attach to that agent's session, steer or approve, then detach (your `tmux` prefix + `d`) to drop
    back to the dashboard.
-4. **Review what ships.** When the agent opens a PR, press `p` to open it. Nothing merges without
-   your sign-off — you own what ships.
+4. **Review what ships.** For `github-peer-reviewed` the agent opens a PR — press `p` to open it
+   in your browser; for `local-git-self-reviewed` it commits to the task branch for you to diff
+   locally. Either way nothing lands until you approve — you own what ships.
 
 Want the fleet feeling? Kick off two or three tasks at once and let the dashboard show you which
 agents are heads-down and which are blocked on you.
