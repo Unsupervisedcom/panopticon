@@ -32,6 +32,63 @@ echo
 echo "$dashboard_hint"
 echo
 
+# The closing summary is a bullet per step; each step appends its outcome here. Defined up front so
+# the env-file choice below (the first step) can record its outcome too.
+summary=""
+add_summary() {
+    if [ -z "$summary" ]; then
+        summary="  • $1"
+    else
+        summary="$summary
+  • $1"
+    fi
+}
+
+# Before working out what's configured, let the operator move this repo off the shared credentials
+# file onto its own <repo>.env (a no-op unless it's still on the shared file). A repo-specific choice
+# repoints the repo record and retargets $env_file, so the "what's configured" checks and every step
+# below act on the chosen file. _SHARED_ENV_FILE is the file quickstart seeds (see ensure_secrets_file);
+# ensure_private_env_file / set_repo_env_file come from setup_repo_lib.sh.
+_SHARED_ENV_FILE="shared.env"
+maybe_choose_env_file() {
+    [ -n "${PANOPTICON_REPO_ID:-}" ] || return 0
+    [ -n "${PANOPTICON_ENV_FILE:-}" ] || return 0
+    _mce_dir=$(dirname "$PANOPTICON_ENV_FILE")
+    _mce_cur=$(basename "$PANOPTICON_ENV_FILE")
+    # Only offer while the repo is on the shared file; one already on its own file keeps it.
+    [ "$_mce_cur" = "$_SHARED_ENV_FILE" ] || return 0
+    _mce_repo_file="${PANOPTICON_REPO_ID}.env"
+    # Nothing to choose when the repo-specific name would just be the shared file again (a repo
+    # whose id makes <repo>.env == shared.env, i.e. one literally named "shared").
+    [ "$_mce_repo_file" != "$_SHARED_ENV_FILE" ] || return 0
+    echo "This repo uses the shared credentials file ($_mce_cur), which every repo on it draws from."
+    echo "You can keep it, or give this repo its own file ($_mce_repo_file) so its credentials are"
+    echo "isolated from other repos'."
+    printf 'Use the [s]hared file or a [r]epo-specific one? [S/r] '
+    read env_answer
+    case "$env_answer" in
+        [Rr]*)
+            _mce_path="$_mce_dir/$_mce_repo_file"
+            # Create the file first (the task service won't point the repo at a missing file), then
+            # repoint the repo record so future task containers source it too.
+            if ensure_private_env_file "$_mce_path" \
+                && set_repo_env_file "$PANOPTICON_SERVICE_URL" "$PANOPTICON_REPO_ID" "$_mce_repo_file"; then
+                PANOPTICON_ENV_FILE="$_mce_path"
+                export PANOPTICON_ENV_FILE
+                env_file="$PANOPTICON_ENV_FILE"
+                echo "Gave this repo its own credentials file: $env_file."
+                add_summary "Credentials file: gave the repo its own ($_mce_repo_file)."
+            else
+                echo "Could not switch to a repo-specific file; keeping the shared one ($_mce_cur)."
+                add_summary "Credentials file: kept the shared one ($_mce_cur) — the switch failed."
+            fi
+            ;;
+        *) add_summary "Credentials file: kept the shared one ($_mce_cur)." ;;
+    esac
+    echo
+}
+maybe_choose_env_file
+
 # Work out what's already set up and what this repo needs. The Claude credential is always needed
 # (the agent runs `claude` regardless); a GH_TOKEN is only needed for a GitHub remote (a local
 # checkout has nothing to push). "Configured" means the **env-file** carries it — the only thing the
@@ -70,17 +127,6 @@ else
     echo "  • GH_TOKEN — not needed (not a GitHub repo)"
 fi
 echo
-
-# The closing summary is a bullet per step; each step appends its outcome here.
-summary=""
-add_summary() {
-    if [ -z "$summary" ]; then
-        summary="  • $1"
-    else
-        summary="$summary
-  • $1"
-    fi
-}
 
 # Write token $2 for var $1 into the env-file, echoing + summarizing the outcome. $3 is the source
 # label, $4 the credential label for the summary. Goes through store_env_token, so any existing value

@@ -251,6 +251,7 @@ class _FakeShellRunner:
         *,
         env_file: str | None = None,
         git_url: str | None = None,
+        repo_id: str | None = None,
         repo_name: str | None = None,
         script: str = "",
         workdir: str | None = None,
@@ -261,6 +262,7 @@ class _FakeShellRunner:
                 "task_id": task_id,
                 "env_file": env_file,
                 "git_url": git_url,
+                "repo_id": repo_id,
                 "repo_name": repo_name,
                 "script": script,
                 "workdir": workdir,
@@ -319,6 +321,7 @@ def test_spawn_one_shell_workflow_runs_the_script_and_skips_docker() -> None:
     assert shell.spawned[0]["script"] == "claude setup-token"  # fetched from the workflow over REST
     assert shell.spawned[0]["env_file"] == "r1.env"  # the repo's secrets name is passed through
     assert shell.spawned[0]["git_url"] == "https://forge/r1.git"  # the repo's forge, for detection
+    assert shell.spawned[0]["repo_id"] == "r1"  # the repo id, so a script can repoint its env_file
     assert shell.spawned[0]["repo_name"] == "acme/widget"  # the repo's label, for the summary
     # by default the script runs in the task's own directory, created empty (no clone)
     assert shell.spawned[0]["workdir"] == "/tasks/t1"

@@ -1,7 +1,7 @@
 """First-time setup helpers for ``panopticon quickstart``.
 
 Registers the repo quickstart is run in with the running task service (idempotent — deduped on
-the remote URL), writes a secrets template to ``~/.config/panopticon/panopticon.env`` when it
+the remote URL), writes a secrets template to ``~/.config/panopticon/secrets/shared.env`` when it
 doesn't already exist, and creates a ``setup-repo`` task the console attaches to on open so the
 operator mints their Claude auth token as the last first-time-setup step.
 """
@@ -20,10 +20,10 @@ _TERMINAL_STATES = {"COMPLETE", "DROPPED"}
 
 
 def _secrets_template() -> str:
-    """The secrets-file template, read from the packaged ``panopticon.env.template`` data file."""
+    """The secrets-file template, read from the packaged ``shared.env.template`` data file."""
     import importlib.resources
 
-    ref = importlib.resources.files("panopticon.terminal") / "panopticon.env.template"
+    ref = importlib.resources.files("panopticon.terminal") / "shared.env.template"
     return ref.read_text()
 
 
@@ -70,13 +70,15 @@ def repo_id_from_url(git_url: str) -> str:
 def ensure_secrets_file() -> str:
     """Write the secrets template into the secrets dir (~/.config/panopticon/secrets/) if absent.
 
-    Returns the file's **name** relative to the secrets dir (``panopticon.env``) — what a repo's
-    ``env_file`` stores, so it resolves against whichever host runs the task (ADR 0007).
+    Returns the file's **name** relative to the secrets dir (``shared.env``) — what a repo's
+    ``env_file`` stores, so it resolves against whichever host runs the task (ADR 0007). It's the
+    *shared* credentials file every repo starts on; the setup-repo task can later give a repo its
+    own ``<repo>.env`` instead.
     """
     from panopticon.core.dirs import _secrets_dir
 
     secrets_dir = _secrets_dir()
-    secrets_path = secrets_dir / "panopticon.env"
+    secrets_path = secrets_dir / "shared.env"
     secrets_dir.mkdir(parents=True, exist_ok=True)
     if secrets_path.exists():
         print(f"Secrets file already exists: {secrets_path}")

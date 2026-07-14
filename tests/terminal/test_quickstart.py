@@ -46,7 +46,7 @@ def test_ensure_secrets_file_creates(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     # Returns the file's name (relative to the secrets dir), written under <config>/secrets/.
     name = qs.ensure_secrets_file()
-    assert name == "panopticon.env"
+    assert name == "shared.env"
     secrets = tmp_path / "secrets" / name
     assert secrets.exists()
     content = secrets.read_text()
@@ -63,7 +63,7 @@ def test_ensure_secrets_file_no_overwrite(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.setattr(dirs_mod, "user_config_dir", lambda: tmp_path)
 
     existing_content = "MY_EXISTING_SECRET=abc\n"
-    secrets_path = tmp_path / "secrets" / "panopticon.env"
+    secrets_path = tmp_path / "secrets" / "shared.env"
     secrets_path.parent.mkdir(parents=True)
     secrets_path.write_text(existing_content)
 
@@ -117,12 +117,12 @@ def test_setup_repo_creates_when_absent() -> None:
             created.update(repo_id=repo_id, name=name, git_url=git_url, **kw)
             return {}
 
-    repo_id, name = qs.setup_repo(_Empty(), "https://github.com/x/y.git", "panopticon.env")  # type: ignore[arg-type]
+    repo_id, name = qs.setup_repo(_Empty(), "https://github.com/x/y.git", "shared.env")  # type: ignore[arg-type]
     assert (repo_id, name) == ("y", "y")
     assert created["repo_id"] == "y"
     assert created["name"] == "y"
     assert created["git_url"] == "https://github.com/x/y.git"
-    assert created["env_file"] == "panopticon.env"
+    assert created["env_file"] == "shared.env"
     # setup-repo is opt-out (enabled everywhere) so quickstart no longer enables it explicitly.
     assert "enabled_workflows" not in created
 

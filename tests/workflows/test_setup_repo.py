@@ -229,6 +229,45 @@ def test_shell_script_closing_summary_is_bulleted() -> None:
     assert 'summary="  • ' in script  # bullet-prefixed accumulation
 
 
+def test_shell_script_offers_a_repo_specific_env_file_when_on_the_shared_one() -> None:
+    script = WF.shell_script()
+    # the choice step is defined and *called* before the flow works out what's already configured
+    # (claude_configured) — so the retargeted file is what those checks and every later step act on.
+    assert "maybe_choose_env_file" in script
+    assert script.rindex("maybe_choose_env_file") < script.index("claude_configured")
+    # gated on the repo id + the repo still being on the shared secrets file (shared.env)
+    assert "PANOPTICON_REPO_ID" in script
+    assert 'shared.env"' in script  # the shared-file name it gates on / offers to replace
+    # creates the repo-specific file, then repoints the repo record over REST via the helpers
+    assert "ensure_private_env_file" in script
+    assert "set_repo_env_file" in script
+    # retargets PANOPTICON_ENV_FILE so the token lands in the repo-specific file
+    assert "export PANOPTICON_ENV_FILE" in script
+
+
+def test_ensure_private_env_file_creates_an_empty_private_file(tmp_path: Path) -> None:
+    env_file = tmp_path / "secrets" / "acme.env"  # parent dir does not exist yet
+    _sh(f"ensure_private_env_file {shlex.quote(str(env_file))}")
+    assert env_file.read_text() == ""  # created empty — a token is written into it later
+    assert stat.S_IMODE(env_file.stat().st_mode) == 0o600  # holds a credential → private
+
+
+def test_ensure_private_env_file_leaves_an_existing_file_untouched(tmp_path: Path) -> None:
+    env_file = tmp_path / "acme.env"
+    env_file.write_text("CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-KEEP\n")
+    _sh(f"ensure_private_env_file {shlex.quote(str(env_file))}")
+    assert env_file.read_text() == "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-KEEP\n"  # not clobbered
+
+
+def test_set_repo_env_file_patches_the_repo() -> None:
+    # It repoints the repo record via PATCH /repos/<id> with the new env_file name (the task service
+    # validates the file exists first — see ensure_private_env_file, run before this).
+    script = WF.shell_script()
+    assert "set_repo_env_file()" in script
+    assert "--request PATCH" in script and "/repos/" in script
+    assert "env_file" in script and "PANOPTICON_REPO_ID" in script
+
+
 def test_is_github_url_matches_https_and_ssh_remotes() -> None:
     # Both stored forms of a github.com remote are detected; other URLs (and empty) are not.
     out = _sh(
