@@ -74,10 +74,6 @@ setup-token` to mint your Claude auth token (it's written into the repo's env-fi
 dashboard you create tasks and watch your fleet; `panopticon stop` tears everything down (task
 containers and the `-L panopticon` server).
 
-Prefer to drive the pieces yourself? The individual subcommands are `panopticon migrate`,
-`build`, `start`, `stop`, `console`, `dashboard`, `tasks`, and `host` — but `quickstart` is the
-path most people want.
-
 ## Configuration
 
 Panopticon stores its data under standard XDG locations, each overridable by an environment
