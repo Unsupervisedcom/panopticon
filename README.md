@@ -77,7 +77,8 @@ On the dashboard:
 
 1. **Create it.** Press `n`, pick the repo and a workflow — `github-peer-reviewed` (opens a PR
    to merge) or `local-git-self-reviewed` (stays on local git, no GitHub needed) — and describe
-   the work in a sentence or two.
+   the work in a sentence or two. See [`docs/workflows/`](docs/workflows/README.md) for the full
+   catalogue and how to choose.
 2. **Watch it start.** The task's `container` column moves `queued → … → live` as the runner
    spawns its container; once it's `live` the agent starts on its own branch and begins planning
    automatically. Press `a` to open its plan when it's ready.

@@ -1,0 +1,76 @@
+# Workflows — choosing how a task runs
+
+Every task runs a **workflow**: the lifecycle that decides what states the task moves
+through, **who advances each one** (you or the agent), what the agent must finish before
+it can move on (its *responsibilities*), and which extra *skills* the agent has in its
+container. Picking a workflow is how you set the line between what the agent may do on
+its own and what needs your sign-off.
+
+You choose a workflow when you create a task — on the dashboard press `n`, pick the repo,
+then pick the workflow. This page is the catalogue; each workflow has its own page with
+the details.
+
+## The built-in workflows
+
+| Workflow | What it does |
+|---|---|
+| [`github-peer-reviewed`](github-peer-reviewed.md) | Ships a GitHub PR that a **peer** reviews before it merges. Full plan → implement → review → merge lifecycle. |
+| [`github-self-reviewed`](github-self-reviewed.md) | Ships a GitHub PR that **you** review yourself — no peer-review gate. |
+| [`local-git-self-reviewed`](local-git-self-reviewed.md) | Keeps the work **local** — commits to a branch and merges it, no GitHub, no PR, no CI. |
+| [`spike`](spike.md) | **Open-ended** agent work with no gates — exploration, debugging, research — until you call it done. |
+| [`orchestrator`](orchestrator.md) | An agent that **decomposes a goal into child tasks**, each pre-planned and handed to you ready to approve. |
+| [`setup-repo`](setup-repo.md) | A host-side **setup utility** (no container) — mints a repo's `claude` auth token. Launched from the repos screen, not the task picker. |
+
+## Choose at a glance
+
+| Workflow | When to use | Lifecycle | Where it ships |
+|---|---|---|---|
+| `github-peer-reviewed` | GitHub changes that need a peer review before merging | `PLANNING → ITERATING → REVIEW → MERGING → COMPLETE` | A GitHub PR (peer-approved) |
+| `github-self-reviewed` | GitHub changes you review yourself | `PLANNING → ITERATING → MERGING → COMPLETE` | A GitHub PR (self-approved) |
+| `local-git-self-reviewed` | Work that stays in the local repo, no remote | `PLANNING → ITERATING → MERGING → COMPLETE` | A local branch merged into the base |
+| `spike` | Explorations, debugging, research — no process | `ITERATING → COMPLETE` | Nothing lands on its own |
+| `orchestrator` | Fan a high-level goal out into parallel tasks | `ORCHESTRATING → COMPLETE` | New pre-planned child tasks |
+| `setup-repo` | One-off host setup (mint an auth token) | `RUNNING → COMPLETE` | A token in the repo's env-file |
+
+Any task can also be **dropped** at any time (dashboard `x`) — that moves it to `DROPPED`
+without merging or shipping anything.
+
+## The planning step
+
+The four change-making workflows — `github-peer-reviewed`, `github-self-reviewed`,
+`local-git-self-reviewed`, and (per child) `orchestrator` — start in **PLANNING**. Before
+the agent can leave that state it must:
+
+- **Write a plan** as the task's `plan.md` artifact. Press `a` on the dashboard to read
+  it. This is your chance to redirect before any code is written.
+- **Record a token estimate** so the task's projected cost is tracked.
+
+You approve the plan by advancing the task out of PLANNING (attach with `t`, run
+`/advance`). `spike` and `setup-repo` have no planning step.
+
+## Who advances a state
+
+Each state is advanced by either **you** or the **agent**:
+
+- **You advance** the foreground states (plan approval, sign-off before merge). The agent
+  fills in its responsibilities and then waits — nothing proceeds until you say so. Attach
+  with `t` and run `/advance` to approve; the agent starts a fresh turn.
+- **The agent advances** the background states (merging). Once its responsibilities are
+  met — the PR is merged, or the branch is merged locally — it moves the task on by itself.
+
+## How workflows are offered
+
+- **Default-on vs. opt-in.** `spike` and `orchestrator` are shown for every repo by
+  default. `github-peer-reviewed`, `github-self-reviewed`, and `local-git-self-reviewed`
+  are **opt-in** — enable them per repo (in the repo's workflow settings) before they show
+  up in the task-creation picker.
+- **Hidden utilities.** `setup-repo` is hidden from the pickers entirely; you launch it
+  from the repos screen's setup hotkey, not by creating an ordinary task.
+
+## Adding your own
+
+Workflows are just `Workflow` subclasses. Drop a module defining one into
+`~/.config/panopticon/workflows/` (or point the session service at a directory with
+`--workflows-path`) and it registers automatically — no change to the core service. See
+[ADR 0004](../design/decisions/0004-workflow-abstraction.md) and
+[`docs/design/ARCHITECTURE.md` §7](../design/ARCHITECTURE.md) for the authoring model.
