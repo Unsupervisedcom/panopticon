@@ -1272,6 +1272,20 @@ async def test_pressing_p_in_the_repos_screen_creates_an_explore_panopticon_task
     assert (repo_id, workflow) == ("r1", "explore-panopticon")
 
 
+async def test_pressing_e_creates_an_explore_panopticon_task() -> None:
+    # The top-level `e` hotkey is a direct launch for the guided-tour workflow — with a single repo
+    # it spawns straight away (no picker), on that repo (which supplies the host shell's creds).
+    fake = _FakeClient([_TASK], repos=["r1"])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+    assert len(fake.created) == 1
+    repo_id, workflow, _memo, _ = fake.created[0]
+    assert (repo_id, workflow) == ("r1", "explore-panopticon")
+
+
 async def test_no_repos_auto_opens_the_repos_screen_on_start() -> None:
     # First-run nudge: with no repos configured, the dashboard drops straight into the repo
     # screen so the operator can add one (a task can't be created without a repo).
@@ -1971,7 +1985,7 @@ def test_footer_shows_only_the_essential_keys() -> None:
     shown = {b.key for b in Dashboard.BINDINGS if b.show}
     hidden = {b.key for b in Dashboard.BINDINGS if not b.show}
     assert shown == {"t", "n", "x", "/", "d", "question_mark", "q"}
-    assert hidden == {"o", "r", "R", "p", "g", "a", "s", "u", "y", "Y", "escape"}
+    assert hidden == {"o", "r", "R", "p", "g", "e", "a", "s", "u", "y", "Y", "escape"}
 
 
 def test_bindings_and_help_derive_from_the_single_hotkey_table() -> None:

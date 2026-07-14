@@ -1253,6 +1253,13 @@ HOTKEYS: tuple[Hotkey, ...] = (
     Hotkey("R", "respawn", "Respawn", "Respawn a down task (release its claim)", show=False),
     Hotkey("p", "open_url", "Open URL", "Open the task's URL in the browser", show=False),
     Hotkey("g", "repos", "Repos", "Repo config (list / create / edit repos)", show=False),
+    Hotkey(
+        "e",
+        "explore_panopticon",
+        "Explore",
+        "New explore-panopticon task (a guided tour of the codebase)",
+        show=False,
+    ),
     Hotkey("a", "artifacts", "Artifacts", "List the task's artifacts", show=False),
     Hotkey("s", "service", "Service", "Switch to the task-service session", show=False),
     Hotkey("u", "runner", "Runner", "Switch to the session-service (runner) session", show=False),
@@ -1676,6 +1683,36 @@ class Dashboard(App[None]):
             self.push_screen(WorkflowScreen(workflows), describe)
 
         self.push_screen(ChoiceScreen("repo", repos), pick_workflow)
+
+    def action_explore_panopticon(self) -> None:
+        """`e`: open a guided tour of panopticon — create an `explore-panopticon` task.
+
+        The workflow is hidden from the pickers, so this is a direct top-level launch (the repos
+        modal's `p` is the other). The task isn't repo-specific (it always clones panopticon), but a
+        task needs a repo and the host shell's `claude` needs credentials — so pick the repo that
+        supplies both (skipping the picker when there's only one)."""
+        repos = [str(r["id"]) for r in self._client.list_repos()]
+        if not repos:
+            self.notify("Need at least one repo to create a task.", severity="warning")
+            return
+
+        def spawn(repo: str | None) -> None:
+            if repo is None:  # backed out of the picker
+                return
+            try:
+                create_explore_panopticon_task(self._client, repo)
+            except httpx.HTTPStatusError as exc:
+                self.notify(
+                    f"Can't create explore-panopticon task: {_detail(exc)}", severity="error"
+                )
+                return
+            self.notify("Created explore-panopticon task.")
+            self.action_refresh()
+
+        if len(repos) == 1:
+            spawn(repos[0])
+        else:
+            self.push_screen(ChoiceScreen("repo", repos), spawn)
 
     def action_drop(self) -> None:
         """`x`: abandon the highlighted task. Drop is the **only** transition the dashboard
