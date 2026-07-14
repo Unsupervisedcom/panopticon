@@ -94,6 +94,9 @@ On the dashboard:
    in your browser; for `local-git-self-reviewed` it commits to the task branch for you to diff
    locally. Either way nothing lands until you approve — you own what ships.
 
+Changed your mind about a task? Press `x` to drop the highlighted one — it moves to a terminal
+*dropped* state and the runner cleans up its container and workspace.
+
 ## Configuration
 
 Panopticon stores its data under standard XDG locations, each overridable by an environment
