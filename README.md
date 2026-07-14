@@ -32,10 +32,8 @@ shells out to a few host tools. You need:
 - The **`claude` CLI** — first-time setup runs `claude setup-token` on the host to mint the
   Claude auth token each agent uses inside its container
 
-`panopticon quickstart` (below) checks all of these before it does anything, and you can run
-`panopticon doctor` on its own any time — both print a `✓`/`✗` line per prerequisite and exit
-non-zero if anything is missing. On macOS, see [`docs/macos-setup.md`](docs/macos-setup.md) for
-host setup notes.
+`panopticon quickstart` checks these first; run `panopticon doctor` to re-check any time. On
+macOS, see [`docs/macos-setup.md`](docs/macos-setup.md) for host setup notes.
 
 ## Install
 
@@ -57,9 +55,7 @@ import are both **`panopticon`**.
 ## Quickstart
 
 Run `panopticon quickstart` **from inside the repo you want agents to work on** — it registers
-whatever repo you're in as the target for your tasks. Just kicking the tires? Run it outside a
-git checkout and it registers Panopticon's own repo as a throwaway target, so you have something
-to try it against.
+whatever repo you're in as the target for your tasks.
 
 ```sh
 cd ~/code/my-project   # the repo you want agents to work on
@@ -81,24 +77,16 @@ On the dashboard:
 
 1. **Create it.** Press `n`, pick the repo and a workflow — `github-peer-reviewed` (opens a PR
    to merge) or `local-git-self-reviewed` (stays on local git, no GitHub needed) — and describe
-   the work in a sentence or two. By default that description becomes the agent's planning prompt.
+   the work in a sentence or two.
 2. **Watch it start.** The task's `container` column moves `queued → … → live` as the runner
-   spawns its container and the agent begins on its own branch; planning then starts
-   automatically. To follow the spawn, press `u` to jump to the runner (session-service) session
-   and read its logs, then detach (`Ctrl-b d` by default, or whatever prefix you've bound `tmux`
-   to) to drop back to the dashboard.
+   spawns its container and the agent begins on its own branch; planning then starts automatically.
 3. **Respond when it needs you.** The `turn` column shows whether the agent is working or waiting
-   on you; when it wants a decision (like approving its plan), the turn flips to you. Press `t` to
-   attach to that agent's session and steer it. To sign off and move the task to its next stage,
-   run **`/advance`** in that session — it's how you approve the plan (`PLANNING → ITERATING`) and,
-   later, the finished change (`ITERATING → MERGING`). Detach (`Ctrl-b d`) to drop back to the
-   dashboard.
+   on you. When it wants a decision, press `t` to attach to its session and steer it; run
+   **`/advance`** there to approve, and again when it's done. Detach any session with `Ctrl-b d`
+   (or your own `tmux` prefix + `d`) to return to the dashboard.
 4. **Review what ships.** For `github-peer-reviewed` the agent opens a PR — press `p` to open it
    in your browser; for `local-git-self-reviewed` it commits to the task branch for you to diff
    locally. Either way nothing lands until you `/advance` it — you own what ships.
-
-Changed your mind about a task? Press `x` to drop the highlighted one — it moves to a terminal
-*dropped* state and the runner cleans up its container and workspace.
 
 ## Configuration
 
