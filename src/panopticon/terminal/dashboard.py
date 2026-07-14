@@ -103,6 +103,10 @@ from panopticon.core.dirs import ARTIFACTS_DIR
 from panopticon.core.state import TERMINAL_LABELS
 from panopticon.sessionservice.local_runner import session_name
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
+from panopticon.terminal.explore_panopticon_task import (
+    EXPLORE_PANOPTICON_WORKFLOW,
+    create_explore_panopticon_task,
+)
 from panopticon.terminal.setup_repo_task import create_setup_repo_task
 
 
@@ -553,6 +557,9 @@ class WorkflowScreen(_OptionListModal[str]):
     #workflow-desc { height: 4; border: tall $panel; padding: 0 1; color: $text-muted; }
     """
     BOX_ID = "workflow-choice-box"
+    # `E` is a testing shortcut: launch the hidden explore-panopticon workflow (a guided tour of the
+    # codebase) on the repo already chosen for this new task, without it needing to be a menu entry.
+    BINDINGS = [("E", "explore_panopticon", "Explore (test)")]
 
     def __init__(self, workflows: list[dict[str, str]]) -> None:
         names = [w["name"] for w in workflows]
@@ -568,6 +575,11 @@ class WorkflowScreen(_OptionListModal[str]):
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         self.dismiss(str(event.option.prompt))
+
+    def action_explore_panopticon(self) -> None:
+        """`E`: testing shortcut — dismiss with the hidden explore-panopticon workflow so the
+        new-task flow spawns a guided-tour task on the chosen repo."""
+        self.dismiss(EXPLORE_PANOPTICON_WORKFLOW)
 
 
 class MemoTextArea(TextArea):
@@ -1634,6 +1646,18 @@ class Dashboard(App[None]):
 
             def describe(workflow: str | None) -> None:
                 if workflow is None:
+                    return
+                if workflow == EXPLORE_PANOPTICON_WORKFLOW:  # the `E` testing shortcut
+                    try:
+                        create_explore_panopticon_task(self._client, repo)
+                    except httpx.HTTPStatusError as exc:
+                        self.notify(
+                            f"Can't create explore-panopticon task: {_detail(exc)}",
+                            severity="error",
+                        )
+                        return
+                    self.notify("Created explore-panopticon task.")
+                    self.action_refresh()
                     return
                 wf_info = next((w for w in workflows if w["name"] == workflow), {})
                 auto_submit_default = bool(wf_info.get("auto_submit_memo", False))

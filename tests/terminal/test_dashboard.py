@@ -1243,6 +1243,28 @@ async def test_pressing_s_in_the_repos_screen_creates_a_setup_repo_task() -> Non
     assert memo is not None and "acme/widgets" in memo
 
 
+async def test_pressing_E_in_the_workflow_picker_creates_an_explore_panopticon_task() -> None:
+    # `E` in the workflow picker is a testing shortcut: it launches the hidden explore-panopticon
+    # workflow on the repo already chosen for this new task, without it being a menu entry.
+    fake = _FakeClient(
+        [_TASK],
+        repos=["r1"],
+        workflows=[{"name": "spike", "when_to_use": "", "auto_submit_memo": False}],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")  # open the repo picker
+        await pilot.pause()
+        await pilot.press("enter")  # pick repo r1 → opens the workflow picker
+        await pilot.pause()
+        await pilot.press("E")  # testing shortcut: spawn explore-panopticon
+        await pilot.pause()
+    assert len(fake.created) == 1
+    repo_id, workflow, _memo, _ = fake.created[0]
+    assert (repo_id, workflow) == ("r1", "explore-panopticon")
+
+
 async def test_no_repos_auto_opens_the_repos_screen_on_start() -> None:
     # First-run nudge: with no repos configured, the dashboard drops straight into the repo
     # screen so the operator can add one (a task can't be created without a repo).
