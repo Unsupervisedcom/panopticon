@@ -12,25 +12,14 @@ the details.
 
 ## The built-in workflows
 
-| Workflow | What it does |
-|---|---|
-| [`github-peer-reviewed`](github-peer-reviewed.md) | Ships a GitHub PR that a **peer** reviews before it merges. Full plan → implement → review → merge lifecycle. |
-| [`github-self-reviewed`](github-self-reviewed.md) | Ships a GitHub PR that **you** review yourself — no peer-review gate. |
-| [`local-git-self-reviewed`](local-git-self-reviewed.md) | Keeps the work **local** — commits to a branch and merges it, no GitHub, no PR, no CI. |
-| [`spike`](spike.md) | **Open-ended** agent work with no gates — exploration, debugging, research — until you call it done. |
-| [`orchestrator`](orchestrator.md) | An agent that **decomposes a goal into child tasks**, each pre-planned and handed to you ready to approve. |
-| [`setup-repo`](setup-repo.md) | A host-side **setup utility** (no container) — mints a repo's `claude` auth token. Launched from the repos screen, not the task picker. |
-
-## Choose at a glance
-
-| Workflow | When to use | Lifecycle | Where it ships |
-|---|---|---|---|
-| `github-peer-reviewed` | GitHub changes that need a peer review before merging | `PLANNING → ITERATING → REVIEW → MERGING → COMPLETE` | A GitHub PR (peer-approved) |
-| `github-self-reviewed` | GitHub changes you review yourself | `PLANNING → ITERATING → MERGING → COMPLETE` | A GitHub PR (self-approved) |
-| `local-git-self-reviewed` | Work that stays in the local repo, no remote | `PLANNING → ITERATING → MERGING → COMPLETE` | A local branch merged into the base |
-| `spike` | Explorations, debugging, research — no process | `ITERATING → COMPLETE` | Nothing lands on its own |
-| `orchestrator` | Fan a high-level goal out into parallel tasks | `ORCHESTRATING → COMPLETE` | New pre-planned child tasks |
-| `setup-repo` | One-off host setup (mint an auth token) | `RUNNING → COMPLETE` | A token in the repo's env-file |
+| Workflow | What it does — and when to use it | Where it ships |
+|---|---|---|
+| [`github-peer-reviewed`](github-peer-reviewed.md) | Ships a GitHub PR that a **peer** reviews before it merges — use for GitHub changes that need a second person's sign-off. | A GitHub PR (peer-approved) |
+| [`github-self-reviewed`](github-self-reviewed.md) | Ships a GitHub PR that **you** review yourself — no peer-review gate. | A GitHub PR (self-approved) |
+| [`local-git-self-reviewed`](local-git-self-reviewed.md) | Keeps the work **local** — commits to a branch and merges it, no GitHub, PR, or CI. Use when the change never leaves the machine. | A local branch merged into the base |
+| [`spike`](spike.md) | **Open-ended** agent work with no gates — use for exploration, debugging, and research, until you call it done. | Nothing lands on its own |
+| [`orchestrator`](orchestrator.md) | An agent that **decomposes a goal into child tasks**, each pre-planned and handed to you ready to approve — use to fan work out across agents. | New pre-planned child tasks |
+| [`setup-repo`](setup-repo.md) | A host-side **setup utility** (no container) — mints a repo's `claude` auth token. Launched from the repos screen, not the task picker. | A token in the repo's env-file |
 
 Any task can also be **dropped** at any time (dashboard `x`) — that moves it to `DROPPED`
 without merging or shipping anything.
