@@ -37,6 +37,7 @@ include = [
   "src/panopticon/docker/Dockerfile",
   "src/panopticon/docker/entrypoint.sh",
   "src/panopticon/sessionservice/task_lib.sh",
+  "src/panopticon/workflows/explore_panopticon.sh",
   "src/panopticon/workflows/setup_repo.sh",
   "src/panopticon/workflows/setup_repo_lib.sh",
 ]

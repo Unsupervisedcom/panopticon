@@ -103,6 +103,7 @@ from panopticon.core.dirs import ARTIFACTS_DIR
 from panopticon.core.state import TERMINAL_LABELS
 from panopticon.sessionservice.local_runner import session_name
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
+from panopticon.terminal.explore_panopticon_task import create_explore_panopticon_task
 from panopticon.terminal.setup_repo_task import create_setup_repo_task
 
 
@@ -1013,6 +1014,7 @@ class ReposScreen(ModalScreen[None]):
         ("n", "new_repo", "New repo"),
         ("e", "edit_repo", "Edit repo"),
         ("s", "setup_repo", "Setup repo"),
+        ("p", "explore_panopticon", "Explore panopticon"),
         ("escape", "close", "Close"),
     ]
 
@@ -1024,7 +1026,7 @@ class ReposScreen(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="repos-box"):
-            yield Label("repos — n: new   e: edit   s: setup   esc: close")
+            yield Label("repos — n: new   e: edit   s: setup   p: explore panopticon   esc: close")
             yield _VimDataTable(id="repos")
 
     def on_mount(self) -> None:
@@ -1136,6 +1138,24 @@ class ReposScreen(ModalScreen[None]):
             self.notify(f"Can't create setup-repo task: {_detail(exc)}", severity="error")
             return
         self.notify(f"Created setup-repo task for {name}.")
+        self.dismiss(None)  # back to the task view, where the new task shows up
+
+    def action_explore_panopticon(self) -> None:
+        """`p`: open a guided tour of panopticon — create an `explore-panopticon` task.
+
+        The `explore-panopticon` workflow is hidden from the pickers, so this is how it's launched.
+        The task isn't repo-specific (it always clones panopticon), but a task needs a repo and the
+        host shell's `claude` needs credentials — so it runs on the highlighted repo, which supplies
+        both."""
+        if self._current is None:
+            self.notify("Highlight a repo first.", severity="warning")
+            return
+        try:
+            create_explore_panopticon_task(self._client, self._current)
+        except httpx.HTTPStatusError as exc:
+            self.notify(f"Can't create explore-panopticon task: {_detail(exc)}", severity="error")
+            return
+        self.notify("Created explore-panopticon task.")
         self.dismiss(None)  # back to the task view, where the new task shows up
 
 
