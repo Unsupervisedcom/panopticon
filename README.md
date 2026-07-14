@@ -90,7 +90,3 @@ variable (resolution is `$PANOPTICON_*` → `$XDG_*_HOME/panopticon` → the def
 | Artifacts + per-task clones | `~/.local/share/panopticon/` | `PANOPTICON_DATA` |
 | Layers, secrets, workflows | `~/.config/panopticon/` | `PANOPTICON_CONFIG` (workflows also via the `--workflows-path` flag) |
 | Per-repo clone cache | `~/.cache/panopticon/repos/` | `PANOPTICON_CACHE` |
-
-For the container auth token in detail, see [`docs/container-auth.md`](docs/container-auth.md).
-The full design — goals, architecture, roadmap, and ADRs — lives under
-[`docs/design/`](docs/design/).
