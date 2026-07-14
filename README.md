@@ -79,14 +79,16 @@ On the dashboard:
    to merge) or `local-git-self-reviewed` (stays on local git, no GitHub needed) — and describe
    the work in a sentence or two.
 2. **Watch it start.** The task's `container` column moves `queued → … → live` as the runner
-   spawns its container and the agent begins on its own branch; planning then starts automatically.
+   spawns its container; once it's `live` the agent starts on its own branch and begins planning
+   automatically. Press `a` to open its plan when it's ready.
 3. **Respond when it needs you.** The `turn` column shows whether the agent is working or waiting
-   on you. When it wants a decision, press `t` to attach to its session and steer it; run
-   **`/advance`** there to approve, and again when it's done. Detach any session with `Ctrl-b d`
-   (or your own `tmux` prefix + `d`) to return to the dashboard.
-4. **Review what ships.** For `github-peer-reviewed` the agent opens a PR — press `p` to open it
-   in your browser; for `local-git-self-reviewed` it commits to the task branch for you to diff
-   locally. Either way nothing lands until you `/advance` it — you own what ships.
+   on you. When it wants a decision — like signing off on that plan — press `t` to attach to its
+   session and steer it; run **`/advance`** there to approve, and again when it's done. Detach any
+   session with `Ctrl-b d` (or your own `tmux` prefix + `d`) to return to the dashboard.
+4. **Review what ships.** For `github-peer-reviewed` the agent opens a PR — press `p` on the
+   dashboard to open it in your browser; for `local-git-self-reviewed` it commits to the task
+   branch for you to diff locally. Either way nothing lands until you `/advance` it — you own what
+   ships.
 
 ## Configuration
 
