@@ -55,7 +55,13 @@ import are both **`panopticon`**.
 
 ## Quickstart
 
+Run `panopticon quickstart` **from inside the repo you want agents to work on** — it registers
+whatever repo you're in as the target for your tasks. Just kicking the tires? Run it anywhere
+outside a git checkout and it falls back to registering the panopticon repo itself, so you have
+something to try it against.
+
 ```sh
+cd ~/code/my-project   # the repo you want agents to work on
 panopticon doctor      # verify host prerequisites (git, docker, tmux, claude)
 panopticon quickstart  # first-time setup, then open the dashboard
 ```
