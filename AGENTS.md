@@ -81,7 +81,9 @@ docker/Dockerfile  # base task-container image (ADR 0005 base layer): python + g
   --extended-regexp`) — they're self-documenting and grep-able. This applies anywhere we emit a
   command: runner/CLI code, the `Makefile`, the base `Dockerfile`, composed `image_layer`s, and
   tests. Use a short flag **only** where the tool has no long form — `tmux` (single-letter
-  options only), `ssh -t`, `git -C` / `git worktree add -b`, and `python -m`.
+  options only), `ssh -t`, `git -C` / `git worktree add -b`, `python -m`, and the BSD
+  userland on macOS hosts (`rm -f` — BSD `rm` has no long options; long forms are safe in
+  Dockerfiles/containers, which are always Linux).
 - **No LLMs in tests.** Automated tests never call a real LLM/agent. The agent launcher
   (`container/agent.py`) splits a deterministic, tested **bootstrap** (render skills, wire MCP)
   from the **launch** (real `claude`), which is injected as a fake in tests and only runs
