@@ -1243,43 +1243,22 @@ async def test_pressing_s_in_the_repos_screen_creates_a_setup_repo_task() -> Non
     assert memo is not None and "acme/widgets" in memo
 
 
-async def test_pressing_p_in_the_repos_screen_creates_an_explore_panopticon_task() -> None:
-    # The explore-panopticon workflow is hidden from the pickers; the repos modal's `p` hotkey is how
-    # it's launched — one explore-panopticon task on the highlighted repo (which supplies the host
-    # shell's claude credentials; the clone is always panopticon).
+async def test_pressing_E_in_the_workflow_picker_creates_an_explore_panopticon_task() -> None:
+    # `E` in the workflow picker is a testing shortcut: it launches the hidden explore-panopticon
+    # workflow on the repo already chosen for this new task, without it being a menu entry.
     fake = _FakeClient(
         [_TASK],
-        repos=[
-            {
-                "id": "r1",
-                "name": "acme/widgets",
-                "git_url": "https://x/r1.git",
-                "default_base": "main",
-            }
-        ],
+        repos=["r1"],
+        workflows=[{"name": "spike", "when_to_use": "", "auto_submit_memo": False}],
     )
     app = Dashboard(fake)  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("g")
+        await pilot.press("n")  # open the repo picker
         await pilot.pause()
-        await pilot.press("p")
+        await pilot.press("enter")  # pick repo r1 → opens the workflow picker
         await pilot.pause()
-        # creating the task dismisses the repos modal, dropping back to the task view
-        assert not isinstance(app.screen, dashboard.ReposScreen)
-    assert len(fake.created) == 1
-    repo_id, workflow, _memo, _ = fake.created[0]
-    assert (repo_id, workflow) == ("r1", "explore-panopticon")
-
-
-async def test_pressing_e_creates_an_explore_panopticon_task() -> None:
-    # The top-level `e` hotkey is a direct launch for the guided-tour workflow — with a single repo
-    # it spawns straight away (no picker), on that repo (which supplies the host shell's creds).
-    fake = _FakeClient([_TASK], repos=["r1"])
-    app = Dashboard(fake)  # type: ignore[arg-type]
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("e")
+        await pilot.press("E")  # testing shortcut: spawn explore-panopticon
         await pilot.pause()
     assert len(fake.created) == 1
     repo_id, workflow, _memo, _ = fake.created[0]
@@ -1985,7 +1964,7 @@ def test_footer_shows_only_the_essential_keys() -> None:
     shown = {b.key for b in Dashboard.BINDINGS if b.show}
     hidden = {b.key for b in Dashboard.BINDINGS if not b.show}
     assert shown == {"t", "n", "x", "/", "d", "question_mark", "q"}
-    assert hidden == {"o", "r", "R", "p", "g", "e", "a", "s", "u", "y", "Y", "escape"}
+    assert hidden == {"o", "r", "R", "p", "g", "a", "s", "u", "y", "Y", "escape"}
 
 
 def test_bindings_and_help_derive_from_the_single_hotkey_table() -> None:
