@@ -58,11 +58,17 @@ def test_spawn_runs_detached_container_then_tmux_pane_execing_in() -> None:
     # pane execs the in-container agent launcher (so `tmux attach` reaches the live agent)
     assert tmux_new[:4] == ["tmux", "-L", "panopticon", "new-session"]
     assert tmux_new[tmux_new.index("-s") + 1] == "panopticon-t1"
-    # the pane execs in as the unprivileged `panopticon` user (so the agent's whoami isn't root)
-    assert tmux_new[-10:] == [
-        "docker", "exec", "--interactive", "--tty", "--user", "panopticon", "panopticon-t1",
-        "python", "-m", "panopticon.container.agent",
-    ]
+    # The pane is one host shell command: a bounded wait for the entrypoint's remap-complete
+    # marker (exec'ing in earlier resolves `--user panopticon` to the pre-remap uid — the spawn
+    # race), then the exec in as the unprivileged `panopticon` user (the agent's whoami isn't
+    # root). Manual `respawn-pane`/heal reruns get the same guard since it *is* the pane command.
+    pane = tmux_new[-1]
+    assert pane.startswith("i=0; until docker exec panopticon-t1 test -f /run/panopticon-ready; ")
+    assert "[ $i -ge 150 ] && break; sleep 0.2" in pane  # bounded — a pre-marker image still launches
+    assert pane.endswith(
+        "exec docker exec --interactive --tty --user panopticon panopticon-t1"
+        " python -m panopticon.container.agent"
+    )
 
 
 def test_spawn_reports_starting_then_awaiting_via_the_progress_callback() -> None:
@@ -97,6 +103,31 @@ def test_is_running_queries_docker_ps_by_container_name() -> None:
 def test_is_running_is_false_when_no_container_is_listed() -> None:
     runner = LocalRunner("http://svc:8000", run=_Recorder())  # records, returns "" → not running
     assert runner.is_running("t1") is False
+
+
+def test_exit_reason_inspects_the_containers_exit_state() -> None:
+    rec = _ReturningRecorder("false false 137\n")
+    runner = LocalRunner("http://svc:8000", run=rec)
+    assert runner.exit_reason("t1") == "container exited (exit 137)"
+    (inspect, check), = rec.calls
+    assert inspect == [
+        "docker", "inspect", "--format",
+        "{{.State.Running}} {{.State.OOMKilled}} {{.State.ExitCode}}", "panopticon-t1",
+    ]
+    assert check is False  # a missing container prints nothing — that's an answer, not an error
+
+
+def test_exit_reason_names_an_oom_kill_over_the_exit_code() -> None:
+    # The kernel's OOM killer can leave a deceptively clean exit code 0 — OOMKilled is the truth.
+    runner = LocalRunner("http://svc:8000", run=_ReturningRecorder("false true 0\n"))
+    assert runner.exit_reason("t1") == "container OOM-killed (exit 0)"
+
+
+def test_exit_reason_is_none_when_running_or_gone() -> None:
+    # Still running → nothing to explain.
+    assert LocalRunner("http://svc:8000", run=_ReturningRecorder("true false 0\n")).exit_reason("t1") is None
+    # Container gone entirely (inspect errors → empty stdout) → nothing left to ask.
+    assert LocalRunner("http://svc:8000", run=_Recorder()).exit_reason("t1") is None
 
 
 def test_has_session_lists_the_tmux_server_and_matches_the_session_name() -> None:

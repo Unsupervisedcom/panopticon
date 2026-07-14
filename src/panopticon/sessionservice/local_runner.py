@@ -12,6 +12,7 @@ daemon. LLM-free — the agent runs inside the container.
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
@@ -44,6 +45,18 @@ CONTAINER_USER = "panopticon"
 #: (its session transcripts) survives respawn/recreate — the container layer is thrown away each
 #: spawn, but the volume persists. Per-task (not per-repo) so concurrent tasks don't share state.
 CONFIG_MOUNT = "/home/panopticon/.claude"
+
+#: The entrypoint touches this in-container marker once it has remapped the ``panopticon`` user
+#: (just before dropping privileges). The tmux pane waits for it before its
+#: ``docker exec --user panopticon``: exec'ing earlier resolves the user to the *pre-remap* uid,
+#: and the agent launcher then dies on a ``PermissionError`` writing the post-remap-owned home
+#: (``docker run --detach`` returns at PID-1 start, not after the remap). The wait is bounded
+#: (:data:`READY_WAIT_POLLS` × 0.2 s) so a pre-marker image still launches, just unguarded.
+READY_MARKER = "/run/panopticon-ready"
+
+#: How many 0.2 s polls the pane waits for :data:`READY_MARKER` before proceeding anyway (30 s —
+#: far beyond any remap, so the fallback only fires for images that predate the marker).
+READY_WAIT_POLLS = 150
 
 
 class CommandRunner(Protocol):
@@ -185,16 +198,21 @@ class LocalRunner(Runner):
         self._run(["docker", "rm", "--force", container], check=False)
         _report(LifecyclePhase.STARTING)  # docker run + the tmux session coming up
         self._run(docker_run)
-        # `docker run --detach` returns once the container is running (the entrypoint has remapped +
-        # dropped), so the pane execs in as the unprivileged `panopticon` user — `tmux attach` and
-        # the agent's `whoami` see that named user, not root.
-        self._run(
-            self._tmux(
-                "new-session", "-d", "-s", container,
-                "docker", "exec", "--interactive", "--tty", "--user", CONTAINER_USER,
-                container, *self._agent_command,
-            )
+        # The pane is a host shell command: wait (bounded) for the entrypoint's READY_MARKER — the
+        # remap-complete signal — then exec in as the unprivileged `panopticon` user, so `tmux
+        # attach` and the agent's `whoami` see that named user, not root (and never the pre-remap
+        # uid — the wait is what closes that race; it also covers heal/`R` respawns and a manual
+        # `respawn-pane`, which rerun this same pane command).
+        agent_exec = shlex.join(
+            ["docker", "exec", "--interactive", "--tty", "--user", CONTAINER_USER,
+             container, *self._agent_command]
         )
+        pane = (
+            f"i=0; until docker exec {container} test -f {READY_MARKER}; "
+            f"do i=$((i+1)); [ $i -ge {READY_WAIT_POLLS} ] && break; sleep 0.2; done; "
+            f"exec {agent_exec}"
+        )
+        self._run(self._tmux("new-session", "-d", "-s", container, pane))
         _report(LifecyclePhase.AWAITING)  # container + tmux up; waiting for its /live registration
         return container
 
@@ -211,6 +229,30 @@ class LocalRunner(Runner):
             check=False,
         )
         return bool(names.strip())
+
+    def exit_reason(self, task_id: str) -> str | None:
+        """Why the task's container stopped, as a display-ready detail string — or ``None``.
+
+        A ``docker inspect`` of the container's exit state, for the host daemon to surface *why*
+        a task went down instead of a bare ``down``: ``None`` when the container is still running
+        or gone entirely (nothing left to explain); ``"container OOM-killed (exit N)"`` when the
+        kernel's out-of-memory killer shot it — checked before the exit code, which an OOM kill
+        can leave at a deceptively clean ``0``; otherwise ``"container exited (exit N)"``."""
+        container = f"panopticon-{task_id}"
+        state = self._run(
+            [
+                "docker", "inspect", "--format",
+                "{{.State.Running}} {{.State.OOMKilled}} {{.State.ExitCode}}", container,
+            ],
+            check=False,
+        )
+        parts = state.split()
+        if len(parts) != 3 or parts[0] == "true":
+            return None  # inspect errored (container gone entirely) or still running
+        _running, oom_killed, exit_code = parts
+        if oom_killed == "true":
+            return f"container OOM-killed (exit {exit_code})"
+        return f"container exited (exit {exit_code})"
 
     def has_session(self, task_id: str) -> bool:
         """Whether the task's host tmux session exists on this runner's tmux server.

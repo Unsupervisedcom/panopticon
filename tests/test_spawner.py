@@ -30,13 +30,14 @@ def _no_op_run(args: object, *, check: bool = True) -> str:
 
 class _FakeRunner:
     """Records spawn calls; stands in for LocalRunner. Mimics its ``progress`` callbacks (STARTING
-    then AWAITING), ``is_running`` (for reconcile/down-detection) and ``has_session`` (for heal/
-    self-heal) — both configurable."""
+    then AWAITING), ``is_running`` (for reconcile/down-detection), ``has_session`` (for heal/
+    self-heal) and ``exit_reason`` (why a stopped container died) — all configurable."""
 
-    def __init__(self, *, running: bool = True, session: bool = True) -> None:
+    def __init__(self, *, running: bool = True, session: bool = True, exit_reason: str | None = None) -> None:
         self.spawned: list[dict[str, object]] = []
         self._running = running
         self._session = session
+        self._exit_reason = exit_reason
 
     def spawn(self, task_id: str, *, env_file: str | None = None, workspace: str | None = None, image: str | None = None, docker_in_docker: bool = False, initial_prompt: str | None = None, turn: str | None = None, progress: Callable[[LifecyclePhase], None] | None = None) -> str:
         self.spawned.append({"task_id": task_id, "env_file": env_file, "workspace": workspace, "image": image, "docker_in_docker": docker_in_docker, "initial_prompt": initial_prompt, "turn": turn})
@@ -50,6 +51,9 @@ class _FakeRunner:
 
     def has_session(self, task_id: str) -> bool:
         return self._session
+
+    def exit_reason(self, task_id: str) -> str | None:
+        return self._exit_reason
 
     def stop(self, container_id: str) -> None:
         pass
@@ -256,6 +260,39 @@ def test_reconcile_ignores_tasks_not_in_flight_or_not_ours() -> None:
     assert client.cleared == []  # live/failed are left as-is; t3 belongs to another runner
 
 
+def test_reconcile_surfaces_why_the_container_died() -> None:
+    # The container stopped but is still around to ask (e.g. the kernel OOM-killed it): report
+    # `failed` with the exit reason — the dashboard shows the cause, not a bare `down`.
+    client = _FakeClient(repo=_REPO)
+    runner = _FakeRunner(running=False, exit_reason="container OOM-killed (exit 0)")
+    _spawner(client, runner).reconcile(
+        {"id": "t1", "claimed_by": "host-1", "container_status": "awaiting", "state": "ITERATING"}
+    )
+    assert client.phases == [("t1", "failed", "container OOM-killed (exit 0)")]
+    assert client.cleared == []  # surfaced as failed+why, not cleared to an unexplained `down`
+
+
+def test_reconcile_surfaces_a_down_tasks_exit_reason() -> None:
+    # A task can go `down` *after* being live (its registration lapsed when the container died) —
+    # the evidence is still in the stopped container, so the same exit-reason check applies.
+    client = _FakeClient(repo=_REPO)
+    runner = _FakeRunner(running=False, exit_reason="container exited (exit 137)")
+    _spawner(client, runner).reconcile(
+        {"id": "t1", "claimed_by": "host-1", "container_status": "down", "state": "ITERATING"}
+    )
+    assert client.phases == [("t1", "failed", "container exited (exit 137)")]
+
+
+def test_reconcile_leaves_a_down_task_alone_without_an_exit_reason() -> None:
+    # `down` with the container gone entirely: nothing to add and nothing to clear — no feed churn.
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner(running=False)
+    _spawner(client, runner).reconcile(
+        {"id": "t1", "claimed_by": "host-1", "container_status": "down", "state": "ITERATING"}
+    )
+    assert client.phases == []
+    assert client.cleared == []
+
+
 def test_heal_respawns_an_orphan_claimed_by_us_with_no_session() -> None:
     # The orphan case (e.g. the tmux server crashed, or `make stop` tore everything down but the
     # task stays claimed): claimed by us, non-terminal, but its tmux session is gone → respawn it
@@ -312,6 +349,30 @@ def test_heal_caps_respawns_then_surfaces_a_crash_looping_task() -> None:
         spawner.heal(_orphan())
         clock["t"] += 1.0  # rapid failures, well within the reset window
     assert len(runner.spawned) == 3  # capped at max_respawns; further attempts are surfaced, not spawned
+
+
+def test_heal_cap_reports_failed_once_with_a_pointer_to_respawn() -> None:
+    # Hitting the crash-loop cap is surfaced where the user looks — a `failed` report whose detail
+    # says what happened and what to do — not just the runner log. And only once: a task already
+    # reading `failed` is left alone rather than re-reported (feed churn) every pass.
+    clock = {"t": 0.0}
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner(session=False)
+    spawner = Spawner(
+        client, runner, runner_id="host-1",  # type: ignore[arg-type]
+        cache=CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None), tasks_root="/tasks",
+        git=GitClones(run=_no_op_run), images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        makedirs=lambda _p: None, now=lambda: clock["t"], max_respawns=2, respawn_reset=60.0,
+    )
+    spawner.heal(_orphan())  # respawn 1
+    clock["t"] += 1.0
+    spawner.heal(_orphan())  # respawn 2 → budget exhausted
+    clock["t"] += 1.0
+    spawner.heal(_orphan())  # capped → surfaced as failed
+    failed = [p for p in client.phases if p[1] == "failed"]
+    assert failed == [("t1", "failed", "keeps losing its tmux session (2 respawns) — press R to respawn")]
+    clock["t"] += 1.0
+    spawner.heal({**_orphan(), "container_status": "failed"})  # already surfaced on a later pass
+    assert [p for p in client.phases if p[1] == "failed"] == failed  # reported once, not every pass
 
 
 def test_heal_resets_the_respawn_budget_after_a_survivor_window() -> None:

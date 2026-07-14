@@ -51,7 +51,9 @@ src/panopticon/
 docker/Dockerfile  # base task-container image (ADR 0005 base layer): python + git + bash +
                    # the panopticon package + the `claude` CLI the agent execs; runs as the
                    # unprivileged `panopticon` user. docker/entrypoint.sh = remap that user to the
-                   # invoking host uid/gid (PANOPTICON_PUID/PGID) then drop via gosu
+                   # invoking host uid/gid (PANOPTICON_PUID/PGID), touch /run/panopticon-ready (the
+                   # remap-complete marker the runner's tmux pane waits for before exec'ing in —
+                   # exec'ing earlier resolves --user to the pre-remap uid), then drop via gosu
 ```
 
 ## Conventions
@@ -168,9 +170,11 @@ commands the Makefile wraps).
   skip terminal/claimed, skip on a 409 lost claim), the **reported phase sequence** (claiming →
   preparing → building → starting → awaiting, and `failed` with the error when a step raises), the
   `reconcile` down-detection (a claimed-by-us in-flight task whose container is gone → clear the
-  phase → composes `down`), `heal` **self-heal** (a claimed-by-us non-terminal task whose tmux
-  session is gone → respawn via the idempotent spawn path; skips healthy/unclaimed/terminal tasks;
-  the crash-loop cap + survivor-window budget reset), and the `spawnable_tasks` filter; an
+  phase → composes `down`; a stopped container still present → report `failed` with its
+  `exit_reason` — OOM kill/exit code — including for an already-`down` task), `heal` **self-heal**
+  (a claimed-by-us non-terminal task whose tmux session is gone → respawn via the idempotent spawn
+  path; skips healthy/unclaimed/terminal tasks; the crash-loop cap — surfaced once as `failed`
+  with a press-R detail — + survivor-window budget reset), and the `spawnable_tasks` filter; an
   integration test claims + spawns against the real task service over REST (fake git/runner).
 - `tests/test_host.py` — the unified per-host daemon (ADR 0008/0011): a unit test isolates a
   failing task and another pins that each pass also `heal`s every task; an integration test drives
@@ -187,7 +191,8 @@ commands the Makefile wraps).
   transition → history) over the REST API, no Docker.
 - `tests/test_local_runner.py` / `tests/test_entrypoint.py` — the runner's emitted docker/tmux
   commands (incl. the ADR 0011 `/workspace` mount + the CLI's spawn-prep→spawn flow, `is_running`'s
-  `docker ps` probe + `has_session`'s `tmux list-sessions` probe for self-heal) and the container
+  `docker ps` probe + `has_session`'s `tmux list-sessions` probe for self-heal, `exit_reason`'s
+  `docker inspect` of a stopped container — OOM-kill before exit code) and the container
   entrypoint loop (fakes; no Docker/LLM), plus a `skipif` docker integration test.
 - `tests/test_spawn.py` — spawn-prep (ADR 0011): unit tests pin the `clone --local` of the
   per-task checkout and the idempotency gate (skips when the checkout already exists).
