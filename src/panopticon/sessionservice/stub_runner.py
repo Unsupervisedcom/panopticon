@@ -23,7 +23,7 @@ class StubRunner(Runner):
     def spawn(
         self, task_id: str, *, proposed_slug: str | None = None, work: Work | None = None
     ) -> str:
-        """"Spawn" a fake container for ``task_id`` and return its container id.
+        """ "Spawn" a fake container for ``task_id`` and return its container id.
 
         Runs the entrypoint protocol in-process. ``proposed_slug``/``work`` are skeleton-only
         affordances (a real runner passes neither — the container decides its slug and runs the

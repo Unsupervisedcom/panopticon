@@ -13,6 +13,7 @@ This task moves through a fixed sequence of phases. You are always in exactly on
    - committed-pushed: Changes are committed and pushed.
    - ci-passing: CI tests are passing, or any failures are irrelevant flakes.
    - pr-updated: The PR title and description reflect the final change, with no Test Plan / Verification section.
+   - url-recorded: The PR URL is recorded on the task with the `set_url` MCP tool.
    The user will advance to the next state.
 3. **REVIEW** — Wait for review or approval of the PR. You must meet these responsibilities before ending your turn — mark each as met the moment you complete it:
    - pr-reviewed: The PR has been reviewed.

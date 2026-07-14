@@ -1,8 +1,8 @@
 # CLAUDE.md — operating manual
 
-Guidance for agents working in this repo. The full design lives on the **`design-docs`**
-branch (GOALS, PARITY, ARCHITECTURE, ROADMAP, ADRs 0001–0008). This file grows one slice
-at a time (see ROADMAP "Definition of done — every slice").
+Guidance for agents working in this repo. The full design lives under **`docs/design/`**
+(GOALS, PARITY, ARCHITECTURE, ROADMAP, ADRs `docs/design/decisions/`). This file grows one
+slice at a time (see ROADMAP "Definition of done — every slice").
 
 ## The one rule that matters most: the determinism invariant
 
@@ -25,14 +25,19 @@ src/panopticon/
                    # = cloude-cade lifecycle; GithubSelfReviewed = same, sans the peer-review state,
                    # the user self-reviews; both share the GithubForgeWorkflow base = gh tool/layer/skills;
                    # Orchestrator = an agent that creates + pre-plans other tasks, `orchestrates=True`
-                   # gating the create/list MCP tools to it, ready-to-approve via the spawn-task skill) +
+                   # gating the create/list MCP tools to it, ready-to-approve via the spawn-task skill;
+                   # SetupRepo = a `runner_type="shell"` workflow — no container, the session service runs
+                   # its shell_script in a host tmux session (here: `claude setup-token`)) +
                    # discovery.py = scan the package + an optional path for Workflow subclasses
                    # (the registry build_app runs on; drop a module in → registered, ADR 0004)
   taskservice/     # control plane: TaskService, FastAPI REST API, the SQLAlchemy store
                    # adapter (in-memory or on-disk SQLite), filesystem artifact store, MCP
                    # server (mcp.py: operations=tools, artifacts=resources; FastMCP) mounted at /mcp
   sessionservice/  # the runner: Runner ABC + StubRunner (in-process) + LocalRunner
-                   # (real Docker+tmux via the CLIs); images.py = ADR-0005 composed images
+                   # (real Docker+tmux via the CLIs) + ShellRunner (shell_runner.py = a workflow's
+                   # shell_script in a host tmux session, no container — for `runner_type="shell"`
+                   # workflows; the spawner routes on it, skipping the image + the clone unless the
+                   # workflow opts in via clone_repo); images.py = ADR-0005 composed images
                    # (base→workflow→repo); provisioner.py = host-side provisioning
                    # (ADR 0011: branch the per-task clone on slug, record it back); clones.py =
                    # per-repo clone cache; spawn.py = spawn-prep (clone --local the per-task
@@ -90,7 +95,9 @@ A `Makefile` wraps the `uv` commands (`make help` lists targets):
 make sync        # uv sync — venv + deps
 make test        # uv run pytest
 make typecheck   # uv run mypy --package panopticon (strict)
-make check       # typecheck + test (what CI runs)
+make lint        # uv run ruff check --fix + ruff format (lint + auto-format)
+make format      # uv run ruff format
+make check       # lint + typecheck + test (what CI runs)
 make serve       # run the task service over HTTP (python -m panopticon.taskservice)
 make dashboard   # run the dashboard once (no attach loop)
 make start       # bring up everything: task service + session-service runner + dashboard supervisor
@@ -100,10 +107,10 @@ make migrate     # alembic upgrade head (uses $PANOPTICON_DB; override DB=<url>)
 make migrate-revision MSG="…"  # autogenerate a migration from ORM schema changes
 ```
 
-Schema is managed by **Alembic** (`migrations/`, `alembic.ini`; ADR 0001 §3). The SQLAlchemy
+Schema is managed by **Alembic** (`src/panopticon/migrations/`, `src/panopticon/alembic.ini`; ADR 0001 §3). The SQLAlchemy
 adapter still `create_all`s a fresh/in-memory DB for zero-config dev + tests; Alembic owns
 versioned evolution of any persistent DB (`make migrate` to apply, `make migrate-revision` after
-changing the ORM rows — then commit the generated `migrations/versions/*.py`). The two are guarded
+changing the ORM rows — then commit the generated `src/panopticon/migrations/versions/*.py`). The two are guarded
 against drift by `tests/test_migrations.py`; `alembic stamp head` aligns a dev DB that `create_all`
 already bootstrapped.
 
@@ -130,8 +137,13 @@ Spawning needs the base image — `make build`
 first. `make dashboard` runs the dashboard once without the attach loop (talks to
 `PANOPTICON_SERVICE_URL`).
 
-CI (`.github/workflows/ci.yml`) runs `uv sync`, `mypy`, and `pytest` on every PR (the same
-commands the Makefile wraps).
+Lint + format is **Ruff** (`make lint` / `make format`); the ruleset lives under `[tool.ruff]` in
+`pyproject.toml` (a curated best-practices `select`, incl. `F401` unused-import — the rule that keeps
+stale imports from landing; `ruff format` owns line width, so `E501` is off). `make check` runs it
+read-only (`ruff check` + `ruff format --check`) before mypy + pytest.
+
+CI (`.github/workflows/ci.yml`) runs `uv sync`, `ruff` (lint + format check), `mypy`, and `pytest`
+on every PR (the same commands the Makefile wraps).
 
 ## Tests worth knowing
 
@@ -210,13 +222,15 @@ commands the Makefile wraps).
 
 - **Ensemble** — the collapsible group of governed tasks shown under a governor in the
   dashboard. Pressing `Enter` on a governing task collapses its children into a single dim
-  `ensemble` placeholder row; pressing `Enter` again expands them. Pure display state — no
+  placeholder row; pressing `Enter` again expands them. Pure display state — no
   change is made to the task service. The placeholder row's key uses the `_ENSEMBLE_KEY_PREFIX`
-  sentinel and its slug cell reads `ensemble` (dim). Arrow keys skip it like the separator.
+  sentinel and its slug cell renders a dim `...`. Arrow keys skip it like the separator.
 - **Task** — a unit of work; identity is `id`, label is `slug`.
-- **Repo** — a repository tasks operate on. Holds `env_file` (a *reference* — a host path to an
-  env-file of secrets, ADR 0007), never the values; the runner injects it at launch (`--env-file`),
-  so a task gets only its own repo's secrets. The env-file carries the container's
+- **Repo** — a repository tasks operate on. Holds `env_file` (a *reference* — a name relative to the
+  secrets dir `$PANOPTICON_CONFIG/secrets` naming an env-file of secrets, ADR 0007), never the
+  values; the runner resolves it against its **own** host's secrets dir and injects it at launch
+  (`--env-file`), so a task gets only its own repo's secrets and the value stays host-agnostic for
+  remote runners. The env-file carries the container's
   `CLAUDE_CODE_OAUTH_TOKEN` — a **non-rotating `claude setup-token` the operator adds** (ADR 0012
   retired the old per-repo OAuth creds volume + `panopticon login`; auth is now just this env var,
   read straight from the environment — see `docs/container-auth.md`) — alongside any
