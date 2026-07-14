@@ -67,10 +67,6 @@ you're in, and drops you into a `setup-repo` task — run `claude setup-token` t
 Claude token (saved to the repo's env-file). Then you create tasks and watch your fleet from the
 dashboard.
 
-**What it puts on your machine:** a SQLite DB under `~/.local/share/panopticon/`, and background
-services on a dedicated `tmux -L panopticon` server (they keep running after you quit the
-dashboard, so `tmux ls` won't show them). `panopticon stop` removes it all.
-
 ## Your first task
 
 On the dashboard:
