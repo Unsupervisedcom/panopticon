@@ -6,16 +6,16 @@ That's easy with one agent. Run a fleet of them and it breaks down: the fleet st
 waiting on you, and you lose track of which agent is doing what. Panopticon gives you
 one place to watch them all.
 
-- **A live dashboard** of all your tasks — which agents are working, and which are blocked
-  waiting on you — so you stop cycling through terminals to find the one that's stuck.
+- **A live dashboard** of all your tasks, showing which agents are working and which are blocked
+  waiting on you, so you stop cycling through terminals to find the one that's stuck.
 - **Configurable workflows** that set the line between what an agent may do alone and what
-  needs your sign-off — so agents run unattended without running unchecked. Other tools show
+  needs your sign-off, so agents run unattended without running unchecked. Other tools show
   you which agent is blocked; Panopticon decides when it blocks.
-- **Sandboxed by default** — each agent works in its own container on its own branch
+- **Sandboxed by default:** each agent works in its own container on its own branch
   (secrets and environment handled per repo), so it can work freely and nothing reaches
   main without your review.
 
-Self-hosted and terminal-native — your infrastructure, your secrets,
+Self-hosted and terminal-native: your infrastructure, your secrets,
 your repos. A ground-up rewrite of the [cloude-cade](https://github.com/tildesrc/cloude-cade)
 prototype.
 
@@ -26,23 +26,22 @@ shells out to a few host tools. You need:
 
 - **Python 3.11+**
 - **Docker**, with the daemon running
-- **tmux** — the dashboard, console supervisor, and task sessions run on a dedicated
+- **tmux:** the dashboard, console supervisor, and task sessions run on a dedicated
   `tmux -L panopticon` server
-- **git** — the session service clones a per-task workspace for each agent
-- The **`claude` CLI** — first-time setup runs `claude setup-token` on the host to mint the
+- **git:** the session service clones a per-task workspace for each agent
+- The **`claude` CLI:** first-time setup runs `claude setup-token` on the host to mint the
   Claude auth token each agent uses inside its container
 
-`panopticon quickstart` checks these first; run `panopticon doctor` to re-check any time. On
-macOS, see [`docs/macos-setup.md`](docs/macos-setup.md) for host setup notes.
+`panopticon quickstart` checks these first; run `panopticon doctor` to re-check any time.
 
 ## Install
 
 Panopticon is a command-line app, so [pipx](https://pipx.pypa.io) is the recommended way to
-install it — it puts the `panopticon` command on your `PATH` in its own isolated environment.
+install it: it puts the `panopticon` command on your `PATH` in its own isolated environment.
 Plain `pip` works too.
 
 ```sh
-# recommended — isolated, on your PATH
+# recommended: isolated, on your PATH
 pipx install panopticon-app
 
 # or with pip
@@ -54,7 +53,7 @@ import are both **`panopticon`**.
 
 ## Quickstart
 
-Run `panopticon quickstart` **from inside the repo you want agents to work on** — it registers
+Run `panopticon quickstart` **from inside the repo you want agents to work on**: it registers
 whatever repo you're in as the target for your tasks.
 
 ```sh
@@ -63,31 +62,27 @@ panopticon quickstart  # first-time setup, then open the dashboard
 ```
 
 `panopticon quickstart` checks your prerequisites, brings the stack up, registers the repo
-you're in, and drops you into a `setup-repo` task — run `claude setup-token` there to mint your
+you're in, and drops you into a `setup-repo` task; run `claude setup-token` there to mint your
 Claude token (saved to the repo's env-file). Then you create tasks and watch your fleet from the
 dashboard.
-
-**What it puts on your machine:** a SQLite DB under `~/.local/share/panopticon/`, and background
-services on a dedicated `tmux -L panopticon` server (they keep running after you quit the
-dashboard, so `tmux ls` won't show them). `panopticon stop` removes it all.
 
 ## Your first task
 
 On the dashboard:
 
-1. **Create it.** Press `n`, pick the repo and a workflow — `github-peer-reviewed` (opens a PR
-   to merge) or `local-git-self-reviewed` (stays on local git, no GitHub needed) — and describe
+1. **Create it.** Press `n`, then pick the repo and a workflow: `github-peer-reviewed` (opens a PR
+   to merge) or `local-git-self-reviewed` (stays on local git, no GitHub needed). Describe
    the work in a sentence or two.
 2. **Watch it start.** The task's `container` column moves `queued → … → live` as the runner
    spawns its container; once it's `live` the agent starts on its own branch and begins planning
    automatically. Press `a` to open its plan when it's ready.
 3. **Respond when it needs you.** The `turn` column shows whether the agent is working or waiting
-   on you. When it wants a decision — like signing off on that plan — press `t` to attach to its
+   on you. When it wants a decision, like signing off on that plan, press `t` to attach to its
    session and steer it; run **`/advance`** there to approve, and again when it's done. Detach any
    session with `Ctrl-b d` (or your own `tmux` prefix + `d`) to return to the dashboard.
-4. **Review what ships.** For `github-peer-reviewed` the agent opens a PR — press `p` on the
-   dashboard to open it in your browser; for `local-git-self-reviewed` it commits to the task
-   branch for you to diff locally. Either way nothing lands until you `/advance` it — you own what
+4. **Review what ships.** For `github-peer-reviewed` the agent opens a PR (press `p` on the
+   dashboard to open it in your browser); for `local-git-self-reviewed` it commits to the task
+   branch for you to diff locally. Either way nothing lands until you `/advance` it: you own what
    ships.
 
 ## Configuration
