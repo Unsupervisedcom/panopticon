@@ -85,13 +85,14 @@ On the dashboard:
 2. **Watch it start.** The task's `container` column moves `queued → … → live` as the runner
    spawns its container and the agent begins on its own branch; planning then starts
    automatically. To follow the spawn, press `u` to jump to the runner (session-service) session
-   and read its logs, then detach with your `tmux` prefix + `d` to drop back to the dashboard.
+   and read its logs, then detach (`Ctrl-b d` by default, or whatever prefix you've bound `tmux`
+   to) to drop back to the dashboard.
 3. **Respond when it needs you.** The `turn` column shows whether the agent is working or waiting
    on you; when it wants a decision (like approving its plan), the turn flips to you. Press `t` to
    attach to that agent's session and steer it. To sign off and move the task to its next stage,
    run **`/advance`** in that session — it's how you approve the plan (`PLANNING → ITERATING`) and,
-   later, the finished change (`ITERATING → MERGING`). Detach (your `tmux` prefix + `d`) to drop
-   back to the dashboard.
+   later, the finished change (`ITERATING → MERGING`). Detach (`Ctrl-b d`) to drop back to the
+   dashboard.
 4. **Review what ships.** For `github-peer-reviewed` the agent opens a PR — press `p` to open it
    in your browser; for `local-git-self-reviewed` it commits to the task branch for you to diff
    locally. Either way nothing lands until you `/advance` it — you own what ships.
