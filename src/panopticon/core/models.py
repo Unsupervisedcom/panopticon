@@ -178,11 +178,14 @@ class Repo:
     spawn. ``docker_in_docker`` (a privileged nested Docker daemon) is the first — off by default,
     since it's a trust escalation (a privileged container ≈ host root).
 
-    ``hook_file`` *references* a host path to an executable script the runner runs on the host
-    after the per-task workspace is prepared but before ``docker run``. The hook receives
-    ``PANOPTICON_TASK_ID`` and ``PANOPTICON_REPO_NAME`` as env vars; a nonzero exit aborts the
-    spawn. Use it to modify the worktree before the agent sees it (e.g. strip host-only config
-    files). ``None`` = no hook.
+    ``hook_file`` *references* an executable script the runner runs on the host after the per-task
+    workspace is prepared but before ``docker run``: a **name relative to the runner's hooks dir**
+    (``$PANOPTICON_CONFIG/hooks``), resolved against its **own** host like ``env_file`` is against
+    the secrets dir, so a remote runner uses its own host's script. The hook runs with the checkout
+    as its cwd and receives ``PANOPTICON_TASK_ID``, ``PANOPTICON_REPO_NAME``, and
+    ``PANOPTICON_WORKSPACE`` as env vars; a nonzero exit aborts the spawn. Use it to modify the
+    worktree before the agent sees it (e.g. strip host-only config files). ``None`` = no hook.
+    See ``docs/hooks.md``.
     """
 
     id: str

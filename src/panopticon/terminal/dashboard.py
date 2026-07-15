@@ -746,6 +746,19 @@ def _list_secrets_files() -> list[str]:
     return sorted(p.name for p in secrets_dir.iterdir() if p.is_file())
 
 
+def _list_hooks_files() -> list[str]:
+    """Return the sorted **names** (relative to the hooks dir) of files in the config hooks dir.
+
+    A ``hook_file`` is stored relative to the hooks dir so it resolves on whichever host runs the
+    task, so the picker offers bare names, not absolute paths (mirrors :func:`_list_secrets_files`)."""
+    from panopticon.core.dirs import _hooks_dir
+
+    hooks_dir = _hooks_dir()
+    if not hooks_dir.is_dir():
+        return []
+    return sorted(p.name for p in hooks_dir.iterdir() if p.is_file())
+
+
 class EnvFileField(Widget):
     """Secrets env-file picker for the repo form.
 
@@ -909,6 +922,81 @@ class ImageLayerField(Widget):
             inp.display = False
 
 
+class HookFileField(Widget):
+    """Pre-launch hook picker for the repo form — the hook analogue of :class:`EnvFileField`.
+
+    Shows a ``Select`` dropdown listing the file **names** found in the config hooks directory
+    (``~/.config/panopticon/hooks/``), with an ``enter custom path…`` option that reveals a
+    free-form ``Input``. The stored value is always a **name relative to the hooks dir** (so it
+    resolves on whichever host runs the task); the custom input accepts an absolute or relative
+    path and normalizes it to that relative name on read (see
+    :func:`~panopticon.core.dirs.relativize_hook_file`). See ``docs/hooks.md``.
+    """
+
+    DEFAULT_CSS = """
+    HookFileField { margin-bottom: 1; height: auto; }
+    HookFileField #hook-file-input { margin-top: 1; }
+    """
+
+    _CUSTOM = "__custom__"
+
+    def __init__(self, initial: str = "", id: str | None = None) -> None:
+        super().__init__(id=id)
+        self._initial = initial
+        self._known = _list_hooks_files()
+
+    def compose(self) -> ComposeResult:
+        known_set = set(self._known)
+        options: list[tuple[str, str]] = [(p, p) for p in self._known]
+        options.append(("enter custom path…", self._CUSTOM))
+        is_custom = bool(self._initial and self._initial not in known_set)
+        yield Select(
+            options,
+            prompt="hook_file (name in hooks dir or custom path)",
+            allow_blank=True,
+            value=self._initial if (self._initial and not is_custom) else Select.NULL,
+            id="hook-file-select",
+        )
+        inp = Input(
+            value=self._initial if is_custom else "",
+            placeholder="prep.sh (or a path — normalized to a hooks-dir name)",
+            id="hook-file-input",
+        )
+        inp.display = is_custom
+        yield inp
+
+    @property
+    def hook_file_value(self) -> str:
+        """The stored hook_file **name** (relative to the hooks dir), or ``""`` when unset.
+
+        A dropdown pick is already a bare name; a custom entry is normalized from whatever path the
+        operator typed (absolute or relative) via
+        :func:`~panopticon.core.dirs.relativize_hook_file`."""
+        from panopticon.core.dirs import relativize_hook_file
+
+        try:
+            sel = self.query_one("#hook-file-select", Select)
+        except NoMatches:
+            return ""
+        v = sel.value
+        if isinstance(v, _SelectNoSelection) or v == self._CUSTOM:
+            try:
+                return relativize_hook_file(self.query_one("#hook-file-input", Input).value)
+            except NoMatches:
+                return ""
+        return str(v)
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id != "hook-file-select":
+            return
+        inp = self.query_one("#hook-file-input", Input)
+        if event.value == self._CUSTOM:
+            inp.display = True
+            inp.focus()
+        else:
+            inp.display = False
+
+
 class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     """A modal form for a repo's fields. On save (Enter or Ctrl+S) it hands the collected
     ``{field: value}`` dict to ``on_submit`` (which validates + persists); if that returns an
@@ -916,9 +1004,9 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     dismisses (with the values dict) only on success. Escape cancels, dismissing ``None``. The
     text fields are strings; the privileged toggle is the bool ``docker_in_docker``.
 
-    Two tabs: **general** (git URL, id, name, base branch, env file, image layer, privileged
-    docker) and **workflows** (a per-workflow opt-in/opt-out checklist). Both tabs' values are
-    collected on save — submitting from either tab captures everything.
+    Two tabs: **general** (git URL, id, name, base branch, env file, image layer, hook file,
+    privileged docker) and **workflows** (a per-workflow opt-in/opt-out checklist). Both tabs'
+    values are collected on save — submitting from either tab captures everything.
 
     **Space toggles checkboxes; Enter saves the form** from any field. The :class:`SpaceCheckbox`
     subclass drops the default ``enter`` binding so Enter always bubbles up to the screen's save
@@ -942,6 +1030,7 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     #form-error { color: $error; text-align: center; }
     #form-hint { color: $text-muted; text-align: center; margin-top: 1; }
     #pane-general EnvFileField #env-file-input { margin-bottom: 0; }
+    #pane-general HookFileField #hook-file-input { margin-bottom: 0; }
     """
     # Enter saves from any field. Text Inputs consume Enter via their own submit binding (posting
     # Input.Submitted → on_input_submitted), so this screen binding only fires for fields that
@@ -1014,6 +1103,7 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
                     yield ImageLayerField(
                         initial=self._initial("image_layer_file"), id="field-image_layer_file"
                     )
+                    yield HookFileField(initial=self._initial("hook_file"), id="field-hook_file")
                     yield SpaceCheckbox(
                         "privileged docker (docker-in-docker)",
                         value=bool(self._repo.get("capabilities", {}).get("docker_in_docker")),
@@ -1075,6 +1165,9 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
         values["env_file"] = self.query_one("#field-env_file", EnvFileField).env_file_value or None
         values["image_layer_file"] = (
             self.query_one("#field-image_layer_file", ImageLayerField).image_layer_value or None
+        )
+        values["hook_file"] = (
+            self.query_one("#field-hook_file", HookFileField).hook_file_value or None
         )
         values["docker_in_docker"] = self.query_one("#field-docker_in_docker", Checkbox).value
         enabled: list[str] = []
@@ -1177,6 +1270,7 @@ class ReposScreen(ModalScreen[None]):
                     values["default_base"] or "main",
                     env_file=values["env_file"] or None,
                     image_layer_file=values["image_layer_file"] or None,
+                    hook_file=values["hook_file"] or None,
                     capabilities={"docker_in_docker": values["docker_in_docker"]},
                     enabled_workflows=values["enabled_workflows"],
                     disabled_workflows=values["disabled_workflows"],
@@ -1210,6 +1304,7 @@ class ReposScreen(ModalScreen[None]):
                     default_base=values["default_base"] or "main",
                     env_file=values["env_file"] or None,
                     image_layer_file=values["image_layer_file"] or None,
+                    hook_file=values["hook_file"] or None,
                     capabilities=capabilities,
                     enabled_workflows=values["enabled_workflows"],
                     disabled_workflows=values["disabled_workflows"],
