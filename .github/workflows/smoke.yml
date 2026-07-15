@@ -77,50 +77,21 @@ jobs:
         run: tmux -L panopticon has-session -t runner
 
       # Run the real `panopticon quickstart` (doctor + repo registration + setup-repo task), then
-      # confirm its shell task reaches the token-mint prompt — the last step before an interactive
-      # `claude setup-token`, which CI can't complete. quickstart ends by opening the interactive
-      # console, which no-TTYs out in CI; we background it so a stuck attach can never wedge the job
-      # and kill it once we've made our assertion.
+      # let `panopticon smoketest` confirm its shell task reaches the token-mint prompt — the last
+      # step before an interactive `claude setup-token`, which CI can't complete. quickstart ends by
+      # opening the interactive console, which no-TTYs out in CI; we background it so a stuck attach
+      # can never wedge the job and kill it once smoketest has made its assertion.
       - name: Run quickstart and reach the token-mint prompt
         run: |
           set -u
           uv run panopticon quickstart </dev/null >quickstart.log 2>&1 &
           qs_pid=$!
-
-          # The runner claims + spawns the setup-repo task quickstart created; find its id.
-          task_id=""
-          for i in $(seq 1 60); do
-            task_id=$(uv run python -c "import httpx; from panopticon.client import TaskServiceClient; c = TaskServiceClient(httpx.Client(base_url='http://localhost:8000')); print(next((t['id'] for t in c.list_tasks() if t['workflow'] == 'setup-repo'), ''))" 2>/dev/null)
-            [ -n "$task_id" ] && break
-            sleep 1
-          done
-          if [ -z "$task_id" ]; then
-            echo "quickstart did not create a setup-repo task"
-            echo "--- quickstart.log ---"; cat quickstart.log 2>/dev/null || true
+          if uv run panopticon smoketest; then
             kill "$qs_pid" 2>/dev/null || true
-            exit 1
-          fi
-          echo "$task_id" > setup_repo_task_id
-          session="panopticon-$task_id"
-
-          echo "Waiting for $session to reach the token-mint prompt..."
-          ok=0
-          for i in $(seq 1 60); do
-            if tmux -L panopticon capture-pane -t "$session" -p 2>/dev/null \
-                 | grep -qF "mint one with 'claude setup-token'"; then
-              echo "Reached the token-mint prompt"
-              ok=1
-              break
-            fi
-            sleep 1
-          done
-          kill "$qs_pid" 2>/dev/null || true
-          if [ "$ok" -ne 1 ]; then
-            echo "setup-repo task did not reach the token-mint prompt within 60s"
-            echo "--- tmux list-sessions ---"; tmux -L panopticon list-sessions 2>&1 || true
-            echo "--- setup-repo pane ---"; tmux -L panopticon capture-pane -t "$session" -p -S - 2>&1 || echo "(no session)"
+          else
             echo "--- quickstart.log ---"; cat quickstart.log 2>/dev/null || true
             echo "--- runner log (tail) ---"; tail -n 40 /tmp/panopticon-runner.log 2>/dev/null || true
+            kill "$qs_pid" 2>/dev/null || true
             exit 1
           fi
 
@@ -131,8 +102,6 @@ jobs:
           tmux -L panopticon capture-pane -t service -p 2>/dev/null || echo "(no session)"
           echo "=== runner pane ==="
           tmux -L panopticon capture-pane -t runner -p 2>/dev/null || echo "(no session)"
-          echo "=== setup-repo pane ==="
-          tmux -L panopticon capture-pane -t "panopticon-$(cat setup_repo_task_id 2>/dev/null)" -p 2>/dev/null || echo "(no session)"
           echo "=== quickstart log ==="
           cat quickstart.log 2>/dev/null || echo "(no log)"
           echo "=== service log ==="
