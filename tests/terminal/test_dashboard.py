@@ -1823,6 +1823,17 @@ def test_open_command_is_xdg_open_on_linux_and_open_on_mac(monkeypatch: Any) -> 
     assert dashboard._open_command() == "open"
 
 
+def test_open_path_silences_child_streams(monkeypatch: Any) -> None:
+    # The opener (and anything it spawns) must not inherit the TUI's TTY — its stdout/stderr
+    # would garble Textual's frame. `_open_path` redirects all three streams to DEVNULL.
+    kwargs: dict[str, Any] = {}
+    monkeypatch.setattr(dashboard.subprocess, "Popen", lambda argv, *a, **k: kwargs.update(k))
+    dashboard._open_path("/some/artifact.md")
+    assert kwargs["stdin"] == dashboard.subprocess.DEVNULL
+    assert kwargs["stdout"] == dashboard.subprocess.DEVNULL
+    assert kwargs["stderr"] == dashboard.subprocess.DEVNULL
+
+
 async def test_pressing_a_opens_the_selected_artifact_via_rest(monkeypatch: Any) -> None:
     # `a` lists the task's artifacts; Enter fetches the selection over REST to a temp file and
     # opens it with the host handler — the universal path (works even remote from the store).

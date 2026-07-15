@@ -5,8 +5,10 @@ Every task runs `claude` inside its container. The agent authenticates from a
 `env_file`** at spawn (ADR 0007 / ADR 0012). You provide that token once per repo; it is long-lived
 and non-rotating, so it survives concurrent tasks and respawns (no ~8h re-login cliff).
 
-You can do this by hand (mint with the `claude` CLI, drop the token into the env-file — below), or
-run the **`setup-repo` workflow**, which does both on the host for you (see *The `setup-repo`
+Normally you don't set this up by hand: **`panopticon quickstart` registers the repo and drops you
+into a `setup-repo` task** that mints the token and writes it into the env-file for you. This page is
+the deep-dive and the manual path — set it up by hand (mint with the `claude` CLI, drop the token
+into the env-file — below), or run the **`setup-repo` workflow** on its own (see *The `setup-repo`
 workflow* below). There is no `login` command.
 
 ## One-time setup per account
@@ -47,7 +49,8 @@ That's it — new task containers for that repo now authenticate from the token.
 
 ## The `setup-repo` workflow
 
-To skip the manual copy, enable the **`setup-repo`** workflow on the repo and start a task on it.
+`panopticon quickstart` runs this workflow for you. To do it manually, start a **`setup-repo`** task
+from the repos modal — press `g` on the dashboard, highlight the repo, and press `s`.
 It runs on the host (no container — `runner_type = "shell"`), attaches you to a shell where it runs
 `claude setup-token`, and on a successful mint **writes the token straight into the repo's env-file**
 as `CLAUDE_CODE_OAUTH_TOKEN=…` (creating the file `0600` if needed). If a token is already present,

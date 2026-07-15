@@ -217,7 +217,7 @@ def main(
                 task_id,
                 runner_id,
                 phase="failed",
-                detail="No auth token — set CLAUDE_CODE_OAUTH_TOKEN in the repo's env_file (see docs/container-auth.md)",
+                detail="No auth token — set CLAUDE_CODE_OAUTH_TOKEN in the repo's env_file (see docs/auth.md)",
             )
         return
     render_skills(client, task_id, config_dir.parent)
