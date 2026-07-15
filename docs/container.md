@@ -29,18 +29,28 @@ the task, builds the image, starts the container, and later heals or cleans it u
 service** only ever *records* and *displays* what the runner reports; it spawns nothing itself.
 
 ```
-   queued
-     │  a runner claims the task
-     ▼
-   claiming → preparing → building → starting → awaiting
-     │  clone      │  compose+build   │  docker run   │  entrypoint
-     │  /workspace │  the image       │  + tmux       │  connects & registers
-     ▼
-    live ──────────────────────────────► (task reaches a terminal state)
-     │  agent working; you can attach          │
-     │                                         ▼
-     ▼  container vanishes                   cleanup: stop container,
-    down ──respawn (self-heal, or `R`)──►    release claim, remove /workspace
+  queued          unclaimed — waiting for a runner to claim it
+  │
+  ▼
+  claiming        a runner claimed it; the spawn begins
+  │
+  ▼
+  preparing       git clone --local → mounted at /workspace
+  │
+  ▼
+  building        compose + docker build the task image
+  │
+  ▼
+  starting        docker run + the tmux session come up
+  │
+  ▼
+  awaiting        entrypoint connects to the task service & registers
+  │
+  ▼
+  live            registration open — agent working; attach with `t`
+  │
+  ├─ container vanishes → down → respawn (self-heal or `R`) → back to spawn
+  └─ task goes terminal → cleanup (stop container, release claim, rm /workspace) → –
 ```
 
 ## The status you see on the dashboard
