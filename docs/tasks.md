@@ -8,22 +8,20 @@ to done.
 
 It's the companion to [the workflow catalog](workflows/README.md): that page is about
 *choosing* how a task runs; this one is about the *task itself* — the object every
-workflow drives. For the deeper role/topology treatment see
-[`design/ARCHITECTURE.md`](design/ARCHITECTURE.md).
+workflow drives. For the system's roles and topology, see [the overview](overview.md).
 
 ## What a task is
 
 A task is a record owned entirely by the **task service** — the control plane, and the
-single writer of task state (ADR 0006). Its identity is an internal `id` (generated at
-creation, never changes); everything else about it is a property the workflow and the
-agent evolve over the task's life. One task runs exactly one **workflow**, against one
-**repo**, and lives on the dashboard until it reaches a terminal state.
+single writer of task state. Its identity is an internal `id` (generated at creation,
+never changes); everything else about it is a property the workflow and the agent evolve
+over the task's life. One task runs exactly one **workflow**, against one **repo**, and
+lives on the dashboard until it reaches a terminal state.
 
-Crucially, the control plane makes **no LLM calls**. The task service, the session
-service, and the dashboard are all deterministic; every LLM call happens inside the task's
-own container, where the agent works. So a task's *state* is a plain, inspectable record —
-the agent proposes changes to it through a narrow, gated interface (see
-[How a task is acted on](#how-a-task-is-acted-on)).
+A task's *state* is a plain, inspectable record: the agent proposes changes to it through
+a narrow, gated interface (see [How a task is acted on](#how-a-task-is-acted-on)), never
+writing task state directly. That the control plane runs no LLM is a system-wide
+invariant — see [the overview](overview.md).
 
 ## Essential properties
 
@@ -39,7 +37,7 @@ are **computed** from the others and are marked as such.
 | `memo` | A brief one-line reminder of intent, collected when the task is created and shown in the dashboard summary. Not the full description — that's the plan artifact. |
 | `initial_prompt` | Optional text prefilled (unsent) into the agent's input box on first spawn; takes precedence over `memo` for that purpose. |
 | `workflow` | The lifecycle this task runs (e.g. `github-self-reviewed`). Fixed at creation. |
-| `repo_id` | The repository the task operates on. |
+| `repo_id` | The [repository](repos.md) the task operates on. |
 
 ### Position in the lifecycle
 
@@ -65,7 +63,7 @@ See [Provisioning](#provisioning) below.
 
 | Property | Meaning |
 |---|---|
-| `claimed_by` | The runner (session service) that has **claimed** the task — the spawn gate, so exactly one host runs it (ADR 0008). `None` if unclaimed. |
+| `claimed_by` | The runner (session service) that has **claimed** the task — the spawn gate, so exactly one host runs it. `None` if unclaimed. |
 | `container_status` | *(computed)* The single status the dashboard shows, folding spawn progress with liveness. See [Container status](#container-status). |
 | `runner_host` | *(computed, at query time)* The host of the claiming runner, used to attach to remote sessions. |
 | `starting_model` | The model the agent starts with (e.g. `opus`), seeded from the workflow's default. |
@@ -87,7 +85,7 @@ A task's lifecycle is a **state machine**, and the workflow *is* that machine. S
 declared as classes (`State` for non-terminal, `TerminalState` for done), each carrying a
 `label`, a `description`, the actor who holds the turn on entry, the actor who advances out,
 and the agent's responsibilities for that state. The lifecycle is code — not control flow
-baked into the engine (ADR 0004).
+baked into the engine.
 
 ### Who acts, and who advances
 
@@ -158,31 +156,15 @@ and calls `set_slug`. The **session service** then branches the clone to `panopt
 and points `origin` at the forge; the task service only **records** the resulting `branch`
 and `clone` (it does no git itself, so this stays correct when the runner is remote). At that
 point `provisioned` becomes `True`. This is why the agent names the task before committing
-anything (ADR 0010/0011).
+anything. For the host-side git mechanics — the per-task clone, the mount, and the branch —
+see [the container doc](container.md).
 
 ## Container status
 
-Whether a task has a live container is a separate axis from its workflow state. The session
-service reports its spawn progress as a `LifecyclePhase` — `claiming → preparing → building
-→ starting → awaiting`, or `failed` — and the task service folds that phase together with
-container-registration presence and runner liveness into one **`container_status`** the
-dashboard renders verbatim (`compose_container_status`, a pure function). The composed
-values:
-
-| Status | Meaning |
-|---|---|
-| `queued` | Unclaimed, non-terminal — waiting for a runner to claim it. |
-| `claiming` / `preparing` / `building` / `starting` / `awaiting` | Spawn in progress (the reported phase). |
-| `healing` | Claimed, container gone, the runner is respawning it. |
-| `live` | A container registration is open — the agent is working. |
-| `down` | Claimed and the runner is live, but the container is gone (respawn with `R`). |
-| `failed` | A spawn step raised. |
-| `disconnected` | Claimed by a runner no longer connected to the task service. |
-| `–` | Terminal task — no container concept. |
-
-Registration and runner liveness are **connection-based**, not heartbeat-based: a
-registration exists exactly as long as the container (or runner) holds its `/live`
-connection open. See the glossary in [`../AGENTS.md`](../AGENTS.md) for the full picture.
+Whether a task has a live container is a separate axis from its workflow state:
+`container_status` folds the runner's reported spawn progress together with container and
+runner liveness into the one status the dashboard shows (queued, building, live, down, and
+so on). The [container doc](container.md) owns the full status set and how it's composed.
 
 ## How a task is acted on
 
@@ -192,8 +174,8 @@ surface the task service exposes over MCP (and REST):
 - **Operations** — `advance` and `drop`, the gated verbs of the state graph. The agent
   invokes `advance` through a skill; the dashboard drives only `drop`.
 - **Artifacts** — the task's own documents (the plan, notes), file-backed and addressable
-  at `panopticon://tasks/{id}/artifacts/{name}`. The plan lives here, not in the repo
-  (ADR 0003); read it from the dashboard with `a`.
+  at `panopticon://tasks/{id}/artifacts/{name}`. The plan lives here, not in the repo;
+  read it from the dashboard with `a`.
 - **Skills** — agent-driven procedures exposed in the container. Every task has the
   universal **`provision`** skill; a workflow adds its own (the GitHub workflows add
   `open-pr`, `babysit-ci`, `babysit-merge`).
@@ -208,10 +190,7 @@ doing inside the container.
 
 - [Workflows: choosing how a task runs](workflows/README.md) — the catalog, and each
   workflow's states and responsibilities.
-- [`design/ARCHITECTURE.md`](design/ARCHITECTURE.md) — the roles, interfaces, and
-  end-to-end topology.
-- The ADRs behind these mechanics: [0004 (workflows)](design/decisions/0004-workflow-abstraction.md),
-  [0006 (task service)](design/decisions/0006-task-service.md),
-  [0008 (claim/spawn)](design/decisions/0008-execution-session-topology.md),
-  [0010](design/decisions/0010-task-provisioning.md) /
-  [0011 (provisioning)](design/decisions/0011-provisioning-per-task-clone.md).
+- [The overview](overview.md) — the system's roles and topology.
+- [The container doc](container.md) — the container status set, and the host-side git a
+  task is provisioned with.
+- [Repos](repos.md) — the repositories tasks operate on.
