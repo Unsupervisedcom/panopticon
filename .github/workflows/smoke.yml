@@ -13,7 +13,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     # Blank the Claude credentials so `setup_repo.sh` skips its "adopt a token from your
     # environment" branch and lands deterministically on the paste/mint prompt — the point this
-    # smoke drives up to. Set job-level so the `make host` runner daemon inherits them too.
+    # smoke drives up to. Set job-level so the runner daemon quickstart starts inherits them too.
     env:
       CLAUDE_CODE_OAUTH_TOKEN: ""
       ANTHROPIC_API_KEY: ""
@@ -54,38 +54,36 @@ jobs:
           fi
           echo "$RUNNER_TEMP/fakebin" >> "$GITHUB_PATH"
 
-      - name: Start host services
-        run: make host
-
-      - name: Wait for service health check
-        run: |
-          for i in $(seq 1 60); do
-            if curl --silent --fail http://localhost:8000/healthz; then
-              echo ""
-              echo "Service is up"
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "Service did not come up within 60 seconds"
-          exit 1
-
-      - name: Verify service tmux session
-        run: tmux -L panopticon has-session -t service
-
-      - name: Verify runner tmux session
-        run: tmux -L panopticon has-session -t runner
-
-      # Run the real `panopticon quickstart` (doctor + repo registration + setup-repo task), then
-      # let `panopticon smoketest` confirm its shell task reaches the token-mint prompt — the last
-      # step before an interactive `claude setup-token`, which CI can't complete. quickstart ends by
-      # opening the interactive console, which no-TTYs out in CI; we background it so a stuck attach
-      # can never wedge the job and kill it once smoketest has made its assertion.
+      # Run the real `panopticon quickstart`: it starts the task service + session-service runner
+      # (detached tmux sessions), runs doctor, registers the repo, creates the setup-repo task, then
+      # opens the interactive console — which no-TTYs out in CI. Background it so a stuck attach can't
+      # wedge the job; the detached sessions outlive it. Then `panopticon smoketest` confirms the
+      # setup-repo shell task reaches the token-mint prompt — the last step before an interactive
+      # `claude setup-token`, which CI can't complete.
       - name: Run quickstart and reach the token-mint prompt
         run: |
           set -u
           uv run panopticon quickstart </dev/null >quickstart.log 2>&1 &
           qs_pid=$!
+
+          # Wait for the task service quickstart brings up.
+          up=0
+          for i in $(seq 1 60); do
+            if curl --silent --fail http://localhost:8000/healthz; then up=1; break; fi
+            sleep 1
+          done
+          if [ "$up" -ne 1 ]; then
+            echo "Service did not come up within 60 seconds"
+            cat quickstart.log 2>/dev/null || true
+            kill "$qs_pid" 2>/dev/null || true
+            exit 1
+          fi
+          echo "Service is up"
+
+          # The service + runner tmux sessions quickstart started.
+          tmux -L panopticon has-session -t service
+          tmux -L panopticon has-session -t runner
+
           if uv run panopticon smoketest; then
             kill "$qs_pid" 2>/dev/null || true
           else
