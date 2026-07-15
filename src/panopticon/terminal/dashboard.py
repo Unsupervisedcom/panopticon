@@ -409,8 +409,18 @@ def _open_command() -> str:
 def _open_path(path: str) -> None:
     """Hand ``path`` to the host's default handler, non-blocking (don't freeze the TUI). Raises
     ``FileNotFoundError`` when the opener isn't installed (e.g. headless host, no ``xdg-open``);
-    callers catch it and notify rather than letting it crash the TUI."""
-    subprocess.Popen([_open_command(), path])
+    callers catch it and notify rather than letting it crash the TUI.
+
+    Silences the child's standard streams (``DEVNULL``): the opener — and any app it spawns —
+    would otherwise inherit the TUI's TTY and print diagnostics straight into Textual's frame,
+    garbling the dashboard. ``stdin`` is closed too so a detached child can't contend with the
+    TUI for keypresses; a GUI opener never needs it."""
+    subprocess.Popen(
+        [_open_command(), path],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 def _edit_with_editor(text: str) -> str:
