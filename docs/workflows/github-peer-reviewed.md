@@ -19,7 +19,7 @@ picker.
 
 | State | What happens | Who advances |
 |---|---|---|
-| **PLANNING** | The agent collects requirements and writes a `plan.md` artifact (press `a` to read it) plus a token estimate. | **You**, by approving the plan with `/advance`. |
+| **PLANNING** | The agent collects requirements and writes a `plan.md` artifact (read it from the dashboard: highlight the task and press `a`) plus a token estimate. | **You**, by approving the plan with `/advance`. |
 | **ITERATING** | The agent implements the plan, commits and pushes, opens a **draft PR**, and gets CI green. | **You**, once you're happy the change is ready for review. |
 | **REVIEW** | The task waits for the PR to be reviewed and approved by a peer. | **You**, once the PR is reviewed. |
 | **MERGING** | The agent adds the PR to the merge queue and re-adds it if it falls out. | **The agent**, which advances itself once the PR is merged. |

@@ -21,7 +21,7 @@ picker.
 
 | State | What happens | Who advances |
 |---|---|---|
-| **PLANNING** | The agent collects requirements and writes a `plan.md` artifact (press `a` to read it) plus a token estimate. | **You**, by approving the plan with `/advance`. |
+| **PLANNING** | The agent collects requirements and writes a `plan.md` artifact (read it from the dashboard: highlight the task and press `a`) plus a token estimate. | **You**, by approving the plan with `/advance`. |
 | **ITERATING** | The agent implements the plan and commits to the task branch. You self-review the diff (`git diff` / `git log` locally). | **You**: advancing to MERGING *is* your approval. |
 | **MERGING** | The agent merges the task branch into the repo's base branch. | **The agent**, which advances itself once the merge lands. |
 | **COMPLETE** | Terminal. The change is merged locally. | n/a |

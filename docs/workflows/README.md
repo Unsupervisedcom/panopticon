@@ -30,9 +30,13 @@ Four change-making workflows (`github-peer-reviewed`, `github-self-reviewed`,
 `local-git-self-reviewed`, and, per child, `orchestrator`) start in **PLANNING**. Before
 the agent can leave that state it must:
 
-- **Write a plan** as the task's `plan.md` artifact. Press `a` on the dashboard to read
-  it. This is your chance to redirect before any code is written.
+- **Write a plan** as the task's `plan.md` artifact. This is your chance to redirect
+  before any code is written.
 - **Record a token estimate** so the task's projected cost is tracked.
+
+The plan is a task **artifact**, which you read from the dashboard: highlight the task and
+press `a` to open its `plan.md`. (Artifacts are the task's own documents, kept with the
+task rather than in the repo, so the dashboard is where you read them.)
 
 You approve the plan by advancing the task out of PLANNING (attach with `t`, run
 `/advance`). `spike` and `setup-repo` have no planning step.
