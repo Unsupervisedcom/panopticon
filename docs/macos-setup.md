@@ -19,22 +19,9 @@ docker info
 `panopticon doctor` checks this (along with tmux, git, the `claude` CLI, and Python), and
 `panopticon quickstart` runs it for you before doing anything.
 
-## What runs where
-
-The control plane, dashboard, and `tmux -L panopticon` server run natively on the macOS host; each
-task's agent runs inside the Docker Desktop Linux VM.
-
-```
-macOS host                          Docker Desktop Linux VM
-──────────────────────────────      ──────────────────────────────────
-task service                        panopticon-<id> containers
-session-service runner                └─ agent (claude CLI)
-dashboard                             └─ /workspace (per-task clone)
-tmux -L panopticon server             └─ entrypoint.sh (Linux tools)
-```
-
-`docker/Dockerfile` and `docker/entrypoint.sh` use Linux-only commands (`groupmod`, `useradd`,
-`gosu`, …) — intentional; they always run inside the Linux VM, never on the host.
+Task containers run inside Docker Desktop's Linux VM rather than on your host directly — which is
+also why the container's Linux-only tooling (`groupmod`, `useradd`, `gosu`, … in `docker/Dockerfile`
+and `docker/entrypoint.sh`) works even though your host is macOS.
 
 ## Known limitations on macOS
 

@@ -49,8 +49,8 @@ That's it — new task containers for that repo now authenticate from the token.
 
 ## The `setup-repo` workflow
 
-`panopticon quickstart` runs this workflow for you. To do it manually, enable the **`setup-repo`**
-workflow on the repo and start a task on it.
+`panopticon quickstart` runs this workflow for you. To do it manually, start a **`setup-repo`** task
+from the repos modal — press `g` on the dashboard, highlight the repo, and press `s`.
 It runs on the host (no container — `runner_type = "shell"`), attaches you to a shell where it runs
 `claude setup-token`, and on a successful mint **writes the token straight into the repo's env-file**
 as `CLAUDE_CODE_OAUTH_TOKEN=…` (creating the file `0600` if needed). If a token is already present,
