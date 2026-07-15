@@ -76,6 +76,12 @@ jobs:
       - name: Verify runner tmux session
         run: tmux -L panopticon has-session -t runner
 
+      # DIAGNOSTIC: keep dead panes so a shell task that exits early (e.g. a bash-3.2 vs dash parse
+      # difference on macOS /bin/sh) leaves its output behind to capture, instead of the session
+      # just vanishing. Must be set on the server before the setup-repo pane is created.
+      - name: Keep dead tmux panes (diagnostic)
+        run: tmux -L panopticon set-option -g remain-on-exit on
+
       # Run the real `panopticon quickstart` (doctor + repo registration + setup-repo task), then
       # confirm its shell task reaches the token-mint prompt — the last step before an interactive
       # `claude setup-token`, which CI can't complete. quickstart ends by opening the interactive
@@ -108,25 +114,27 @@ jobs:
           for i in $(seq 1 60); do
             if tmux -L panopticon capture-pane -t "$session" -p 2>/dev/null \
                  | grep -qF "mint one with 'claude setup-token'"; then
-              echo "Reached the token-mint prompt"
               ok=1
               break
             fi
             sleep 1
           done
           kill "$qs_pid" 2>/dev/null || true
+
+          echo "=== DIAGNOSTICS ==="
+          echo "--- tmux list-sessions ---"; tmux -L panopticon list-sessions 2>&1 || true
+          echo "--- setup-repo task state ---"
+          uv run python -c "import httpx; from panopticon.client import TaskServiceClient; c = TaskServiceClient(httpx.Client(base_url='http://localhost:8000')); t = next((x for x in c.list_tasks() if x['workflow'] == 'setup-repo'), None); print(t['state'], t.get('turn'), t.get('container_status')) if t else print('no setup-repo task')" 2>&1 || true
+          echo "--- setup-repo pane (with history, dead panes kept) ---"
+          tmux -L panopticon capture-pane -t "$session" -p -S - 2>&1 || echo "(no pane)"
+          echo "--- runner log (tail) ---"; tail -n 40 /tmp/panopticon-runner.log 2>/dev/null || true
+
           if [ "$ok" -ne 1 ]; then
             echo "setup-repo task did not reach the token-mint prompt within 60s"
-            echo "=== DIAGNOSTICS ==="
-            echo "--- tmux list-sessions ---"; tmux -L panopticon list-sessions 2>&1 || true
-            echo "--- setup-repo task state ---"
-            uv run python -c "import httpx; from panopticon.client import TaskServiceClient; c = TaskServiceClient(httpx.Client(base_url='http://localhost:8000')); t = next((x for x in c.list_tasks() if x['workflow'] == 'setup-repo'), None); print(t['state'], t.get('turn'), t.get('container_status')) if t else print('no setup-repo task')" 2>&1 || true
-            echo "--- setup-repo pane (with history) ---"; tmux -L panopticon capture-pane -t "$session" -p -S - 2>&1 || echo "(no session)"
             echo "--- quickstart.log ---"; cat quickstart.log 2>/dev/null || true
-            echo "--- runner log (tail) ---"; tail -n 50 /tmp/panopticon-runner.log 2>/dev/null || true
-            echo "--- service log (tail) ---"; tail -n 30 /tmp/panopticon-service.log 2>/dev/null || true
             exit 1
           fi
+          echo "Reached the token-mint prompt"
 
       - name: Dump logs on failure
         if: failure()
