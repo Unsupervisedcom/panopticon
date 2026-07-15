@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from panopticon.container.skills import render_command, render_operation, write_commands
 from panopticon.core.models import Skill
+from panopticon.harnesses.claude import render_command, render_operation, write_commands
 
 
 def test_render_command_is_frontmatter_plus_procedure_with_task_id() -> None:
