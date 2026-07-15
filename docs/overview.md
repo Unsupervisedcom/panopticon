@@ -60,9 +60,13 @@ everything else goes through it.
 
 ## The concepts you'll meet
 
+These are the terms you'll see on the dashboard, in brief. Each has a dedicated guide that
+goes deeper; this section is just the map.
+
 - **Task, and its slug.** A task is one unit of work. You describe it in a sentence or two;
   the agent gives it a short **slug** (a human-friendly name), and that slug names its branch
-  (`panopticon/<slug>`). You'll see the slug on the dashboard.
+  (`panopticon/<slug>`). You'll see the slug on the dashboard. [`docs/tasks.md`](tasks.md) is
+  the full reference for the task object, its states, turns, and responsibilities.
 - **Branch and sandbox.** Every task gets its own clone of the repo and its own branch. That's
   the isolation: agents never share a working tree, and their work is quarantined on a branch
   until you're happy with it.
@@ -88,7 +92,9 @@ Here's the whole arc, and where each step shows up on the dashboard:
 1. **You create it.** Press `n`, pick the repo and a workflow, and describe the work. The task
    appears with no branch yet.
 2. **The runner starts it.** The `container` column moves `queued → … → live` as the runner
-   builds the container, injects the repo's secrets, and starts the agent.
+   builds the container, injects the repo's secrets, and starts the agent. See
+   [`docs/container.md`](container.md) for what each container status means and how a
+   container recovers if it dies.
 3. **The agent plans.** It names the task (setting the slug and creating its branch), then writes
    a plan. When the `turn` column shows the task is waiting on you, press `a` to read the plan.
    This is your chance to redirect before any code is written.
@@ -114,6 +120,7 @@ database, task artifacts, and per-task clones under standard locations on your m
 overridable; see the [Configuration table in the README](../README.md#configuration)). Each
 repo's secrets are stored per repo as a reference the runner resolves on its own host and
 injects only into that repo's tasks; the values never enter the database or the artifacts.
+[`docs/repos.md`](repos.md) covers how a repo is configured, secrets and all.
 
 ## Running a fleet across machines
 
@@ -124,6 +131,11 @@ capacity is just starting another runner; there's no change to the control plane
 
 ## Where to go next
 
+This page is the map; these guides are the detail:
+
 - **[Workflow catalog](workflows/README.md)** — the built-in workflows and how to choose (and
   how to add your own).
+- **[Tasks](tasks.md)** — the task object in full: its properties, states, and lifecycle.
+- **[Containers](container.md)** — the container lifecycle, every dashboard status, and recovery.
+- **[Repos](repos.md)** — configuring a repo: secrets, image layers, and capabilities.
 - **[README](../README.md)** — install, quickstart, your first task, and configuration.
