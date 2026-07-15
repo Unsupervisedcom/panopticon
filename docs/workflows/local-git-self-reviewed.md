@@ -48,4 +48,4 @@ There's no `gh` tool and no PR/CI plumbing. That's the point of this workflow.
 
 - [`github-self-reviewed`](github-self-reviewed.md): the same self-review model, but ships
   a GitHub PR.
-- [Workflow catalogue](README.md).
+- [Workflow catalog](README.md).

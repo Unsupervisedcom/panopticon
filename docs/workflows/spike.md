@@ -38,4 +38,4 @@ None beyond the universal ones every task has. A spike is deliberately bare.
 
 - [`orchestrator`](orchestrator.md): the other ungated, single-state workflow, but one
   that spawns and pre-plans child tasks.
-- [Workflow catalogue](README.md).
+- [Workflow catalog](README.md).

@@ -41,4 +41,4 @@ task has no agent to gate.
 
 - [Container authentication](../container-auth.md): what the token is for and how to set
   it by hand instead.
-- [Workflow catalogue](README.md).
+- [Workflow catalog](README.md).

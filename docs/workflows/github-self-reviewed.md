@@ -52,4 +52,4 @@ The agent has these forge skills in its container (it runs `gh` against GitHub):
 - [`github-peer-reviewed`](github-peer-reviewed.md): the same flow with a peer-review gate.
 - [`local-git-self-reviewed`](local-git-self-reviewed.md): the same self-review model, but
   local git only (no PR).
-- [Workflow catalogue](README.md).
+- [Workflow catalog](README.md).

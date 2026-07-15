@@ -7,7 +7,7 @@ container. Picking a workflow is how you set the line between what the agent may
 its own and what needs your sign-off.
 
 You choose a workflow when you create a task. On the dashboard press `n`, pick the repo,
-then pick the workflow. This page is the catalogue; each workflow has its own page with
+then pick the workflow. This page is the catalog; each workflow has its own page with
 the details.
 
 ## The built-in workflows

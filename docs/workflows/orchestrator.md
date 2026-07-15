@@ -45,4 +45,4 @@ tasks that arrive pre-planned.
 
 - [`spike`](spike.md): the other ungated, single-state workflow (does the work itself
   rather than spawning tasks).
-- [Workflow catalogue](README.md).
+- [Workflow catalog](README.md).
