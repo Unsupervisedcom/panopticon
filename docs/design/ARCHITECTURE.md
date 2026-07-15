@@ -249,6 +249,9 @@ mounted creds. Values never enter the DB, artifacts, or image layers.
 
 ## 9. End-to-end task lifecycle
 
+*(For the container's own lifecycle from the operator's chair — the dashboard statuses and how a
+container spawns, heals, and is torn down — see [`../container.md`](../container.md).)*
+
 1. **Idea → task.** A user captures an idea / promotes it via the dashboard (REST). The task
    service creates a Task row (internal id, chosen workflow, `repo_id`), in the workflow's
    initial state, with the turn assigned appropriately. No slug yet.
