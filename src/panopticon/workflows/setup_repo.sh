@@ -8,10 +8,11 @@
 # with `claude setup-token`. Whatever route the operator takes, the script converges on a bulleted
 # summary + a prompt to press Enter, which completes the task and returns them to the dashboard.
 
-# No apostrophe in the fallback: a `'` inside a `${…:-default}` default, itself inside a
-# double-quoted string, derails macOS /bin/sh (bash 3.2)'s quote tracking and it then mis-parses
-# the rest of the script ("syntax error near `('").
-env_file="${PANOPTICON_ENV_FILE:-the repo env-file}"
+# The fallback text lives outside the expansion: an apostrophe inside a double-quoted
+# ${var:-word} is read as a quote character by bash 3.2 (macOS /bin/sh) and unbalances
+# the whole script.
+env_file="${PANOPTICON_ENV_FILE:-}"
+[ -n "$env_file" ] || env_file="the repo's env-file"
 repo_name="${PANOPTICON_REPO_NAME:-this repo}"
 repo_url="${PANOPTICON_GIT_URL:-}"
 repo_label=$(repo_source_label "$repo_url")

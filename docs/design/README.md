@@ -1,7 +1,7 @@
 # Design docs
 
 Internal design documentation for panopticon. User-facing docs live one level up in
-[`../`](..) (e.g. `container-auth.md`, `macos-setup.md`).
+[`../`](..) (e.g. `auth.md`, `macos-setup.md`).
 
 - [`GOALS.md`](GOALS.md) — motivation, non-goals, and the milestones.
 - [`PARITY.md`](PARITY.md) — feature inventory mined from the cloude-cade prototype.

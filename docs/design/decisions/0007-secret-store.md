@@ -8,7 +8,7 @@
 > **retired**. Container `claude` auth is now a non-rotating `claude setup-token` the operator places
 > in the repo's **`env_file`** as `CLAUDE_CODE_OAUTH_TOKEN` (the runner already injects `env_file`);
 > there is no `panopticon login`. The per-repo **env-file** mechanism below is unchanged — it simply
-> also carries that token. See [`docs/container-auth.md`](../container-auth.md).
+> also carries that token. See [`docs/auth.md`](../auth.md).
 >
 > **Amendment (remote runners).** `env_file` is stored as a **name relative to the secrets dir**
 > (`$PANOPTICON_CONFIG/secrets`, default `~/.config/panopticon/secrets/`), not an absolute host
