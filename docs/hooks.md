@@ -89,24 +89,10 @@ So, to add a hook:
 
    If you run tasks on more than one host, put the script on each host that will run this repo.
 
-2. **Point the repo's `hook_file` at its name.** The dashboard repo form doesn't expose
-   `hook_file` yet, so set it over the REST API — its **name**, not a full path:
-
-   ```sh
-   gh api --method PATCH /repos/<repo-id> --input - <<'JSON'
-   { "id": "<repo-id>", "hook_file": "strip-host-config.sh" }
-   JSON
-   ```
-
-   or with `curl` against the task service:
-
-   ```sh
-   curl --request PATCH "$PANOPTICON_SERVICE_URL/repos/<repo-id>" \
-     --header 'content-type: application/json' \
-     --data '{"id": "<repo-id>", "hook_file": "strip-host-config.sh"}'
-   ```
-
-   Clear it by setting `hook_file` back to `null`.
+2. **Point the repo's `hook_file` at its name** in the dashboard's repo form: open **repos**,
+   `n` (new) or `e` (edit) the repo, and on the **general** tab pick the script from the
+   **hook_file** dropdown (it lists the names in your hooks dir) — or choose *enter custom path…*
+   to type one, which is normalized to a hooks-dir name. Leave it blank for no hook.
 
 ## Example hook
 

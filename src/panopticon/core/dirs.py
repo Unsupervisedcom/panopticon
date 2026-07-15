@@ -163,3 +163,30 @@ def relativize_secrets_file(path: str, *, secrets_dir: str | Path | None = None)
             return str(resolved.relative_to(root))
         return p.name
     return path
+
+
+def relativize_hook_file(path: str, *, hooks_dir: str | Path | None = None) -> str:
+    """Normalize a user-entered hook ``path`` to a name relative to the hooks dir.
+
+    The hook analogue of :func:`relativize_secrets_file` (used by the dashboard repo form's
+    custom-path input). Accepts an absolute or relative path and always yields a stored *relative
+    name*:
+
+    - a path inside the hooks dir → its subpath relative to the dir;
+    - any other absolute path → its basename (so it lands as a bare name, resolved against each
+      runner's own hooks dir at spawn);
+    - a relative path → returned unchanged (already a name under the dir).
+
+    An empty/whitespace input yields ``""``. ``hooks_dir`` defaults to this host's.
+    """
+    path = path.strip()
+    if not path:
+        return ""
+    p = Path(path)
+    if p.is_absolute():
+        root = (Path(hooks_dir) if hooks_dir is not None else _hooks_dir()).resolve()
+        resolved = p.resolve()
+        if resolved == root or root in resolved.parents:
+            return str(resolved.relative_to(root))
+        return p.name
+    return path

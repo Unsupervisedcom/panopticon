@@ -129,6 +129,7 @@ class TaskServiceClient:
         default_base: str = "main",
         *,
         env_file: str | None = None,
+        hook_file: str | None = None,
         capabilities: dict[str, Any] | None = None,
         enabled_workflows: list[str] | None = None,
         disabled_workflows: list[str] | None = None,
@@ -139,6 +140,7 @@ class TaskServiceClient:
             "git_url": git_url,
             "default_base": default_base,
             "env_file": env_file,
+            "hook_file": hook_file,
             "enabled_workflows": enabled_workflows or [],
             "disabled_workflows": disabled_workflows or [],
         }

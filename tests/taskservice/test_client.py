@@ -105,6 +105,14 @@ def test_create_repo_with_secret_references(
     assert repo["env_file"] == "r3.env"
 
 
+def test_create_repo_with_hook_file(client: TaskServiceClient) -> None:
+    # hook_file is a name relative to the hooks dir; unlike env_file it isn't validated to exist on
+    # create (operators may register a hook before the script lands — see docs/hooks.md).
+    repo = client.create_repo("r7", "acme/hooked", "https://x/r7.git", hook_file="prep.sh")
+    assert repo["hook_file"] == "prep.sh"
+    assert client.get_repo("r7")["hook_file"] == "prep.sh"  # persisted
+
+
 def test_update_repo_patches_only_sent_fields(client: TaskServiceClient) -> None:
     client.create_repo("r4", "acme/svc", "https://x/r4.git")
     updated = client.update_repo("r4", name="renamed", git_url="https://x/r4-new.git")

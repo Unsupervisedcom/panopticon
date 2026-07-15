@@ -11,7 +11,12 @@ from __future__ import annotations
 
 import pytest
 
-from panopticon.core.dirs import hook_file_path, relativize_secrets_file, secrets_file_path
+from panopticon.core.dirs import (
+    hook_file_path,
+    relativize_hook_file,
+    relativize_secrets_file,
+    secrets_file_path,
+)
 
 
 def test_secrets_file_path_joins_name_onto_root() -> None:
@@ -69,3 +74,27 @@ def test_hook_file_path_none_or_empty_is_none() -> None:
 def test_hook_file_path_rejects_escapes(name: str) -> None:
     with pytest.raises(ValueError):
         hook_file_path(name, hooks_dir="/host/hooks")
+
+
+def test_relativize_hook_absolute_under_hooks_dir_becomes_subpath() -> None:
+    assert relativize_hook_file("/host/hooks/prep.sh", hooks_dir="/host/hooks") == "prep.sh"
+    assert relativize_hook_file("/host/hooks/sub/prep.sh", hooks_dir="/host/hooks") == "sub/prep.sh"
+
+
+def test_relativize_hook_absolute_elsewhere_becomes_basename() -> None:
+    assert relativize_hook_file("/some/other/prep.sh", hooks_dir="/host/hooks") == "prep.sh"
+
+
+def test_relativize_hook_relative_path_is_kept() -> None:
+    assert relativize_hook_file("prep.sh", hooks_dir="/host/hooks") == "prep.sh"
+
+
+def test_relativize_hook_blank_is_empty() -> None:
+    assert relativize_hook_file("   ", hooks_dir="/host/hooks") == ""
+
+
+def test_hook_file_path_roundtrips_with_relativize() -> None:
+    root = "/host/hooks"
+    resolved = hook_file_path("prep.sh", hooks_dir=root)
+    assert resolved is not None
+    assert relativize_hook_file(resolved, hooks_dir=root) == "prep.sh"
