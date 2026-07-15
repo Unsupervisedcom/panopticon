@@ -72,6 +72,12 @@ def render_config(service_url: str, overview: str, cwd: Path) -> str:
         "[mcp_servers.panopticon]",
         f"url = {_toml_str(service_url.rstrip('/') + '/mcp')}",
         "",
+        # codex's built-in `codex_apps` connector can't start in the container and would stall
+        # every spawn on its 30s startup timeout — disable it; the panopticon server is the
+        # only MCP surface a task needs.
+        "[mcp_servers.codex_apps]",
+        "enabled = false",
+        "",
         f"[projects.{_toml_str(str(cwd))}]",
         'trust_level = "trusted"',
     ]

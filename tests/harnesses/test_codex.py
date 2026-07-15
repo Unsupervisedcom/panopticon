@@ -76,6 +76,12 @@ def test_config_wires_the_turn_flip_hooks_to_the_shared_callback() -> None:
     }
 
 
+def test_config_disables_the_builtin_codex_apps_connector() -> None:
+    # It can't start in the container and would stall every spawn on its 30s startup timeout.
+    cfg = tomllib.loads(render_config("http://svc:8000", "", Path("/w")))
+    assert cfg["mcp_servers"]["codex_apps"] == {"enabled": False}
+
+
 def test_config_forces_file_backed_credentials() -> None:
     # Containers have no OS keyring, and the subscription flow shares auth.json via a mount.
     cfg = tomllib.loads(render_config("http://svc:8000", "", Path("/w")))
