@@ -48,9 +48,11 @@ never crosses the wire. The resolver refuses any name that escapes the secrets d
 segment or an absolute path).
 
 The env-file's most important entry is the container's `claude` auth token,
-`CLAUDE_CODE_OAUTH_TOKEN` (plus any `ANTHROPIC_API_KEY` or `GH_TOKEN` the tasks need); see
-[`auth.md`](auth.md) for how to mint and place it, and the
-[`setup-repo` workflow](workflows/setup-repo.md) for the automated, host-side path.
+`CLAUDE_CODE_OAUTH_TOKEN` (plus any `ANTHROPIC_API_KEY` or `GH_TOKEN` the tasks need). You don't
+have to write it by hand: **`panopticon quickstart` sets a repo's token up at any time**, and the
+[`setup-repo` workflow](workflows/setup-repo.md) is available from the dashboard whenever you need
+to (re-)mint it — press `g` to open the repos modal, highlight the repo, and press `s`. See
+[`auth.md`](auth.md) for the details and the by-hand path.
 
 `env_file` is validated at create time: `POST /repos` rejects a reference whose file doesn't
 exist under the secrets dir.
