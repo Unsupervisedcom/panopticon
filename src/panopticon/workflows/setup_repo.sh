@@ -8,7 +8,10 @@
 # with `claude setup-token`. Whatever route the operator takes, the script converges on a bulleted
 # summary + a prompt to press Enter, which completes the task and returns them to the dashboard.
 
-env_file="${PANOPTICON_ENV_FILE:-the repo's env-file}"
+# No apostrophe in the fallback: a `'` inside a `${…:-default}` default, itself inside a
+# double-quoted string, derails macOS /bin/sh (bash 3.2)'s quote tracking and it then mis-parses
+# the rest of the script ("syntax error near `('").
+env_file="${PANOPTICON_ENV_FILE:-the repo env-file}"
 repo_name="${PANOPTICON_REPO_NAME:-this repo}"
 repo_url="${PANOPTICON_GIT_URL:-}"
 repo_label=$(repo_source_label "$repo_url")
@@ -17,11 +20,7 @@ repo_label=$(repo_source_label "$repo_url")
 # from the running server (the operator may have rebound them), falling back to the tmux defaults.
 prefix=$(tmux show-options -gv prefix 2>/dev/null)
 [ -n "$prefix" ] || prefix="C-b"
-# Pass "detach-client" via `awk -v` and assign NF-1 to a variable: a double-quoted string nested
-# inside this `awk '…'` program — itself inside a `$(…)` command substitution — trips macOS
-# /bin/sh (bash 3.2), whose command-substitution parser mishandles the nested quotes ("syntax
-# error near `('"). With `-v` the awk program carries no nested quotes (and no `$(NF-1)` parens).
-detach=$(tmux list-keys -T prefix 2>/dev/null | awk -v k=detach-client '$NF == k { i = NF - 1; print $i; exit }')
+detach=$(tmux list-keys -T prefix 2>/dev/null | awk '$NF == "detach-client" { print $(NF - 1); exit }')
 [ -n "$detach" ] || detach="d"
 dashboard_hint="To return to the dashboard without finishing, detach: press $prefix then $detach (you can resume this task any time from the dashboard)."
 

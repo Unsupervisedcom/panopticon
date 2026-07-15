@@ -76,11 +76,6 @@ jobs:
       - name: Verify runner tmux session
         run: tmux -L panopticon has-session -t runner
 
-      # DIAGNOSTIC (temporary): keep dead panes so a shell task that exits early leaves its output
-      # behind to capture. Must be set on the server before the setup-repo pane is created.
-      - name: Keep dead tmux panes (diagnostic)
-        run: tmux -L panopticon set-option -g remain-on-exit on
-
       # Run the real `panopticon quickstart` (doctor + repo registration + setup-repo task), then
       # confirm its shell task reaches the token-mint prompt — the last step before an interactive
       # `claude setup-token`, which CI can't complete. quickstart ends by opening the interactive
