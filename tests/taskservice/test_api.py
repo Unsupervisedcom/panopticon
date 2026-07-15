@@ -251,6 +251,34 @@ def test_create_task_defaults_to_no_harness(client: TestClient) -> None:
     assert client.get(f"/tasks/{task_id}").json()["harness"] is None
 
 
+def test_create_task_claude_default_keeps_the_workflow_default_model(client: TestClient) -> None:
+    task_id = _new_task(client)
+    assert client.get(f"/tasks/{task_id}").json()["starting_model"] == "opus"
+
+
+def test_create_task_non_default_harness_drops_the_claude_flavored_default_model(
+    client: TestClient,
+) -> None:
+    # Model names are harness-scoped: the workflow's default ("opus") means nothing to codex, so
+    # an unstated model must reach the container as None (codex picks its own default), never as
+    # a foreign name it warns about and mishandles.
+    resp = client.post("/tasks", json={"repo_id": "r1", "workflow": "spike", "harness": "codex"})
+    assert resp.json()["starting_model"] is None
+
+
+def test_create_task_records_an_explicit_starting_model(client: TestClient) -> None:
+    resp = client.post(
+        "/tasks",
+        json={
+            "repo_id": "r1",
+            "workflow": "spike",
+            "harness": "codex",
+            "starting_model": "gpt-5.6-sol",
+        },
+    )
+    assert resp.json()["starting_model"] == "gpt-5.6-sol"
+
+
 def test_create_task_unknown_harness_400(client: TestClient) -> None:
     resp = client.post("/tasks", json={"repo_id": "r1", "workflow": "spike", "harness": "cursor"})
     assert resp.status_code == 400

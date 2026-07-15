@@ -216,6 +216,7 @@ class CreateTaskIn(BaseModel):
     governor_task_id: str | None = None
     initial_prompt: str | None = None
     harness: str | None = None  # agent-CLI harness for the task's container (None = claude)
+    starting_model: str | None = None  # harness-scoped model name (None = the harness's default)
     artifacts: dict[str, str] | None = None
     depends_on_task_ids: list[str] = []
 
@@ -513,6 +514,7 @@ def create_app(service: TaskService) -> FastAPI:
                     governor_task_id=body.governor_task_id,
                     initial_prompt=body.initial_prompt,
                     harness=body.harness,
+                    starting_model=body.starting_model,
                     artifacts=body.artifacts,
                     depends_on_task_ids=body.depends_on_task_ids or None,
                 )

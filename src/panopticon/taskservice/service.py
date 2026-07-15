@@ -36,7 +36,7 @@ from panopticon.core.provisioning import PROVISION_SKILL
 from panopticon.core.state import TERMINAL_LABELS, Dropped
 from panopticon.core.store import NotFound, Store
 from panopticon.core.workflow import Workflow
-from panopticon.harnesses import get_harness
+from panopticon.harnesses import DEFAULT_HARNESS, get_harness
 
 _log = logging.getLogger(__name__)
 
@@ -335,6 +335,7 @@ class TaskService:
         governor_task_id: str | None = None,
         initial_prompt: str | None = None,
         harness: str | None = None,
+        starting_model: str | None = None,
         artifacts: dict[str, str] | None = None,
         depends_on_task_ids: list[str] | None = None,
     ) -> Task:
@@ -352,6 +353,14 @@ class TaskService:
         now = self._clock()
         task = wf.start_task(self._id(), repo_id, at=now, memo=memo, initial_prompt=initial_prompt)
         task.harness = harness
+        # Model names are harness-scoped vocabulary. The workflow's default_model (seeded by
+        # start_task) speaks the default harness's (claude's "opus"); for any other harness that
+        # default is meaningless, so only an explicit starting_model survives — None lets the
+        # harness's CLI pick its own default.
+        if starting_model is not None:
+            task.starting_model = starting_model
+        elif harness is not None and harness != DEFAULT_HARNESS:
+            task.starting_model = None
         task.governor_task_id = governor_task_id
         task.created_at = now
         task.updated_at = now  # creation time = first mutation
