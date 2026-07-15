@@ -25,6 +25,37 @@ The hook runs on **whichever host runs the task** (the session service / runner)
 container — the container does not exist yet. Like a repo's `env_file`, the hook is resolved
 against that host's own config, so a remote runner uses its own copy of the script.
 
+## Hook vs. image layer — which to use
+
+A repo has two ways to customize what a task runs against: a **hook** (`hook_file`) and an **image
+layer** (`image_layer_file`, a Dockerfile fragment composed onto the task image). They solve
+different problems — reach for the one whose axis matches your need:
+
+| | **Image layer** (`image_layer_file`) | **Repo hook** (`hook_file`) |
+|---|---|---|
+| Runs at | image **build** time | **spawn** time, before `docker run` |
+| Runs where | inside the image (Linux, `docker build`) | on the **host**, outside the container |
+| Runs how often | once per image, then **cached** and reused | **every spawn**, never cached |
+| Acts on | the **container image** — tools, packages, system deps | the **per-task workspace checkout** |
+| Can see the checkout? | **no** (the clone is mounted at run time, after build) | **yes** (it's the hook's cwd) |
+| Effect | baked in, shared by every task on the image | ephemeral, specific to that one task |
+
+**Use an image layer** when you're changing the **environment the agent runs in** — installing a
+toolchain (`uv`, `make`, compilers), system libraries, or other files that are the same for every
+task on the repo. It's built once and cached, so it's reproducible and cheap per task, and it keeps
+that setup isolated inside the container.
+
+**Use a hook** when you need to **touch the specific per-task checkout** before the agent sees it,
+or to do host-side work that depends on the task — stripping host-only config out of the clone,
+seeding a task-specific fixture, or rewriting the tree. A hook is the only one of the two that can
+see the workspace, but it pays that cost on **every** spawn and runs with host privileges outside
+the container.
+
+Rule of thumb: if it belongs in the image and is the same for all tasks, make it a **layer**; if it
+mutates the checkout or must run per task on the host, make it a **hook**. Prefer a layer when
+either works — cached and container-isolated beats per-spawn and host-side. (Neither is the place
+for secrets: runtime secrets belong in the repo's `env_file` — see [`auth.md`](auth.md).)
+
 ## The execution contract
 
 - **Working directory:** the per-task workspace checkout, so relative paths in the hook resolve
