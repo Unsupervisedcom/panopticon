@@ -4,18 +4,17 @@ Every task in panopticon runs in its own **container** — a throwaway Docker co
 `claude` agent inside it, working on a private clone of the repo. This doc explains that
 container's life from the operator's chair: how one comes up, the statuses you watch on the
 dashboard, what each means, and how a container recovers or is torn down. It's about *observable
-behaviour*, not internals — for the design rationale, follow the ADR links.
+behaviour* from the operator's side.
 
-If you just want to give a repo its `claude` token, see
-[container authentication](container-auth.md). For the whole-system picture, see
-[the architecture doc](design/ARCHITECTURE.md).
+For the token a container authenticates with, see [auth](auth.md); for the image it's built from,
+[layers](layers.md); for a task's branch/clone and provisioning, [tasks](tasks.md).
 
 ## One task, one container, one session
 
 A task's work happens in exactly one place: its container. Nothing else in panopticon runs an
 LLM — the task service (control plane) and the session service (runner) are deterministic host
-processes that never call `claude`. That's the **determinism invariant** (ADR 0008): the
-container is the *only* LLM-bearing component, so everything the agent does is scoped to it.
+processes that never call `claude`. That's the **determinism invariant**: the container is the
+*only* LLM-bearing component, so everything the agent does is scoped to it.
 
 Concretely, each running task has:
 
@@ -31,7 +30,7 @@ service** only ever *records* and *displays* what the runner reports; it spawns 
 
 ```
    queued
-     │  a runner claims the task (ADR 0008)
+     │  a runner claims the task
      ▼
    claiming → preparing → building → starting → awaiting
      │  clone      │  compose+build   │  docker run   │  entrypoint
@@ -78,19 +77,18 @@ When a new task appears, the per-host session service brings its container up in
 reporting each as a status above.
 
 1. **Claim** (`claiming`). A runner **claims** the unclaimed task first — a compare-and-set that
-   409s if another host got there first (ADR 0008). This is the spawn gate: exactly one host
-   ever runs a given task, even with several runners watching the same task service.
+   409s if another host got there first. This is the spawn gate: exactly one host ever runs a
+   given task, even with several runners watching the same task service.
 
 2. **Prepare** (`preparing`). The runner makes the task's **workspace**: a
    `git clone --local` of a per-repo cache clone into a task-private directory, mounted
-   read-write at `/workspace` (ADR 0011). The clone is self-contained (hard-linked objects, so
-   it's cheap), and its `origin` is pointed at the real forge rather than the local cache.
+   read-write at `/workspace`. The clone is self-contained (hard-linked objects, so it's cheap),
+   and its `origin` is pointed at the real forge rather than the local cache.
 
-3. **Build** (`building`). The runner composes the task's image from three layers — **base →
-   workflow → repo** (ADR 0005) — and `docker build`s it. The base layer is Python + git + the
-   `claude` CLI; the workflow layer adds workflow tools (e.g. `gh` for the GitHub workflows); the
-   repo layer adds the repo's own toolchain. The image is tagged per `(workflow, repo)`, so once
-   built it's cached — only the **first** task for a repo pays the full build cost.
+3. **Build** (`building`). The runner composes and `docker build`s the task's image. It's tagged
+   per `(workflow, repo)`, so once built it's cached — only the **first** task for a repo pays the
+   full build cost, which is why `building` can be slow that first time. See [layers](layers.md)
+   for how the image is composed.
 
 4. **Start** (`starting`). The runner does `docker run --detach` (injecting the repo's secrets
    via `--env-file`, mounting `/workspace`, and a small config volume that persists the agent's
@@ -107,16 +105,13 @@ Once that registration is open, the status flips to **`live`** and the agent is 
 
 ## Provisioning: naming the task gives it a branch
 
-A fresh task has no slug, so it has no branch — it starts on whatever the clone checked out. Early
-in its first turn the agent (nudged by the `provision` skill) picks a short **slug** and sets it.
-The session service, watching the task over its pull loop, sees the slug land and **branches the
-workspace**: `git checkout -b panopticon/<slug>` on the per-task clone, with `origin` already
-pointed at the forge (ADR 0010 / ADR 0011).
+A fresh task starts on whatever its clone checked out; once the agent sets a **slug**, the branch
+appears. The mechanics happen on the runner, where the container actually is (so they stay correct
+even when the runner is remote): the session service sees the slug land and runs
+`git checkout -b panopticon/<slug>` on the per-task clone, with `origin` already pointed at the
+forge. The task service only *records* the result — it touches no filesystem.
 
-The host git happens on the runner — where the container actually is — so it stays correct even
-when the runner is remote. The task service only *records* the result (the branch name and clone
-path); it touches no filesystem. From then on the task is **provisioned** and the agent commits on
-its own `panopticon/<slug>` branch.
+For what a slug, branch, clone, and `provisioned` mean as task concepts, see [tasks](tasks.md).
 
 ## While it runs
 
@@ -134,7 +129,7 @@ its own `panopticon/<slug>` branch.
   flips (`agent` ↔ `user`) via in-container hooks; a separate **blocked** marker is a deliberate
   "waiting on something" flag the agent sets. Both are shown on the dashboard.
 - **Auth.** The agent authenticates from a `CLAUDE_CODE_OAUTH_TOKEN` injected from the repo's
-  env-file — see [container authentication](container-auth.md).
+  env-file — see [auth](auth.md).
 
 ## When it goes wrong
 
@@ -168,12 +163,6 @@ wedges the runner. After cleanup the task shows `–`: no container, nothing to 
 
 ## See also
 
-- [Container authentication](container-auth.md) — giving a repo its `claude` token.
-- [Architecture](design/ARCHITECTURE.md) — the whole system; §3 the determinism invariant, §9
-  the end-to-end task lifecycle.
-- ADR [0005](design/decisions/0005-composable-images.md) — composable base → workflow → repo
-  images.
-- ADR [0008](design/decisions/0008-execution-session-topology.md) — host processes, the claim
-  gate, and container topology.
-- ADR [0011](design/decisions/0011-provisioning-per-task-clone.md) — the per-task clone and
-  slug-named branch.
+- [auth](auth.md) — giving a repo its `claude` token.
+- [layers](layers.md) — how a task's image is composed (base → workflow → repo).
+- [tasks](tasks.md) — slug, branch, clone, and provisioning as task concepts.
