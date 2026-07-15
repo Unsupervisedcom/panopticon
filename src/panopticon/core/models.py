@@ -195,6 +195,14 @@ class Repo:
     hook_file: str | None = None
     enabled_workflows: list[str] = field(default_factory=list)
     disabled_workflows: list[str] = field(default_factory=list)
+    #: A *reference* to the repo's shared credential **directory** (ADR 0007's directory-shaped
+    #: sibling of ``env_file``): a name relative to the secrets dir, resolved host-locally by the
+    #: runner and mounted **read-write** into the repo's task containers at
+    #: :data:`~panopticon.harnesses.CREDENTIALS_MOUNT`. Holds credential *files* whose nature is
+    #: shared across sessions (e.g. a ChatGPT-subscription ``auth.json``, one rotating token
+    #: chain per account) — unlike env-file values, these rotate in place and every container
+    #: converges on the same copy. ``None`` = no credential dir.
+    credential_dir: str | None = None
 
 
 @dataclass(frozen=True)
@@ -277,6 +285,11 @@ class Task:
     #: injected as ``PANOPTICON_STARTING_MODEL`` at spawn so the agent can pass ``--model``
     #: to ``claude`` on first launch. ``None`` means no model preference (claude picks its default).
     starting_model: str | None = None
+    #: Which agent-CLI **harness** runs this task's container (``"claude"``, ``"codex"``, …) —
+    #: an opaque name the control plane records and the container/runner resolve against the
+    #: harness registry (:mod:`panopticon.harnesses`). Validated at creation; ``None`` means the
+    #: default (claude). Like ``starting_model``, recorded — never interpreted — here.
+    harness: str | None = None
     #: The task that *governs* (oversees) this one — its ``id``. Set by the orchestrator on the
     #: tasks it creates so the relationship is recorded; also settable manually via
     #: :meth:`TaskService.set_governor`. ``None`` for ungoverned tasks.

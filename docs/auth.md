@@ -1,4 +1,8 @@
-# Container authentication — giving tasks a `claude` token
+# Container authentication — giving tasks their agent credentials
+
+Each **harness** (the agent CLI a task runs — claude by default, codex for OpenAI models)
+authenticates its own way. The claude setup is below; codex follows in
+[Codex / OpenAI](#codex--openai-gpt-56).
 
 Every task runs `claude` inside its container. The agent authenticates from a
 **`CLAUDE_CODE_OAUTH_TOKEN`** environment variable, which the runner injects from the **repo's
@@ -75,3 +79,53 @@ instructions above.
   Per-token revocation isn't available upstream (account-level "revoke all" can take time to
   propagate), so treat a leak as "mint a replacement + monitor usage in the Console," and keep the
   env-file tightly held.
+
+## Codex / OpenAI (GPT-5.6)
+
+A task created with `harness: "codex"` runs OpenAI's Codex CLI in its container. Three
+credential tiers, in order of setup effort:
+
+1. **API key** (pay-per-token): add one line to the repo's env-file —
+
+   ```sh
+   CODEX_API_KEY=sk-...
+   ```
+
+   The harness renders it into codex's `auth.json` at container start (the same shape
+   `codex login --with-api-key` writes). `OPENAI_API_KEY` works too.
+
+2. **ChatGPT Business/Enterprise access token** (non-rotating — the exact analog of
+   `claude setup-token`): mint at `chatgpt.com/admin/access-tokens`, then
+
+   ```sh
+   CODEX_ACCESS_TOKEN=...
+   ```
+
+   in the env-file. Codex reads it straight from the environment.
+
+3. **ChatGPT Plus/Pro subscription** (rotating tokens — needs the shared credential dir):
+
+   ```sh
+   # on the host, once per account:
+   codex login              # or: codex login --device-auth (headless)
+   mkdir -p ~/.config/panopticon/secrets/openai.d
+   cp ~/.codex/auth.json ~/.config/panopticon/secrets/openai.d/
+   chmod 0600 ~/.config/panopticon/secrets/openai.d/auth.json
+   # then point the repo at it:
+   curl -X PATCH "$PANOPTICON_SERVICE_URL/repos/<repo-id>" \
+     -H 'content-type: application/json' \
+     -d '{"credential_dir": "openai.d"}'
+   ```
+
+   The runner mounts the dir **read-write and shared** into that repo's task containers; the
+   harness symlinks `auth.json` into each task's `CODEX_HOME`. Sharing is deliberate: ChatGPT
+   refresh tokens **rotate with reuse detection**, so every session must converge on one copy —
+   codex reloads the file from disk before refreshing (and on 401) and writes refreshed tokens
+   back through the symlink, so concurrent sessions on one host stay consistent. Do **not**
+   copy the same auth.json to a second host (OpenAI's documented constraint); log in per host,
+   or use an access token. If the chain is ever invalidated (re-login elsewhere, revocation),
+   tasks fail with a lifecycle detail naming the fix — re-run the login + copy above.
+
+Pick the model per task via `starting_model` (e.g. `gpt-5.6-sol`, `gpt-5.6-terra`,
+`gpt-5.6-luna`). Note the fleet-level constraint: plan rate limits (not auth) cap concurrent
+Codex throughput on Plus/Pro.

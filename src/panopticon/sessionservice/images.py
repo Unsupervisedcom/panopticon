@@ -1,8 +1,9 @@
-"""Composable task images (ADR 0005): a task's image = **base → workflow → repo** layers.
+"""Composable task images (ADR 0005): a task's image = **base → harness → workflow → repo**.
 
-The base is minimal and general (the agent runtime); a workflow contributes a layer with what
-its skills need (e.g. `gh`); a repo contributes its toolchain/setup. We compose them by writing
-a Dockerfile that `FROM`s the base and appends the layers, tag it `panopticon-<workflow>-<repo>`,
+The base is minimal and general; a **harness** contributes its agent CLI (M3 — empty for claude,
+whose CLI still ships in the base); a workflow contributes a layer with what its skills need
+(e.g. `gh`); a repo contributes its toolchain/setup. We compose them by writing a Dockerfile
+that `FROM`s the base and appends the layers, tag it `panopticon-<harness>-<workflow>-<repo>`,
 and `docker build` it behind the injectable command-runner (so it's unit-testable without a
 daemon). LLM-free. The runner builds the composed image, then spawns the task on it.
 """
@@ -20,9 +21,9 @@ from panopticon.sessionservice.local_runner import DEFAULT_IMAGE, CommandRunner,
 _log = logging.getLogger(__name__)
 
 
-def image_tag(workflow: str, repo_id: str) -> str:
-    """The composed image's tag for a (workflow, repo) pair (ADR 0005 naming)."""
-    return f"panopticon-{workflow}-{repo_id}"
+def image_tag(harness: str, workflow: str, repo_id: str) -> str:
+    """The composed image's tag for a (harness, workflow, repo) triple (ADR 0005 naming)."""
+    return f"panopticon-{harness}-{workflow}-{repo_id}"
 
 
 def compose_dockerfile(base: str, layers: Sequence[str]) -> str:
@@ -39,13 +40,19 @@ class ImageBuilder:
         self._run = run
 
     def build(
-        self, workflow: str, repo_id: str, layers: Sequence[str], *, verbose: bool = False
+        self,
+        harness: str,
+        workflow: str,
+        repo_id: str,
+        layers: Sequence[str],
+        *,
+        verbose: bool = False,
     ) -> str:
         """Compose base → ``layers`` and `docker build` it; return the image tag.
 
         ``verbose`` streams docker build output to the caller's stdout/stderr (visible in the
         runner's tmux session) instead of capturing it."""
-        tag = image_tag(workflow, repo_id)
+        tag = image_tag(harness, workflow, repo_id)
         dockerfile = compose_dockerfile(self._base, layers)
         with tempfile.TemporaryDirectory() as context:
             (Path(context) / "Dockerfile").write_text(dockerfile)

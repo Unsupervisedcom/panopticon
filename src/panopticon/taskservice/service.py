@@ -36,6 +36,7 @@ from panopticon.core.provisioning import PROVISION_SKILL
 from panopticon.core.state import TERMINAL_LABELS, Dropped
 from panopticon.core.store import NotFound, Store
 from panopticon.core.workflow import Workflow
+from panopticon.harnesses import get_harness
 
 _log = logging.getLogger(__name__)
 
@@ -147,6 +148,7 @@ class TaskService:
 
     async def create_repo(self, repo: Repo) -> Repo:
         await self._validate_env_file(repo.env_file)
+        await self._validate_credential_dir(repo.credential_dir)
         await self._store.create_repo(repo)
         return repo
 
@@ -172,6 +174,21 @@ class TaskService:
         if not await asyncio.to_thread(os.path.isfile, path):
             raise ValueError(f"env_file {env_file!r} does not exist under the secrets dir")
 
+    async def _validate_credential_dir(self, credential_dir: str | None) -> None:
+        """Reject a repo whose credential-dir reference points at a missing directory.
+
+        The directory-shaped sibling of :meth:`_validate_env_file`: ``credential_dir`` is a name
+        relative to the secrets dir, mounted read-write into the repo's task containers at spawn.
+        Same M1 caveat — resolved against *this host's* secrets dir.
+        """
+        path = secrets_file_path(credential_dir)  # None for no reference; raises on escape
+        if path is None:
+            return
+        if not await asyncio.to_thread(os.path.isdir, path):
+            raise ValueError(
+                f"credential_dir {credential_dir!r} does not exist under the secrets dir"
+            )
+
     async def get_repo(self, repo_id: str) -> Repo:
         repo = await self._store.get_repo(repo_id)
         if repo is None:
@@ -196,6 +213,8 @@ class TaskService:
             await self._validate_env_file(
                 updated.env_file
             )  # so an unrelated patch never fails on it
+        if "credential_dir" in changes:
+            await self._validate_credential_dir(updated.credential_dir)
         await self._store.update_repo(updated)
         return updated
 
@@ -315,17 +334,24 @@ class TaskService:
         memo: str | None = None,
         governor_task_id: str | None = None,
         initial_prompt: str | None = None,
+        harness: str | None = None,
         artifacts: dict[str, str] | None = None,
         depends_on_task_ids: list[str] | None = None,
     ) -> Task:
         repo = await self.get_repo(repo_id)  # ensure exists (raises NotFound)
         if governor_task_id is not None:
             await self.get_task(governor_task_id)  # ensure governor exists (raises NotFound)
+        if harness is not None:
+            try:  # validate at creation so a spawn never meets an unknown harness
+                get_harness(harness)
+            except KeyError as exc:
+                raise ValueError(str(exc.args[0])) from exc
         wf = self._workflow(workflow_name)
         if not self._workflow_visible(wf, repo):
             raise NotAuthorized(f"workflow {workflow_name!r} is not enabled for repo {repo_id!r}")
         now = self._clock()
         task = wf.start_task(self._id(), repo_id, at=now, memo=memo, initial_prompt=initial_prompt)
+        task.harness = harness
         task.governor_task_id = governor_task_id
         task.created_at = now
         task.updated_at = now  # creation time = first mutation

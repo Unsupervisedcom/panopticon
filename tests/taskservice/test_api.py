@@ -237,6 +237,63 @@ def test_create_task_unknown_workflow_400(client: TestClient) -> None:
     assert resp.status_code == 400
 
 
+def test_create_task_records_the_harness(client: TestClient) -> None:
+    resp = client.post("/tasks", json={"repo_id": "r1", "workflow": "spike", "harness": "codex"})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["harness"] == "codex"
+    got = client.get(f"/tasks/{resp.json()['id']}")  # and it survives a reload
+    assert got.json()["harness"] == "codex"
+
+
+def test_create_task_defaults_to_no_harness(client: TestClient) -> None:
+    # None = the claude default; recorded as null so old rows and new defaults read the same.
+    task_id = _new_task(client)
+    assert client.get(f"/tasks/{task_id}").json()["harness"] is None
+
+
+def test_create_task_unknown_harness_400(client: TestClient) -> None:
+    resp = client.post("/tasks", json={"repo_id": "r1", "workflow": "spike", "harness": "cursor"})
+    assert resp.status_code == 400
+    assert "cursor" in resp.json()["detail"]  # the error names the offender (and the known set)
+
+
+def test_create_repo_with_a_missing_credential_dir_is_400(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # credential_dir is a directory name under the secrets dir (the sibling of env_file); an
+    # unresolvable name is a 400 at create rather than an obscure mount failure at spawn.
+    monkeypatch.setenv("PANOPTICON_CONFIG", str(tmp_path))
+    resp = client.post(
+        "/repos",
+        json={
+            "id": "r2",
+            "name": "acme/other",
+            "git_url": "https://x/r2.git",
+            "credential_dir": "absent.d",
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    assert "credential_dir" in resp.json()["detail"]
+
+
+def test_create_repo_with_an_existing_credential_dir_round_trips(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PANOPTICON_CONFIG", str(tmp_path))
+    (tmp_path / "secrets" / "openai.d").mkdir(parents=True)
+    resp = client.post(
+        "/repos",
+        json={
+            "id": "r2",
+            "name": "acme/other",
+            "git_url": "https://x/r2.git",
+            "credential_dir": "openai.d",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert client.get("/repos/r2").json()["credential_dir"] == "openai.d"
+
+
 def test_create_task_missing_repo_404(client: TestClient) -> None:
     resp = client.post("/tasks", json={"repo_id": "ghost", "workflow": "spike"})
     assert resp.status_code == 404

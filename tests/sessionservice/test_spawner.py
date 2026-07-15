@@ -49,6 +49,9 @@ class _FakeRunner:
         initial_prompt: str | None = None,
         turn: str | None = None,
         starting_model: str | None = None,
+        harness: str | None = None,
+        config_mount: str = "/home/panopticon/.claude",
+        credential_dir: str | None = None,
         progress: Callable[[LifecyclePhase], None] | None = None,
     ) -> str:
         self.spawned.append(
@@ -61,6 +64,9 @@ class _FakeRunner:
                 "initial_prompt": initial_prompt,
                 "turn": turn,
                 "starting_model": starting_model,
+                "harness": harness,
+                "config_mount": config_mount,
+                "credential_dir": credential_dir,
             }
         )
         if progress is not None:  # the real runner reports these two sub-steps
@@ -423,14 +429,14 @@ class _FakeImageBuilder:
     """Records compose calls; stands in for ImageBuilder (no docker)."""
 
     def __init__(self) -> None:
-        self.built: list[tuple[str, str, list[str]]] = []
+        self.built: list[tuple[str, str, str, list[str]]] = []
         self.base_checks: int = 0
 
     def build(
-        self, workflow: str, repo_id: str, layers: list[str], *, verbose: bool = False
+        self, harness: str, workflow: str, repo_id: str, layers: list[str], *, verbose: bool = False
     ) -> str:
-        self.built.append((workflow, repo_id, layers))
-        return f"panopticon-{workflow}-{repo_id}"
+        self.built.append((harness, workflow, repo_id, layers))
+        return f"panopticon-{harness}-{workflow}-{repo_id}"
 
     def build_base_if_missing(self, *, verbose: bool = False) -> bool:
         self.base_checks += 1
@@ -464,10 +470,10 @@ def test_spawn_one_composes_the_workflow_image_when_it_has_a_layer() -> None:
         }
     )
     assert images.built == [
-        ("github-peer-reviewed", "r1", ["RUN apt-get install --yes gh"])
-    ]  # composed base → layer
+        ("claude", "github-peer-reviewed", "r1", ["RUN apt-get install --yes gh"])
+    ]  # composed base → layer (harness first: the claude tier is empty today)
     assert (
-        runner.spawned[0]["image"] == "panopticon-github-peer-reviewed-r1"
+        runner.spawned[0]["image"] == "panopticon-claude-github-peer-reviewed-r1"
     )  # spawned on the composed image
 
 
@@ -500,9 +506,14 @@ def test_spawn_one_composes_workflow_then_repo_layers() -> None:
         }
     )
     assert images.built == [
-        ("github-peer-reviewed", "r1", ["RUN apt-get install --yes gh", "RUN pip install uv"])
+        (
+            "claude",
+            "github-peer-reviewed",
+            "r1",
+            ["RUN apt-get install --yes gh", "RUN pip install uv"],
+        )
     ]
-    assert runner.spawned[0]["image"] == "panopticon-github-peer-reviewed-r1"
+    assert runner.spawned[0]["image"] == "panopticon-claude-github-peer-reviewed-r1"
 
 
 def test_spawn_one_probes_base_image_during_building_phase() -> None:

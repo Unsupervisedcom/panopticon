@@ -84,6 +84,7 @@ class TaskSummaryOut(BaseModel):
     tokens_used: int | None
     token_estimate: int | None
     starting_model: str | None = None
+    harness: str | None = None
     governor_task_id: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -121,6 +122,7 @@ class TaskOut(BaseModel):
     starting_model: str | None = (
         None  # the model seeded at creation from the workflow's default_model
     )
+    harness: str | None = None  # which agent-CLI harness runs the container (None = claude)
     governor_task_id: str | None = (
         None  # the task that oversees this one, or None for ungoverned tasks
     )
@@ -163,6 +165,7 @@ class RepoIn(BaseModel):
     hook_file: str | None = None
     enabled_workflows: list[str] = Field(default_factory=list)
     disabled_workflows: list[str] = Field(default_factory=list)
+    credential_dir: str | None = None  # name of a shared credential dir under the secrets dir
 
 
 class RepoOut(BaseModel):
@@ -178,6 +181,7 @@ class RepoOut(BaseModel):
     hook_file: str | None = None
     enabled_workflows: list[str] = Field(default_factory=list)
     disabled_workflows: list[str] = Field(default_factory=list)
+    credential_dir: str | None = None
 
 
 class RepoPatchIn(BaseModel):
@@ -195,6 +199,7 @@ class RepoPatchIn(BaseModel):
     hook_file: str | None = None
     enabled_workflows: list[str] | None = None
     disabled_workflows: list[str] | None = None
+    credential_dir: str | None = None
 
 
 class WorkflowInfo(BaseModel):
@@ -210,6 +215,7 @@ class CreateTaskIn(BaseModel):
     memo: str | None = None
     governor_task_id: str | None = None
     initial_prompt: str | None = None
+    harness: str | None = None  # agent-CLI harness for the task's container (None = claude)
     artifacts: dict[str, str] | None = None
     depends_on_task_ids: list[str] = []
 
@@ -498,17 +504,21 @@ def create_app(service: TaskService) -> FastAPI:
 
     @app.post("/tasks", status_code=201)
     async def create_task(body: CreateTaskIn) -> TaskOut:
-        return _task_out(
-            await service.create_task(
-                body.repo_id,
-                body.workflow,
-                memo=body.memo,
-                governor_task_id=body.governor_task_id,
-                initial_prompt=body.initial_prompt,
-                artifacts=body.artifacts,
-                depends_on_task_ids=body.depends_on_task_ids or None,
+        try:
+            return _task_out(
+                await service.create_task(
+                    body.repo_id,
+                    body.workflow,
+                    memo=body.memo,
+                    governor_task_id=body.governor_task_id,
+                    initial_prompt=body.initial_prompt,
+                    harness=body.harness,
+                    artifacts=body.artifacts,
+                    depends_on_task_ids=body.depends_on_task_ids or None,
+                )
             )
-        )
+        except ValueError as exc:  # e.g. an unknown harness
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/tasks")
     async def list_tasks(

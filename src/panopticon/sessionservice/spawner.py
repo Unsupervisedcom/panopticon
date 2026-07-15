@@ -24,10 +24,11 @@ import httpx
 from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.models import ContainerStatus, LifecyclePhase
 from panopticon.core.state import TERMINAL_LABELS
+from panopticon.harnesses import Harness, get_harness
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.executions import WorkflowExecutions
 from panopticon.sessionservice.images import ImageBuilder
-from panopticon.sessionservice.local_runner import LocalRunner
+from panopticon.sessionservice.local_runner import CONTAINER_HOME, LocalRunner
 from panopticon.sessionservice.shell_runner import ShellRunner
 from panopticon.sessionservice.spawn import cleanup_workspace, prepare_workspace
 
@@ -216,7 +217,8 @@ class Spawner:
         )
         self._report(task_id, LifecyclePhase.BUILDING)
         self._images.build_base_if_missing(verbose=True)
-        image = self._compose_image(task["workflow"], repo)
+        harness = get_harness(task.get("harness"))
+        image = self._compose_image(harness, task["workflow"], repo)
         return self._runner.spawn(
             task_id,
             env_file=repo.get("env_file"),
@@ -225,11 +227,14 @@ class Spawner:
             docker_in_docker=bool((repo.get("capabilities") or {}).get("docker_in_docker")),
             initial_prompt=task.get(
                 "initial_prompt"
-            ),  # passed as a CLI arg to claude on the first run
+            ),  # passed as a CLI arg to the agent on the first run
             turn=task.get("turn"),  # agent's turn → INTERRUPT_PROMPT on respawn
             starting_model=task.get(
                 "starting_model"
-            ),  # model selection passed to claude --model on first launch
+            ),  # model selection passed to the agent CLI on first launch
+            harness=task.get("harness"),  # which agent CLI the launcher runs (None = claude)
+            config_mount=f"{CONTAINER_HOME}/{harness.config_dirname}",
+            credential_dir=repo.get("credential_dir"),  # shared credential mount (ADR 0007)
             progress=lambda phase: self._report(task_id, phase),  # STARTING then AWAITING
         )
 
@@ -451,19 +456,21 @@ class Spawner:
             docker_cleanup=self._docker_cleanup,
         )
 
-    def _compose_image(self, workflow: str, repo: JsonObj) -> str | None:
-        """Compose the task's image (base → workflow → repo layers, ADR 0005) and return its tag;
-        ``None`` when neither tier contributes a layer (the runner falls back to the base image).
-        E.g. github-peer-reviewed layers `gh` for its forge skills, then the repo layers its toolchain (`uv`,
-        `make`). Docker layer-caches, so this is a no-op once built."""
+    def _compose_image(self, harness: Harness, workflow: str, repo: JsonObj) -> str | None:
+        """Compose the task's image (base → harness → workflow → repo layers, ADR 0005) and return
+        its tag; ``None`` when no tier contributes a layer (the runner falls back to the base
+        image). E.g. the codex harness layers its CLI, github-peer-reviewed layers `gh` for its
+        forge skills, then the repo layers its toolchain (`uv`, `make`). Docker layer-caches, so
+        this is a no-op once built."""
         layers = [
+            harness.image_layer(),
             self._client.workflow_image_layer(workflow),
             self._client.repo_image_layer(repo["id"]),
         ]
         layers = [layer for layer in layers if layer.strip()]
         if not layers:
             return None
-        return self._images.build(workflow, repo["id"], layers, verbose=True)
+        return self._images.build(harness.name, workflow, repo["id"], layers, verbose=True)
 
 
 def spawnable_tasks(client: TaskServiceClient) -> Callable[[], list[JsonObj]]:

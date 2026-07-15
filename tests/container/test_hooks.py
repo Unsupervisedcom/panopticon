@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from panopticon.container import hook
-from panopticon.container.hooks import settings, write_settings
+from panopticon.harnesses.claude import settings, write_settings
 
 
 def test_settings_wire_stop_to_user_and_prompt_to_agent() -> None:
