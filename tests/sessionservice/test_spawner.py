@@ -952,7 +952,9 @@ def test_spawn_runs_repo_hook_with_correct_args() -> None:
     def _fake_hook(hook_file: str, task_id: str, repo_name: str, workspace: str) -> None:
         calls.append((hook_file, task_id, repo_name, workspace))
 
-    repo = {**_REPO, "name": "acme/widgets", "hook_file": "/hooks/acme.sh"}
+    # ``hook_file`` is a name relative to the runner's hooks dir; the spawner resolves it against
+    # its ``hooks_dir`` and hands ``run_hook`` the absolute path.
+    repo = {**_REPO, "name": "acme/widgets", "hook_file": "acme.sh"}
     client, runner = _FakeClient(repo=repo), _FakeRunner()
     cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
     spawner = Spawner(
@@ -964,12 +966,13 @@ def test_spawn_runs_repo_hook_with_correct_args() -> None:
         git=GitClones(run=_no_op_run),
         images=_FakeImageBuilder(),  # type: ignore[arg-type]
         run_hook=_fake_hook,
+        hooks_dir="/host/hooks",
         makedirs=lambda _p: None,
     )
     spawner.spawn_one(
         {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None}
     )
-    assert calls == [("/hooks/acme.sh", "t1", "acme/widgets", "/tasks/t1")]
+    assert calls == [("/host/hooks/acme.sh", "t1", "acme/widgets", "/tasks/t1")]
     assert runner.spawned  # container still spawned after the hook
 
 
@@ -1131,7 +1134,7 @@ def test_spawn_hook_failure_aborts_spawn() -> None:
     def _boom(hook_file: str, task_id: str, repo_name: str, workspace: str) -> None:
         raise RuntimeError("hook exited 1")
 
-    repo = {**_REPO, "name": "acme/widgets", "hook_file": "/hooks/acme.sh"}
+    repo = {**_REPO, "name": "acme/widgets", "hook_file": "acme.sh"}
     client, runner = _FakeClient(repo=repo), _FakeRunner()
     cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
     spawner = Spawner(
@@ -1143,6 +1146,7 @@ def test_spawn_hook_failure_aborts_spawn() -> None:
         git=GitClones(run=_no_op_run),
         images=_FakeImageBuilder(),  # type: ignore[arg-type]
         run_hook=_boom,
+        hooks_dir="/host/hooks",
         makedirs=lambda _p: None,
     )
     with pytest.raises(RuntimeError, match="hook exited 1"):
@@ -1180,6 +1184,37 @@ def test_spawn_skips_hook_when_repo_has_no_hook_file() -> None:
     )
     assert not calls  # hook never invoked
     assert runner.spawned  # container spawned normally
+
+
+def test_spawn_rejects_hook_file_escaping_the_hooks_dir() -> None:
+    calls: list[object] = []
+    repo = {**_REPO, "name": "acme/widgets", "hook_file": "../evil.sh"}  # escapes the hooks dir
+    client, runner = _FakeClient(repo=repo), _FakeRunner()
+    cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
+    spawner = Spawner(
+        client,
+        runner,
+        runner_id="host-1",
+        cache=cache,
+        tasks_root="/tasks",  # type: ignore[arg-type]
+        git=GitClones(run=_no_op_run),
+        images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        run_hook=lambda *a: calls.append(a),
+        hooks_dir="/host/hooks",
+        makedirs=lambda _p: None,
+    )
+    with pytest.raises(ValueError, match="escapes the hooks dir"):
+        spawner.spawn_one(
+            {
+                "id": "t1",
+                "repo_id": "r1",
+                "workflow": "spike",
+                "state": "PLANNING",
+                "claimed_by": None,
+            }
+        )
+    assert not calls  # hook never invoked
+    assert not runner.spawned  # docker run was never reached
 
 
 def test_spawner_against_the_real_service(tmp_path: Path) -> None:

@@ -168,6 +168,7 @@ class _FakeClient:
         default_base: str = "main",
         *,
         env_file: str | None = None,
+        hook_file: str | None = None,
         capabilities: dict[str, Any] | None = None,
         enabled_workflows: list[str] | None = None,
         disabled_workflows: list[str] | None = None,
@@ -180,6 +181,7 @@ class _FakeClient:
             "git_url": git_url,
             "default_base": default_base,
             "env_file": env_file,
+            "hook_file": hook_file,
             "enabled_workflows": enabled_workflows or [],
             "disabled_workflows": disabled_workflows or [],
         }
@@ -1291,6 +1293,7 @@ async def test_repos_screen_creates_a_repo_autofilling_from_the_git_url() -> Non
                 "git_url": "git@github.com:acme/widgets.git",
                 "default_base": "main",
                 "env_file": None,
+                "hook_file": None,
                 "enabled_workflows": [],
                 "disabled_workflows": [],
                 "capabilities": {"docker_in_docker": False},
@@ -1320,6 +1323,7 @@ async def test_repo_form_autofill_only_fills_blank_fields() -> None:
                 "git_url": "https://x/widgets.git",
                 "default_base": "main",
                 "env_file": None,
+                "hook_file": None,
                 "enabled_workflows": [],
                 "disabled_workflows": [],
                 "capabilities": {"docker_in_docker": False},
@@ -1472,6 +1476,7 @@ async def test_repos_screen_edits_a_repo_via_patch() -> None:
                     "git_url": "https://x/r1.git",
                     "default_base": "main",
                     "env_file": None,
+                    "hook_file": None,
                     "capabilities": {"docker_in_docker": False},
                     "enabled_workflows": [],
                     "disabled_workflows": [],
@@ -1805,6 +1810,110 @@ async def test_env_file_field_custom_input_draws_a_bottom_border(
         region = inp.region
         bottom_row = rows[region.y + region.height - 1]
         assert "▁" in bottom_row[region.x : region.x + region.width]
+
+
+@pytest.mark.asyncio
+async def test_hook_file_field_blank_when_no_known_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HookFileField returns '' and shows nothing selected when the hooks dir is absent."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    fake = _FakeClient(
+        [], repos=[{"id": "r1", "name": "x", "git_url": "https://x/r.git", "default_base": "main"}]
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        hf = app.screen.query_one("#field-hook_file", dashboard.HookFileField)
+        assert hf.hook_file_value == ""
+
+
+@pytest.mark.asyncio
+async def test_hook_file_field_pre_selects_known_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HookFileField pre-selects an existing hook_file by its name (relative to the hooks dir)."""
+    cfg = tmp_path / "config" / "panopticon" / "hooks"
+    cfg.mkdir(parents=True)
+    (cfg / "prep.sh").write_text("#!/bin/sh\n")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    fake = _FakeClient(
+        [],
+        repos=[
+            {
+                "id": "r1",
+                "name": "x",
+                "git_url": "https://x/r.git",
+                "default_base": "main",
+                "hook_file": "prep.sh",
+            }
+        ],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        hf = app.screen.query_one("#field-hook_file", dashboard.HookFileField)
+        assert hf.hook_file_value == "prep.sh"
+
+
+@pytest.mark.asyncio
+async def test_hook_file_field_custom_absolute_path_normalized_to_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A custom absolute hook path is normalized to a bare name (resolved per-runner at spawn)."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    fake = _FakeClient(
+        [], repos=[{"id": "r1", "name": "x", "git_url": "https://x/r.git", "default_base": "main"}]
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        hf = app.screen.query_one("#field-hook_file", dashboard.HookFileField)
+        sel = hf.query_one("#hook-file-select", Select)
+        sel.value = hf._CUSTOM
+        await pilot.pause()
+        hf.query_one("#hook-file-input", Input).value = "/some/other/path/prep.sh"
+        assert hf.hook_file_value == "prep.sh"
+
+
+@pytest.mark.asyncio
+async def test_hook_file_field_value_is_saved_on_edit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Editing a repo PATCHes the picked hook_file name through to the client."""
+    cfg = tmp_path / "config" / "panopticon" / "hooks"
+    cfg.mkdir(parents=True)
+    (cfg / "prep.sh").write_text("#!/bin/sh\n")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    fake = _FakeClient(
+        [],
+        repos=[{"id": "r1", "name": "old", "git_url": "https://x/r1.git", "default_base": "main"}],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        hf = app.screen.query_one("#field-hook_file", dashboard.HookFileField)
+        hf.query_one("#hook-file-select", Select).value = "prep.sh"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert fake.updated_repos[0][1]["hook_file"] == "prep.sh"
 
 
 def _record_popen(monkeypatch: Any) -> list[list[str]]:
