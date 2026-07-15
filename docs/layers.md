@@ -79,14 +79,9 @@ A repo layer is **operator-authored** and referenced by name, so you don't touch
    that). It builds on top of the workflow layer as the unprivileged `panopticon` user's
    environment.
 
-2. **Point the repo at it** by setting `image_layer_file` to the file's **name** (`myrepo.dockerfile`),
-   not a path — in the dashboard's repo form, or over the API:
-
-   ```sh
-   curl -X PATCH "$PANOPTICON_SERVICE_URL/repos/<repo-id>" \
-     -H 'content-type: application/json' \
-     -d '{"image_layer_file": "myrepo.dockerfile"}'
-   ```
+2. **Point the repo at it** in the dashboard's repo form: set `image_layer_file` to the file's
+   **name** (`myrepo.dockerfile`), not a path. The form offers a picker over the files in your
+   layers dir, with a custom-path entry that normalizes to a name.
 
 The value is a **reference**, not inline content — see the `image_layer_file` field in
 [`repos.md`](repos.md). The task service resolves it against its layers dir and serves the content
