@@ -104,13 +104,14 @@ fleet from the dashboard.
 
 On the dashboard:
 
-1. **Create it.** Press `n`, then pick the repo and a workflow. `spike` (open-ended, no gates)
-   works on every repo out of the box. The change-shipping workflows (`github-peer-reviewed` and
-   `github-self-reviewed`, which open a PR, and `local-git-self-reviewed`, which keeps commits
-   local) are **opt-in**: enable them for the repo first in the repos form (press `g`, edit the
-   repo, and check the workflows you want). GitHub workflows also need a `GH_TOKEN` in the repo's
-   env-file so the container's `gh` can open PRs (see [`docs/auth.md`](docs/auth.md)). Describe the
-   work in a sentence or two; the [workflow catalog](docs/workflows/README.md) explains how to choose.
+1. **Create it.** Press `n`, then pick the repo and a workflow. `quickstart` already enabled the
+   coding workflow that matches your repo: `github-peer-reviewed` for a GitHub repo (opens a PR), or
+   `local-git-self-reviewed` for a local-only one (keeps commits local). `spike` (open-ended, no
+   gates) is always available too. To use a different workflow, enable it for the repo first in the
+   repos form (press `g`, edit the repo, and check the workflows you want). GitHub workflows need a
+   `GH_TOKEN` in the repo's env-file so the container's `gh` can open PRs (see
+   [`docs/auth.md`](docs/auth.md)). Describe the work in a sentence or two; the
+   [workflow catalog](docs/workflows/README.md) explains how to choose.
 2. **Watch it start.** The task's `container` column moves `queued → … → live` as the runner
    spawns its container; once it's `live` the agent starts on its own branch and begins planning
    automatically. Press `a` to open its plan when it's ready.
