@@ -19,6 +19,9 @@ Self-hosted and terminal-native: your infrastructure, your secrets,
 your repos. A ground-up rewrite of the [cloude-cade](https://github.com/tildesrc/cloude-cade)
 prototype.
 
+New here? [`docs/overview.md`](docs/overview.md) explains how the pieces fit together — the
+mental model behind the dashboard.
+
 ## Requirements
 
 Panopticon runs the control plane on your host and each agent in its own container, so it
