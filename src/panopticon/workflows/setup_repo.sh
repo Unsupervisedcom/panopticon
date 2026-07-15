@@ -8,7 +8,11 @@
 # with `claude setup-token`. Whatever route the operator takes, the script converges on a bulleted
 # summary + a prompt to press Enter, which completes the task and returns them to the dashboard.
 
-env_file="${PANOPTICON_ENV_FILE:-the repo's env-file}"
+# The fallback text lives outside the expansion: an apostrophe inside a double-quoted
+# ${var:-word} is read as a quote character by bash 3.2 (macOS /bin/sh) and unbalances
+# the whole script.
+env_file="${PANOPTICON_ENV_FILE:-}"
+[ -n "$env_file" ] || env_file="the repo's env-file"
 repo_name="${PANOPTICON_REPO_NAME:-this repo}"
 repo_url="${PANOPTICON_GIT_URL:-}"
 repo_label=$(repo_source_label "$repo_url")
