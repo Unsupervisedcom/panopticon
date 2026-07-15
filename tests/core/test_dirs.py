@@ -10,7 +10,11 @@ from __future__ import annotations
 
 import pytest
 
-from panopticon.core.dirs import relativize_secrets_file, secrets_file_path
+from panopticon.core.dirs import (
+    relativize_layers_file,
+    relativize_secrets_file,
+    secrets_file_path,
+)
 
 
 def test_secrets_file_path_joins_name_onto_root() -> None:
@@ -53,3 +57,20 @@ def test_secrets_file_path_roundtrips_with_relativize() -> None:
     resolved = secrets_file_path("r1.env", secrets_dir=root)
     assert resolved is not None
     assert relativize_secrets_file(resolved, secrets_dir=root) == "r1.env"
+
+
+def test_relativize_layers_file_normalizes_like_secrets() -> None:
+    """``image_layer_file`` normalizes to a name relative to the layers dir (ADR 0005), the same
+    way ``env_file`` does against the secrets dir."""
+    root = "/host/layers"
+    # absolute path inside the layers dir → subpath (nested names allowed)
+    assert relativize_layers_file("/host/layers/r1.dockerfile", layers_dir=root) == "r1.dockerfile"
+    assert (
+        relativize_layers_file("/host/layers/team/base.dockerfile", layers_dir=root)
+        == "team/base.dockerfile"
+    )
+    # absolute path elsewhere → basename
+    assert relativize_layers_file("/other/r1.dockerfile", layers_dir=root) == "r1.dockerfile"
+    # relative path kept; blank → empty
+    assert relativize_layers_file("r1.dockerfile", layers_dir=root) == "r1.dockerfile"
+    assert relativize_layers_file("   ", layers_dir=root) == ""

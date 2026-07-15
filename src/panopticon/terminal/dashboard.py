@@ -821,6 +821,94 @@ class EnvFileField(Widget):
             inp.display = False
 
 
+def _list_layers_files() -> list[str]:
+    """Return the sorted **names** (relative to the layers dir) of files in the config layers dir.
+
+    A repo's ``image_layer_file`` is stored relative to the layers dir so it resolves on whichever
+    host runs the task (ADR 0005), so the picker offers bare names, not absolute paths. Nested
+    files (e.g. ``team/base.dockerfile``) are listed with their subpath."""
+    from panopticon.core.dirs import _layers_dir
+
+    layers_dir = _layers_dir()
+    if not layers_dir.is_dir():
+        return []
+    return sorted(str(p.relative_to(layers_dir)) for p in layers_dir.rglob("*") if p.is_file())
+
+
+class ImageLayerField(Widget):
+    """Image-layer picker for the repo form (ADR 0005's repo tier).
+
+    Mirrors :class:`EnvFileField`: a ``Select`` dropdown listing the Dockerfile-fragment file
+    **names** found in the config layers directory (``~/.config/panopticon/layers/``), with an
+    ``enter custom path…`` option that reveals a free-form ``Input``. The stored value is always a
+    **name relative to the layers dir** (so the runner resolves it against its own host's layers
+    dir at spawn); the custom input accepts an absolute or relative path and normalizes it to that
+    relative name on read (see :func:`~panopticon.core.dirs.relativize_layers_file`)."""
+
+    DEFAULT_CSS = """
+    ImageLayerField { margin-bottom: 1; height: auto; }
+    ImageLayerField #image-layer-input { margin-top: 1; }
+    """
+
+    _CUSTOM = "__custom__"
+
+    def __init__(self, initial: str = "", id: str | None = None) -> None:
+        super().__init__(id=id)
+        self._initial = initial
+        self._known = _list_layers_files()
+
+    def compose(self) -> ComposeResult:
+        known_set = set(self._known)
+        options: list[tuple[str, str]] = [(p, p) for p in self._known]
+        options.append(("enter custom path…", self._CUSTOM))
+        is_custom = bool(self._initial and self._initial not in known_set)
+        yield Select(
+            options,
+            prompt="image_layer_file (name in layers dir or custom path)",
+            allow_blank=True,
+            value=self._initial if (self._initial and not is_custom) else Select.NULL,
+            id="image-layer-select",
+        )
+        inp = Input(
+            value=self._initial if is_custom else "",
+            placeholder="repo.dockerfile (or a path — normalized to a layers-dir name)",
+            id="image-layer-input",
+        )
+        inp.display = is_custom
+        yield inp
+
+    @property
+    def image_layer_value(self) -> str:
+        """The stored ``image_layer_file`` **name** (relative to the layers dir), or ``""`` unset.
+
+        A dropdown pick is already a bare name; a custom entry is normalized from whatever path the
+        operator typed (absolute or relative) via
+        :func:`~panopticon.core.dirs.relativize_layers_file`."""
+        from panopticon.core.dirs import relativize_layers_file
+
+        try:
+            sel = self.query_one("#image-layer-select", Select)
+        except NoMatches:
+            return ""
+        v = sel.value
+        if isinstance(v, _SelectNoSelection) or v == self._CUSTOM:
+            try:
+                return relativize_layers_file(self.query_one("#image-layer-input", Input).value)
+            except NoMatches:
+                return ""
+        return str(v)
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id != "image-layer-select":
+            return
+        inp = self.query_one("#image-layer-input", Input)
+        if event.value == self._CUSTOM:
+            inp.display = True
+            inp.focus()
+        else:
+            inp.display = False
+
+
 class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     """A modal form for a repo's fields. On save (Enter or Ctrl+S) it hands the collected
     ``{field: value}`` dict to ``on_submit`` (which validates + persists); if that returns an
@@ -828,9 +916,9 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     dismisses (with the values dict) only on success. Escape cancels, dismissing ``None``. The
     text fields are strings; the privileged toggle is the bool ``docker_in_docker``.
 
-    Two tabs: **general** (git URL, id, name, base branch, env file, privileged docker) and
-    **workflows** (a per-workflow opt-in/opt-out checklist). Both tabs' values are collected
-    on save — submitting from either tab captures everything.
+    Two tabs: **general** (git URL, id, name, base branch, env file, image layer, privileged
+    docker) and **workflows** (a per-workflow opt-in/opt-out checklist). Both tabs' values are
+    collected on save — submitting from either tab captures everything.
 
     **Space toggles checkboxes; Enter saves the form** from any field. The :class:`SpaceCheckbox`
     subclass drops the default ``enter`` binding so Enter always bubbles up to the screen's save
@@ -838,7 +926,7 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
 
     The **git URL leads** create mode: blank ``id`` and ``name`` auto-fill from it on blur and
     at submit; ``default_base`` defaults to ``main``. Edit mode leaves existing values untouched.
-    Edit mode shows ``id`` read-only; ``image_layer_file`` and other capability keys aren't
+    Edit mode shows ``id`` read-only; capability keys other than ``docker_in_docker`` aren't
     edited in the TUI (a PATCH update leaves them untouched)."""
 
     CSS = """
@@ -923,6 +1011,9 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
                     for name in self.FIELDS[1:]:  # git_url already rendered above
                         yield Input(value=self._initial(name), placeholder=name, id=f"field-{name}")
                     yield EnvFileField(initial=self._initial("env_file"), id="field-env_file")
+                    yield ImageLayerField(
+                        initial=self._initial("image_layer_file"), id="field-image_layer_file"
+                    )
                     yield SpaceCheckbox(
                         "privileged docker (docker-in-docker)",
                         value=bool(self._repo.get("capabilities", {}).get("docker_in_docker")),
@@ -982,6 +1073,9 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
         for name in self.FIELDS:
             values[name] = self.query_one(f"#field-{name}", Input).value.strip()
         values["env_file"] = self.query_one("#field-env_file", EnvFileField).env_file_value or None
+        values["image_layer_file"] = (
+            self.query_one("#field-image_layer_file", ImageLayerField).image_layer_value or None
+        )
         values["docker_in_docker"] = self.query_one("#field-docker_in_docker", Checkbox).value
         enabled: list[str] = []
         disabled: list[str] = []
@@ -1082,6 +1176,7 @@ class ReposScreen(ModalScreen[None]):
                     values["git_url"],
                     values["default_base"] or "main",
                     env_file=values["env_file"] or None,
+                    image_layer_file=values["image_layer_file"] or None,
                     capabilities={"docker_in_docker": values["docker_in_docker"]},
                     enabled_workflows=values["enabled_workflows"],
                     disabled_workflows=values["disabled_workflows"],
@@ -1101,8 +1196,8 @@ class ReposScreen(ModalScreen[None]):
 
         # Returns an error to show inline (the form stays open) or None on success.
         def save(values: dict[str, Any]) -> str | None:
-            # PATCH the core fields; image_layer_file is left intact. The privileged toggle is merged
-            # onto the repo's existing capabilities so other keys (if any) survive.
+            # PATCH the core fields. The privileged toggle is merged onto the repo's existing
+            # capabilities so other keys (if any) survive.
             capabilities = {
                 **self._repos[repo_id].get("capabilities", {}),
                 "docker_in_docker": values["docker_in_docker"],
@@ -1114,6 +1209,7 @@ class ReposScreen(ModalScreen[None]):
                     git_url=values["git_url"],
                     default_base=values["default_base"] or "main",
                     env_file=values["env_file"] or None,
+                    image_layer_file=values["image_layer_file"] or None,
                     capabilities=capabilities,
                     enabled_workflows=values["enabled_workflows"],
                     disabled_workflows=values["disabled_workflows"],

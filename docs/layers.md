@@ -1,10 +1,9 @@
 # Container image layers — how they work and how to add your own
 
 Every task runs its agent inside a container. That container's image is not one fixed blob — it is
-**composed from three layers** stacked in order: **base → workflow → repo** (ADR 0005,
-`docs/design/decisions/0005-composable-images.md`). The base stays small and general; a workflow
-adds what its skills need; a repo adds its own toolchain. This doc explains the model and gives
-copy-pasteable recipes for adding a workflow layer and a repo layer.
+**composed from three layers** stacked in order: **base → workflow → repo**. The base stays small
+and general; a workflow adds what its skills need; a repo adds its own toolchain. This doc explains
+the model and gives copy-pasteable recipes for adding a workflow layer and a repo layer.
 
 ## The three tiers
 
@@ -50,7 +49,7 @@ the image, so use it for system-level installs your skills depend on. The real e
 
 ```python
 def image_layer(self) -> str:
-    """The forge skills shell out to `gh`, so layer it onto the base image (ADR 0005)."""
+    """The forge skills shell out to `gh`, so layer it onto the base image."""
     return "RUN apt-get update && apt-get install --yes --no-install-recommends gh"
 ```
 
@@ -59,9 +58,8 @@ Notes:
 - This is distinct from `tools()` and `skills()`. `image_layer()` puts a binary **in the image**;
   `tools()` just *names* it so the agent reaches for it, and `skills()` declares agent-driven
   procedures. Installing `gh` and naming it are two separate declarations on the same workflow.
-- Spell external-program flags in full (`apt-get install --yes`, `--no-install-recommends`) — the
-  long-option convention in AGENTS.md applies anywhere we emit a command, Dockerfile fragments
-  included.
+- Spell external-program flags in full (`apt-get install --yes`, `--no-install-recommends`) — they
+  are self-documenting and grep-able.
 - Keep it small. The base stays general on purpose; only add what the workflow's own skills need.
 
 ## Adding a repo layer
@@ -90,16 +88,16 @@ A repo layer is **operator-authored** and referenced by name, so you don't touch
      -d '{"image_layer_file": "myrepo.dockerfile"}'
    ```
 
-The value is a **reference**, not inline content (`Repo.image_layer_file`, `core/models.py`). The
-task service resolves it against its layers dir and serves the content over REST; the runner
-composes it onto base → workflow. Names that escape the layers root (`..`, absolute paths) are
-rejected; nested names (`team/myrepo.dockerfile`) are allowed. An empty or unset `image_layer_file`
-means no repo layer.
+The value is a **reference**, not inline content — see the `image_layer_file` field in
+[`repos.md`](repos.md). The task service resolves it against its layers dir and serves the content
+over REST; the runner composes it onto base → workflow. Names that escape the layers root (`..`,
+absolute paths) are rejected; nested names (`team/myrepo.dockerfile`) are allowed. An empty or unset
+`image_layer_file` means no repo layer.
 
 ## Notes
 
 - **The layer file lives on the host that spawns the container.** Like `env_file` (see
-  `docs/container-auth.md`), `image_layer_file` is a bare name resolved against each runner host's
+  `docs/auth.md`), `image_layer_file` is a bare name resolved against each runner host's
   own layers dir. With a single host that's your machine; with remote runners (M5), place a
   same-named file under each runner host's layers dir.
 - **Rebuilds & cleanup.** Editing a layer rebuilds the affected steps on the next spawn (Docker
@@ -109,4 +107,4 @@ means no repo layer.
   `capabilities` map (`docker_in_docker`), which makes the runner spawn `--privileged` and the
   entrypoint start a nested daemon — it is not something you add through a Dockerfile fragment.
 - **Secrets never go in a layer.** Image layers are cached and shared; keep API keys and tokens in
-  the repo's `env_file` (`docs/container-auth.md`), injected at launch, not baked into the image.
+  the repo's `env_file` (`docs/auth.md`), injected at launch, not baked into the image.

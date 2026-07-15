@@ -168,6 +168,7 @@ class _FakeClient:
         default_base: str = "main",
         *,
         env_file: str | None = None,
+        image_layer_file: str | None = None,
         capabilities: dict[str, Any] | None = None,
         enabled_workflows: list[str] | None = None,
         disabled_workflows: list[str] | None = None,
@@ -180,6 +181,7 @@ class _FakeClient:
             "git_url": git_url,
             "default_base": default_base,
             "env_file": env_file,
+            "image_layer_file": image_layer_file,
             "enabled_workflows": enabled_workflows or [],
             "disabled_workflows": disabled_workflows or [],
         }
@@ -1291,6 +1293,7 @@ async def test_repos_screen_creates_a_repo_autofilling_from_the_git_url() -> Non
                 "git_url": "git@github.com:acme/widgets.git",
                 "default_base": "main",
                 "env_file": None,
+                "image_layer_file": None,
                 "enabled_workflows": [],
                 "disabled_workflows": [],
                 "capabilities": {"docker_in_docker": False},
@@ -1320,6 +1323,7 @@ async def test_repo_form_autofill_only_fills_blank_fields() -> None:
                 "git_url": "https://x/widgets.git",
                 "default_base": "main",
                 "env_file": None,
+                "image_layer_file": None,
                 "enabled_workflows": [],
                 "disabled_workflows": [],
                 "capabilities": {"docker_in_docker": False},
@@ -1462,8 +1466,8 @@ async def test_repos_screen_edits_a_repo_via_patch() -> None:
         await pilot.press("enter")
         await pilot.pause()
         # Core fields, capabilities, and workflow preferences are all PATCHed together.
-        # image_layer_file is left untouched. The checkbox is unchecked → docker_in_docker=False.
-        # No workflows were passed to the form so enabled/disabled lists are empty.
+        # The checkbox is unchecked → docker_in_docker=False; the layer field is empty →
+        # image_layer_file=None. No workflows were passed to the form so enabled/disabled are empty.
         assert fake.updated_repos == [
             (
                 "r1",
@@ -1472,6 +1476,7 @@ async def test_repos_screen_edits_a_repo_via_patch() -> None:
                     "git_url": "https://x/r1.git",
                     "default_base": "main",
                     "env_file": None,
+                    "image_layer_file": None,
                     "capabilities": {"docker_in_docker": False},
                     "enabled_workflows": [],
                     "disabled_workflows": [],
@@ -1805,6 +1810,108 @@ async def test_env_file_field_custom_input_draws_a_bottom_border(
         region = inp.region
         bottom_row = rows[region.y + region.height - 1]
         assert "▁" in bottom_row[region.x : region.x + region.width]
+
+
+@pytest.mark.asyncio
+async def test_image_layer_field_blank_when_no_known_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ImageLayerField returns '' and shows nothing selected when the layers dir is absent."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    fake = _FakeClient(
+        [], repos=[{"id": "r1", "name": "x", "git_url": "https://x/r.git", "default_base": "main"}]
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        lf = app.screen.query_one("#field-image_layer_file", dashboard.ImageLayerField)
+        assert lf.image_layer_value == ""
+
+
+@pytest.mark.asyncio
+async def test_image_layer_field_pre_selects_known_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ImageLayerField pre-selects a stored image_layer_file by its name (relative to layers dir)."""
+    layers = tmp_path / "config" / "panopticon" / "layers"
+    layers.mkdir(parents=True)
+    (layers / "r1.dockerfile").write_text("RUN echo hi")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    fake = _FakeClient(
+        [],
+        repos=[
+            {
+                "id": "r1",
+                "name": "x",
+                "git_url": "https://x/r.git",
+                "default_base": "main",
+                "image_layer_file": "r1.dockerfile",
+            }
+        ],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        lf = app.screen.query_one("#field-image_layer_file", dashboard.ImageLayerField)
+        assert lf.image_layer_value == "r1.dockerfile"
+
+
+@pytest.mark.asyncio
+async def test_image_layer_field_custom_absolute_path_normalized_to_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A custom absolute path is normalized to a bare name (resolved per-runner at spawn)."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    fake = _FakeClient(
+        [], repos=[{"id": "r1", "name": "x", "git_url": "https://x/r.git", "default_base": "main"}]
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        lf = app.screen.query_one("#field-image_layer_file", dashboard.ImageLayerField)
+        sel = lf.query_one("#image-layer-select", Select)
+        sel.value = lf._CUSTOM
+        await pilot.pause()
+        lf.query_one("#image-layer-input", Input).value = "/some/other/path/r1.dockerfile"
+        assert lf.image_layer_value == "r1.dockerfile"
+
+
+@pytest.mark.asyncio
+async def test_repo_form_saves_a_picked_image_layer_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Picking an image_layer_file in the form PATCHes it onto the repo (ADR 0005 repo tier)."""
+    layers = tmp_path / "config" / "panopticon" / "layers"
+    layers.mkdir(parents=True)
+    (layers / "r1.dockerfile").write_text("RUN echo hi")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    fake = _FakeClient(
+        [], repos=[{"id": "r1", "name": "x", "git_url": "https://x/r.git", "default_base": "main"}]
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        lf = app.screen.query_one("#field-image_layer_file", dashboard.ImageLayerField)
+        lf.query_one("#image-layer-select", Select).value = "r1.dockerfile"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert fake.updated_repos[-1][1]["image_layer_file"] == "r1.dockerfile"
 
 
 def _record_popen(monkeypatch: Any) -> list[list[str]]:

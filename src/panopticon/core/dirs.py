@@ -88,6 +88,42 @@ def _secrets_dir() -> Path:
     return user_config_dir() / "secrets"
 
 
+def _layers_dir() -> Path:
+    """The layers dir, resolved dynamically (so ``$PANOPTICON_CONFIG``/XDG overrides take effect).
+
+    :data:`LAYERS_DIR` is the same path as a module-level constant for the common case; this is
+    the callable form for runtime resolution and tests that override the config dir."""
+    return user_config_dir() / "layers"
+
+
+def relativize_layers_file(path: str, *, layers_dir: str | Path | None = None) -> str:
+    """Normalize a user-entered image-layer ``path`` to a name relative to the layers dir.
+
+    A repo's ``image_layer_file`` is a name relative to the layers dir (see :data:`LAYERS_DIR`),
+    mirroring how ``env_file`` names resolve against the secrets dir. Used when accepting operator
+    input (the dashboard's custom-path field); accepts an absolute or relative path and always
+    yields a stored *relative name*:
+
+    - a path inside the layers dir → its subpath relative to the dir (nested names allowed);
+    - any other absolute path → its basename (so it lands as a bare name, resolved against each
+      runner's own layers dir at spawn);
+    - a relative path → returned unchanged (already a name under the dir).
+
+    An empty/whitespace input yields ``""``. ``layers_dir`` defaults to this host's.
+    """
+    path = path.strip()
+    if not path:
+        return ""
+    p = Path(path)
+    if p.is_absolute():
+        root = (Path(layers_dir) if layers_dir is not None else _layers_dir()).resolve()
+        resolved = p.resolve()
+        if resolved == root or root in resolved.parents:
+            return str(resolved.relative_to(root))
+        return p.name
+    return path
+
+
 def secrets_file_path(name: str | None, *, secrets_dir: str | Path | None = None) -> str | None:
     """Resolve a stored ``env_file`` *name* to an absolute path under the secrets dir.
 
