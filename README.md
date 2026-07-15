@@ -19,6 +19,34 @@ Self-hosted and terminal-native: your infrastructure, your secrets,
 your repos. A ground-up rewrite of the [cloude-cade](https://github.com/tildesrc/cloude-cade)
 prototype.
 
+## The dashboard
+
+The whole fleet in one terminal view — every task's `state`, whose `turn` it is (agent or you),
+its `container` status, and its repo and slug:
+
+```text
+══════════════════════════════════════════════════════════════════════════
+  panopticon                                                6 tasks
+──────────────────────────────────────────────────────────────────────────
+  state          turn       container   repo       slug[memo]
+  ITERATING      agent      live        web-api    add-oauth[Add OAuth login]
+  PLANNING       user       live        web-api    fix-upload[Flaky S3 upload]
+  MERGING        agent      starting    dashboard  dark-mode[Dark-mode theme]
+  ITERATING      user ⚠     down        web-api    migrate-db[Move to Postgres]
+  ORCHESTRATING  agent      live        infra      q3-cleanup[Q3 tech-debt]
+  PLANNING       agent      live        infra      └─ drop-py38[Drop Python 3.8]
+  COMPLETE       agent      –           web-api    ship-readme[README refresh]
+──────────────────────────────────────────────────────────────────────────
+  t attach   n new task   x drop   / search   d detail   ? help   q quit
+══════════════════════════════════════════════════════════════════════════
+```
+
+The `turn` column is color-coded live — green when the agent is working, yellow when it's your
+move, red (`⚠`) when a task is blocked waiting on you — so you can tell at a glance which agents
+need you. The `container` column tracks each agent's sandbox as it spawns (`queued → … → live`,
+or `down` when one needs a respawn), and governed sub-tasks nest under their governor (`└─`).
+Press `t` to drop into any task's session, `?` for the full key list.
+
 ## Requirements
 
 Panopticon runs the control plane on your host and each agent in its own container, so it
