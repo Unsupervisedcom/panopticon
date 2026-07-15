@@ -127,5 +127,3 @@ capacity is just starting another runner; there's no change to the control plane
 - **[Workflow catalog](workflows/README.md)** — the built-in workflows and how to choose (and
   how to add your own).
 - **[README](../README.md)** — install, quickstart, your first task, and configuration.
-- **[Design docs](design/)** — the internals: the topology, the design decisions (ADRs), and the
-  interfaces, for readers who want to go deeper or contribute.
