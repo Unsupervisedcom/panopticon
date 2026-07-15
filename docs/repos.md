@@ -51,7 +51,7 @@ The most important secret is the container's `claude` auth token,
 `CLAUDE_CODE_OAUTH_TOKEN`, a non-rotating token the operator adds to the env-file (ADR 0012
 retired the old per-repo OAuth creds volume — auth is now just this env var). Any
 `ANTHROPIC_API_KEY` or `GH_TOKEN` the tasks need go in the same file. See
-[`container-auth.md`](container-auth.md) for how to mint and place the token, and the
+[`auth.md`](auth.md) for how to mint and place the token, and the
 [`setup-repo` workflow](workflows/setup-repo.md) for the automated, host-side path.
 
 `env_file` is validated at create time: `POST /repos` rejects a reference whose file doesn't
@@ -122,7 +122,7 @@ Repos are managed over the task service's REST API:
 
 ## Related
 
-- [`container-auth.md`](container-auth.md) — the `claude` token that lives in `env_file`.
+- [`auth.md`](auth.md) — the `claude` token that lives in `env_file`.
 - [`workflows/setup-repo.md`](workflows/setup-repo.md) — host-side utility that mints and places that token.
 - ADR 0005 — composable workflow/repo container images.
 - ADR 0007 — per-repo secrets (env-file injection).
