@@ -137,4 +137,5 @@ This page is the map; these guides are the detail:
 - **[Repos](repos.md)** — configuring a repo: secrets, image layers, and capabilities.
 - **[Image layers](layers.md)** — the composed `base → workflow → repo` image, and adding your own.
 - **[Hooks](hooks.md)** — the per-repo host hook that runs before a container spawns.
+- **[Developing](dev.md)** — working *on* panopticon: setup, the check loop, and CI.
 - **[README](../README.md)** — install, quickstart, your first task, and configuration.

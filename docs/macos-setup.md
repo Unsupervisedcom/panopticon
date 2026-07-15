@@ -37,4 +37,5 @@ and `docker/entrypoint.sh`) works even though your host is macOS.
 
 Contributing rather than just running it? The `make` targets work on macOS with the same Docker
 Desktop + tmux requirements above — add `uv` (`brew install uv`), then `make sync`, `make build`,
-`make start`. `make stop` (or `panopticon stop`) tears everything down.
+`make start`. `make stop` (or `panopticon stop`) tears everything down. See
+[`docs/dev.md`](dev.md) for the full development loop (setup, checks, and CI).
