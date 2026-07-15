@@ -17,7 +17,9 @@ repo_label=$(repo_source_label "$repo_url")
 # from the running server (the operator may have rebound them), falling back to the tmux defaults.
 prefix=$(tmux show-options -gv prefix 2>/dev/null)
 [ -n "$prefix" ] || prefix="C-b"
-detach=$(tmux list-keys -T prefix 2>/dev/null | awk '$NF == "detach-client" { print $(NF - 1); exit }')
+# Assign NF-1 to a variable rather than `print $(NF - 1)`: a `$(...)`-nested `(` inside this outer
+# command substitution trips macOS /bin/sh (bash 3.2)'s parser ("syntax error near `('").
+detach=$(tmux list-keys -T prefix 2>/dev/null | awk '$NF == "detach-client" { i = NF - 1; print $i; exit }')
 [ -n "$detach" ] || detach="d"
 dashboard_hint="To return to the dashboard without finishing, detach: press $prefix then $detach (you can resume this task any time from the dashboard)."
 
