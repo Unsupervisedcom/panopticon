@@ -45,7 +45,7 @@ Put together, it looks like this:
  │dashboard │ ◀────▶ │  control plane  │ ◀────▶ │  runner  │
  └──────────┘        │ (source of      │        └────┬─────┘
       │              │  truth)         │             │ spawns
-      │ attach (t)   └─────────────────┘             ▼
+      │ attach       └─────────────────┘             ▼
       │                                     ┌───────────────────┐
       └────────────────────────────────────▶│  task containers  │
                                             │  agent + branch   │
@@ -82,36 +82,33 @@ goes deeper; this section is just the map.
   the task can advance: write a plan, get tests passing, get CI green. A task won't move on
   until they're all met, which is why it sometimes sits and waits.
 - **Artifacts.** A task's own documents, most importantly its **plan** (`plan.md`), kept with
-  the task rather than in the repo. You read them from the dashboard: highlight the task and
-  press `a`.
+  the task rather than in the repo. You read them from the dashboard.
 
 ## The life of a task
 
-Here's the whole arc, and where each step shows up on the dashboard:
+The same arc plays out for every change-making task. This is its conceptual shape; the
+[README](../README.md) has the literal keystrokes, and [`docs/tasks.md`](tasks.md) has the
+state-machine detail.
 
-1. **You create it.** Press `n`, pick the repo and a workflow, and describe the work. The task
-   appears with no branch yet.
-2. **The runner starts it.** The `container` column moves `queued → … → live` as the runner
+1. **You create it.** You pick the repo and a workflow and describe the work in a sentence or
+   two. The task starts with no branch yet.
+2. **The runner starts it.** Its container status climbs from queued to live as the runner
    builds the container, injects the repo's secrets, and starts the agent. See
-   [`docs/container.md`](container.md) for what each container status means and how a
-   container recovers if it dies.
-3. **The agent plans.** It names the task (setting the slug and creating its branch), then writes
-   a plan. When the `turn` column shows the task is waiting on you, press `a` to read the plan.
-   This is your chance to redirect before any code is written.
-4. **You approve the plan.** Attach to the task with `t`, run `/advance` to accept the plan (or
-   steer the agent first), and detach with `Ctrl-b d`. The agent starts a fresh turn and begins
-   implementing.
+   [`docs/container.md`](container.md) for what each status means and how a container recovers
+   if it dies.
+3. **The agent plans.** It names the task, which creates its branch, and writes a plan; then
+   the turn passes to you. Reading the plan is your chance to redirect before any code is
+   written.
+4. **You approve the plan.** You advance the task out of planning (steering the agent first if
+   you want), and it starts a fresh turn and begins implementing.
 5. **The agent works.** It writes code on its branch, runs tests, opens a PR, and shepherds CI,
-   all inside its container and reporting progress back to the control plane. It handles the steps a
-   workflow lets it do on its own; it stops and waits for you at the steps that need your
-   sign-off.
-6. **You review what ships.** For a GitHub workflow, press `p` to open the PR in your browser; for
-   a local workflow, diff the task's branch. Nothing lands until you advance it: you own what
-   ships.
+   all inside its container and reporting progress back to the control plane. It handles the
+   steps its workflow lets it do alone and waits for you at the steps that need your sign-off.
+6. **You review what ships.** You review the PR, or diff the branch for a local workflow.
+   Nothing lands until you advance it: you own what ships.
 7. **It merges.** Once you've signed off, the task moves to its merge step and finishes.
 
-Throughout, you can drop any task with `x` (it moves to `DROPPED` without shipping anything),
-and re-attach to any running task with `t` to see what it's doing.
+At any point you can drop a task, which moves it to `DROPPED` without shipping anything.
 
 ## Where your data lives
 
@@ -138,4 +135,6 @@ This page is the map; these guides are the detail:
 - **[Tasks](tasks.md)** — the task object in full: its properties, states, and lifecycle.
 - **[Containers](container.md)** — the container lifecycle, every dashboard status, and recovery.
 - **[Repos](repos.md)** — configuring a repo: secrets, image layers, and capabilities.
+- **[Image layers](layers.md)** — the composed `base → workflow → repo` image, and adding your own.
+- **[Hooks](hooks.md)** — the per-repo host hook that runs before a container spawns.
 - **[README](../README.md)** — install, quickstart, your first task, and configuration.
