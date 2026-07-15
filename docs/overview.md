@@ -135,7 +135,9 @@ This page is the map; these guides are the detail:
 - **[Tasks](tasks.md)** — the task object in full: its properties, states, and lifecycle.
 - **[Containers](container.md)** — the container lifecycle, every dashboard status, and recovery.
 - **[Repos](repos.md)** — configuring a repo: secrets, image layers, and capabilities.
+- **[Container auth](auth.md)** — giving each repo's agents their Claude token (and a GitHub token for PRs).
 - **[Image layers](layers.md)** — the composed `base → workflow → repo` image, and adding your own.
 - **[Hooks](hooks.md)** — the per-repo host hook that runs before a container spawns.
+- **[macOS setup](macos-setup.md)** — the Docker Desktop specifics for running on a Mac.
 - **[Developing](dev.md)** — working *on* panopticon: setup, the check loop, and CI.
 - **[README](../README.md)** — install, quickstart, your first task, and configuration.
