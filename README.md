@@ -24,7 +24,7 @@ mental model behind the dashboard.
 
 ## The dashboard
 
-The whole fleet in one terminal view — every task's `state`, whose `turn` it is (agent or you),
+See the whole fleet in one terminal view, with every task's `state`, whose `turn` it is (agent or you),
 its `container` status, and its repo and slug:
 
 ```text
