@@ -9,13 +9,19 @@ from collections.abc import Callable, Generator
 from pathlib import Path
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.git import GitClones
 from panopticon.core.models import Repo
 from panopticon.sessionservice.clones import CloneCache
-from panopticon.sessionservice.host import HostDaemon, hold_runner_liveness, run_host
+from panopticon.sessionservice.host import (
+    HostDaemon,
+    build_arg_parser,
+    hold_runner_liveness,
+    run_host,
+)
 from panopticon.taskservice.api import create_app
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 from panopticon.taskservice.service import TaskService
@@ -354,6 +360,28 @@ def test_hold_runner_liveness_passes_host_to_client() -> None:
         sleep=lambda _s: None,
     )
     assert recorded == ["box.example.com"]
+
+
+def test_build_arg_parser_host_defaults_to_empty_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A local runner must not report a host at all — any truthy value makes the terminal
+    # supervisor wrap tmux attach in `ssh -t <host>`, which breaks a purely local session.
+    monkeypatch.delenv("PANOPTICON_RUNNER_HOST", raising=False)
+    args = build_arg_parser().parse_args([])
+    assert args.host == ""
+
+
+def test_build_arg_parser_host_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PANOPTICON_RUNNER_HOST", "box.example.com")
+    args = build_arg_parser().parse_args([])
+    assert args.host == "box.example.com"
+
+
+def test_build_arg_parser_host_flag_overrides_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PANOPTICON_RUNNER_HOST", "box.example.com")
+    args = build_arg_parser().parse_args(["--host", "other.example.com"])
+    assert args.host == "other.example.com"
 
 
 def test_run_host_spawns_then_provisions_end_to_end(tmp_path: Path) -> None:

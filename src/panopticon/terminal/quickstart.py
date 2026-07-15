@@ -18,6 +18,15 @@ _FALLBACK_GIT_URL = "https://github.com/Unsupervisedcom/panopticon.git"
 #: Task states past which a setup-repo task is done — used to decide whether to reuse one.
 _TERMINAL_STATES = {"COMPLETE", "DROPPED"}
 
+#: The opt-in coding workflows quickstart enables for a repo (kept in sync with the workflow
+#: classes' ``name`` ClassVars): the forge lifecycle for hosted remotes, the forge-free one for
+#: local-only repos.
+_FORGE_WORKFLOW = "github-peer-reviewed"
+_LOCAL_WORKFLOW = "local-git-self-reviewed"
+
+#: URL schemes that mean a networked (hosted-forge) remote rather than a local path.
+_FORGE_SCHEMES = ("https://", "http://", "ssh://", "git://", "ftp://", "ftps://")
+
 
 def _secrets_template() -> str:
     """The secrets-file template, read from the packaged ``panopticon.env.template`` data file."""
@@ -65,6 +74,50 @@ def repo_id_from_url(git_url: str) -> str:
     """
     tail = _normalize_url(git_url).replace(":", "/").rstrip("/").rsplit("/", 1)[-1]
     return tail.lower() or "repo"
+
+
+def _is_forge_url(git_url: str) -> bool:
+    """True when ``git_url`` names a hosted-forge remote (network push/PR/CI), not a local path.
+
+    Recognizes URL-scheme remotes (``https://…``, ``ssh://…``, …) and scp-like ``user@host:path``
+    remotes; treats a bare filesystem path or a ``file://`` URL as local-only.
+    """
+    url = git_url.strip()
+    if url.lower().startswith("file://"):
+        return False
+    if url.lower().startswith(_FORGE_SCHEMES):
+        return True
+    # scp-like syntax: user@host:path — an '@' and a ':' before any '/'. A Windows drive path
+    # (``C:\…``) has the ':' but no '@', so it stays local.
+    at, colon, slash = url.find("@"), url.find(":"), url.find("/")
+    return at != -1 and colon > at and (slash == -1 or colon < slash)
+
+
+def choose_enabled_workflow(git_url: str) -> str:
+    """The opt-in workflow quickstart enables for a repo, chosen from its remote URL.
+
+    A hosted-forge remote gets the forge lifecycle (``github-peer-reviewed``); a local-only repo
+    gets the forge-free ``local-git-self-reviewed``.
+    """
+    return _FORGE_WORKFLOW if _is_forge_url(git_url) else _LOCAL_WORKFLOW
+
+
+def _ensure_workflow_enabled(
+    client: TaskServiceClient, repo: dict[str, object], workflow: str
+) -> None:
+    """Add ``workflow`` to an existing repo's ``enabled_workflows`` if it's missing.
+
+    Merges rather than replaces, so a re-run (or a repo registered before quickstart enabled a
+    workflow) gets the coding lifecycle without clobbering entries the operator set by hand. A
+    no-op when it's already enabled.
+    """
+    raw = repo.get("enabled_workflows")
+    enabled = [str(w) for w in raw] if isinstance(raw, list) else []
+    if workflow in enabled:
+        return
+    repo_id = str(repo["id"])
+    client.update_repo(repo_id, enabled_workflows=[*enabled, workflow])
+    print(f"  → Enabled the {workflow!r} workflow for repo {repo_id!r}.")
 
 
 def ensure_secrets_file() -> str:
@@ -125,26 +178,41 @@ def _find_existing_repo(client: TaskServiceClient, git_url: str) -> dict[str, ob
 def setup_repo(client: TaskServiceClient, git_url: str, env_file: str) -> tuple[str, str]:
     """Register the repo quickstart is run in with the task service; return its ``(id, name)``.
 
+    Enables the opt-in coding workflow appropriate to the repo's remote — the forge lifecycle
+    (``github-peer-reviewed``) for a hosted remote, the forge-free ``local-git-self-reviewed`` for a
+    local-only one (see :func:`choose_enabled_workflow`) — so a fresh quickstart repo can create a
+    normal coding task without a hand-edit.
+
     Idempotent: an already-registered repo (matched by remote URL or derived id, see
-    :func:`_find_existing_repo`) is reused rather than re-registered, and a create that races into a
-    conflict falls back to reuse. The name is used to seed the setup-repo task's memo.
+    :func:`_find_existing_repo`) is reused rather than re-registered — and still has the workflow
+    ensured (merged in if absent) — and a create that races into a conflict falls back to the same
+    reuse. The name is used to seed the setup-repo task's memo.
     """
+    workflow = choose_enabled_workflow(git_url)
     existing = _find_existing_repo(client, git_url)
     if existing is not None:
         print(f"Repo already configured for {git_url!r} — skipping registration.")
+        _ensure_workflow_enabled(client, existing, workflow)
         repo_id = str(existing["id"])
         return repo_id, str(existing.get("name") or repo_id)
     repo_id = repo_id_from_url(git_url)
     try:
-        client.create_repo(repo_id, repo_id, git_url, env_file=env_file)
+        client.create_repo(
+            repo_id, repo_id, git_url, env_file=env_file, enabled_workflows=[workflow]
+        )
     except httpx.HTTPStatusError as err:
         if err.response.status_code != 409:
             raise
-        # A repo with this id already exists (its remote just didn't match our dedup) — reuse it.
+        # A repo with this id already exists (a race after our dedup check) — reuse it, and still
+        # ensure the workflow is enabled on it.
         print(f"Repo {repo_id!r} already exists — reusing it.")
+        raced = _find_existing_repo(client, git_url)
+        if raced is not None:
+            _ensure_workflow_enabled(client, raced, workflow)
         return repo_id, repo_id
     print(f"Registered repo {repo_id!r} (git_url={git_url!r}).")
     print(f"  → Secrets file: {env_file}")
+    print(f"  → Enabled the {workflow!r} workflow.")
     return repo_id, repo_id
 
 

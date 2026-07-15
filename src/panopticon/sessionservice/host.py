@@ -194,9 +194,9 @@ def run_host(
     HostDaemon(client, spawner, provisioner, interval=interval, sleep=sleep).run(until=until)
 
 
-def main(
-    argv: list[str] | None = None, *, client: TaskServiceClient | None = None
-) -> None:  # pragma: no cover - thin wiring + endless loop
+def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the ``host`` daemon's CLI parser — split out from :func:`main` so tests can inspect
+    argument defaults (e.g. ``--host``) without running the endless daemon loop."""
     parser = argparse.ArgumentParser(
         prog="python -m panopticon.sessionservice.host",
         description="Per-host session service: spawn tasks + provision them (ADR 0008/0011).",
@@ -226,7 +226,13 @@ def main(
         default=2.0,
         help="change-feed long-poll wait, seconds (the keepalive ceiling between blocking calls)",
     )
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(
+    argv: list[str] | None = None, *, client: TaskServiceClient | None = None
+) -> None:  # pragma: no cover - thin wiring + endless loop
+    args = build_arg_parser().parse_args(argv)
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )

@@ -39,6 +39,34 @@ def test_detect_git_url_fallback_on_nonzero_exit(monkeypatch: pytest.MonkeyPatch
     assert qs.detect_git_url() == qs._FALLBACK_GIT_URL
 
 
+@pytest.mark.parametrize(
+    "git_url",
+    [
+        "https://github.com/acme/widget.git",
+        "http://example.com/acme/widget",
+        "git@github.com:acme/widget.git",
+        "ssh://git@github.com/acme/widget.git",
+        "git://github.com/acme/widget.git",
+        qs._FALLBACK_GIT_URL,
+    ],
+)
+def test_choose_enabled_workflow_forge(git_url: str) -> None:
+    assert qs.choose_enabled_workflow(git_url) == "github-peer-reviewed"
+
+
+@pytest.mark.parametrize(
+    "git_url",
+    [
+        "/srv/repos/widget",
+        "./widget",
+        "file:///srv/repos/widget",
+        "C:\\repos\\widget",
+    ],
+)
+def test_choose_enabled_workflow_local(git_url: str) -> None:
+    assert qs.choose_enabled_workflow(git_url) == "local-git-self-reviewed"
+
+
 def test_ensure_secrets_file_creates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import panopticon.core.dirs as dirs_mod
 
@@ -90,6 +118,9 @@ def test_setup_repo_dedups_on_remote_url(capsys: pytest.CaptureFixture[str]) -> 
     class _HasRepo:
         create_repo_called = False
 
+        def __init__(self) -> None:
+            self.updated: dict[str, Any] = {}
+
         def list_repos(self) -> list[dict[str, object]]:
             return [{"id": "other", "name": "acme/other", "git_url": "https://github.com/x/y"}]
 
@@ -97,10 +128,19 @@ def test_setup_repo_dedups_on_remote_url(capsys: pytest.CaptureFixture[str]) -> 
             self.create_repo_called = True
             return {}
 
+        def update_repo(self, repo_id: str, **changes: Any) -> dict[str, object]:
+            self.updated = {"repo_id": repo_id, **changes}
+            return {}
+
     fake_client = _HasRepo()
     repo_id, name = qs.setup_repo(fake_client, "https://github.com/x/y.git", "/tmp/env")  # type: ignore[arg-type]
     assert (repo_id, name) == ("other", "acme/other")
     assert not fake_client.create_repo_called
+    # The reused repo had no enabled workflows, so the forge lifecycle is merged in.
+    assert fake_client.updated == {
+        "repo_id": "other",
+        "enabled_workflows": ["github-peer-reviewed"],
+    }
     assert "already configured" in capsys.readouterr().out
 
 
@@ -123,8 +163,27 @@ def test_setup_repo_creates_when_absent() -> None:
     assert created["name"] == "y"
     assert created["git_url"] == "https://github.com/x/y.git"
     assert created["env_file"] == "panopticon.env"
-    # setup-repo is opt-out (enabled everywhere) so quickstart no longer enables it explicitly.
-    assert "enabled_workflows" not in created
+    # A hosted-forge remote enables the forge lifecycle so the repo can create a coding task.
+    assert created["enabled_workflows"] == ["github-peer-reviewed"]
+
+
+def test_setup_repo_enables_local_workflow_for_local_remote() -> None:
+    created: dict[str, Any] = {}
+
+    class _Empty:
+        def list_repos(self) -> list[dict[str, object]]:
+            return []
+
+        def create_repo(
+            self, repo_id: str, name: str, git_url: str, **kw: Any
+        ) -> dict[str, object]:
+            created.update(repo_id=repo_id, name=name, git_url=git_url, **kw)
+            return {}
+
+    repo_id, _ = qs.setup_repo(_Empty(), "/srv/repos/widget", "panopticon.env")  # type: ignore[arg-type]
+    assert repo_id == "widget"
+    # A local-only remote (a filesystem path) enables the forge-free lifecycle instead.
+    assert created["enabled_workflows"] == ["local-git-self-reviewed"]
 
 
 def test_setup_repo_dedups_on_derived_id_when_remote_differs() -> None:
@@ -134,11 +193,21 @@ def test_setup_repo_dedups_on_derived_id_when_remote_differs() -> None:
         create_repo_called = False
 
         def list_repos(self) -> list[dict[str, object]]:
-            return [{"id": "y", "name": "x/y", "git_url": "git@github.com:x/y.git"}]
+            return [
+                {
+                    "id": "y",
+                    "name": "x/y",
+                    "git_url": "git@github.com:x/y.git",
+                    "enabled_workflows": ["github-peer-reviewed"],
+                }
+            ]
 
         def create_repo(self, *a: Any, **kw: Any) -> dict[str, object]:
             self.create_repo_called = True
             return {}
+
+        def update_repo(self, repo_id: str, **changes: Any) -> dict[str, object]:
+            raise AssertionError("workflow already enabled — should not update")
 
     fake_client = _HasRepo()
     repo_id, name = qs.setup_repo(fake_client, "https://github.com/x/y.git", "/tmp/env")  # type: ignore[arg-type]
