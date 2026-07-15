@@ -57,7 +57,6 @@ def test_health_and_workflows(client: TestClient) -> None:
         {
             "name": "spike",
             "when_to_use": Spike().when_to_use,
-            "auto_submit_memo": False,
             "opt_in": False,
         }
     ]

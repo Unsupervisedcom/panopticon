@@ -594,6 +594,10 @@ class MemoTextArea(TextArea):
             event.prevent_default()
             event.stop()  # don't let Enter bubble to the screen's enter binding
             self.screen.action_submit()  # type: ignore[attr-defined]
+        elif event.key == "ctrl+s":
+            event.prevent_default()
+            event.stop()  # set the memo without submitting it as an initial prompt
+            self.screen.action_set_only()  # type: ignore[attr-defined]
         else:
             await super()._on_key(event)
 
@@ -603,48 +607,45 @@ class MemoTextArea(TextArea):
 
 
 class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
-    """Memo + auto-submit checkbox for task creation.
+    """Memo prompt for task creation.
 
-    Dismisses ``(text, auto_submit)`` on submit (Enter), or ``None`` on cancel (Escape).
-    ``auto_submit_default`` seeds the checkbox; the user can toggle it with Space.
+    Dismisses ``(text, submit)`` where ``submit`` says whether to deliver the memo as the
+    agent's initial prompt, or ``None`` on cancel (Escape). **Enter always submits** the memo
+    as an initial prompt; **ctrl+s sets the memo without submitting** it (an unsent paste).
 
     Uses :class:`MemoTextArea` so Enter submits rather than inserting a newline — same UX
     as the original single-line ``Input``, but the field can display multi-line content
-    loaded by ``ctrl+g`` (open in ``$EDITOR``).
-
-    **Space toggles the checkbox; Enter saves**."""
+    loaded by ``ctrl+g`` (open in ``$EDITOR``)."""
 
     CSS = """
     MemoScreen { align: center middle; }
     #memo-box { width: 64; height: auto; padding: 1 2; border: round $accent; background: $surface; }
     #memo-box MemoTextArea { height: 1; margin-bottom: 1; }
-    #memo-box Checkbox { margin-top: 0; }
     #memo-box .memo-hint { color: $text-muted; margin-top: 1; }
     """
     BINDINGS = [
         ("escape", "cancel", "Cancel"),
         ("ctrl+g", "edit_in_editor", "Edit"),
+        ("ctrl+s", "set_only", "Set"),
         ("enter", "submit", "Create"),
     ]
 
-    def __init__(self, auto_submit_default: bool) -> None:
-        super().__init__()
-        self._auto_submit_default = auto_submit_default
-
     def compose(self) -> ComposeResult:
         with Vertical(id="memo-box"):
-            yield Label("memo")
             yield MemoTextArea(compact=True)
-            yield SpaceCheckbox("Submit as initial prompt", value=self._auto_submit_default)
-            yield Label("ctrl+g: open in $EDITOR", classes="memo-hint")
+            yield Label(
+                "enter: submit · ctrl+s: set without submitting · ctrl+g: edit",
+                classes="memo-hint",
+            )
 
     def on_mount(self) -> None:
         self.query_one(MemoTextArea).focus()
 
     def action_submit(self) -> None:
-        text = self.query_one(MemoTextArea).text
-        auto_submit = self.query_one(SpaceCheckbox).value
-        self.dismiss((text, auto_submit))
+        self.dismiss((self.query_one(MemoTextArea).text, True))
+
+    def action_set_only(self) -> None:
+        self.dismiss((self.query_one(MemoTextArea).text, False))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -1645,23 +1646,21 @@ class Dashboard(App[None]):
             def describe(workflow: str | None) -> None:
                 if workflow is None:
                     return
-                wf_info = next((w for w in workflows if w["name"] == workflow), {})
-                auto_submit_default = bool(wf_info.get("auto_submit_memo", False))
 
                 def create(result: tuple[str, bool] | None) -> None:
                     if result is None:  # backed out
                         return
-                    memo_text, auto_submit = result
+                    memo_text, submit = result
                     stripped = memo_text.strip()
                     if _apply_memo_filter(stripped):
                         return
-                    if auto_submit and stripped:
+                    if submit and stripped:
                         self._client.create_task(repo, workflow, stripped, initial_prompt=stripped)
                     else:
                         self._client.create_task(repo, workflow, stripped or None)
                     self.action_refresh()
 
-                self.push_screen(MemoScreen(auto_submit_default), create)
+                self.push_screen(MemoScreen(), create)
 
             self.push_screen(WorkflowScreen(workflows), describe)
 

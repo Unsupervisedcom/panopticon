@@ -38,7 +38,6 @@ class GithubPeerReviewed(GithubForgeWorkflow):
     gates the merge. Foreground states are user-advanced; MERGING is agent-driven."""
 
     name: ClassVar[str] = "github-peer-reviewed"
-    auto_submit_memo: ClassVar[bool] = True
     opt_in: ClassVar[bool] = True
     when_to_use: ClassVar[str] = (
         "GitHub-hosted changes that require a peer review before merging — full PLANNING → ITERATING → "

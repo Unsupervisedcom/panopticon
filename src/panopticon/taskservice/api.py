@@ -200,7 +200,6 @@ class RepoPatchIn(BaseModel):
 class WorkflowInfo(BaseModel):
     name: str
     when_to_use: str
-    auto_submit_memo: bool
     opt_in: bool
 
 

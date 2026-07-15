@@ -226,13 +226,12 @@ class TaskService:
         return sorted(self._workflows)
 
     async def list_workflow_infos(self) -> list[dict[str, str | bool]]:
-        """Each workflow's name, when_to_use description, auto_submit_memo and opt_in flags, sorted
-        by name. ``hidden`` workflows are omitted — this drives the repo form's enable/disable menu."""
+        """Each workflow's name, when_to_use description and opt_in flag, sorted by name.
+        ``hidden`` workflows are omitted — this drives the repo form's enable/disable menu."""
         return [
             {
                 "name": name,
                 "when_to_use": self._workflows[name].when_to_use,
-                "auto_submit_memo": self._workflows[name].auto_submit_memo,
                 "opt_in": self._workflows[name].opt_in,
             }
             for name in sorted(self._workflows)
@@ -248,7 +247,6 @@ class TaskService:
             {
                 "name": name,
                 "when_to_use": self._workflows[name].when_to_use,
-                "auto_submit_memo": self._workflows[name].auto_submit_memo,
                 "opt_in": self._workflows[name].opt_in,
             }
             for name in sorted(self._workflows)
