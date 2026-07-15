@@ -61,9 +61,12 @@ shells out to a few host tools. You need:
   `tmux -L panopticon` server
 - **git:** the session service clones a per-task workspace for each agent
 - The **`claude` CLI:** first-time setup runs `claude setup-token` on the host to mint the
-  Claude auth token each agent uses inside its container
+  Claude auth token each agent uses inside its container. Minting a token needs a **paid Claude
+  subscription or Console login**; an `ANTHROPIC_API_KEY` works instead. See
+  [`docs/auth.md`](docs/auth.md).
 
-`panopticon quickstart` checks these first; run `panopticon doctor` to re-check any time.
+`panopticon quickstart` checks these first; run `panopticon doctor` to re-check any time. On macOS
+you need Docker **Desktop** specifically; see [`docs/macos-setup.md`](docs/macos-setup.md).
 
 ## Install
 
@@ -101,10 +104,14 @@ fleet from the dashboard.
 
 On the dashboard:
 
-1. **Create it.** Press `n`, then pick the repo and a workflow: `github-peer-reviewed` (opens a PR
-   to merge) or `local-git-self-reviewed` (stays on local git, no GitHub needed). Describe
-   the work in a sentence or two. See [`docs/workflows/`](docs/workflows/README.md) for the full
-   catalog and how to choose.
+1. **Create it.** Press `n`, then pick the repo and a workflow. `quickstart` already enabled the
+   coding workflow that matches your repo: `github-peer-reviewed` for a GitHub repo (opens a PR), or
+   `local-git-self-reviewed` for a local-only one (keeps commits local). `spike` (open-ended, no
+   gates) is always available too. To use a different workflow, enable it for your repo in the
+   repos form (press `g`, edit the repo, and check the workflows you want). GitHub workflows need a
+   `GH_TOKEN` in the repo's env-file so the container's `gh` can open PRs (see
+   [`docs/auth.md`](docs/auth.md)). Describe the work in a sentence or two; the
+   [workflow catalog](docs/workflows/README.md) explains how to choose.
 2. **Watch it start.** The task's `container` column moves `queued → … → live` as the runner
    spawns its container; once it's `live` the agent starts on its own branch and begins planning
    automatically. Press `a` to open its plan when it's ready.
@@ -129,3 +136,21 @@ variable (resolution is `$PANOPTICON_*` → `$XDG_*_HOME/panopticon` → the def
 | Artifacts + per-task clones | `~/.local/share/panopticon/` | `PANOPTICON_DATA` |
 | Layers, secrets, workflows | `~/.config/panopticon/` | `PANOPTICON_CONFIG` (workflows also via the `--workflows-path` flag) |
 | Per-repo clone cache | `~/.cache/panopticon/repos/` | `PANOPTICON_CACHE` |
+
+## Managing your install
+
+- **Bring it back up** after a reboot or after you quit: `panopticon start` starts the services and
+  opens the dashboard. `panopticon console` re-attaches when the services are already running.
+- **Stop everything:** `panopticon stop` removes the task containers and the `-L panopticon` tmux
+  server. Your data under `~/.local/share/panopticon` is left in place.
+- **Check your host:** `panopticon doctor` verifies Python, Docker (and a running daemon), tmux,
+  git, and the `claude` CLI, printing a line per check and exiting non-zero if anything is missing.
+- **Upgrade:** `pipx upgrade panopticon-app` (or `pip install --upgrade panopticon-app`), then
+  `panopticon migrate` to apply any new database migrations.
+- **Uninstall:** `panopticon stop`, then `pipx uninstall panopticon-app`. To remove state too,
+  delete `~/.local/share/panopticon`, `~/.config/panopticon`, and `~/.cache/panopticon`, and remove
+  the `panopticon-*` Docker images.
+
+## License
+
+MIT. See [`LICENSE`](LICENSE).

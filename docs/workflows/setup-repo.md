@@ -17,8 +17,8 @@ token lands in the repo's env-file.
 ## How you launch it
 
 This workflow is **hidden** from the normal task-creation picker. You start it from the
-**repos screen's setup hotkey**, which creates a `setup-repo` task for the highlighted
-repo. (It's available for every repo; there's nothing to enable.)
+**repos screen**: press `g` to open it, highlight the repo, and press `s`. That creates a
+`setup-repo` task for that repo. (It's available for every repo; there's nothing to enable.)
 
 ## Lifecycle
 
@@ -39,6 +39,6 @@ task has no agent to gate.
 
 ## Related
 
-- [Container authentication](../container-auth.md): what the token is for and how to set
+- [Container authentication](../auth.md): what the token is for and how to set
   it by hand instead.
 - [Workflow catalog](README.md).
