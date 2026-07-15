@@ -7,10 +7,10 @@ to inject, what to add to the container image, which container privileges to gra
 workflows the repo offers.
 
 Crucially, a repo record holds mostly **references**, never the sensitive values themselves. The
-secrets and the image layer live as files on each runner host; the repo only names them. That
-keeps secrets out of the database, artifacts, and image layers, and lets a remote runner resolve
-each reference against its **own** host — so the value stays host-agnostic and never crosses the
-wire.
+secrets, image layer, and hook script live as files on each runner host; the repo only names
+them. That keeps secrets out of the database, artifacts, and image layers, and lets a remote
+runner resolve each reference against its **own** host — so the value stays host-agnostic and
+never crosses the wire.
 
 A repo's identity is its `id`; `name` is the human label. Every task carries a `repo_id`
 pointing at one.
@@ -28,7 +28,7 @@ The `Repo` model (`src/panopticon/core/models.py`) has these fields:
 | `env_file` | **Name** (relative to the secrets dir) of an env-file of secrets, injected at spawn via `--env-file`. See [Secrets](#secrets-env_file). |
 | `image_layer_file` | **Name** (relative to the layers dir) of a Dockerfile fragment — the repo tier of the composed image. See [Container image](#container-image-image_layer_file). |
 | `capabilities` | Opt-in map for elevated container privileges (e.g. `docker_in_docker`). See [Capabilities](#capabilities). |
-| `hook_file` | Host path to an executable run after workspace prep, before `docker run`. See [Host hook](#host-hook-hook_file). |
+| `hook_file` | **Name** (relative to the hooks dir) of a script the runner runs before `docker run`. See [Host hook](#host-hook-hook_file). |
 | `enabled_workflows` / `disabled_workflows` | Filter which workflows the repo offers. See [Workflow visibility](#workflow-visibility). |
 
 The three reference fields (`env_file`, `image_layer_file`, `hook_file`) are all optional — a
@@ -40,18 +40,16 @@ minimal repo is just an `id`, `name`, and `git_url`.
 `~/.config/panopticon/secrets/` — naming a file of `KEY=value` lines. At spawn the runner
 resolves the name against its own host's secrets dir and injects the file with
 `docker run --env-file`, so the task container gets exactly its repo's secrets and nothing
-else (ADR 0007).
+else.
 
 Because only the *name* is stored, secrets stay out of the database, artifacts, and image
 layers, and a remote runner resolves the same name against its own host — the file's content
 never crosses the wire. The resolver refuses any name that escapes the secrets dir (a `..`
 segment or an absolute path).
 
-The most important secret is the container's `claude` auth token,
-`CLAUDE_CODE_OAUTH_TOKEN`, a non-rotating token the operator adds to the env-file (ADR 0012
-retired the old per-repo OAuth creds volume — auth is now just this env var). Any
-`ANTHROPIC_API_KEY` or `GH_TOKEN` the tasks need go in the same file. See
-[`auth.md`](auth.md) for how to mint and place the token, and the
+The env-file's most important entry is the container's `claude` auth token,
+`CLAUDE_CODE_OAUTH_TOKEN` (plus any `ANTHROPIC_API_KEY` or `GH_TOKEN` the tasks need); see
+[`auth.md`](auth.md) for how to mint and place it, and the
 [`setup-repo` workflow](workflows/setup-repo.md) for the automated, host-side path.
 
 `env_file` is validated at create time: `POST /repos` rejects a reference whose file doesn't
@@ -59,21 +57,13 @@ exist under the secrets dir.
 
 ## Container image (`image_layer_file`)
 
-A task's image is composed from three layers — **base → workflow → repo** (ADR 0005):
-
-- **Base** — the general task-container image: python, git, bash, the `claude` CLI.
-- **Workflow** — what the workflow's skills need (e.g. `gh` for the GitHub forge workflows).
-- **Repo** — this repo's own tier, from `image_layer_file`.
-
 `image_layer_file` is a **name relative to the layers dir**, naming a Dockerfile fragment (not
-inline content). The task service reads it and serves it over `GET /repos/{id}/image-layer`;
-the runner fetches the workflow and repo layers, composes them onto the base with `FROM`
-chaining, and `docker build`s the result (tag `panopticon-<workflow>-<repo>`). This is where a
-repo layers on its toolchain — for example installing `uv` and `make`. The layer is optional:
-declare none and the repo tier is simply empty.
-
-Image layers are **build-time only** — secrets are never baked in; they're injected at run time
-via `env_file`, which is what keeps a composed image safe to cache and (eventually) publish.
+inline content) — the repo's own tier of the task image, which the runner composes as
+**base → workflow → repo** and builds at spawn. This is where a repo layers on its toolchain,
+for example installing `uv` and `make`. The task service serves the fragment over
+`GET /repos/{id}/image-layer`; the layer is optional (declare none and the repo tier is empty),
+and secrets are never baked in — they're injected at run time via `env_file`. See
+[`layers.md`](layers.md) for how the layers compose.
 
 ## Capabilities
 
@@ -86,10 +76,11 @@ need to run Docker.
 
 ## Host hook (`hook_file`)
 
-`hook_file` is a **host path** to an executable the runner runs on the host after the per-task
-workspace is prepared but before `docker run`. The hook receives `PANOPTICON_TASK_ID` and
-`PANOPTICON_REPO_NAME` as environment variables; a nonzero exit aborts the spawn. Use it to
-adjust the checkout before the agent sees it — for example stripping host-only config files.
+`hook_file` names a script the runner runs on the host after the per-task workspace is prepared
+but before `docker run` — a chance to adjust the checkout before the agent sees it (for example
+stripping host-only config files). Like `env_file`, it is a **name relative to the hooks dir**
+(`$PANOPTICON_CONFIG/hooks`), resolved against each runner's own host. See
+[`hooks.md`](hooks.md) for what the hook receives and how failures are handled.
 
 ## Workflow visibility
 
@@ -103,7 +94,7 @@ When the session service spawns a task, it uses the repo's fields in order:
 
 1. **Fetch the repo** by the task's `repo_id`.
 2. **Prepare the per-task clone** — `git clone --local` from the host's per-repo cache into a
-   fresh directory mounted read-write at `/workspace` (ADR 0011).
+   fresh directory mounted read-write at `/workspace`.
 3. **Run `hook_file`** on the host, if the repo declares one.
 4. **Compose the image** — fetch the workflow and repo (`image_layer_file`) layers, build
    base → workflow → repo.
@@ -123,8 +114,6 @@ Repos are managed over the task service's REST API:
 ## Related
 
 - [`auth.md`](auth.md) — the `claude` token that lives in `env_file`.
-- [`workflows/setup-repo.md`](workflows/setup-repo.md) — host-side utility that mints and places that token.
-- ADR 0005 — composable workflow/repo container images.
-- ADR 0007 — per-repo secrets (env-file injection).
-- ADR 0011 — per-task clone provisioning.
-- ADR 0012 — retiring the OAuth creds volume for `CLAUDE_CODE_OAUTH_TOKEN`.
+- [`layers.md`](layers.md) — how the base → workflow → repo image layers compose.
+- [`hooks.md`](hooks.md) — repo hooks and how `hook_file` resolves.
+- [`workflows/setup-repo.md`](workflows/setup-repo.md) — host-side utility that mints and places the auth token.
