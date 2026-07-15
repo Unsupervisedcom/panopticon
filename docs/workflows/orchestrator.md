@@ -19,15 +19,15 @@ This workflow is **shown for every repo by default** (no opt-in needed).
 
 | State | What happens | Who advances |
 |---|---|---|
-| **ORCHESTRATING** | The agent breaks the request into child tasks and, for each, creates it, writes its `plan.md`, names it, records a token estimate, and hands its turn to you. | **You** — mark it COMPLETE (`/advance`) once it has spawned everything. |
-| **COMPLETE** | Terminal. | — |
+| **ORCHESTRATING** | The agent breaks the request into child tasks and, for each, creates it, writes its `plan.md`, names it, records a token estimate, and hands its turn to you. | **You**, by marking it COMPLETE (`/advance`) once it has spawned everything. |
+| **COMPLETE** | Terminal. | n/a |
 
 Each child task lands in **PLANNING** with its plan already written and the planning gate
-cleared — so all you do is read the plan and advance it. The usual targets are
+cleared, so all you do is read the plan and advance it. The usual targets are
 [`github-self-reviewed`](github-self-reviewed.md) / [`github-peer-reviewed`](github-peer-reviewed.md)
 tasks that arrive pre-planned.
 
-## Your part / the agent's part
+## Your part and the agent's part
 
 - **You**: give the high-level goal, then review and approve each spawned child task.
 - **The agent**: decomposes the goal, creates and pre-plans the children, and hands each
@@ -36,13 +36,13 @@ tasks that arrive pre-planned.
 
 ## Skills
 
-- **`spawn-task`** — creates a new child task and seeds it with a plan, ready for you to
+- **`spawn-task`** creates a new child task and seeds it with a plan, ready for you to
   approve.
-- **`review-task`** — reviews a spawned task's change and either approves it or leaves a
+- **`review-task`** reviews a spawned task's change and either approves it or leaves a
   `review.md` artifact on that task with findings.
 
 ## Related
 
-- [`spike`](spike.md) — the other ungated, single-state workflow (does the work itself
+- [`spike`](spike.md): the other ungated, single-state workflow (does the work itself
   rather than spawning tasks).
 - [Workflow catalogue](README.md).
