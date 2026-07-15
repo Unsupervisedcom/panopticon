@@ -117,8 +117,14 @@ jobs:
           kill "$qs_pid" 2>/dev/null || true
           if [ "$ok" -ne 1 ]; then
             echo "setup-repo task did not reach the token-mint prompt within 60s"
-            echo "--- setup-repo pane ---"; tmux -L panopticon capture-pane -t "$session" -p 2>/dev/null || echo "(no session)"
+            echo "=== DIAGNOSTICS ==="
+            echo "--- tmux list-sessions ---"; tmux -L panopticon list-sessions 2>&1 || true
+            echo "--- setup-repo task state ---"
+            uv run python -c "import httpx; from panopticon.client import TaskServiceClient; c = TaskServiceClient(httpx.Client(base_url='http://localhost:8000')); t = next((x for x in c.list_tasks() if x['workflow'] == 'setup-repo'), None); print(t['state'], t.get('turn'), t.get('container_status')) if t else print('no setup-repo task')" 2>&1 || true
+            echo "--- setup-repo pane (with history) ---"; tmux -L panopticon capture-pane -t "$session" -p -S - 2>&1 || echo "(no session)"
             echo "--- quickstart.log ---"; cat quickstart.log 2>/dev/null || true
+            echo "--- runner log (tail) ---"; tail -n 50 /tmp/panopticon-runner.log 2>/dev/null || true
+            echo "--- service log (tail) ---"; tail -n 30 /tmp/panopticon-service.log 2>/dev/null || true
             exit 1
           fi
 
