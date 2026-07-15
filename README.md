@@ -8,9 +8,9 @@ one place to watch them all.
 
 - **A live dashboard** of all your tasks, showing which agents are working and which are blocked
   waiting on you, so you stop cycling through terminals to find the one that's stuck.
-- **Configurable workflows** that set the line between what an agent may do alone and what
-  needs your sign-off, so agents run unattended without running unchecked. Other tools show
-  you which agent is blocked; Panopticon decides when it blocks.
+- **[Configurable workflows](docs/workflows/README.md)** that set the line between what an
+  agent may do alone and what needs your sign-off, so agents run unattended without running
+  unchecked. Other tools show you which agent is blocked; Panopticon decides when it blocks.
 - **Sandboxed by default:** each agent works in its own container on its own branch
   (secrets and environment handled per repo), so it can work freely and nothing reaches
   main without your review.
@@ -72,7 +72,8 @@ On the dashboard:
 
 1. **Create it.** Press `n`, then pick the repo and a workflow: `github-peer-reviewed` (opens a PR
    to merge) or `local-git-self-reviewed` (stays on local git, no GitHub needed). Describe
-   the work in a sentence or two.
+   the work in a sentence or two. See [`docs/workflows/`](docs/workflows/README.md) for the full
+   catalog and how to choose.
 2. **Watch it start.** The task's `container` column moves `queued → … → live` as the runner
    spawns its container; once it's `live` the agent starts on its own branch and begins planning
    automatically. Press `a` to open its plan when it's ready.
