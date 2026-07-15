@@ -79,6 +79,12 @@ LAYERS_DIR: str = str(user_config_dir() / "layers")
 #: the wire (ADR 0007). Mirrors ``LAYERS_DIR``.
 SECRETS_DIR: str = str(user_config_dir() / "secrets")
 
+#: Per-repo pre-launch hook scripts — $PANOPTICON_CONFIG/hooks. A repo's ``hook_file`` is a name
+#: *relative to this dir*; each runner resolves it against its **own** local hooks dir when it
+#: spawns a task's container (so a remote runner uses its own host's script). Mirrors
+#: ``SECRETS_DIR`` — see ``docs/hooks.md``.
+HOOKS_DIR: str = str(user_config_dir() / "hooks")
+
 
 def _secrets_dir() -> Path:
     """The secrets dir, resolved dynamically (so ``$PANOPTICON_CONFIG``/XDG overrides take effect).
@@ -103,6 +109,32 @@ def secrets_file_path(name: str | None, *, secrets_dir: str | Path | None = None
     path = (root / name).resolve()
     if path != root and root not in path.parents:
         raise ValueError(f"env_file name {name!r} escapes the secrets dir")
+    return str(path)
+
+
+def _hooks_dir() -> Path:
+    """The hooks dir, resolved dynamically (so ``$PANOPTICON_CONFIG``/XDG overrides take effect).
+
+    :data:`HOOKS_DIR` is the same path as a module-level constant for the common case; this is the
+    callable form for runtime resolution and tests that override the config dir."""
+    return user_config_dir() / "hooks"
+
+
+def hook_file_path(name: str | None, *, hooks_dir: str | Path | None = None) -> str | None:
+    """Resolve a stored ``hook_file`` *name* to an absolute path under the hooks dir.
+
+    ``name`` is a path relative to the hooks dir (see :data:`HOOKS_DIR`); ``hooks_dir`` defaults to
+    this host's (resolved dynamically). Returns ``None`` for a falsy name; otherwise joins it onto
+    the root and returns the absolute path, **refusing anything that escapes the root** (``..`` or
+    an absolute name) — the same guard :func:`secrets_file_path` applies. The runner calls this to
+    resolve a repo's pre-launch hook against its own host's hooks dir.
+    """
+    if not name:
+        return None
+    root = (Path(hooks_dir) if hooks_dir is not None else _hooks_dir()).resolve()
+    path = (root / name).resolve()
+    if path != root and root not in path.parents:
+        raise ValueError(f"hook_file name {name!r} escapes the hooks dir")
     return str(path)
 
 
