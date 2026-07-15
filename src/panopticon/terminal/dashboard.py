@@ -621,7 +621,7 @@ class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
     MemoScreen { align: center middle; }
     #memo-box { width: 64; height: auto; padding: 1 2; border: round $accent; background: $surface; }
     #memo-box MemoTextArea { height: 1; margin-bottom: 1; }
-    #memo-box .memo-hint { color: $text-muted; margin-top: 1; }
+    #memo-box .memo-hint { color: $text-muted; }
     """
     BINDINGS = [
         ("escape", "cancel", "Cancel"),
@@ -633,10 +633,9 @@ class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
     def compose(self) -> ComposeResult:
         with Vertical(id="memo-box"):
             yield MemoTextArea(compact=True)
-            yield Label(
-                "enter: submit · ctrl+s: set without submitting · ctrl+g: edit",
-                classes="memo-hint",
-            )
+            yield Label("enter: submit", classes="memo-hint")
+            yield Label("ctrl+s: set without submitting", classes="memo-hint")
+            yield Label("ctrl+g: edit in $EDITOR", classes="memo-hint")
 
     def on_mount(self) -> None:
         self.query_one(MemoTextArea).focus()
