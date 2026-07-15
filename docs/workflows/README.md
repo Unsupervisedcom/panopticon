@@ -8,7 +8,8 @@ its own and what needs your sign-off.
 
 You choose a workflow when you create a task. On the dashboard press `n`, pick the repo,
 then pick the workflow. This page is the catalog; each workflow has its own page with
-the details.
+the details. For the *task* itself — the object a workflow drives, its properties, and its
+lifecycle — see [Tasks](../tasks.md).
 
 ## The built-in workflows
 
