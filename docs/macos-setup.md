@@ -1,75 +1,53 @@
-# macOS developer setup
+# macOS setup
 
-This guide covers what you need to run panopticon on macOS.
+Install and first run are the same on macOS as anywhere else — see the
+[README](../README.md) (`pipx install panopticon-app`, then `panopticon quickstart`). This page
+covers only what's **macOS-specific**.
 
-## Prerequisites
+## Use Docker Desktop, not Docker Engine
 
-| Tool | How to install | Why |
-|------|----------------|-----|
-| Docker Desktop for Mac | [docs.docker.com/desktop/install/mac-install/](https://docs.docker.com/desktop/install/mac-install/) | Provides the Linux VM that runs task containers; injects `host.docker.internal` automatically |
-| tmux | `brew install tmux` | `make start` and `make stop` use `tmux -L panopticon` on the macOS host |
-| Python 3.11+ | `brew install python` or pyenv | The control plane runs natively on macOS |
-| uv | `brew install uv` or `pip install uv` | Dependency manager (`make sync`, `make test`, etc.) |
+Task containers reach the host task service via `host.docker.internal`, which **Docker Desktop for
+Mac** injects automatically. Bare Docker Engine doesn't provide it, so tasks can't call home —
+Docker Desktop is required. Install it from
+[docs.docker.com/desktop](https://docs.docker.com/desktop/install/mac-install/), start it, and
+confirm the daemon is up:
 
-Docker Engine alone (without Docker Desktop) is **not sufficient** on macOS — `host.docker.internal` would not be available.
+```sh
+docker info
+```
+
+`panopticon doctor` checks this (along with tmux, git, the `claude` CLI, and Python), and
+`panopticon quickstart` runs it for you before doing anything.
 
 ## What runs where
+
+The control plane, dashboard, and `tmux -L panopticon` server run natively on the macOS host; each
+task's agent runs inside the Docker Desktop Linux VM.
 
 ```
 macOS host                          Docker Desktop Linux VM
 ──────────────────────────────      ──────────────────────────────────
-make start  → task service          panopticon-<id> containers
-             + session service         └─ agent (claude CLI)
-             + dashboard              └─ /workspace (per-task clone)
-tmux -L panopticon server            └─ entrypoint.sh (Linux tools)
+task service                        panopticon-<id> containers
+session-service runner                └─ agent (claude CLI)
+dashboard                             └─ /workspace (per-task clone)
+tmux -L panopticon server             └─ entrypoint.sh (Linux tools)
 ```
 
 `docker/Dockerfile` and `docker/entrypoint.sh` use Linux-only commands (`groupmod`, `useradd`,
-`gosu`, etc.) — this is correct and intentional; they always run inside the Linux VM.
-
-## Quick start
-
-```sh
-# 1. Install prerequisites
-brew install tmux uv
-
-# 2. Install Docker Desktop, start it, and verify
-docker info
-
-# 3. Install Python dependencies
-make sync
-
-# 4. Build the base task-container image
-make build
-
-# 5. Bring everything up
-make start
-```
-
-## Verifying prerequisites
-
-Run `panopticon doctor` to check that the host has everything the `quickstart`, `start` and
-`setup-repo` flows need — git, docker (and a reachable daemon), tmux, the `claude` CLI, and
-Python 3.11+. It prints a line per check and exits non-zero if any are missing, so a fresh pip
-install (`pip install panopticon-app`) can self-diagnose before the first `panopticon
-quickstart`.
-
-`make start` launches the task service and session-service runner as background tmux sessions on
-the `panopticon` tmux server, then opens the dashboard supervisor in the foreground.
-
-## Stopping
-
-```sh
-make stop   # kills task containers and the -L panopticon tmux server
-```
+`gosu`, …) — intentional; they always run inside the Linux VM, never on the host.
 
 ## Known limitations on macOS
 
-- **`--network host`** is not supported by Docker Desktop for Mac. Panopticon does not use it —
-  containers reach the host task service via `host.docker.internal`, which Docker Desktop injects
-  automatically.
+- **`--network host`** isn't supported by Docker Desktop for Mac. Panopticon doesn't use it —
+  containers reach the host via `host.docker.internal`.
 - **Docker-in-Docker** (`capabilities.docker_in_docker`) uses `--privileged`, which Docker Desktop
   supports. On Apple Silicon, if the task image is `linux/amd64`-only, disable "Use Rosetta for
   x86/amd64 emulation" in Docker Desktop settings or rebuild for `arm64`.
-- **tmux must be installed** before `make start`. If it is missing, the session launches will
-  silently fail.
+- **tmux must be installed** before you start Panopticon — if it's missing, session launches fail
+  silently. `panopticon doctor` catches this.
+
+## Developing from source
+
+Contributing rather than just running it? The `make` targets work on macOS with the same Docker
+Desktop + tmux requirements above — add `uv` (`brew install uv`), then `make sync`, `make build`,
+`make start`. `make stop` (or `panopticon stop`) tears everything down.
