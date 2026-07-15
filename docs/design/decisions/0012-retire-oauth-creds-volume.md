@@ -32,7 +32,7 @@ container and respawn, so there is no refresh race and no 8h cliff.
 **panopticon does not mint or store the token.** There is **no `panopticon login` command** and no
 credential-management surface in the control plane. Obtaining the token (`claude setup-token`) and
 putting it in the repo's env-file is an **operator step**, documented in
-[`docs/container-auth.md`](../container-auth.md). This keeps the control plane out of the
+[`docs/auth.md`](../auth.md). This keeps the control plane out of the
 secret-custody business: as in ADR 0007, panopticon records only the env-file *reference*, never its
 contents.
 
@@ -74,4 +74,4 @@ contents.
 - No list/revoke tooling: #48373. Revoke-all leaves tokens valid for days: #43801.
 - Docs: `claude setup-token`, `CLAUDE_CODE_OAUTH_TOKEN`, auth precedence (authentication.md).
 - In-repo: [`docs/design/decisions/0007-secret-store.md`](0007-secret-store.md) (amended by this ADR);
-  [`docs/container-auth.md`](../container-auth.md) (the operator how-to).
+  [`docs/auth.md`](../auth.md) (the operator how-to).
