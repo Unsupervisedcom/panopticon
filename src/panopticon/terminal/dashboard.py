@@ -36,24 +36,26 @@ keys return while the filter stays applied; `Esc` **clears** it (from typing or 
 filter is applied in ``action_refresh``, so a change-feed refresh preserves it across rebuilds.
 
 `Enter` on a **governing task** (one with governed children) **collapses** its sub-tasks into a
-single dim ``ensemble`` row; pressing `Enter` again **expands** them. Arrow keys skip the ensemble
-row (it is not a real task). Expanding or collapsing does not affect the task service — it is pure
+single dim placeholder row (its slug cell renders ``...``); pressing `Enter` again **expands** them.
+Arrow keys skip the ensemble row (it is not a real task). Expanding or collapsing does not affect the task service — it is pure
 display state local to the dashboard.
 
 The `container` column shows each task's container status: `live` (an active registration), `down`
 (was up, container gone — respawn with `R`), `starting` (claimed, no registration yet — its
-container is still coming up), `–` (unclaimed/not spawned yet), or `respawning` (just released
-by `R`, awaiting the runner's re-claim). Liveness is the registration, independent of provisioning.
+container is still coming up), `healing` (the runner is self-healing an orphan), or `–` (unclaimed
+or just released by `R`, awaiting the runner's re-claim). Liveness is the registration, independent
+of provisioning.
 
 The dashboard does not attach to tmux itself: on `t` it calls ``on_switch`` (the terminal
 supervisor, ADR 0009 §6, records the chosen session and detaches this client) and **keeps
 running**, so when the supervisor re-attaches after the operator detaches the task, it is the
 same live dashboard — cursor and all. Network calls are synchronous (small, local); moving them
-to Textual workers is a refinement (docs/BACKLOG.md).
+to Textual workers is a refinement (docs/design/BACKLOG.md).
 """
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import os
 import re
@@ -76,43 +78,75 @@ from textual import events, work
 from textual.app import App, ComposeResult, SuspendNotSupported
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widget import Widget
-from textual.css.query import NoMatches
 from textual.widgets import (
-    Checkbox, DataTable, Footer, Header, Input, Label, OptionList, Static, TabPane, TabbedContent,
+    Checkbox,
+    DataTable,
+    Footer,
+    Header,
+    Input,
+    Label,
+    OptionList,
+    Select,
+    Static,
+    TabbedContent,
+    TabPane,
     TextArea,
 )
+from textual.widgets._select import NoSelection as _SelectNoSelection
 from textual.worker import get_current_worker
 
 from panopticon.client import JsonObj, TaskServiceClient
+from panopticon.core.dirs import ARTIFACTS_DIR
 from panopticon.core.state import TERMINAL_LABELS
-from panopticon.taskservice.artifacts_fs import DEFAULT_ARTIFACTS, FilesystemArtifactStore
+from panopticon.sessionservice.local_runner import session_name
+from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
+from panopticon.terminal.setup_repo_task import create_setup_repo_task
 
 
-def _sort_key(task: JsonObj) -> tuple[bool, bool, float, str]:
-    """Order rows for the operator: live work first, then by whose turn it is, then recency.
+def _make_sort_key(
+    by_updated: bool = False,
+) -> Callable[[JsonObj], tuple[bool, bool, float, str]]:
+    """Return a sort key function for the task table.
 
-    1. non-terminal before terminal — COMPLETE/DROPPED sink to the bottom;
-    2. turn priority differs by group: for active tasks the user's turn comes first (tasks waiting
-       on the operator surface early); for terminal tasks the agent's turn comes first (tasks the
-       agent just finished surface at the top of the completed section);
-    3. most recently updated first (negative timestamp);
-    4. slug (then id) for a stable, readable order within each tier.
+    1. non-terminal before terminal — COMPLETE/DROPPED sink to the bottom.
+    2. turn priority: for active tasks the user's turn comes first (operator action needed);
+       for terminal tasks the agent's turn comes first (task just finished).
+    3. timestamp:
+       - Active, ``by_updated=False`` (default): ``created_at`` descending — newest first
+         (stable: ``created_at`` never changes, so rows don't reorder when a task updates).
+       - Active, ``by_updated=True``: ``updated_at`` descending — most recently updated rises first.
+       - Terminal (always): ``updated_at`` descending — most recently completed rises first.
+    4. id as a stable tiebreaker.
     """
-    is_terminal = task["state"] in TERMINAL_LABELS
-    raw = task.get("updated_at") or ""
-    try:
-        ts = -datetime.fromisoformat(raw).timestamp()
-    except ValueError:
-        ts = 0.0
-    turn_first = "agent" if is_terminal else "user"
-    return (
-        is_terminal,  # False (live) before True (terminal)
-        task["turn"] != turn_first,  # False (priority turn) before True (other turn)
-        ts,  # negative so newest sorts first
-        task["slug"] or task["id"],
-    )
+
+    def key(task: JsonObj) -> tuple[bool, bool, float, str]:
+        is_terminal = task["state"] in TERMINAL_LABELS
+        turn_first = "agent" if is_terminal else "user"
+        turn_after_priority = task["turn"] != turn_first  # False (priority) sorts before True
+        if is_terminal or by_updated:
+            # Terminal tasks always use updated_at descending; by_updated mode does too.
+            raw = task.get("updated_at") or ""
+            try:
+                ts = -datetime.fromisoformat(raw).timestamp()  # negative → newest first
+            except ValueError:
+                ts = 0.0
+        else:
+            raw = task.get("created_at") or task.get("updated_at") or ""
+            try:
+                ts = -datetime.fromisoformat(raw).timestamp()  # negative → newest first
+            except ValueError:
+                ts = 0.0
+        return (
+            is_terminal,  # False (active) before True (terminal)
+            turn_after_priority,  # priority turn sorts first within each section
+            ts,
+            task["id"],  # stable tiebreaker
+        )
+
+    return key
 
 
 def _short_tokens(n: int | None) -> str:
@@ -129,10 +163,11 @@ def _short_tokens(n: int | None) -> str:
 
 
 # Row-key prefix for ensemble placeholder rows. When the operator collapses a governing task
-# (Enter on a governor), its governed children are replaced by one dim ``ensemble`` row whose
-# key is ``f"{_ENSEMBLE_KEY_PREFIX}{governor_id}"``. The highlight handler skips these rows
-# (like the separator) and ``on_data_table_row_selected`` ignores them.
+# (Enter on a governor), its governed children are replaced by one dim placeholder row (its slug
+# cell renders ``...``) whose key is ``f"{_ENSEMBLE_KEY_PREFIX}{governor_id}"``. Keyboard navigation skips these rows
+# (_VimDataTable steps the cursor straight past them) and ``on_data_table_row_selected`` ignores them.
 _ENSEMBLE_KEY_PREFIX = "__ensemble__"
+
 
 def _dim(cell: Text | str) -> Text:
     """Return a dim copy of a cell value (str or Rich Text), fading it without erasing content."""
@@ -305,6 +340,14 @@ _STATUS_COLORS = {
     "disconnected": "red",
 }
 
+#: Container statuses whose tmux session exists and can be attached (`t`). ``live`` = an open
+#: container registration (a docker task); ``awaiting`` = the session is up but not (yet) registered
+#: — a docker task mid-boot, or a **shell** task, which runs no agent so never registers and sits at
+#: ``awaiting`` for its whole run (its session *is* its liveness). Both name the session the same way
+#: (``panopticon-<task_id>``, see :func:`session_name`), so attach keys off the status, not a
+#: registration lookup — which is what lets `t` reach a shell task at all.
+_ATTACHABLE_STATUSES = {"live", "awaiting"}
+
 
 def _status_cell(task: JsonObj) -> Text:
     """The container column: the task service's composed ``container_status``, color-coded."""
@@ -366,8 +409,18 @@ def _open_command() -> str:
 def _open_path(path: str) -> None:
     """Hand ``path`` to the host's default handler, non-blocking (don't freeze the TUI). Raises
     ``FileNotFoundError`` when the opener isn't installed (e.g. headless host, no ``xdg-open``);
-    callers catch it and notify rather than letting it crash the TUI."""
-    subprocess.Popen([_open_command(), path])
+    callers catch it and notify rather than letting it crash the TUI.
+
+    Silences the child's standard streams (``DEVNULL``): the opener — and any app it spawns —
+    would otherwise inherit the TUI's TTY and print diagnostics straight into Textual's frame,
+    garbling the dashboard. ``stdin`` is closed too so a detached child can't contend with the
+    TUI for keypresses; a GUI opener never needs it."""
+    subprocess.Popen(
+        [_open_command(), path],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 def _edit_with_editor(text: str) -> str:
@@ -443,10 +496,12 @@ def _open_via_rest(client: TaskServiceClient, task_id: str, name: str, tmpdir: s
 def _apply_memo_filter(memo: str) -> bool:
     """Return ``True`` if ``memo`` matched a filter and was handled, ``False`` to proceed normally."""
     if memo.upper() == __import__("base64").b64decode(b"RkFSVEJBUkY=").decode():
-        try:
-            _open_path(__import__("base64").b64decode(b"aHR0cHM6Ly93d3cueW91dHViZS5jb20vd2F0Y2g/dj1na3g5VmFMdkx6QQ==").decode())
-        except FileNotFoundError:
-            pass
+        with contextlib.suppress(FileNotFoundError):
+            _open_path(
+                __import__("base64")
+                .b64decode(b"aHR0cHM6Ly93d3cueW91dHViZS5jb20vd2F0Y2g/dj1na3g5VmFMdkx6QQ==")
+                .decode()
+            )
         return True
     return False
 
@@ -525,37 +580,6 @@ class WorkflowScreen(_OptionListModal[str]):
         self.dismiss(str(event.option.prompt))
 
 
-class InputScreen(ModalScreen[str | None]):
-    """A modal free-text prompt: submit the text (Enter) or cancel (Escape).
-
-    Dismisses the entered string (empty string if blank) on submit, or ``None`` on cancel — so
-    a caller can tell "left it empty" apart from "backed out"."""
-
-    CSS = """
-    InputScreen { align: center middle; }
-    #input-box { width: 64; height: auto; padding: 1 2; border: round $accent; background: $surface; }
-    """
-    BINDINGS = [("escape", "cancel", "Cancel")]
-
-    def __init__(self, title: str) -> None:
-        super().__init__()
-        self._title = title
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="input-box"):
-            yield Label(self._title)
-            yield Input()
-
-    def on_mount(self) -> None:
-        self.query_one(Input).focus()
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        self.dismiss(event.value)
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-
 class MemoTextArea(TextArea):
     """TextArea for memo input where Enter submits the form instead of inserting a newline.
 
@@ -570,6 +594,10 @@ class MemoTextArea(TextArea):
             event.prevent_default()
             event.stop()  # don't let Enter bubble to the screen's enter binding
             self.screen.action_submit()  # type: ignore[attr-defined]
+        elif event.key == "ctrl+s":
+            event.prevent_default()
+            event.stop()  # set the memo without submitting it as an initial prompt
+            self.screen.action_set_only()  # type: ignore[attr-defined]
         else:
             await super()._on_key(event)
 
@@ -579,48 +607,44 @@ class MemoTextArea(TextArea):
 
 
 class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
-    """Memo + auto-submit checkbox for task creation.
+    """Memo prompt for task creation.
 
-    Dismisses ``(text, auto_submit)`` on submit (Enter), or ``None`` on cancel (Escape).
-    ``auto_submit_default`` seeds the checkbox; the user can toggle it with Space.
+    Dismisses ``(text, submit)`` where ``submit`` says whether to deliver the memo as the
+    agent's initial prompt, or ``None`` on cancel (Escape). **Enter always submits** the memo
+    as an initial prompt; **ctrl+s sets the memo without submitting** it (an unsent paste).
 
     Uses :class:`MemoTextArea` so Enter submits rather than inserting a newline — same UX
     as the original single-line ``Input``, but the field can display multi-line content
-    loaded by ``ctrl+g`` (open in ``$EDITOR``).
-
-    **Space toggles the checkbox; Enter saves**."""
+    loaded by ``ctrl+g`` (open in ``$EDITOR``)."""
 
     CSS = """
     MemoScreen { align: center middle; }
     #memo-box { width: 64; height: auto; padding: 1 2; border: round $accent; background: $surface; }
     #memo-box MemoTextArea { height: 1; margin-bottom: 1; }
-    #memo-box Checkbox { margin-top: 0; }
-    #memo-box .memo-hint { color: $text-muted; margin-top: 1; }
+    #memo-box .memo-hint { color: $text-muted; }
     """
     BINDINGS = [
         ("escape", "cancel", "Cancel"),
         ("ctrl+g", "edit_in_editor", "Edit"),
+        ("ctrl+s", "set_only", "Set"),
         ("enter", "submit", "Create"),
     ]
 
-    def __init__(self, auto_submit_default: bool) -> None:
-        super().__init__()
-        self._auto_submit_default = auto_submit_default
-
     def compose(self) -> ComposeResult:
         with Vertical(id="memo-box"):
-            yield Label("memo")
             yield MemoTextArea(compact=True)
-            yield SpaceCheckbox("Submit as initial prompt", value=self._auto_submit_default)
-            yield Label("ctrl+g: open in $EDITOR", classes="memo-hint")
+            yield Label("enter: submit", classes="memo-hint")
+            yield Label("ctrl+s: set without submitting", classes="memo-hint")
+            yield Label("ctrl+g: edit in $EDITOR", classes="memo-hint")
 
     def on_mount(self) -> None:
         self.query_one(MemoTextArea).focus()
 
     def action_submit(self) -> None:
-        text = self.query_one(MemoTextArea).text
-        auto_submit = self.query_one(SpaceCheckbox).value
-        self.dismiss((text, auto_submit))
+        self.dismiss((self.query_one(MemoTextArea).text, True))
+
+    def action_set_only(self) -> None:
+        self.dismiss((self.query_one(MemoTextArea).text, False))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -648,7 +672,7 @@ def _repo_name_from_git_url(url: str) -> str:
     if not url or ("/" not in url and ":" not in url):
         return ""
     tail = re.split(r"[/:]", url)[-1]
-    return tail[:-len(".git")] if tail.endswith(".git") else tail
+    return tail[: -len(".git")] if tail.endswith(".git") else tail
 
 
 class SpaceCheckbox(Checkbox, inherit_bindings=False):
@@ -663,7 +687,13 @@ class SpaceCheckbox(Checkbox, inherit_bindings=False):
 
 class _VimDataTable(DataTable[Any]):
     """A :class:`DataTable` with vim-style ``hjkl`` layered onto the default arrow keys (default
-    ``inherit_bindings=True``, so the arrow keys still work — this just adds a second way in)."""
+    ``inherit_bindings=True``, so the arrow keys still work — this just adds a second way in).
+
+    Vertical movement also **skips ensemble placeholder rows** (keys prefixed with
+    ``_ENSEMBLE_KEY_PREFIX``): the cursor steps straight onto the next real row rather than
+    landing on the sentinel and bouncing off it, so a collapsed ensemble is never briefly
+    highlighted mid-traversal. Both the arrow keys and ``j``/``k`` route through
+    ``action_cursor_down``/``action_cursor_up``, so overriding those covers every input path."""
 
     BINDINGS = [
         Binding("j", "cursor_down", "Down", show=False),
@@ -671,6 +701,26 @@ class _VimDataTable(DataTable[Any]):
         Binding("h", "cursor_left", "Left", show=False),
         Binding("l", "cursor_right", "Right", show=False),
     ]
+
+    def _move_skipping(self, direction: int) -> None:
+        """Move the cursor one step in ``direction`` (+1 down, -1 up), stepping over any ensemble
+        placeholder rows so it lands on the first real row. If only sentinels or the table edge
+        lie beyond, stay put — never land on a sentinel."""
+        rows = self.ordered_rows
+        target = self.cursor_row + direction
+        while 0 <= target < len(rows):
+            key = rows[target].key.value
+            if isinstance(key, str) and key.startswith(_ENSEMBLE_KEY_PREFIX):
+                target += direction
+                continue
+            self.move_cursor(row=target)
+            return
+
+    def action_cursor_down(self) -> None:
+        self._move_skipping(1)
+
+    def action_cursor_up(self) -> None:
+        self._move_skipping(-1)
 
 
 class _VimOptionList(OptionList):
@@ -683,14 +733,280 @@ class _VimOptionList(OptionList):
     ]
 
 
-class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
-    """A modal form for a repo's fields. Submits a ``{field: value}`` dict on save (Enter
-    or Ctrl+S), or ``None`` on cancel (Escape). The text fields are strings; the privileged
-    toggle is the bool ``docker_in_docker``.
+def _list_secrets_files() -> list[str]:
+    """Return the sorted **names** (relative to the secrets dir) of files in the config secrets dir.
 
-    Two tabs: **general** (git URL, id, name, base branch, env file, privileged docker) and
-    **workflows** (a per-workflow opt-in/opt-out checklist). Both tabs' values are collected
-    on save — submitting from either tab captures everything.
+    An ``env_file`` is stored relative to the secrets dir so it resolves on whichever host runs the
+    task (ADR 0007), so the picker offers bare names, not absolute paths."""
+    from panopticon.core.dirs import _secrets_dir
+
+    secrets_dir = _secrets_dir()
+    if not secrets_dir.is_dir():
+        return []
+    return sorted(p.name for p in secrets_dir.iterdir() if p.is_file())
+
+
+def _list_hooks_files() -> list[str]:
+    """Return the sorted **names** (relative to the hooks dir) of files in the config hooks dir.
+
+    A ``hook_file`` is stored relative to the hooks dir so it resolves on whichever host runs the
+    task, so the picker offers bare names, not absolute paths (mirrors :func:`_list_secrets_files`)."""
+    from panopticon.core.dirs import _hooks_dir
+
+    hooks_dir = _hooks_dir()
+    if not hooks_dir.is_dir():
+        return []
+    return sorted(p.name for p in hooks_dir.iterdir() if p.is_file())
+
+
+class EnvFileField(Widget):
+    """Secrets env-file picker for the repo form.
+
+    Shows a ``Select`` dropdown listing the file **names** found in the config secrets directory
+    (``~/.config/panopticon/secrets/``), with an ``enter custom path…`` option at the bottom that
+    reveals a free-form ``Input``. The stored value is always a **name relative to the secrets
+    dir** (so it resolves on whichever host runs the task, ADR 0007); the custom input accepts an
+    absolute or relative path and normalizes it to that relative name on read (see
+    :func:`~panopticon.core.dirs.relativize_secrets_file`).
+    """
+
+    DEFAULT_CSS = """
+    EnvFileField { margin-bottom: 1; height: auto; }
+    EnvFileField #env-file-input { margin-top: 1; }
+    """
+
+    _CUSTOM = "__custom__"
+
+    def __init__(self, initial: str = "", id: str | None = None) -> None:
+        super().__init__(id=id)
+        self._initial = initial
+        self._known = _list_secrets_files()
+
+    def compose(self) -> ComposeResult:
+        known_set = set(self._known)
+        options: list[tuple[str, str]] = [(p, p) for p in self._known]
+        options.append(("enter custom path…", self._CUSTOM))
+        is_custom = bool(self._initial and self._initial not in known_set)
+        yield Select(
+            options,
+            prompt="env_file (name in secrets dir or custom path)",
+            allow_blank=True,
+            value=self._initial if (self._initial and not is_custom) else Select.NULL,
+            id="env-file-select",
+        )
+        inp = Input(
+            value=self._initial if is_custom else "",
+            placeholder="repo.env (or a path — normalized to a secrets-dir name)",
+            id="env-file-input",
+        )
+        inp.display = is_custom
+        yield inp
+
+    @property
+    def env_file_value(self) -> str:
+        """The stored env_file **name** (relative to the secrets dir), or ``""`` when unset.
+
+        A dropdown pick is already a bare name; a custom entry is normalized from whatever path the
+        operator typed (absolute or relative) via
+        :func:`~panopticon.core.dirs.relativize_secrets_file`."""
+        from panopticon.core.dirs import relativize_secrets_file
+
+        try:
+            sel = self.query_one("#env-file-select", Select)
+        except NoMatches:
+            return ""
+        v = sel.value
+        if isinstance(v, _SelectNoSelection) or v == self._CUSTOM:
+            try:
+                return relativize_secrets_file(self.query_one("#env-file-input", Input).value)
+            except NoMatches:
+                return ""
+        return str(v)
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id != "env-file-select":
+            return
+        inp = self.query_one("#env-file-input", Input)
+        if event.value == self._CUSTOM:
+            inp.display = True
+            inp.focus()
+        else:
+            inp.display = False
+
+
+def _list_layers_files() -> list[str]:
+    """Return the sorted **names** (relative to the layers dir) of files in the config layers dir.
+
+    A repo's ``image_layer_file`` is stored relative to the layers dir so it resolves on whichever
+    host runs the task (ADR 0005), so the picker offers bare names, not absolute paths. Nested
+    files (e.g. ``team/base.dockerfile``) are listed with their subpath."""
+    from panopticon.core.dirs import _layers_dir
+
+    layers_dir = _layers_dir()
+    if not layers_dir.is_dir():
+        return []
+    return sorted(str(p.relative_to(layers_dir)) for p in layers_dir.rglob("*") if p.is_file())
+
+
+class ImageLayerField(Widget):
+    """Image-layer picker for the repo form (ADR 0005's repo tier).
+
+    Mirrors :class:`EnvFileField`: a ``Select`` dropdown listing the Dockerfile-fragment file
+    **names** found in the config layers directory (``~/.config/panopticon/layers/``), with an
+    ``enter custom path…`` option that reveals a free-form ``Input``. The stored value is always a
+    **name relative to the layers dir** (so the runner resolves it against its own host's layers
+    dir at spawn); the custom input accepts an absolute or relative path and normalizes it to that
+    relative name on read (see :func:`~panopticon.core.dirs.relativize_layers_file`)."""
+
+    DEFAULT_CSS = """
+    ImageLayerField { margin-bottom: 1; height: auto; }
+    ImageLayerField #image-layer-input { margin-top: 1; }
+    """
+
+    _CUSTOM = "__custom__"
+
+    def __init__(self, initial: str = "", id: str | None = None) -> None:
+        super().__init__(id=id)
+        self._initial = initial
+        self._known = _list_layers_files()
+
+    def compose(self) -> ComposeResult:
+        known_set = set(self._known)
+        options: list[tuple[str, str]] = [(p, p) for p in self._known]
+        options.append(("enter custom path…", self._CUSTOM))
+        is_custom = bool(self._initial and self._initial not in known_set)
+        yield Select(
+            options,
+            prompt="image_layer_file (name in layers dir or custom path)",
+            allow_blank=True,
+            value=self._initial if (self._initial and not is_custom) else Select.NULL,
+            id="image-layer-select",
+        )
+        inp = Input(
+            value=self._initial if is_custom else "",
+            placeholder="repo.dockerfile (or a path — normalized to a layers-dir name)",
+            id="image-layer-input",
+        )
+        inp.display = is_custom
+        yield inp
+
+    @property
+    def image_layer_value(self) -> str:
+        """The stored ``image_layer_file`` **name** (relative to the layers dir), or ``""`` unset.
+
+        A dropdown pick is already a bare name; a custom entry is normalized from whatever path the
+        operator typed (absolute or relative) via
+        :func:`~panopticon.core.dirs.relativize_layers_file`."""
+        from panopticon.core.dirs import relativize_layers_file
+
+        try:
+            sel = self.query_one("#image-layer-select", Select)
+        except NoMatches:
+            return ""
+        v = sel.value
+        if isinstance(v, _SelectNoSelection) or v == self._CUSTOM:
+            try:
+                return relativize_layers_file(self.query_one("#image-layer-input", Input).value)
+            except NoMatches:
+                return ""
+        return str(v)
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id != "image-layer-select":
+            return
+        inp = self.query_one("#image-layer-input", Input)
+        if event.value == self._CUSTOM:
+            inp.display = True
+            inp.focus()
+        else:
+            inp.display = False
+
+
+class HookFileField(Widget):
+    """Pre-launch hook picker for the repo form — the hook analogue of :class:`EnvFileField`.
+
+    Shows a ``Select`` dropdown listing the file **names** found in the config hooks directory
+    (``~/.config/panopticon/hooks/``), with an ``enter custom path…`` option that reveals a
+    free-form ``Input``. The stored value is always a **name relative to the hooks dir** (so it
+    resolves on whichever host runs the task); the custom input accepts an absolute or relative
+    path and normalizes it to that relative name on read (see
+    :func:`~panopticon.core.dirs.relativize_hook_file`). See ``docs/hooks.md``.
+    """
+
+    DEFAULT_CSS = """
+    HookFileField { margin-bottom: 1; height: auto; }
+    HookFileField #hook-file-input { margin-top: 1; }
+    """
+
+    _CUSTOM = "__custom__"
+
+    def __init__(self, initial: str = "", id: str | None = None) -> None:
+        super().__init__(id=id)
+        self._initial = initial
+        self._known = _list_hooks_files()
+
+    def compose(self) -> ComposeResult:
+        known_set = set(self._known)
+        options: list[tuple[str, str]] = [(p, p) for p in self._known]
+        options.append(("enter custom path…", self._CUSTOM))
+        is_custom = bool(self._initial and self._initial not in known_set)
+        yield Select(
+            options,
+            prompt="hook_file (name in hooks dir or custom path)",
+            allow_blank=True,
+            value=self._initial if (self._initial and not is_custom) else Select.NULL,
+            id="hook-file-select",
+        )
+        inp = Input(
+            value=self._initial if is_custom else "",
+            placeholder="prep.sh (or a path — normalized to a hooks-dir name)",
+            id="hook-file-input",
+        )
+        inp.display = is_custom
+        yield inp
+
+    @property
+    def hook_file_value(self) -> str:
+        """The stored hook_file **name** (relative to the hooks dir), or ``""`` when unset.
+
+        A dropdown pick is already a bare name; a custom entry is normalized from whatever path the
+        operator typed (absolute or relative) via
+        :func:`~panopticon.core.dirs.relativize_hook_file`."""
+        from panopticon.core.dirs import relativize_hook_file
+
+        try:
+            sel = self.query_one("#hook-file-select", Select)
+        except NoMatches:
+            return ""
+        v = sel.value
+        if isinstance(v, _SelectNoSelection) or v == self._CUSTOM:
+            try:
+                return relativize_hook_file(self.query_one("#hook-file-input", Input).value)
+            except NoMatches:
+                return ""
+        return str(v)
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id != "hook-file-select":
+            return
+        inp = self.query_one("#hook-file-input", Input)
+        if event.value == self._CUSTOM:
+            inp.display = True
+            inp.focus()
+        else:
+            inp.display = False
+
+
+class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
+    """A modal form for a repo's fields. On save (Enter or Ctrl+S) it hands the collected
+    ``{field: value}`` dict to ``on_submit`` (which validates + persists); if that returns an
+    error string the form shows it inline and **stays open** so invalid input isn't lost, and it
+    dismisses (with the values dict) only on success. Escape cancels, dismissing ``None``. The
+    text fields are strings; the privileged toggle is the bool ``docker_in_docker``.
+
+    Two tabs: **general** (git URL, id, name, base branch, env file, image layer, hook file,
+    privileged docker) and **workflows** (a per-workflow opt-in/opt-out checklist). Both tabs'
+    values are collected on save — submitting from either tab captures everything.
 
     **Space toggles checkboxes; Enter saves the form** from any field. The :class:`SpaceCheckbox`
     subclass drops the default ``enter`` binding so Enter always bubbles up to the screen's save
@@ -698,7 +1014,7 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
 
     The **git URL leads** create mode: blank ``id`` and ``name`` auto-fill from it on blur and
     at submit; ``default_base`` defaults to ``main``. Edit mode leaves existing values untouched.
-    Edit mode shows ``id`` read-only; ``image_layer_file`` and other capability keys aren't
+    Edit mode shows ``id`` read-only; capability keys other than ``docker_in_docker`` aren't
     edited in the TUI (a PATCH update leaves them untouched)."""
 
     CSS = """
@@ -711,7 +1027,10 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     #wf-scroll { height: 1fr; }
     #wf-scroll SpaceCheckbox { margin-bottom: 0; }
     #wf-desc { height: 4; border: tall $panel; padding: 0 1; color: $text-muted; margin-top: 1; }
+    #form-error { color: $error; text-align: center; }
     #form-hint { color: $text-muted; text-align: center; margin-top: 1; }
+    #pane-general EnvFileField #env-file-input { margin-bottom: 0; }
+    #pane-general HookFileField #hook-file-input { margin-bottom: 0; }
     """
     # Enter saves from any field. Text Inputs consume Enter via their own submit binding (posting
     # Input.Submitted → on_input_submitted), so this screen binding only fires for fields that
@@ -723,8 +1042,9 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     ]
 
     # git_url leads (the auto-fill source); the rest follow. ``id`` is rendered between git_url
-    # and these, separately, since it's editable only in create mode.
-    FIELDS = ("git_url", "name", "default_base", "env_file")
+    # and these, separately, since it's editable only in create mode. ``env_file`` is rendered
+    # as an EnvFileField (dropdown + custom-path input) rather than a plain Input.
+    FIELDS = ("git_url", "name", "default_base")
     # Fields auto-derived from git_url → how to derive each (create mode only; see
     # _autofill_from_git_url). id and name are the bare repo name.
     _DERIVED: dict[str, Callable[[str], str]] = {
@@ -733,7 +1053,11 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     }
 
     def __init__(
-        self, title: str, repo: JsonObj | None = None, workflows: list[dict[str, Any]] | None = None
+        self,
+        title: str,
+        repo: JsonObj | None = None,
+        workflows: list[dict[str, Any]] | None = None,
+        on_submit: Callable[[dict[str, Any]], str | None] | None = None,
     ) -> None:
         super().__init__()
         self._title = title
@@ -742,6 +1066,10 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
         self._workflows = workflows or []
         self._wf_enabled: set[str] = set(self._repo.get("enabled_workflows") or [])
         self._wf_disabled: set[str] = set(self._repo.get("disabled_workflows") or [])
+        # The parent supplies this: it attempts the submission (validation + REST) and returns an
+        # error message to show inline (form stays open) or None on success (form dismisses). This
+        # is what keeps an invalid form open instead of closing it and toasting the error after.
+        self._on_submit = on_submit
 
     def _initial(self, name: str) -> str:
         """A field's pre-populated value: the repo's stored value, else (create mode only)
@@ -762,13 +1090,20 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
             yield Label(self._title)
             with TabbedContent(id="form-tabs"):
                 with TabPane("general", id="pane-general"):
-                    yield Input(value=self._initial("git_url"), placeholder="git_url", id="field-git_url")
+                    yield Input(
+                        value=self._initial("git_url"), placeholder="git_url", id="field-git_url"
+                    )
                     if self._editing:
                         yield Label(f"id: {self._repo['id']}")
                     else:
                         yield Input(placeholder="id", id="field-id")
                     for name in self.FIELDS[1:]:  # git_url already rendered above
                         yield Input(value=self._initial(name), placeholder=name, id=f"field-{name}")
+                    yield EnvFileField(initial=self._initial("env_file"), id="field-env_file")
+                    yield ImageLayerField(
+                        initial=self._initial("image_layer_file"), id="field-image_layer_file"
+                    )
+                    yield HookFileField(initial=self._initial("hook_file"), id="field-hook_file")
                     yield SpaceCheckbox(
                         "privileged docker (docker-in-docker)",
                         value=bool(self._repo.get("capabilities", {}).get("docker_in_docker")),
@@ -778,10 +1113,13 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
                     if self._workflows:
                         with VerticalScroll(id="wf-scroll"):
                             for wf in self._workflows:
-                                yield SpaceCheckbox(wf["name"], value=self._wf_checked(wf), id=f"wf-{wf['name']}")
+                                yield SpaceCheckbox(
+                                    wf["name"], value=self._wf_checked(wf), id=f"wf-{wf['name']}"
+                                )
                         yield Static("", id="wf-desc")
                     else:
                         yield Label("no workflows available")
+            yield Static("", id="form-error")
             yield Static("enter: save   esc: cancel", id="form-hint")
 
     def on_mount(self) -> None:
@@ -793,10 +1131,8 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
             return
         name = (widget.id or "").removeprefix("wf-")
         desc = next((w.get("when_to_use", "") for w in self._workflows if w["name"] == name), "")
-        try:
+        with contextlib.suppress(NoMatches):
             self.query_one("#wf-desc", Static).update(desc)
-        except NoMatches:
-            pass
 
     def _autofill_from_git_url(self) -> None:
         """Fill the blank derived fields from the git URL — create mode only (editing an
@@ -826,6 +1162,13 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
             values["id"] = self.query_one("#field-id", Input).value.strip()
         for name in self.FIELDS:
             values[name] = self.query_one(f"#field-{name}", Input).value.strip()
+        values["env_file"] = self.query_one("#field-env_file", EnvFileField).env_file_value or None
+        values["image_layer_file"] = (
+            self.query_one("#field-image_layer_file", ImageLayerField).image_layer_value or None
+        )
+        values["hook_file"] = (
+            self.query_one("#field-hook_file", HookFileField).hook_file_value or None
+        )
         values["docker_in_docker"] = self.query_one("#field-docker_in_docker", Checkbox).value
         enabled: list[str] = []
         disabled: list[str] = []
@@ -843,6 +1186,12 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
                     disabled.append(name)
         values["enabled_workflows"] = enabled
         values["disabled_workflows"] = disabled
+        # Let the parent attempt the submission while the modal is still open: an error message
+        # is shown inline and the form stays put (so invalid input isn't lost); None means success.
+        error = self._on_submit(values) if self._on_submit else None
+        if error is not None:
+            self.query_one("#form-error", Static).update(error)
+            return
         self.dismiss(values)
 
     def action_cancel(self) -> None:
@@ -860,6 +1209,7 @@ class ReposScreen(ModalScreen[None]):
     BINDINGS = [
         ("n", "new_repo", "New repo"),
         ("e", "edit_repo", "Edit repo"),
+        ("s", "setup_repo", "Setup repo"),
         ("escape", "close", "Close"),
     ]
 
@@ -871,7 +1221,7 @@ class ReposScreen(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="repos-box"):
-            yield Label("repos — n: new   e: edit   esc: close")
+            yield Label("repos — n: new   e: edit   s: setup   esc: close")
             yield _VimDataTable(id="repos")
 
     def on_mount(self) -> None:
@@ -888,10 +1238,16 @@ class ReposScreen(ModalScreen[None]):
         for repo in self._repos.values():
             priv = "✓" if (repo.get("capabilities") or {}).get("docker_in_docker") else "–"
             table.add_row(
-                repo["id"], repo["name"], repo["git_url"], repo["default_base"], priv,
+                repo["id"],
+                repo["name"],
+                repo["git_url"],
+                repo["default_base"],
+                priv,
                 key=str(repo["id"]),
             )
-        self._current = self._current if self._current in self._repos else next(iter(self._repos), None)
+        self._current = (
+            self._current if self._current in self._repos else next(iter(self._repos), None)
+        )
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         key = event.row_key.value
@@ -901,60 +1257,87 @@ class ReposScreen(ModalScreen[None]):
         self.dismiss(None)
 
     def action_new_repo(self) -> None:
-        def create(values: dict[str, Any] | None) -> None:
-            if values is None:  # backed out
-                return
+        # Returns an error to show inline (the form stays open, keeping the user's input) or None
+        # on success. The form only closes when this returns None.
+        def create(values: dict[str, Any]) -> str | None:
             if not (values["id"] and values["name"] and values["git_url"]):
-                self.notify("id, name and git_url are required.", severity="warning")
-                return
+                return "id, name and git_url are required."
             try:
                 self._client.create_repo(
-                    values["id"], values["name"], values["git_url"], values["default_base"] or "main",
+                    values["id"],
+                    values["name"],
+                    values["git_url"],
+                    values["default_base"] or "main",
                     env_file=values["env_file"] or None,
+                    image_layer_file=values["image_layer_file"] or None,
+                    hook_file=values["hook_file"] or None,
                     capabilities={"docker_in_docker": values["docker_in_docker"]},
                     enabled_workflows=values["enabled_workflows"],
                     disabled_workflows=values["disabled_workflows"],
                 )
             except httpx.HTTPStatusError as exc:
-                self.notify(f"Can't create: {_detail(exc)}", severity="error")
-                return
+                return f"Can't create: {_detail(exc)}"
             self._refresh()
+            return None
 
         workflows = self._client.list_workflows()
-        self.app.push_screen(RepoFormScreen("new repo", workflows=workflows), create)
+        self.app.push_screen(RepoFormScreen("new repo", workflows=workflows, on_submit=create))
 
     def action_edit_repo(self) -> None:
         if self._current is None:
             return
         repo_id = self._current
 
-        def save(values: dict[str, Any] | None) -> None:
-            if values is None:
-                return
-            # PATCH the core fields; image_layer_file is left intact. The privileged toggle is merged
-            # onto the repo's existing capabilities so other keys (if any) survive.
+        # Returns an error to show inline (the form stays open) or None on success.
+        def save(values: dict[str, Any]) -> str | None:
+            # PATCH the core fields. The privileged toggle is merged onto the repo's existing
+            # capabilities so other keys (if any) survive.
             capabilities = {
                 **self._repos[repo_id].get("capabilities", {}),
                 "docker_in_docker": values["docker_in_docker"],
             }
             try:
                 self._client.update_repo(
-                    repo_id, name=values["name"], git_url=values["git_url"],
+                    repo_id,
+                    name=values["name"],
+                    git_url=values["git_url"],
                     default_base=values["default_base"] or "main",
                     env_file=values["env_file"] or None,
+                    image_layer_file=values["image_layer_file"] or None,
+                    hook_file=values["hook_file"] or None,
                     capabilities=capabilities,
                     enabled_workflows=values["enabled_workflows"],
                     disabled_workflows=values["disabled_workflows"],
                 )
             except httpx.HTTPStatusError as exc:
-                self.notify(f"Can't update: {_detail(exc)}", severity="error")
-                return
+                return f"Can't update: {_detail(exc)}"
             self._refresh()
+            return None
 
         workflows = self._client.list_workflows()
         self.app.push_screen(
-            RepoFormScreen(f"edit {repo_id}", repo=self._repos[repo_id], workflows=workflows), save
+            RepoFormScreen(
+                f"edit {repo_id}", repo=self._repos[repo_id], workflows=workflows, on_submit=save
+            )
         )
+
+    def action_setup_repo(self) -> None:
+        """`s`: run host-side setup for the highlighted repo — create a `setup-repo` task.
+
+        The `setup-repo` workflow is hidden from the pickers, so this is how it's launched: one
+        task, seeded with a memo, on the repo under the cursor."""
+        if self._current is None:
+            self.notify("Highlight a repo first.", severity="warning")
+            return
+        repo_id = self._current
+        name = str(self._repos[repo_id].get("name", repo_id))
+        try:
+            create_setup_repo_task(self._client, repo_id, name)
+        except httpx.HTTPStatusError as exc:
+            self.notify(f"Can't create setup-repo task: {_detail(exc)}", severity="error")
+            return
+        self.notify(f"Created setup-repo task for {name}.")
+        self.dismiss(None)  # back to the task view, where the new task shows up
 
 
 def _detail(exc: httpx.HTTPStatusError) -> str:
@@ -996,7 +1379,11 @@ class ArtifactScreen(_OptionListModal[tuple[str, str]]):
             yield SpaceCheckbox("Show hidden", id="show-hidden")
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
-        names = self._all_names if event.value else [n for n in self._all_names if not n.startswith(".")]
+        names = (
+            self._all_names
+            if event.value
+            else [n for n in self._all_names if not n.startswith(".")]
+        )
         option_list = self.query_one(OptionList)
         option_list.clear_options()
         for name in names:
@@ -1042,6 +1429,7 @@ HOTKEYS: tuple[Hotkey, ...] = (
     Hotkey("x", "drop", "Drop", "Drop the highlighted task"),
     Hotkey("/", "search", "Search", "Search tasks as you type"),
     Hotkey("d", "toggle_detail", "Detail", "Show/hide the detail pane"),
+    Hotkey("o", "toggle_sort", "Sort order", "Toggle sort: created ↔ updated", show=False),
     Hotkey("r", "refresh", "Refresh", "Refresh from the task service now", show=False),
     Hotkey("R", "respawn", "Respawn", "Respawn a down task (release its claim)", show=False),
     Hotkey("p", "open_url", "Open URL", "Open the task's URL in the browser", show=False),
@@ -1052,8 +1440,12 @@ HOTKEYS: tuple[Hotkey, ...] = (
     Hotkey("y", "copy_slug", "Copy slug", "Copy the task's slug to the clipboard", show=False),
     Hotkey("Y", "copy_id", "Copy id", "Copy the task's id to the clipboard", show=False),
     Hotkey(
-        "escape", "clear_search", "Clear search", "Clear the search filter",
-        show=False, display="Esc",
+        "escape",
+        "clear_search",
+        "Clear search",
+        "Clear the search filter",
+        show=False,
+        display="Esc",
     ),
     Hotkey("question_mark", "help", "Help", "This help screen", display="?"),
     Hotkey("q", "quit", "Quit", "Quit"),
@@ -1100,11 +1492,13 @@ class HelpScreen(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         # Enter and hjkl are handled on the list widgets themselves (not HOTKEYS bindings), so
         # they're listed here as literal lines rather than derived from the HOTKEYS table.
-        enter_line = f"  [b]{'Enter':<5}[/b] Collapse/expand the ensemble of governed tasks under the cursor"
-        vim_line = f"  [b]{'hjkl':<5}[/b] Vim-style navigation (task/repo tables, option-list pickers)"
-        rows = "\n".join(
-            f"  [b]{(h.display or h.key):<5}[/b] {h.description}" for h in HOTKEYS
+        enter_line = (
+            f"  [b]{'Enter':<5}[/b] Collapse/expand the ensemble of governed tasks under the cursor"
         )
+        vim_line = (
+            f"  [b]{'hjkl':<5}[/b] Vim-style navigation (task/repo tables, option-list pickers)"
+        )
+        rows = "\n".join(f"  [b]{(h.display or h.key):<5}[/b] {h.description}" for h in HOTKEYS)
         with Vertical(id="help-box"):
             yield Label("panopticon — keys")
             yield Static(enter_line + "\n" + vim_line + "\n" + rows, id="help-keys")
@@ -1150,7 +1544,7 @@ class Dashboard(App[None]):
         on_switch: Callable[[str, str | None], None] | None = None,
         on_service: Callable[[], bool] | None = None,
         on_runner: Callable[[], bool] | None = None,
-        artifacts_root: str | Path = DEFAULT_ARTIFACTS,
+        artifacts_root: str | Path = ARTIFACTS_DIR,
         refresh_interval: float | None = REFRESH_INTERVAL,
     ) -> None:
         super().__init__()
@@ -1159,17 +1553,24 @@ class Dashboard(App[None]):
         self._on_service = on_service  # `s` hook: switch to the service session; True if one exists
         self._on_runner = on_runner  # `u` hook: switch to the runner session; True if one exists
         self._artifacts_root = artifacts_root  # for `a`'s `e` local-open (co-located store)
-        self._refresh_interval = refresh_interval  # change-feed long-poll wait (0/None → manual only)
+        self._refresh_interval = (
+            refresh_interval  # change-feed long-poll wait (0/None → manual only)
+        )
         self._version = 0  # the change-feed cursor (X-Tasks-Version) the worker long-polls against
         self._tasks: dict[str, JsonObj] = {}
         self._repo_names: dict[str, str] = {}  # repo id → name; populated by _load_repo_names
         self._current: str | None = None
         self._query: str = ""  # active search filter ("" → no filter); see action_search
-        self._detail_visible = False  # detail pane hidden by default; `d` toggles it (action_toggle_detail)
-        self._last_cursor_row = 0  # previous cursor row index → infer travel direction to skip the divider
+        self._detail_visible = (
+            False  # detail pane hidden by default; `d` toggles it (action_toggle_detail)
+        )
         self._collapsed: set[str] = set()  # governor IDs whose ensembles are currently collapsed
+        self._first_refresh: bool = True  # seed _collapsed with all governors on first refresh
         self._governors: set[str] = set()  # governor IDs visible in the current table build
         self._multi_runner: bool = False  # True when tasks span >1 distinct runner_host
+        self._sort_by_updated: bool = (
+            False  # False = creation order (stable); True = updated_at (newest first)
+        )
         # one reused scratch dir for `a`'s REST-open (lazily made, cleaned on exit) — so opening
         # many artifacts doesn't leak a temp dir each.
         self._artifact_tmp: tempfile.TemporaryDirectory[str] | None = None
@@ -1224,10 +1625,9 @@ class Dashboard(App[None]):
         worker = get_current_worker()
         # Seed the cursor without redrawing: on_mount already painted the current snapshot, so the
         # first poll should wait for the *next* change rather than re-firing on the current version.
-        try:
+        # service not up yet — fall through; the loop retries with back-off
+        with contextlib.suppress(Exception):
             _, self._version = self._client.list_tasks_versioned()
-        except Exception:  # service not up yet — fall through; the loop retries with back-off
-            pass
         while not worker.is_cancelled:
             try:
                 _, version = self._client.list_tasks_versioned(
@@ -1260,38 +1660,65 @@ class Dashboard(App[None]):
         table = self.query_one("#tasks", DataTable)
         selected = self._current  # keep the operator's highlight across the rebuild (feed refresh)
         table.clear()
-        ordered = sorted(self._client.list_tasks(), key=_sort_key)  # terminal last, then slug
-        new_multi_runner = len({r.get("host") for r in self._client.live_runners() if r.get("host")}) > 1
+        ordered = sorted(self._client.list_tasks(), key=_make_sort_key(self._sort_by_updated))
+        new_multi_runner = (
+            len({r.get("host") for r in self._client.live_runners() if r.get("host")}) > 1
+        )
         if new_multi_runner != self._multi_runner:
             table.clear(columns=True)  # rows already gone; also clears columns for rebuild
             self._multi_runner = new_multi_runner
             _setup_task_columns(table, multi_runner=self._multi_runner)
         active = [t for t in ordered if t.get("state") not in TERMINAL_LABELS]
         agent_on = sum(1 for t in active if t.get("turn") == "agent")
-        self.query_one(_StatusFooter).set_counter(f"active agents {agent_on}/{len(active)}")
+        sort_label = "sort: updated" if self._sort_by_updated else "sort: created"
+        self.query_one(_StatusFooter).set_counter(
+            f"active agents {agent_on}/{len(active)}  ·  {sort_label}"
+        )
         # Inject repo_name so _matches can search on it without a separate lookup per task.
         for task in ordered:
             task["repo_name"] = self._repo_names.get(str(task.get("repo_id") or ""), "")
+        # Governor IDs: the set of task IDs that have at least one governed child in the full
+        # snapshot. Computed from ``ordered`` (pre-collapse, pre-filter) so collapsing a governor
+        # doesn't remove it from the set and prevent a second Enter from re-expanding it.
+        self._governors = {t["governor_task_id"] for t in ordered if t.get("governor_task_id")}
+        # Prune stale collapsed entries for governors no longer present (e.g. task deleted),
+        # then seed all governors as collapsed on the very first refresh.
+        self._collapsed &= self._governors
+        if self._first_refresh:
+            self._collapsed = set(self._governors)
+            self._first_refresh = False
         # Group governed tasks under their governor (within each section), then filter.
         # The two sections come back separately so the divider sits at the structural
         # boundary — not based on individual task state (a terminal governed task can live
         # in the active section when its governor is still active).
-        active_group, terminal_group = _group_by_governor(ordered, self._collapsed)
-        active_visible = [(t, p) for t, p in active_group if _matches(t, self._query)]
-        terminal_visible = [(t, p) for t, p in terminal_group if _matches(t, self._query)]
+        # While a search is active, expand every ensemble so collapsed children are
+        # searchable — otherwise a `└─ ...` placeholder hides them from the filter. We
+        # pass an empty collapsed set (not mutating self._collapsed), so the operator's
+        # collapse state is restored as soon as the query is cleared.
+        collapsed_for_display = set() if self._query else self._collapsed
+        # When a query is active, filter *before* grouping and pull each matching task's
+        # governor chain up with it: a visible child must keep its ancestors visible, or the
+        # tree breaks (a child rendered under a governor that got filtered out is orphaned).
+        # This is one-directional — a matching governor does not pull its children down.
+        if self._query:
+            task_by_id_all: dict[str, JsonObj] = {t["id"]: t for t in ordered}
+            visible_ids: set[str] = set()
+            for t in ordered:
+                if _matches(t, self._query):
+                    tid: str | None = str(t["id"])
+                    while tid is not None and tid not in visible_ids:
+                        visible_ids.add(tid)
+                        parent = task_by_id_all.get(tid)
+                        tid = parent.get("governor_task_id") if parent else None
+            search_filtered = [t for t in ordered if t["id"] in visible_ids]
+        else:
+            search_filtered = ordered
+        active_group, terminal_group = _group_by_governor(search_filtered, collapsed_for_display)
+        active_visible = list(active_group)
+        terminal_visible = list(terminal_group)
         visible = active_visible + terminal_visible
         # Build the task index (real tasks only; ensemble placeholders are synthetic).
         self._tasks = {t["id"]: t for t, _ in visible if not t.get("_ensemble")}
-        # Governor IDs: the set of task IDs that have at least one governed child in the full
-        # snapshot. Computed from ``ordered`` (pre-collapse, pre-filter) so collapsing a governor
-        # doesn't remove it from the set and prevent a second Enter from re-expanding it.
-        self._governors = {
-            t["governor_task_id"]
-            for t in ordered
-            if t.get("governor_task_id")
-        }
-        # Prune stale collapsed entries for governors no longer present (e.g. task deleted).
-        self._collapsed &= self._governors
 
         def _add_row(task: JsonObj, prefix: str) -> None:
             if task.get("_ensemble"):
@@ -1299,7 +1726,12 @@ class Dashboard(App[None]):
                 slug_cell = Text(f"{prefix}...", style="dim")
                 runner_blank = (Text(""),) if self._multi_runner else ()
                 table.add_row(
-                    Text(""), Text(""), Text(""), *runner_blank, Text(""), slug_cell,
+                    Text(""),
+                    Text(""),
+                    Text(""),
+                    *runner_blank,
+                    Text(""),
+                    slug_cell,
                     key=f"{_ENSEMBLE_KEY_PREFIX}{gov_id}",
                 )
             else:
@@ -1321,7 +1753,12 @@ class Dashboard(App[None]):
                     slug_cell_real = _dim(slug_cell_real)
                 runner_extra = (runner_cell,) if runner_cell is not None else ()
                 table.add_row(
-                    state_cell, turn_cell, status_cell, *runner_extra, repo_cell, slug_cell_real,
+                    state_cell,
+                    turn_cell,
+                    status_cell,
+                    *runner_extra,
+                    repo_cell,
+                    slug_cell_real,
                     key=task["id"],
                 )
 
@@ -1335,27 +1772,21 @@ class Dashboard(App[None]):
         self._update_detail(target)
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        table = self.query_one("#tasks", DataTable)
-        key_val = event.row_key.value
-        if isinstance(key_val, str) and key_val.startswith(_ENSEMBLE_KEY_PREFIX):
-            # The arrow keys jump ensemble placeholder rows: step one more row in the direction
-            # of travel. Placeholders always sit between real rows, so there's a real row on
-            # both sides; move_cursor re-fires this handler on that real row, so we don't
-            # recurse on the sentinel.
-            step = 1 if table.cursor_row >= self._last_cursor_row else -1
-            table.move_cursor(row=table.cursor_row + step)
-            return
-        self._last_cursor_row = table.cursor_row
         key = event.row_key.value
+        if isinstance(key, str) and key.startswith(_ENSEMBLE_KEY_PREFIX):
+            # Keyboard navigation skips ensemble sentinels (see _VimDataTable), so this only
+            # fires for a mouse hover/click onto the placeholder — leave the detail pane as-is
+            # rather than trying to render a non-task.
+            return
         self._update_detail(str(key) if key is not None else None)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         """`Enter` on a governing task collapses or expands its **ensemble** of governed children.
 
         Pressing Enter on a task that has governed children toggles its collapsed state: a
-        collapsed governor's sub-tasks are replaced by a single dim ``ensemble`` placeholder row;
-        pressing Enter again restores the full tree.  Enter on a non-governor (or on a sentinel
-        row) is a no-op."""
+        collapsed governor's sub-tasks are replaced by a single dim ensemble placeholder row (its
+        slug cell renders ``...``); pressing Enter again restores the full tree.  Enter on a
+        non-governor (or on a sentinel row) is a no-op."""
         key = event.row_key.value
         if not isinstance(key, str):
             return
@@ -1378,10 +1809,14 @@ class Dashboard(App[None]):
             try:
                 task = self._client.get_task(task_id)
             except Exception:
-                task = self._tasks.get(task_id)  # fall back to summary when the service is unreachable
+                task = self._tasks.get(
+                    task_id
+                )  # fall back to summary when the service is unreachable
         # wrap in Text so the pane renders literally — never parse task content as console markup
         # (a "[" in e.g. a docker-command lifecycle_detail would otherwise crash the whole dashboard)
-        self.query_one("#detail", Static).update(Text(render_detail(task)) if task else Text("no tasks"))
+        self.query_one("#detail", Static).update(
+            Text(render_detail(task)) if task else Text("no tasks")
+        )
 
     def action_new_task(self) -> None:
         """`n`: create a task — pick a repo, a workflow, describe the work, then POST it."""
@@ -1401,23 +1836,21 @@ class Dashboard(App[None]):
             def describe(workflow: str | None) -> None:
                 if workflow is None:
                     return
-                wf_info = next((w for w in workflows if w["name"] == workflow), {})
-                auto_submit_default = bool(wf_info.get("auto_submit_memo", False))
 
-                def create(result: "tuple[str, bool] | None") -> None:
+                def create(result: tuple[str, bool] | None) -> None:
                     if result is None:  # backed out
                         return
-                    memo_text, auto_submit = result
+                    memo_text, submit = result
                     stripped = memo_text.strip()
                     if _apply_memo_filter(stripped):
                         return
-                    if auto_submit and stripped:
+                    if submit and stripped:
                         self._client.create_task(repo, workflow, stripped, initial_prompt=stripped)
                     else:
                         self._client.create_task(repo, workflow, stripped or None)
                     self.action_refresh()
 
-                self.push_screen(MemoScreen(auto_submit_default), create)
+                self.push_screen(MemoScreen(), create)
 
             self.push_screen(WorkflowScreen(workflows), describe)
 
@@ -1456,24 +1889,32 @@ class Dashboard(App[None]):
         self.action_refresh()
 
     def action_attach(self) -> None:
-        """`t`: hand off to the highlighted task's container tmux session, if it's running.
+        """`t`: hand off to the highlighted task's tmux session, if it's running.
 
         Calls ``on_switch`` (the supervisor records the session and detaches this client, then
         attaches the task) and **keeps running**, so returning lands on this same live dashboard
         (ADR 0009). Switching is always detach→attach, never `switch-client`. Standalone (no
-        supervisor) there is nothing to attach to."""
+        supervisor) there is nothing to attach to.
+
+        Attachable when the composed ``container_status`` says a session exists
+        (:data:`_ATTACHABLE_STATUSES`) — ``live`` for a registered container, ``awaiting`` for a
+        session that's up but unregistered (a docker task mid-boot, or a **shell** task, which never
+        registers). The session name is derived, not read from a registration
+        (:func:`session_name`), so this reaches a shell task the same as a container one."""
         if self._current is None:
             return
         if self._on_switch is None:
-            self.notify("Attach is available when run via `panopticon console`.", severity="warning")
-            return
-        registrations = self._client.list_registrations(self._current)
-        if not registrations:
-            self.notify("No running container for this task.", severity="warning")
+            self.notify(
+                "Attach is available when run via `panopticon console`.", severity="warning"
+            )
             return
         task = self._tasks.get(self._current)
+        status = task.get("container_status") if task else None
+        if status not in _ATTACHABLE_STATUSES:
+            self.notify("No running session for this task.", severity="warning")
+            return
         runner_host = task.get("runner_host") if task else None
-        self._on_switch(registrations[0]["container_id"], runner_host)  # session == container id
+        self._on_switch(session_name(self._current), runner_host)
 
     def action_open_url(self) -> None:
         """`p`: open the highlighted task's `url` in the browser (cloude-cade's `p` "open PR").
@@ -1495,10 +1936,9 @@ class Dashboard(App[None]):
         ``copy_to_clipboard`` — terminal-forwarded, so it survives tmux/ssh and needs no external
         tool) **and** the host's clipboard binary (`pbcopy`/`wl-copy`/`xclip`/`xsel`). Either path
         alone covers a gap the other has, and neither failure is allowed to crash the TUI."""
-        try:
+        # never let a clipboard write take down the dashboard
+        with contextlib.suppress(Exception):
             self.copy_to_clipboard(text)  # OSC 52 — no-op on terminals that don't support it
-        except Exception:  # never let a clipboard write take down the dashboard
-            pass
         _clipboard_copy(text)  # host tool; best-effort (False when none installed)
 
     def action_copy_slug(self) -> None:
@@ -1521,6 +1961,11 @@ class Dashboard(App[None]):
         self._copy_to_clipboard(self._current)
         self.notify(f"copied id: {self._current}")
 
+    def action_toggle_sort(self) -> None:
+        """`o`: toggle between sorting by creation time or update time."""
+        self._sort_by_updated = not self._sort_by_updated
+        self.action_refresh()
+
     def action_toggle_detail(self) -> None:
         """`d`: show/hide the right-hand detail pane. It starts hidden (``display: none``) so the
         task table — the only remaining row child — takes the full width; pressing `d` reveals the
@@ -1538,6 +1983,7 @@ class Dashboard(App[None]):
 
     def action_repos(self) -> None:
         """`g`: open the repo config screen — list repos, create/edit them (ADR 0002)."""
+
         def _on_repos_dismissed(_: None) -> None:
             self._load_repo_names()  # pick up any renames/additions before the table rebuilds
             self.action_refresh()
@@ -1578,7 +2024,9 @@ class Dashboard(App[None]):
                     _open_via_rest(self._client, task_id, name, self._artifact_tmpdir())
                     self.notify(f"opened {name}")
             except FileNotFoundError:  # no opener binary on this host — notify, don't crash the TUI
-                self.notify(f"No '{_open_command()}' on this host to open files.", severity="warning")
+                self.notify(
+                    f"No '{_open_command()}' on this host to open files.", severity="warning"
+                )
             except httpx.HTTPStatusError as exc:
                 self.notify(f"Can't open {name}: {exc}", severity="error")
 
@@ -1591,7 +2039,10 @@ class Dashboard(App[None]):
         to it the same way `t` switches to a task (record + detach), returning whether a service
         session existed. Standalone (no supervisor) there is nothing to switch to."""
         if self._on_service is None:
-            self.notify("Service shortcut is available when run via `panopticon console`.", severity="warning")
+            self.notify(
+                "Service shortcut is available when run via `panopticon console`.",
+                severity="warning",
+            )
             return
         if not self._on_service():
             self.notify("No task-service session is running.", severity="warning")
@@ -1603,7 +2054,10 @@ class Dashboard(App[None]):
         to it the same way `s` switches to the service (record + detach), returning whether a runner
         session existed. Standalone (no supervisor) there is nothing to switch to."""
         if self._on_runner is None:
-            self.notify("Runner shortcut is available when run via `panopticon console`.", severity="warning")
+            self.notify(
+                "Runner shortcut is available when run via `panopticon console`.",
+                severity="warning",
+            )
             return
         if not self._on_runner():
             self.notify("No session-service (runner) session is running.", severity="warning")
@@ -1642,8 +2096,7 @@ class Dashboard(App[None]):
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """`Enter` in the search box **locks** the filter: hide the box, keep the query, restore
-        navigation. The `n`-flow's modal `InputScreen` handles its own submit, so this only fires
-        for the dashboard's own search box."""
+        navigation."""
         if event.input.id != "search":
             return
         self._hide_search()
@@ -1655,12 +2108,15 @@ def run(
     on_switch: Callable[[str, str | None], None] | None = None,
     on_service: Callable[[], bool] | None = None,
     on_runner: Callable[[], bool] | None = None,
-    artifacts_root: str | Path = DEFAULT_ARTIFACTS,
+    artifacts_root: str | Path = ARTIFACTS_DIR,
 ) -> None:
     """Run the dashboard. ``on_switch``/``on_service``/``on_runner`` are the supervisor's `t`/`s`/`u`
     hooks (ADR 0009); all ``None`` standalone. ``artifacts_root`` is the local artifact-store root
     `a`'s `e` opens files from when the dashboard shares the task service's filesystem."""
     Dashboard(
-        client, on_switch=on_switch, on_service=on_service, on_runner=on_runner,
+        client,
+        on_switch=on_switch,
+        on_service=on_service,
+        on_runner=on_runner,
         artifacts_root=artifacts_root,
     ).run()

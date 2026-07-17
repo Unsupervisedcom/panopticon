@@ -31,7 +31,6 @@ class LocalGitSelfReviewed(PlannedWorkflow):
 
     name: ClassVar[str] = "local-git-self-reviewed"
     opt_in: ClassVar[bool] = True
-    auto_submit_memo: ClassVar[bool] = True
     when_to_use: ClassVar[str] = (
         "Local commits only, no remote push or PR — use when the work stays in the local repo; "
         "you approve the diff and the agent merges the branch."
@@ -54,9 +53,13 @@ class LocalGitSelfReviewed(PlannedWorkflow):
         )
         responsibilities = (
             Responsibility(key="plan-implemented", description="The plan is implemented in code."),
-            Responsibility(key="requests-implemented", description="All user requests are implemented in code."),
+            Responsibility(
+                key="requests-implemented", description="All user requests are implemented in code."
+            ),
             Responsibility(key="tests-pass", description="New and relevant tests pass locally."),
-            Responsibility(key="committed", description="Changes are committed to the local branch."),
+            Responsibility(
+                key="committed", description="Changes are committed to the local branch."
+            ),
         )
         transitions = ("MERGING",)  # the user self-reviews, then advances to MERGING
 

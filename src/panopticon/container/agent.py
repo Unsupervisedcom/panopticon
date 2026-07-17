@@ -81,20 +81,25 @@ def write_workflow_overview(config_dir: Path, overview: str) -> Path | None:
 
 
 def trust_workspace(config_dir: Path, cwd: Path) -> Path:
-    """Pre-accept claude's "Do you trust the files in this folder?" dialog for ``cwd``.
+    """Pre-accept claude's first-run dialogs for ``cwd``.
 
-    The trust dialog is **separate** from the permission prompts ``--dangerously-skip-permissions``
-    skips (cf. claude issue #45298): it blocks on startup until accepted, and there's no operator in
-    the container to accept it. claude records acceptance per-project in ``<config>/.claude.json``
-    under ``projects[<cwd>].hasTrustDialogAccepted``; we seed exactly that (and mark onboarding done,
-    the other first-run blocker). Merge-in-place so we don't clobber config claude writes itself, and
-    idempotent. The path encoding is
-    undocumented internals — a safe degradation if it ever drifts is that the dialog reappears, which
-    only matters in an (already attended) interactive re-attach.
+    Three blockers fire on a fresh container and must be pre-seeded — there is no operator in the
+    container to dismiss them interactively:
+
+    - ``hasCompletedOnboarding`` — the general onboarding screen.
+    - ``projects[<cwd>].hasTrustDialogAccepted`` — "Do you trust the files in this folder?"
+      (cf. claude issue #45298; separate from ``--dangerously-skip-permissions``).
+    - ``hasAcknowledgedCostThreshold`` — cost-acknowledgment dialog shown when authenticating
+      via ``ANTHROPIC_API_KEY`` (not shown for OAuth tokens).
+
+    Merge-in-place so we don't clobber config claude writes itself, and idempotent. The path
+    encoding is undocumented internals — a safe degradation if it ever drifts is that the dialog
+    reappears, which only matters in an (already attended) interactive re-attach.
     """
     config = config_dir / CONFIG_FILE
     with update_json_config(config) as data:
         data["hasCompletedOnboarding"] = True
+        data["hasAcknowledgedCostThreshold"] = True
         projects = data.setdefault("projects", {})
         projects.setdefault(str(cwd), {})["hasTrustDialogAccepted"] = True
     return config
@@ -110,6 +115,7 @@ def _claude_argv(
     *,
     initial_prompt: str | None = None,
     turn: str | None = None,
+    starting_model: str | None = None,
 ) -> list[str]:
     """`claude` argv, resuming the project's most recent conversation if one exists.
 
@@ -127,6 +133,9 @@ def _claude_argv(
     the ``initial_prompt`` is omitted — the agent is already mid-task. When the resumed session is
     the agent's turn (``turn == "agent"``), :data:`INTERRUPT_PROMPT` is appended instead so the
     agent automatically picks up where it left off rather than waiting for user input.
+
+    ``starting_model`` (e.g. ``"opus"``) is passed as ``--model`` on the **first run only** — on
+    resume claude uses whichever model the conversation was already using.
     """
     argv = ["claude", "--dangerously-skip-permissions"]
     overview = config_dir / WORKFLOW_OVERVIEW_FILE
@@ -140,8 +149,15 @@ def _claude_argv(
         argv.append("--continue")
         if turn == "agent":
             argv.append(INTERRUPT_PROMPT)  # positional: auto-resume after container restart
-    elif initial_prompt:
-        argv.append(initial_prompt)  # positional: claude sends this as the agent's first message
+    else:
+        if (
+            starting_model
+        ):  # first run only — on resume claude uses the conversation's existing model
+            argv += ["--model", starting_model]
+        if initial_prompt:
+            argv.append(
+                initial_prompt
+            )  # positional: claude sends this as the agent's first message
     return argv
 
 
@@ -153,7 +169,14 @@ def _run_claude(config_dir: Path) -> None:  # pragma: no cover - real LLM; skipi
     surface ``tmux attach`` reaches)."""
     initial_prompt = os.environ.get("PANOPTICON_INITIAL_PROMPT") or None
     turn = os.environ.get("PANOPTICON_TASK_TURN") or None
-    argv = _claude_argv(config_dir, Path.cwd(), initial_prompt=initial_prompt, turn=turn)
+    starting_model = os.environ.get("PANOPTICON_STARTING_MODEL") or None
+    argv = _claude_argv(
+        config_dir,
+        Path.cwd(),
+        initial_prompt=initial_prompt,
+        turn=turn,
+        starting_model=starting_model,
+    )
     subprocess.run(argv, env={**os.environ, "CLAUDE_CONFIG_DIR": str(config_dir)})
 
 
@@ -194,14 +217,16 @@ def main(
                 task_id,
                 runner_id,
                 phase="failed",
-                detail="No auth token — set CLAUDE_CODE_OAUTH_TOKEN in the repo's env_file (see docs/container-auth.md)",
+                detail="No auth token — set CLAUDE_CODE_OAUTH_TOKEN in the repo's env_file (see docs/auth.md)",
             )
         return
     render_skills(client, task_id, config_dir.parent)
     render_operations(client, task_id, config_dir.parent)  # advance/drop/… as slash-commands
     write_settings(config_dir.parent)  # turn-flip hooks → <home>/.claude/settings.json
     write_mcp_config(config_dir, service_url)  # point claude at the task service's MCP server
-    write_workflow_overview(config_dir, client.workflow_overview(task_id))  # → system prompt (the map)
+    write_workflow_overview(
+        config_dir, client.workflow_overview(task_id)
+    )  # → system prompt (the map)
     trust_workspace(config_dir, Path.cwd())  # pre-accept the trust dialog (no operator to)
     launch(config_dir)  # the agent runs until it exits...
     on_exit()  # ...then stop the container (task → down → respawn)
