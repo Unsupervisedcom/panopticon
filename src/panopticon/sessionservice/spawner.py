@@ -289,7 +289,9 @@ class Spawner:
         elif phase == LifecyclePhase.AWAITING:
             _log.info("task %s: awaiting registration", task_id)
         elif phase == LifecyclePhase.FAILED:
-            _log.error("task %s: spawn failed — %s", task_id, detail)
+            _log.error(
+                "task %s: failed — %s", task_id, detail
+            )  # a spawn step, an exit, a crash loop
         with contextlib.suppress(httpx.HTTPError):
             self._client.report_lifecycle(task_id, self._runner_id, phase.value, detail)
 
@@ -297,17 +299,33 @@ class Spawner:
         """Reconcile a task this runner claims into the right lifecycle status (down-detection).
 
         For a task claimed by **this** runner whose reported spawn is still in flight (``CLAIMING`` …
-        ``AWAITING``) but whose container isn't actually running, clear the stale phase so the task
-        service composes ``down`` — the authoritative replacement for the dashboard's old guess. A
-        registered (``live``) or already-``down``/``failed`` task is left alone; an in-flight one
-        whose container *is* still running is left to keep coming up."""
+        ``AWAITING``) but whose container isn't actually running, surface *why* when the stopped
+        container is still around to ask (:meth:`~panopticon.sessionservice.local_runner.LocalRunner.exit_reason`
+        — an OOM kill, a nonzero exit): report ``FAILED`` with that reason so the dashboard shows
+        the cause. When the container is gone entirely, clear the stale phase so the task service
+        composes ``down`` — the authoritative replacement for the dashboard's old guess. An
+        already-``down`` task gets the same exit-reason check (its container may have died *after*
+        going live — e.g. OOM-killed — leaving the registration to lapse into ``down`` with the
+        evidence still in ``docker inspect``); with no reason to add it is left alone. A registered
+        (``live``) or already-``failed`` task is left alone; an in-flight one whose container *is*
+        still running is left to keep coming up."""
         if task.get("claimed_by") != self._runner_id:
             return  # not ours (or unclaimed) — spawn_one handles the unclaimed case
-        if task.get("container_status") not in _IN_PROGRESS:
-            return  # live / down / failed / queued / disconnected — nothing to reconcile
-        if self._runner_for(task).is_running(task["id"]):
+        status = task.get("container_status")
+        if status not in _IN_PROGRESS and status != ContainerStatus.DOWN.value:
+            return  # live / failed / queued / disconnected — nothing to reconcile
+        runner = self._runner_for(task)
+        if runner.is_running(task["id"]):
             return  # container/session present, just not registered yet — still coming up
-        self._client.clear_lifecycle(task["id"])  # container gone → composes `down`
+        reason = runner.exit_reason(task["id"])
+        if reason is not None:
+            self._report(
+                task["id"], LifecyclePhase.FAILED, detail=reason
+            )  # composes `failed` + why
+        elif status in _IN_PROGRESS:
+            self._client.clear_lifecycle(
+                task["id"]
+            )  # container gone without a trace → composes `down`
 
     def _is_orphan(self, task: JsonObj) -> bool:
         """Whether ``task`` is an orphan **this** runner should self-heal: claimed by us,
@@ -382,11 +400,12 @@ class Spawner:
         now = self._now()
         count = self._respawn_count(task_id, now)
         if count >= self._max_respawns:
-            _log.error(
-                "task %s keeps losing its tmux session (%d respawns) — leaving it for attention",
-                task_id,
-                count,
-            )
+            # Surface the crash loop where the user looks (the dashboard's detail pane), not just
+            # the runner log — and only once: a task already reading `failed` is left alone rather
+            # than re-reported (and re-logged) every pass.
+            if task.get("container_status") != ContainerStatus.FAILED.value:
+                detail = f"keeps losing its tmux session ({count} respawns) — press R to respawn"
+                self._report(task_id, LifecyclePhase.FAILED, detail=detail)  # _report logs it too
             return None
         self._respawns[task_id] = (count + 1, now)
         _log.warning(

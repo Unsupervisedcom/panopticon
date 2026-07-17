@@ -57,4 +57,11 @@ if [ "${PANOPTICON_DOCKER_IN_DOCKER:-0}" = "1" ]; then
     fi
 fi
 
+# Signal that the remap is complete. The runner's tmux pane waits for this marker before its
+# `docker exec --user panopticon` — exec'ing earlier resolves the user to the *pre-remap* uid,
+# and the agent launcher then can't write the (post-remap-owned) home dir. `docker run --detach`
+# returns at PID-1 start, not here, so without the marker the pane races the remap and loses
+# under load.
+touch /run/panopticon-ready
+
 exec gosu panopticon "$@"
