@@ -28,7 +28,7 @@ from panopticon.core.state import TERMINAL_LABELS
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.executions import WorkflowExecutions
 from panopticon.sessionservice.images import ImageBuilder
-from panopticon.sessionservice.local_runner import LocalRunner
+from panopticon.sessionservice.local_runner import LocalRunner, session_name
 from panopticon.sessionservice.shell_runner import ShellRunner
 from panopticon.sessionservice.spawn import cleanup_workspace, prepare_workspace
 
@@ -431,21 +431,25 @@ class Spawner:
                 self._client.release(task["id"])
 
     def cleanup(self, task: JsonObj) -> None:
-        """Remove the per-task workspace once a terminal task's container has exited.
+        """Reap a terminal task's container, then remove its per-task workspace.
 
-        Self-gates on two conditions so calling this on every task each pass is safe:
-        the task must be terminal (COMPLETE/DROPPED) **and** the container must no longer
-        be running — so we never delete a workspace while the agent is still active, and
-        we don't need to force-stop anything.
+        Self-gates on the task being terminal (COMPLETE/DROPPED) so calling this on every
+        task each pass is safe — a non-terminal (still-working) task is left untouched.
 
-        Also releases a lingering claim (best-effort) before cleaning the workspace. In the
-        normal flow the container agent releases its own claim on exit; this catches the case
-        where it didn't (e.g. a crash, or a workflow that was renamed/removed before the
-        container could clean up)."""
+        A terminal task's container does **not** exit on its own: the container's liveness
+        loop only stops on SIGTERM/SIGINT, never on task state, so nothing tears it down when
+        the agent finishes. If the container is still running we therefore **actively stop it**
+        (``stop`` → ``docker rm --force`` + ``tmux kill-session``, idempotent) rather than wait
+        for an exit that never comes; a terminal task whose container is already gone skips
+        straight to the workspace cleanup. Either way we then release a lingering claim
+        (best-effort — the container agent normally releases its own on exit; this catches a
+        crash or a workflow renamed/removed before it could) and clean the workspace."""
         if task["state"] not in TERMINAL_LABELS:
             return
-        if self._runner_for(task).is_running(task["id"]):
-            return  # container/session still up — wait for it to exit naturally
+        runner = self._runner_for(task)
+        if runner.is_running(task["id"]):
+            # Container never self-exits on terminal state — force it down (idempotent).
+            runner.stop(session_name(task["id"]))
         if task.get("claimed_by") == self._runner_id:
             with contextlib.suppress(httpx.HTTPError):
                 self._client.release(task["id"])
