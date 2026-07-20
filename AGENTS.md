@@ -30,6 +30,13 @@ src/panopticon/
                    # its shell_script in a host tmux session (here: `claude setup-token`)) +
                    # discovery.py = scan the package + an optional path for Workflow subclasses
                    # (the registry build_app runs on; drop a module in → registered, ADR 0004)
+  harnesses/       # agent-CLI harnesses (M3): the Harness interface + the registry (a literal
+                   # mapping — claude only for now; path discovery waits for a real third-party
+                   # need) + claude.py (the default, extracted from the Slice-6 launcher: argv,
+                   # .claude/commands rendering, turn-flip settings.json, MCP config, trust
+                   # seeds) + config.py (the JSON-config write helper). LLM-free: harnesses
+                   # DESCRIBE and RENDER a CLI; only the container's launcher EXECUTES one. The
+                   # launcher selects by name (PANOPTICON_HARNESS, default claude)
   taskservice/     # control plane: TaskService, FastAPI REST API, the SQLAlchemy store
                    # adapter (in-memory or on-disk SQLite), filesystem artifact store, MCP
                    # server (mcp.py: operations=tools, artifacts=resources; FastMCP) mounted at /mcp
@@ -51,8 +58,10 @@ src/panopticon/
                    # spawns one task
   container/       # entrypoint (`python -m panopticon.container` = connect/register/slug/
                    # heartbeat liveness) + agent.py (`-m panopticon.container.agent` = the tmux
-                   # pane's launcher: render skills + operations, point claude at the /mcp server,
-                   # put the workflow overview in its system prompt → exec `claude`) — the ONLY LLM pkg
+                   # pane's launcher: fetch the workflow surface, dispatch to the task's harness
+                   # (bootstrap = pure file writes: skills, operations, MCP, workflow overview),
+                   # then run its argv) + hook.py (the turn-flip callback the harness's hooks
+                   # invoke) — the ONLY LLM pkg (the launch)
 docker/Dockerfile  # base task-container image (ADR 0005 base layer): python + git + bash +
                    # the panopticon package + the `claude` CLI the agent execs; runs as the
                    # unprivileged `panopticon` user. docker/entrypoint.sh = remap that user to the
@@ -149,6 +158,11 @@ on every PR (the same commands the Makefile wraps).
 
 ## Tests worth knowing
 
+- `tests/harnesses/` — the **agent-CLI harness suite** (M3): the registry (names, the claude
+  default, unknown-name rejection), `test_claude.py` (the Slice-6 argv/rendering expectations
+  carried over verbatim — the seam extraction must not change what claude is launched with),
+  `test_claude_skills.py` (skill → `.claude/commands` rendering), and `test_config.py` (the
+  JSON-config write helper). Extend it when you touch a harness or add one.
 - `tests/test_workflow.py` — the **golden harness**: every legal/illegal transition, turn
   derivation, responsibility gating, and workflow validation. Extend it when you touch the
   state machine.

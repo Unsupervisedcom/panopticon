@@ -1,9 +1,9 @@
-"""The single place we touch claude's on-disk JSON config (`.claude.json`, `.claude/settings.json`).
+"""The single place harness renderers touch a CLI's on-disk JSON config (e.g. `.claude.json`,
+`.claude/settings.json`, codex's `auth.json`).
 
 A **read-merge-write** so a caller states only the keys it cares about and never clobbers the
 rest: load whatever's already there (or start empty), let the caller mutate it in the ``with``
-block, then write it back with stable 2-space indentation on a clean exit. claude-specific, like
-its callers (M3 revisits for other CLIs).
+block, then write it back with stable 2-space indentation on a clean exit.
 """
 
 from __future__ import annotations

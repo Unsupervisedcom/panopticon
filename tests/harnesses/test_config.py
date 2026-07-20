@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from panopticon.container.config import update_json_config
+from panopticon.harnesses.config import update_json_config
 
 
 def test_update_json_config_starts_empty_when_absent(tmp_path: Path) -> None:
