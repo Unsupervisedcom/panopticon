@@ -31,6 +31,7 @@ class _Recorder:
         check: bool = True,
         interactive: bool = False,
         verbose: bool = False,
+        env: object = None,
     ) -> str:
         self.calls.append((list(args), check))
         self.interactive.append(interactive)
@@ -388,7 +389,11 @@ def test_cli_preps_the_workspace_then_spawns_with_secrets_and_mount(
     monkeypatch.setattr(cli, "CLONE_CACHE_DIR", str(cache_root))
     monkeypatch.setattr(cli, "TASKS_DIR", str(tasks_root))
     # The runner resolves the repo's env_file *name* against this host's secrets dir (ADR 0007).
+    # Create the file so _parse_env_file can open it (its contents are forwarded to git network ops).
     monkeypatch.setattr(dirs_mod, "user_config_dir", lambda: tmp_path)
+    secrets_dir = tmp_path / "secrets"
+    secrets_dir.mkdir()
+    (secrets_dir / "r1.env").write_text("GH_TOKEN=test_token\n")
     cid = cli_main(
         ["t1", "--service-url", "http://svc:9", "--image", "img:2"],
         run=rec,

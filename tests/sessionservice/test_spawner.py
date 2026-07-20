@@ -24,8 +24,12 @@ from panopticon.taskservice.store_sqlalchemy import SqlAlchemyStore
 from panopticon.workflows import Spike
 
 
-def _no_op_run(args: object, *, check: bool = True) -> str:
+def _no_op_run(args: object, *, check: bool = True, env: object = None) -> str:
     return ""
+
+
+def _no_op_parse_env(path: str) -> dict[str, str]:
+    return {}  # tests use fake env_file names that don't resolve to real files on disk
 
 
 class _FakeRunner:
@@ -163,6 +167,7 @@ def _spawner(client: object, runner: object, images: object = None) -> Spawner:
         git=GitClones(run=_no_op_run),
         images=images or _FakeImageBuilder(),  # type: ignore[arg-type]
         makedirs=lambda _p: None,
+        parse_env=_no_op_parse_env,
     )
 
 
@@ -295,6 +300,7 @@ def _shell_spawner(
         git=GitClones(run=_no_op_run),
         images=_FakeImageBuilder(),  # type: ignore[arg-type]
         makedirs=(made.append if made is not None else (lambda _p: None)),
+        parse_env=_no_op_parse_env,
     )
 
 
@@ -453,6 +459,7 @@ def test_spawn_one_composes_the_workflow_image_when_it_has_a_layer() -> None:
         git=GitClones(run=_no_op_run),
         images=images,
         makedirs=lambda _p: None,  # type: ignore[arg-type]
+        parse_env=_no_op_parse_env,
     )
     spawner.spawn_one(
         {
@@ -489,6 +496,7 @@ def test_spawn_one_composes_workflow_then_repo_layers() -> None:
         git=GitClones(run=_no_op_run),
         images=images,
         makedirs=lambda _p: None,  # type: ignore[arg-type]
+        parse_env=_no_op_parse_env,
     )
     spawner.spawn_one(
         {
@@ -692,6 +700,7 @@ def test_heal_caps_respawns_then_surfaces_a_crash_looping_task() -> None:
         git=GitClones(run=_no_op_run),
         images=_FakeImageBuilder(),  # type: ignore[arg-type]
         makedirs=lambda _p: None,
+        parse_env=_no_op_parse_env,
         now=lambda: clock["t"],
         max_respawns=3,
         respawn_reset=60.0,
@@ -720,6 +729,7 @@ def test_heal_resets_the_respawn_budget_after_a_survivor_window() -> None:
         git=GitClones(run=_no_op_run),
         images=_FakeImageBuilder(),  # type: ignore[arg-type]
         makedirs=lambda _p: None,
+        parse_env=_no_op_parse_env,
         now=lambda: clock["t"],
         max_respawns=2,
         respawn_reset=60.0,
@@ -791,6 +801,7 @@ def test_mark_healing_skips_a_crash_looped_out_orphan() -> None:
         git=GitClones(run=_no_op_run),
         images=_FakeImageBuilder(),  # type: ignore[arg-type]
         makedirs=lambda _p: None,
+        parse_env=_no_op_parse_env,
         now=lambda: clock["t"],
         max_respawns=2,
         respawn_reset=60.0,
@@ -968,6 +979,7 @@ def test_spawn_runs_repo_hook_with_correct_args() -> None:
         run_hook=_fake_hook,
         hooks_dir="/host/hooks",
         makedirs=lambda _p: None,
+        parse_env=_no_op_parse_env,
     )
     spawner.spawn_one(
         {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None}
@@ -989,6 +1001,7 @@ def _cleanup_spawner(runner: _FakeRunner, *, workspace_exists: bool) -> Spawner:
         git=GitClones(run=_no_op_run),
         images=_FakeImageBuilder(),  # type: ignore[arg-type]
         makedirs=lambda _p: None,
+        parse_env=_no_op_parse_env,
         exists=lambda _p: workspace_exists,
         rmtree=lambda _p: None,  # swapped out per test when we need to record calls
     )
@@ -1148,6 +1161,7 @@ def test_spawn_hook_failure_aborts_spawn() -> None:
         run_hook=_boom,
         hooks_dir="/host/hooks",
         makedirs=lambda _p: None,
+        parse_env=_no_op_parse_env,
     )
     with pytest.raises(RuntimeError, match="hook exited 1"):
         spawner.spawn_one(
@@ -1178,6 +1192,7 @@ def test_spawn_skips_hook_when_repo_has_no_hook_file() -> None:
         images=_FakeImageBuilder(),  # type: ignore[arg-type]
         run_hook=lambda *a: calls.append(a),
         makedirs=lambda _p: None,
+        parse_env=_no_op_parse_env,
     )
     spawner.spawn_one(
         {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None}

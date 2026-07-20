@@ -8,24 +8,28 @@ from pathlib import Path
 
 from panopticon.core.git import GitClones
 from panopticon.sessionservice.clones import CloneCache
-from panopticon.sessionservice.spawn import cleanup_workspace, prepare_workspace
+from panopticon.sessionservice.spawn import _parse_env_file, cleanup_workspace, prepare_workspace
 
 
-def _recording_runner() -> tuple[list[list[str]], Callable[..., str]]:
+def _recording_runner() -> tuple[
+    list[list[str]], list[dict[str, object] | None], Callable[..., str]
+]:
     calls: list[list[str]] = []
+    envs: list[dict[str, object] | None] = []
 
-    def run(args: object, *, check: bool = True) -> str:
+    def run(args: object, *, check: bool = True, env: dict[str, object] | None = None) -> str:
         calls.append(list(args))  # type: ignore[arg-type]
+        envs.append(env)
         return ""
 
-    return calls, run
+    return calls, envs, run
 
 
 _REPO = {"id": "r1", "git_url": "https://forge/r1.git"}
 
 
 def test_prepare_clones_the_cache_then_the_per_task_checkout() -> None:
-    calls, run = _recording_runner()
+    calls, _, run = _recording_runner()
     cache = CloneCache(
         "/cache", run=run, exists=lambda _p: False, makedirs=lambda _p: None
     )  # cache absent → clone
@@ -57,7 +61,7 @@ def test_prepare_clones_the_cache_then_the_per_task_checkout() -> None:
 
 
 def test_prepare_is_idempotent_but_still_asserts_origin_when_the_checkout_exists() -> None:
-    calls, run = _recording_runner()
+    calls, _, run = _recording_runner()
     cache = CloneCache("/cache", run=run, exists=lambda _p: True, makedirs=lambda _p: None)
 
     clone = prepare_workspace(
@@ -81,7 +85,7 @@ def test_prepare_is_idempotent_but_still_asserts_origin_when_the_checkout_exists
 def test_prepare_uses_the_git_url_verbatim_as_origin() -> None:
     # The git_url is registered in the form the container should use (here SSH); spawn sets it as-is,
     # no rewriting — the URL scheme is the operator's choice at repo setup, not a conversion here.
-    calls, run = _recording_runner()
+    calls, _, run = _recording_runner()
     repo = {"id": "r1", "git_url": "git@github.com:Org/repo.git"}
     cache = CloneCache("/cache", run=run, exists=lambda _p: True, makedirs=lambda _p: None)
 
@@ -207,3 +211,55 @@ def test_cleanup_quarantines_when_docker_cleanup_also_fails() -> None:
         rename=lambda src, dst: renamed.append((src, dst)),
     )
     assert renamed == [("/tasks/t1", "/tasks/t1.stale")]
+
+
+def test_prepare_forwards_env_to_cache_ensure() -> None:
+    # Credentials from the env_file must reach the git network operations (clone/fetch) so that
+    # private repos can be accessed on the host side before the container starts.
+    calls, envs, run = _recording_runner()
+    cache = CloneCache("/cache", run=run, exists=lambda _p: False, makedirs=lambda _p: None)
+    repo_with_secrets = {"id": "r1", "git_url": "https://forge/r1.git", "env_file": "r1.env"}
+    fake_env = {"GH_TOKEN": "tok123"}
+
+    prepare_workspace(
+        "t1",
+        repo_with_secrets,
+        cache=cache,
+        tasks_root="/tasks",
+        git=GitClones(run=run),
+        exists=lambda _p: False,
+        makedirs=lambda _p: None,
+        parse_env=lambda _path: fake_env,
+    )
+
+    # First call is `git clone` on the cache — it should receive the env dict.
+    assert calls[0] == ["git", "clone", "https://forge/r1.git", "/cache/r1"]
+    assert envs[0] == fake_env
+
+
+def test_prepare_passes_no_env_when_repo_has_no_env_file() -> None:
+    calls, envs, run = _recording_runner()
+    cache = CloneCache("/cache", run=run, exists=lambda _p: False, makedirs=lambda _p: None)
+
+    prepare_workspace(
+        "t1",
+        _REPO,  # no env_file key
+        cache=cache,
+        tasks_root="/tasks",
+        git=GitClones(run=run),
+        exists=lambda _p: False,
+        makedirs=lambda _p: None,
+    )
+
+    assert calls[0] == ["git", "clone", "https://forge/r1.git", "/cache/r1"]
+    assert envs[0] is None  # no credentials → env=None, subprocess inherits the ambient env
+
+
+def test_parse_env_file(tmp_path: Path) -> None:
+    env_file = tmp_path / "secrets.env"
+    env_file.write_text("# comment\n\nGH_TOKEN=ghp_abc123\nANTHROPIC_API_KEY=sk-ant=rest\n")
+    result = _parse_env_file(str(env_file))
+    assert result == {
+        "GH_TOKEN": "ghp_abc123",
+        "ANTHROPIC_API_KEY": "sk-ant=rest",  # embedded '=' is preserved verbatim
+    }

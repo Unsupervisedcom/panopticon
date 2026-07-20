@@ -30,7 +30,7 @@ from panopticon.sessionservice.executions import WorkflowExecutions
 from panopticon.sessionservice.images import ImageBuilder
 from panopticon.sessionservice.local_runner import LocalRunner
 from panopticon.sessionservice.shell_runner import ShellRunner
-from panopticon.sessionservice.spawn import cleanup_workspace, prepare_workspace
+from panopticon.sessionservice.spawn import _parse_env_file, cleanup_workspace, prepare_workspace
 
 _log = logging.getLogger(__name__)
 
@@ -99,6 +99,7 @@ class Spawner:
         run_hook: Callable[[str, str, str, str], None] | None = None,
         hooks_dir: str | Path | None = None,
         makedirs: Callable[[str], None] = lambda p: Path(p).mkdir(parents=True, exist_ok=True),
+        parse_env: Callable[[str], dict[str, str]] = _parse_env_file,
         exists: Callable[[str], bool] = os.path.isdir,
         rmtree: Callable[[str], None] = shutil.rmtree,
         docker_cleanup: Callable[[str], None] | None = None,
@@ -124,6 +125,7 @@ class Spawner:
         #: ``LocalRunner`` treats the secrets dir.
         self._hooks_dir = hooks_dir
         self._makedirs = makedirs
+        self._parse_env = parse_env
         self._exists = exists
         self._rmtree = rmtree
         self._docker_cleanup = (
@@ -200,6 +202,7 @@ class Spawner:
                 tasks_root=self._tasks_root,
                 git=self._git,  # type: ignore[arg-type]
                 makedirs=self._makedirs,
+                parse_env=self._parse_env,
             )
         workdir = f"{self._tasks_root}/{task_id}"
         self._makedirs(workdir)

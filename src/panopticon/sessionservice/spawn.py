@@ -19,6 +19,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from panopticon.client import JsonObj
+from panopticon.core.dirs import secrets_file_path
 from panopticon.core.git import GitClones
 from panopticon.sessionservice.clones import CloneCache
 
@@ -30,6 +31,23 @@ _log = logging.getLogger(__name__)
 QUARANTINE_SUFFIX = ".stale"
 
 
+def _parse_env_file(path: str) -> dict[str, str]:
+    """Parse a ``KEY=VALUE`` env file into a dict, skipping blank lines and ``#`` comments.
+
+    Values are kept verbatim after the first ``=`` so embedded ``=`` characters are preserved.
+    Leading/trailing whitespace is stripped from keys only.
+    """
+    env: dict[str, str] = {}
+    with open(path) as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            key, _, value = line.partition("=")
+            env[key.strip()] = value
+    return env
+
+
 def prepare_workspace(
     task_id: str,
     repo: JsonObj,
@@ -39,6 +57,7 @@ def prepare_workspace(
     git: GitClones | None = None,
     exists: Callable[[str], bool] = os.path.isdir,
     makedirs: Callable[[str], None] = lambda p: Path(p).mkdir(parents=True, exist_ok=True),
+    parse_env: Callable[[str], dict[str, str]] = _parse_env_file,
 ) -> str:
     """Ensure the task's per-task clone exists and return its path (mount this at ``/workspace``).
 
@@ -52,12 +71,19 @@ def prepare_workspace(
     the container should use as its remote — HTTPS for token auth, SSH for key auth — so no rewriting
     happens here. Done at spawn, not deferred to slug-time provisioning, so the agent has a correct
     ``origin`` from its first action; ``set-url`` is idempotent, so it also repoints an existing clone.
+
+    If the repo has an ``env_file`` name, it is resolved against this host's secrets dir
+    (``core.dirs.secrets_file_path``) and parsed; the resulting env dict is forwarded to the
+    cache's network git operations (clone / fetch) so that credentials such as ``GH_TOKEN`` are
+    available for private-repo access on the host side — before the container is started.
     """
     git = git or GitClones()
     clone = f"{tasks_root.rstrip('/')}/{task_id}"
+    env_path = secrets_file_path(repo.get("env_file"))
+    env = parse_env(env_path) if env_path else None
     if not exists(clone):
         makedirs(str(Path(clone).parent))
-        cache_path = cache.ensure(repo["id"], repo["git_url"])
+        cache_path = cache.ensure(repo["id"], repo["git_url"], env=env)
         git.clone_local(cache_path=cache_path, dest=clone)
     git.set_origin(repo_path=clone, url=repo["git_url"])
     return clone

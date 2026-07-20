@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import argparse
 import os
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import httpx
 
@@ -24,13 +24,14 @@ from panopticon.sessionservice.local_runner import (
     LocalRunner,
     _subprocess_run,
 )
-from panopticon.sessionservice.spawn import prepare_workspace
+from panopticon.sessionservice.spawn import _parse_env_file, prepare_workspace
 
 
 def main(
     argv: Sequence[str] | None = None,
     *,
     run: CommandRunner = _subprocess_run,
+    parse_env: Callable[[str], dict[str, str]] = _parse_env_file,
     client: TaskServiceClient | None = None,
 ) -> str:
     parser = argparse.ArgumentParser(
@@ -57,6 +58,7 @@ def main(
         cache=CloneCache(CLONE_CACHE_DIR, run=run),
         tasks_root=TASKS_DIR,
         git=GitClones(run=run),
+        parse_env=parse_env,
     )
     container_id = LocalRunner(args.service_url, image=args.image, run=run).spawn(
         args.task_id,
