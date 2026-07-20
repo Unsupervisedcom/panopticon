@@ -1,4 +1,4 @@
-name: Smoke Test (make start)
+name: Smoke Test (quickstart → token mint)
 
 on:
   push:
@@ -11,6 +11,12 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    # Blank the Claude credentials so `setup_repo.sh` skips its "adopt a token from your
+    # environment" branch and lands deterministically on the paste/mint prompt — the point this
+    # smoke drives up to. Set job-level so the runner daemon quickstart starts inherits them too.
+    env:
+      CLAUDE_CODE_OAUTH_TOKEN: ""
+      ANTHROPIC_API_KEY: ""
     steps:
       - uses: actions/checkout@v4
 
@@ -31,27 +37,61 @@ jobs:
       - name: Sync dependencies
         run: uv sync
 
-      - name: Start host services
-        run: make host
-
-      - name: Wait for service health check
+      # `panopticon quickstart` gates on `panopticon doctor`, which requires `claude` (absent on
+      # both runners) and a reachable `docker` daemon (absent on macOS). doctor only checks binary
+      # presence (`which`) and `docker info`'s exit code, so a stub bin on PATH satisfies it. This
+      # lets the *real* quickstart command run — the setup-repo task is a shell workflow, so nothing
+      # after the doctor gate needs real docker to reach the token-mint prompt. Keep real docker on
+      # Linux (ubuntu-latest has a daemon); only stub what's missing.
+      - name: Install doctor stubs (fake claude / docker to pass the doctor gate)
         run: |
+          mkdir -p "$RUNNER_TEMP/fakebin"
+          printf '#!/bin/sh\nexit 0\n' > "$RUNNER_TEMP/fakebin/claude"
+          chmod +x "$RUNNER_TEMP/fakebin/claude"
+          if [ "$RUNNER_OS" != "Linux" ]; then
+            printf '#!/bin/sh\nexit 0\n' > "$RUNNER_TEMP/fakebin/docker"
+            chmod +x "$RUNNER_TEMP/fakebin/docker"
+          fi
+          echo "$RUNNER_TEMP/fakebin" >> "$GITHUB_PATH"
+
+      # Run the real `panopticon quickstart`: it starts the task service + session-service runner
+      # (detached tmux sessions), runs doctor, registers the repo, creates the setup-repo task, then
+      # opens the interactive console — which no-TTYs out in CI. Background it so a stuck attach can't
+      # wedge the job; the detached sessions outlive it. Then `panopticon smoketest` confirms the
+      # setup-repo shell task reaches the token-mint prompt — the last step before an interactive
+      # `claude setup-token`, which CI can't complete.
+      - name: Run quickstart and reach the token-mint prompt
+        run: |
+          set -u
+          uv run panopticon quickstart </dev/null >quickstart.log 2>&1 &
+          qs_pid=$!
+
+          # Wait for the task service quickstart brings up.
+          up=0
           for i in $(seq 1 60); do
-            if curl --silent --fail http://localhost:8000/healthz; then
-              echo ""
-              echo "Service is up"
-              exit 0
-            fi
+            if curl --silent --fail http://localhost:8000/healthz; then up=1; break; fi
             sleep 1
           done
-          echo "Service did not come up within 60 seconds"
-          exit 1
+          if [ "$up" -ne 1 ]; then
+            echo "Service did not come up within 60 seconds"
+            cat quickstart.log 2>/dev/null || true
+            kill "$qs_pid" 2>/dev/null || true
+            exit 1
+          fi
+          echo "Service is up"
 
-      - name: Verify service tmux session
-        run: tmux -L panopticon has-session -t service
+          # The service + runner tmux sessions quickstart started.
+          tmux -L panopticon has-session -t service
+          tmux -L panopticon has-session -t runner
 
-      - name: Verify runner tmux session
-        run: tmux -L panopticon has-session -t runner
+          if uv run panopticon smoketest; then
+            kill "$qs_pid" 2>/dev/null || true
+          else
+            echo "--- quickstart.log ---"; cat quickstart.log 2>/dev/null || true
+            echo "--- runner log (tail) ---"; tail -n 40 /tmp/panopticon-runner.log 2>/dev/null || true
+            kill "$qs_pid" 2>/dev/null || true
+            exit 1
+          fi
 
       - name: Dump logs on failure
         if: failure()
@@ -60,6 +100,8 @@ jobs:
           tmux -L panopticon capture-pane -t service -p 2>/dev/null || echo "(no session)"
           echo "=== runner pane ==="
           tmux -L panopticon capture-pane -t runner -p 2>/dev/null || echo "(no session)"
+          echo "=== quickstart log ==="
+          cat quickstart.log 2>/dev/null || echo "(no log)"
           echo "=== service log ==="
           cat /tmp/panopticon-service.log 2>/dev/null || echo "(no log)"
           echo "=== runner log ==="

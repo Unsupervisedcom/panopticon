@@ -79,7 +79,12 @@ def main(
         default=os.environ.get("PANOPTICON_SERVICE_URL", DEFAULT_SERVICE_URL),
         help="task service base URL",
     )
-    sub = parser.add_subparsers(dest="command")
+    # Explicit metavar lists the documented commands only, so the hidden `smoketest` subcommand
+    # (added below with no help) stays out of both the usage line and the command listing.
+    sub = parser.add_subparsers(
+        dest="command",
+        metavar="{console,dashboard,tasks,migrate,build,doctor,host,start,stop,quickstart}",
+    )
     con = sub.add_parser(
         "console", help="session supervisor: dashboard + attach loop (assumes services are running)"
     )
@@ -101,6 +106,11 @@ def main(
     start = sub.add_parser("start", help="start everything and open the dashboard supervisor")
     start.add_argument("task", nargs="?", help="task id or slug to join (attach to) on startup")
     sub.add_parser("stop", help="stop task containers and the panopticon tmux server")
+    # Undocumented (no help + excluded from the metavar above): the CI smoke test's pass/fail check
+    # — waits for the setup-repo task and asserts its shell pane reaches the `claude setup-token`
+    # mint prompt.
+    smk = sub.add_parser("smoketest")
+    smk.add_argument("--timeout", type=int, default=60, help=argparse.SUPPRESS)
     sub.add_parser(
         "quickstart",
         help=(
@@ -178,7 +188,11 @@ def main(
         return 0
 
     client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
-    if args.command == "tasks":
+    if args.command == "smoketest":
+        from panopticon.terminal import smoketest
+
+        return smoketest.run(client, timeout=args.timeout)
+    elif args.command == "tasks":
         for t in client.list_tasks():
             print(f"{t['id']}  {t['state']:<10}  {t['turn']:<5}  {t['slug'] or '-'}")
     elif args.command == "dashboard":
