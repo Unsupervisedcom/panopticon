@@ -29,6 +29,16 @@ def test_settings_flip_to_user_while_asking_a_question_and_back_when_answered() 
     assert post["hooks"][0]["command"].endswith("hook agent")
 
 
+def test_settings_wires_the_tarot_gate_on_apply_operation() -> None:
+    # Registered unconditionally (like the turn-flip hooks) — the gate script itself decides
+    # relevance per task/repo at runtime (see tests/container/test_tarot_gate.py).
+    entries = settings()["hooks"]["PreToolUse"]
+    tarot = next(e for e in entries if e.get("matcher") == "mcp__panopticon__apply_operation")
+    assert tarot["hooks"][0]["command"] == "python -m panopticon.container.tarot_gate"
+    # AskUserQuestion's turn-flip entry is still present alongside it.
+    assert any(e.get("matcher") == "AskUserQuestion" for e in entries)
+
+
 def test_settings_pre_accept_bypass_permissions_mode() -> None:
     # Without this, unattended claude (--dangerously-skip-permissions) hangs on the first-run
     # "Bypass Permissions mode" acceptance prompt — the task shows "stuck starting".

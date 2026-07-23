@@ -8,10 +8,13 @@
 - **PreToolUse**/**PostToolUse** matched to the ``AskUserQuestion`` tool flip to the *user* while
   the agent is asking the user something (so the dashboard shows input is required) and back to the
   *agent* once it's answered. ``AskUserQuestion`` is a mid-turn tool call — it never fires ``Stop``
-  — so without this the turn would wrongly read *agent* the whole time the question is pending.
+  — so without this the turn would wrongly read *agent* the whole time the question is pending;
+- **PreToolUse** matched to the `apply_operation` MCP tool also runs the tarot review-artifact
+  gate (:mod:`panopticon.container.tarot_gate`) — a real, opt-in check (not just turn bookkeeping)
+  that can deny an `advance` call; see that module for what it does and why.
 
-claude-specific (`.claude/settings.json`); M3 revisits for other CLIs. Pure — the callback the
-hooks invoke is :mod:`panopticon.container.hook`. `:blocked:` is preserved by construction: the
+claude-specific (`.claude/settings.json`); M3 revisits for other CLIs. Pure — the turn-flip
+callback is :mod:`panopticon.container.hook`. `:blocked:` is preserved by construction: the
 callback only sets the turn, never the block.
 """
 
@@ -24,6 +27,8 @@ from panopticon.container.config import update_json_config
 
 #: The command claude runs for each hook event (sets the turn via the task service).
 HOOK_COMMAND = "python -m panopticon.container.hook"
+#: The command claude runs on every `apply_operation` call (the tarot review-artifact gate).
+TAROT_GATE_COMMAND = "python -m panopticon.container.tarot_gate"
 
 
 def settings() -> dict[str, Any]:
@@ -53,7 +58,13 @@ def settings() -> dict[str, Any]:
             "Stop": [run("user", "stop")],
             "UserPromptSubmit": [run("agent", "prompt")],
             # The agent stops to ask the user → flip to user; once answered → back to agent.
-            "PreToolUse": [run("user", matcher="AskUserQuestion")],
+            "PreToolUse": [
+                run("user", matcher="AskUserQuestion"),
+                {
+                    "matcher": "mcp__panopticon__apply_operation",
+                    "hooks": [{"type": "command", "command": TAROT_GATE_COMMAND}],
+                },
+            ],
             "PostToolUse": [run("agent", matcher="AskUserQuestion")],
         },
         "skipDangerousModePermissionPrompt": True,

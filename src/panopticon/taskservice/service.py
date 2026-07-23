@@ -323,7 +323,9 @@ class TaskService:
         if not self._workflow_visible(wf, repo):
             raise NotAuthorized(f"workflow {workflow_name!r} is not enabled for repo {repo_id!r}")
         now = self._clock()
-        task = wf.start_task(self._id(), repo_id, at=now, memo=memo, initial_prompt=initial_prompt)
+        task = wf.start_task(
+            self._id(), repo_id, at=now, memo=memo, initial_prompt=initial_prompt, repo=repo
+        )
         task.governor_task_id = governor_task_id
         task.created_at = now
         task.updated_at = now  # creation time = first mutation
@@ -505,10 +507,15 @@ class TaskService:
     ) -> Task:
         from_state = task.state
         _log.info("task %s: %s → %s (trigger=%s)", task.id, from_state, to_state, trigger)
+        repo = await self.get_repo(task.repo_id)
         if force:
-            wf.force_transition(task, to_state, at=self._clock(), trigger=trigger, note=note)
+            wf.force_transition(
+                task, to_state, at=self._clock(), trigger=trigger, note=note, repo=repo
+            )
         else:
-            wf.apply_transition(task, to_state, at=self._clock(), trigger=trigger, note=note)
+            wf.apply_transition(
+                task, to_state, at=self._clock(), trigger=trigger, note=note, repo=repo
+            )
         # Deterministic lifecycle hook (e.g. seed the plan on plan acceptance) — may touch the
         # task/artifacts; run before the single save so any task mutation persists with it.
         await wf.on_transition(

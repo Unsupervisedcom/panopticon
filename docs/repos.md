@@ -70,11 +70,29 @@ and secrets are never baked in — they're injected at run time via `env_file`. 
 ## Capabilities
 
 `capabilities` is a JSON opt-in map for elevated container privileges the runner grants at
-spawn. The first (and currently only) capability is `docker_in_docker`: set it and the runner
-spawns the container `--privileged`, gives it a volume for `/var/lib/docker`, and the entrypoint
-starts a nested Docker daemon. It's **off by default** because it's a trust escalation — a
-privileged container is effectively host root — so a repo opts in only when its tasks genuinely
-need to run Docker.
+spawn. `docker_in_docker`: set it and the runner spawns the container `--privileged`, gives it a
+volume for `/var/lib/docker`, and the entrypoint starts a nested Docker daemon. It's **off by
+default** because it's a trust escalation — a privileged container is effectively host root — so
+a repo opts in only when its tasks genuinely need to run Docker.
+
+### `tarot_review` — the tarot review-artifact gate
+
+For the GitHub-forge workflows (`github-peer-reviewed`, `github-self-reviewed`), setting
+`capabilities.tarot_review` adds a real, verified ITERATING responsibility: before `advance` out
+of ITERATING is allowed, the task must author `.tarot/strands.json` and (for non-trivial changes)
+a tour, passing `tarot strands check` / `tarot tour check`. Unlike every other responsibility
+(agent self-attested), this one is checked by an in-container hook that runs the actual commands
+and denies the `advance` call — with the checks' output as the reason — on failure. A trivial
+diff (below a changed-line threshold, default 20; override with the integer capability
+`tarot_review_threshold`) skips the checks and resolves the responsibility automatically.
+
+The `tarot` CLI itself isn't installed by panopticon — a repo that opts in must add it to its own
+`image_layer_file` (for example `RUN pip install tarot-review`), since installing it into the
+shared workflow layer would force it onto every forge repo whether opted in or not. If `tarot`
+isn't on `PATH` for an opted-in repo, the gate denies with a message pointing back here.
+
+Off by default, like `docker_in_docker` — a repo opts in only once it has installed `tarot` via
+its image layer.
 
 ## Host hook (`hook_file`)
 

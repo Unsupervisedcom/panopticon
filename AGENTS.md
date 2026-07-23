@@ -52,7 +52,11 @@ src/panopticon/
   container/       # entrypoint (`python -m panopticon.container` = connect/register/slug/
                    # heartbeat liveness) + agent.py (`-m panopticon.container.agent` = the tmux
                    # pane's launcher: render skills + operations, point claude at the /mcp server,
-                   # put the workflow overview in its system prompt → exec `claude`) — the ONLY LLM pkg
+                   # put the workflow overview in its system prompt → exec `claude`) — the ONLY LLM pkg;
+                   # tarot_gate.py = the `PreToolUse` hook on `apply_operation` that real-verifies
+                   # (not self-attests) the opt-in tarot review-artifact responsibility for the
+                   # GitHub-forge workflows (`Repo.capabilities.tarot_review`, docs/repos.md) — runs
+                   # `tarot strands check` / `tarot tour check` and denies `advance` on failure
 docker/Dockerfile  # base task-container image (ADR 0005 base layer): python + git + bash +
                    # the panopticon package + the `claude` CLI the agent execs; runs as the
                    # unprivileged `panopticon` user. docker/entrypoint.sh = remap that user to the
