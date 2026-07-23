@@ -16,6 +16,7 @@ from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.git import GitClones
 from panopticon.core.models import LifecyclePhase, Repo
 from panopticon.sessionservice.clones import CloneCache
+from panopticon.sessionservice.local_runner import session_name
 from panopticon.sessionservice.spawner import Spawner, spawnable_tasks
 from panopticon.taskservice.api import create_app
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
@@ -35,6 +36,7 @@ class _FakeRunner:
 
     def __init__(self, *, running: bool = True, session: bool = True) -> None:
         self.spawned: list[dict[str, object]] = []
+        self.stopped: list[str] = []
         self._running = running
         self._session = session
 
@@ -75,7 +77,7 @@ class _FakeRunner:
         return self._session
 
     def stop(self, container_id: str) -> None:
-        pass
+        self.stopped.append(container_id)
 
     def delete_workspace_contents(self, path: str) -> None:
         pass
@@ -1013,9 +1015,11 @@ def test_cleanup_removes_workspace_when_terminal_and_container_gone() -> None:
     )
     spawner.cleanup({"id": "t1", "state": "COMPLETE"})
     assert removed == ["/tasks/t1"]
+    assert runner.stopped == []  # container already gone — stop skipped (safe no-op)
 
 
-def test_cleanup_waits_when_container_still_running() -> None:
+def test_cleanup_stops_running_container_then_removes_workspace() -> None:
+    # A terminal task's container never self-exits, so cleanup must actively reap it.
     removed: list[str] = []
     runner = _FakeRunner(running=True)
     client = _FakeClient(repo=_REPO)
@@ -1033,7 +1037,8 @@ def test_cleanup_waits_when_container_still_running() -> None:
         rmtree=removed.append,
     )
     spawner.cleanup({"id": "t1", "state": "COMPLETE"})
-    assert removed == []  # container still up — leave workspace alone
+    assert runner.stopped == [session_name("t1")]  # force-stopped the running container
+    assert removed == ["/tasks/t1"]  # then cleaned the workspace
 
 
 def test_cleanup_is_a_no_op_for_non_terminal_task() -> None:
@@ -1055,6 +1060,7 @@ def test_cleanup_is_a_no_op_for_non_terminal_task() -> None:
     )
     spawner.cleanup({"id": "t1", "state": "ITERATING"})
     assert removed == []  # live task — never touch its workspace
+    assert runner.stopped == []  # nor stop its container
 
 
 def test_cleanup_invokes_docker_cleanup_when_rmtree_fails() -> None:
