@@ -11,8 +11,10 @@ daemon. LLM-free — the agent runs inside the container.
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
+import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
@@ -20,6 +22,8 @@ from typing import Protocol
 from panopticon.core.dirs import secrets_file_path
 from panopticon.core.models import LifecyclePhase
 from panopticon.sessionservice.runner import Runner
+
+_log = logging.getLogger(__name__)
 
 #: Default composed image (base layer, ADR 0005); built in a later PR of this slice.
 DEFAULT_IMAGE = "panopticon-base"
@@ -112,6 +116,8 @@ class LocalRunner(Runner):
         user: str | None = None,
         secrets_dir: str | Path | None = None,
         run: CommandRunner = _subprocess_run,
+        ready_timeout: float = 60.0,
+        ready_interval: float = 0.5,
     ) -> None:
         self._service_url = service_url
         self._image = image
@@ -129,6 +135,11 @@ class LocalRunner(Runner):
         self._tmux_socket = tmux_socket  # isolate panopticon's tmux server when set (-L)
         self._extra_env = dict(extra_env or {})
         self._run = run
+        # How long spawn waits for the entrypoint's user remap + config chown to finish before
+        # creating the tmux pane (see _wait_entrypoint_ready). 0 disables the wait entirely —
+        # unit tests use that to keep the pinned command sequences free of probe calls.
+        self._ready_timeout = ready_timeout
+        self._ready_interval = ready_interval
 
     def _tmux(self, *args: str) -> list[str]:
         prefix = ["tmux", *(["-L", self._tmux_socket] if self._tmux_socket else [])]
@@ -235,9 +246,15 @@ class LocalRunner(Runner):
         self._run(["docker", "rm", "--force", container], check=False)
         _report(LifecyclePhase.STARTING)  # docker run + the tmux session coming up
         self._run(docker_run)
-        # `docker run --detach` returns once the container is running (the entrypoint has remapped +
-        # dropped), so the pane execs in as the unprivileged `panopticon` user — `tmux attach` and
-        # the agent's `whoami` see that named user, not root.
+        # `docker run --detach` returns when PID 1 *starts* — NOT when the entrypoint has finished
+        # remapping the `panopticon` user to PANOPTICON_PUID and chowning the config volume. An
+        # exec that races the remap runs as the stale baked-in uid against a volume owned (or being
+        # chowned) by the new one and dies on its first write (EPERM), killing the pane — under
+        # herd load (many containers starting at once) this loses consistently. Wait for the remap
+        # to complete before creating the pane; the pane then execs in as the unprivileged
+        # `panopticon` user — `tmux attach` and the agent's `whoami` see that named user, not root.
+        if self._ready_timeout > 0:
+            self._wait_entrypoint_ready(container, puid)
         self._run(
             self._tmux(
                 "new-session",
@@ -256,6 +273,36 @@ class LocalRunner(Runner):
         )
         _report(LifecyclePhase.AWAITING)  # container + tmux up; waiting for its /live registration
         return container
+
+    def _wait_entrypoint_ready(self, container: str, puid: str) -> bool:
+        """Poll until the entrypoint's user remap + config-volume chown are done.
+
+        Ready means both: the ``panopticon`` user inside the container resolves to the invoking
+        ``PANOPTICON_PUID`` (usermod finished), and the config mount is owned by that uid (chown
+        finished). Probed host-side via ``docker exec`` so no image/entrypoint change is needed.
+        On timeout, logs a warning and returns False — spawn proceeds with today's racy behavior
+        rather than failing outright (the heal loop remains the backstop)."""
+        probe = [
+            "docker",
+            "exec",
+            container,
+            "sh",
+            "-c",
+            f'test "$(id --user {CONTAINER_USER})" = "{puid}"'
+            f' && test "$(stat --format=%u {CONFIG_MOUNT})" = "{puid}"'
+            " && echo READY",
+        ]
+        deadline = time.monotonic() + self._ready_timeout
+        while time.monotonic() < deadline:
+            if "READY" in self._run(probe, check=False):
+                return True
+            time.sleep(self._ready_interval)
+        _log.warning(
+            "container %s: entrypoint not ready after %.0fs; creating the pane anyway",
+            container,
+            self._ready_timeout,
+        )
+        return False
 
     def is_running(self, task_id: str) -> bool:
         """Whether the task's container is currently running on this host's Docker daemon.

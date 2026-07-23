@@ -43,7 +43,7 @@ def test_local_runner_is_a_runner() -> None:
 
 def test_spawn_runs_detached_container_then_tmux_pane_execing_in() -> None:
     rec = _Recorder()
-    runner = LocalRunner("http://svc:8000", image="img:1", runner_id="r1", run=rec)
+    runner = LocalRunner("http://svc:8000", ready_timeout=0, image="img:1", runner_id="r1", run=rec)
 
     container_id = runner.spawn("t1")
 
@@ -81,7 +81,7 @@ def test_spawn_runs_detached_container_then_tmux_pane_execing_in() -> None:
 
 
 def test_spawn_reports_starting_then_awaiting_via_the_progress_callback() -> None:
-    runner = LocalRunner("http://svc:8000", run=_Recorder())
+    runner = LocalRunner("http://svc:8000", ready_timeout=0, run=_Recorder())
     phases: list[LifecyclePhase] = []
     runner.spawn("t1", progress=phases.append)
     # STARTING just before `docker run`, AWAITING once the container + tmux session are up
@@ -109,7 +109,7 @@ class _ReturningRecorder(_Recorder):
 
 def test_is_running_queries_docker_ps_by_container_name() -> None:
     rec = _ReturningRecorder("panopticon-t1\n")
-    runner = LocalRunner("http://svc:8000", run=rec)
+    runner = LocalRunner("http://svc:8000", ready_timeout=0, run=rec)
     assert runner.is_running("t1") is True
     ((ps, check),) = rec.calls
     assert ps == ["docker", "ps", "--filter", "name=^panopticon-t1$", "--format", "{{.Names}}"]
@@ -117,13 +117,15 @@ def test_is_running_queries_docker_ps_by_container_name() -> None:
 
 
 def test_is_running_is_false_when_no_container_is_listed() -> None:
-    runner = LocalRunner("http://svc:8000", run=_Recorder())  # records, returns "" → not running
+    runner = LocalRunner(
+        "http://svc:8000", ready_timeout=0, run=_Recorder()
+    )  # records, returns "" → not running
     assert runner.is_running("t1") is False
 
 
 def test_has_session_lists_the_tmux_server_and_matches_the_session_name() -> None:
     rec = _ReturningRecorder("panopticon-t1\npanopticon-t2\n")  # two sessions on the server
-    runner = LocalRunner("http://svc:8000", run=rec)
+    runner = LocalRunner("http://svc:8000", ready_timeout=0, run=rec)
     assert runner.has_session("t1") is True
     ((ls, check),) = rec.calls
     assert ls == ["tmux", "-L", "panopticon", "list-sessions", "-F", "#{session_name}"]
@@ -134,9 +136,13 @@ def test_has_session_lists_the_tmux_server_and_matches_the_session_name() -> Non
 
 def test_has_session_is_false_when_the_session_is_absent() -> None:
     # No server running (e.g. after `make stop`) → list-sessions prints nothing → not a session.
-    assert LocalRunner("http://svc:8000", run=_Recorder()).has_session("t1") is False
+    assert (
+        LocalRunner("http://svc:8000", ready_timeout=0, run=_Recorder()).has_session("t1") is False
+    )
     # A server with *other* sessions but not this task's is still a miss (no substring false-match).
-    runner = LocalRunner("http://svc:8000", run=_ReturningRecorder("panopticon-t10\n"))
+    runner = LocalRunner(
+        "http://svc:8000", ready_timeout=0, run=_ReturningRecorder("panopticon-t10\n")
+    )
     assert runner.has_session("t1") is False
 
 
@@ -248,7 +254,7 @@ def test_spawn_omits_turn_env_var_when_not_set() -> None:
 
 def test_spawn_uses_the_composed_image_when_given_else_the_base() -> None:
     rec = _Recorder()
-    runner = LocalRunner("http://svc", image="panopticon-base", run=rec)
+    runner = LocalRunner("http://svc", image="panopticon-base", ready_timeout=0, run=rec)
     runner.spawn("t1")  # no override → base
     assert rec.calls[2][0][-1] == "panopticon-base"
     runner.spawn("t2", image="panopticon-github-peer-reviewed-r1")  # composed image (ADR 0005)
@@ -265,7 +271,7 @@ def test_stop_kills_session_and_force_removes_container_idempotently() -> None:
 
 def test_delete_workspace_contents_runs_root_container_to_empty_directory() -> None:
     rec = _Recorder()
-    LocalRunner("http://svc", image="panopticon-base", run=rec).delete_workspace_contents(
+    LocalRunner("http://svc", image="panopticon-base", ready_timeout=0, run=rec).delete_workspace_contents(
         "/tasks/t1"
     )
     assert rec.calls == [
@@ -289,7 +295,7 @@ def test_delete_workspace_contents_runs_root_container_to_empty_directory() -> N
 
 def test_tmux_socket_can_be_overridden() -> None:
     rec = _Recorder()
-    LocalRunner("http://svc", tmux_socket="panopt", run=rec).spawn("t1")
+    LocalRunner("http://svc", tmux_socket="panopt", ready_timeout=0, run=rec).spawn("t1")
     assert rec.calls[3][0][:4] == [
         "tmux",
         "-L",
@@ -405,3 +411,30 @@ def test_cli_preps_the_workspace_then_spawns_with_secrets_and_mount(
         tmp_path / "secrets" / "r1.env"
     )  # repo's secrets
     assert f"{tasks_root}/t1:/workspace" in docker_run  # the per-task clone mounted as /workspace
+
+
+def test_spawn_waits_for_entrypoint_readiness_before_creating_the_pane() -> None:
+    """With a ready_timeout, spawn probes the container (user remap + config chown done)
+    between `docker run` and `tmux new-session`; an unready probe (empty output) is retried
+    until the deadline, then spawn proceeds anyway (degraded, warned) rather than failing."""
+    rec = _Recorder()
+    runner = LocalRunner("http://svc:8000", ready_timeout=0.05, ready_interval=0, run=rec)
+
+    container_id = runner.spawn("t1")
+
+    assert container_id == "panopticon-t1"
+    probes = [args for args, _ in rec.calls if args[:2] == ["docker", "exec"] and "sh" in args]
+    assert probes, "expected at least one readiness probe"
+    assert 'test "$(id --user panopticon)"' in probes[0][-1]
+    assert "stat --format=%u" in probes[0][-1]
+    # probes sit between the docker run and the tmux pane creation
+    run_idx = next(i for i, (a, _) in enumerate(rec.calls) if a[:2] == ["docker", "run"])
+    pane_idx = next(i for i, (a, _) in enumerate(rec.calls) if "new-session" in a)
+    probe_idx = next(i for i, (a, _) in enumerate(rec.calls) if a[:2] == ["docker", "exec"])
+    assert run_idx < probe_idx < pane_idx
+
+
+def test_spawn_skips_readiness_probe_when_disabled() -> None:
+    rec = _Recorder()
+    LocalRunner("http://svc:8000", ready_timeout=0, run=rec).spawn("t1")
+    assert not [args for args, _ in rec.calls if args[:2] == ["docker", "exec"]]
