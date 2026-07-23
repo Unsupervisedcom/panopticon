@@ -17,7 +17,7 @@ from functools import cached_property
 from typing import ClassVar
 
 from panopticon.core.artifacts import ArtifactStore
-from panopticon.core.models import Actor, HistoryEntry, Responsibility, Skill, Task, Tool
+from panopticon.core.models import Actor, HistoryEntry, Repo, Responsibility, Skill, Task, Tool
 from panopticon.core.state import BaseState, Complete, Dropped, InitialState, State, TerminalState
 
 _ABSTRACT_BASES = (BaseState, State, TerminalState)
@@ -291,8 +291,14 @@ class Workflow(ABC):
             raise InvalidWorkflow(f"{self.name!r}: terminal state {label!r} does not advance")
         return cls.advanced_by
 
-    def responsibilities(self, label: str) -> Iterator[Responsibility]:
-        """Yield the obligations (PENDING definitions) the agent takes on entering ``label``."""
+    def responsibilities(self, label: str, *, repo: Repo | None = None) -> Iterator[Responsibility]:
+        """Yield the obligations (PENDING definitions) the agent takes on entering ``label``.
+
+        ``repo`` is the task's repo, when known — ``None`` by default (most workflows are
+        repo-agnostic). A subclass may override this to vary its declared responsibilities per
+        repo (e.g. a repo opted into an extra review convention); the base implementation ignores
+        it and always yields the state's static list.
+        """
         yield from self._state_class(label).responsibilities
 
     def skills(self) -> Sequence[Skill]:
@@ -487,9 +493,9 @@ class Workflow(ABC):
 
     # -- task lifecycle (deterministic: no clock, no I/O; timestamps passed in) ---------
 
-    def _promised(self, label: str) -> list[Responsibility]:
+    def _promised(self, label: str, *, repo: Repo | None = None) -> list[Responsibility]:
         """A fresh PENDING responsibility list to seed the history entry for entering ``label``."""
-        return list(self.responsibilities(label))
+        return list(self.responsibilities(label, repo=repo))
 
     def start_task(
         self,
@@ -499,12 +505,15 @@ class Workflow(ABC):
         at: str,
         memo: str | None = None,
         initial_prompt: str | None = None,
+        repo: Repo | None = None,
     ) -> Task:
         """Create a task in this workflow's initial state, with turn and seed history set.
 
         The seed history entry carries the initial state's responsibilities (all ``PENDING``).
         ``memo`` is the optional brief one-line reminder of what the task is, collected at creation.
         ``initial_prompt`` is optional text prefilled into Claude's input box on first spawn.
+        ``repo`` is the task's repo, when known — passed through to :meth:`responsibilities` so a
+        workflow can vary what it promises per repo; ``None`` (the default) if not needed/known.
         """
         state = self.initial_label
         return Task(
@@ -522,7 +531,7 @@ class Workflow(ABC):
                     from_state=None,
                     to_state=state,
                     trigger="start",
-                    responsibilities=self._promised(state),
+                    responsibilities=self._promised(state, repo=repo),
                 )
             ],
         )
@@ -535,6 +544,7 @@ class Workflow(ABC):
         at: str,
         trigger: str | None = None,
         note: str | None = None,
+        repo: Repo | None = None,
     ) -> Task:
         """Validate and apply a transition, mutating ``task`` in place and returning it.
 
@@ -543,7 +553,7 @@ class Workflow(ABC):
         is resolved (each ``MET`` or ``FAILED``-with-comment, none ``PENDING``). Dropping is
         always allowed and bypasses the gate. On success, appends a new history entry for the
         destination state — seeded with *its* responsibilities (``PENDING``) — and recomputes
-        the turn.
+        the turn. ``repo`` is passed through to :meth:`responsibilities` for the new entry.
         """
         if self.is_terminal(task.state):
             raise IllegalTransition(f"task {task.id!r} is terminal ({task.state!r})")
@@ -556,7 +566,7 @@ class Workflow(ABC):
                 raise ResponsibilitiesNotMet(
                     f"{self.name!r}: responsibility {outstanding[0].key!r} is not resolved"
                 )
-        return self._enter(task, to_state, at=at, trigger=trigger, note=note)
+        return self._enter(task, to_state, at=at, trigger=trigger, note=note, repo=repo)
 
     def force_transition(
         self,
@@ -566,6 +576,7 @@ class Workflow(ABC):
         at: str,
         trigger: str | None = None,
         note: str | None = None,
+        repo: Repo | None = None,
     ) -> Task:
         """Set the task to *any* state directly — the user's authority to move freely.
 
@@ -575,10 +586,17 @@ class Workflow(ABC):
         that the target state exists. Same history/turn bookkeeping as a normal transition.
         """
         self._state_class(to_state)  # validate the target exists
-        return self._enter(task, to_state, at=at, trigger=trigger, note=note)
+        return self._enter(task, to_state, at=at, trigger=trigger, note=note, repo=repo)
 
     def _enter(
-        self, task: Task, to_state: str, *, at: str, trigger: str | None, note: str | None
+        self,
+        task: Task,
+        to_state: str,
+        *,
+        at: str,
+        trigger: str | None,
+        note: str | None,
+        repo: Repo | None = None,
     ) -> Task:
         """Append the entry for ``to_state`` (seeding its promises) and recompute state + turn."""
         task.history.append(
@@ -588,7 +606,7 @@ class Workflow(ABC):
                 to_state=to_state,
                 trigger=trigger,
                 note=note,
-                responsibilities=self._promised(to_state),
+                responsibilities=self._promised(to_state, repo=repo),
             )
         )
         task.state = to_state
