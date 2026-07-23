@@ -311,6 +311,16 @@ def test_render_detail_marks_blocked() -> None:
     assert "turn: agent (blocked)" in render_detail({**_TASK, "blocked": True})
 
 
+def test_render_detail_shows_the_time_summary_only_when_supplied() -> None:
+    # time_summary is opt-in and caller-supplied (never computed inside render_detail — see `P` /
+    # action_profile) so a task with no profile yet just omits the line.
+    assert "waited on user" not in render_detail(_TASK)
+    out = render_detail(
+        _TASK, time_summary="agent 1.2h: llm 38% tests 27% tools 35% | waited on user 4.6h"
+    )
+    assert "agent 1.2h: llm 38% tests 27% tools 35% | waited on user 4.6h" in out
+
+
 def test_short_tokens_formats_human_short() -> None:
     assert _short_tokens(None) == "-"  # not yet reported
     assert _short_tokens(0) == "-"
@@ -906,6 +916,41 @@ async def test_pressing_shift_y_copies_the_id(monkeypatch: Any) -> None:
         await pilot.press("Y")
         await pilot.pause()
         assert copied == ["task-abcdef0123"]
+
+
+async def test_pressing_shift_p_profiles_and_shows_the_summary(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # `P` shells out to docker (via task_session_paths) on demand — never automatically, since
+    # that'd be too slow to redo on every highlight. Fake it out here; the real read + gap-analysis
+    # are covered in test_transcripts.py / test_parse.py.
+    transcript = tmp_path / "s1.jsonl"
+    transcript.write_text(
+        '{"type": "user", "timestamp": "2026-01-01T00:00:00.000Z", '
+        '"message": {"role": "user", "content": "hi"}}\n'
+    )
+    monkeypatch.setattr(dashboard, "task_session_paths", lambda task_id: [transcript])
+    app = Dashboard(_FakeClient([_TASK]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        detail = app.query_one("#detail", Static)
+        assert detail.styles.display == "none"  # hidden by default
+        await pilot.press("P")
+        await pilot.pause()
+        assert detail.styles.display == "block"  # `P` reveals it so the summary is visible
+        assert "agent " in str(detail.render())
+        assert "waited on user" in str(detail.render())
+
+
+async def test_pressing_shift_p_with_no_transcripts_warns(monkeypatch: Any) -> None:
+    monkeypatch.setattr(dashboard, "task_session_paths", lambda task_id: [])
+    app = Dashboard(_FakeClient([_TASK]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("P")
+        await pilot.pause()
+        assert app.is_running  # warns, doesn't crash
+        assert app.query_one("#detail", Static).styles.display == "none"  # never revealed
 
 
 def test_render_detail_shows_the_claim() -> None:
@@ -2170,7 +2215,7 @@ def test_footer_shows_only_the_essential_keys() -> None:
     shown = {b.key for b in Dashboard.BINDINGS if b.show}
     hidden = {b.key for b in Dashboard.BINDINGS if not b.show}
     assert shown == {"t", "n", "x", "/", "d", "question_mark", "q"}
-    assert hidden == {"o", "r", "R", "p", "g", "a", "s", "u", "y", "Y", "escape"}
+    assert hidden == {"o", "r", "R", "p", "g", "a", "s", "u", "y", "Y", "P", "escape"}
 
 
 def test_bindings_and_help_derive_from_the_single_hotkey_table() -> None:
