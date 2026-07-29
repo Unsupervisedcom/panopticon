@@ -103,6 +103,7 @@ from panopticon.core.dirs import ARTIFACTS_DIR
 from panopticon.core.state import TERMINAL_LABELS
 from panopticon.sessionservice.local_runner import session_name
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
+from panopticon.terminal.console import ReviewResult, ReviewTarget
 from panopticon.terminal.setup_repo_task import create_setup_repo_task
 
 
@@ -1433,6 +1434,7 @@ HOTKEYS: tuple[Hotkey, ...] = (
     Hotkey("r", "refresh", "Refresh", "Refresh from the task service now", show=False),
     Hotkey("R", "respawn", "Respawn", "Respawn a down task (release its claim)", show=False),
     Hotkey("p", "open_url", "Open URL", "Open the task's URL in the browser", show=False),
+    Hotkey("v", "review", "Review", "Open tarot to review this task's work", show=False),
     Hotkey("g", "repos", "Repos", "Repo config (list / create / edit repos)", show=False),
     Hotkey("a", "artifacts", "Artifacts", "List the task's artifacts", show=False),
     Hotkey("s", "service", "Service", "Switch to the task-service session", show=False),
@@ -1517,8 +1519,9 @@ def _setup_task_columns(table: DataTable[Any], *, multi_runner: bool) -> None:
 
 class Dashboard(App[None]):
     """The task view. On `t` it calls ``on_switch`` with the task's session (and `s`/`u` call
-    ``on_service``/``on_runner`` for the task-service / session-service runner sessions) and stays
-    running; the supervisor handles the attach/detach (ADR 0009)."""
+    ``on_service``/``on_runner`` for the task-service / session-service runner sessions, `v` calls
+    ``on_review`` to open tarot on the task's work) and stays running; the supervisor handles the
+    attach/detach (ADR 0009)."""
 
     CSS = (
         "#tasks { width: 3fr; } #detail { width: 2fr; padding: 0 1; display: none; } "
@@ -1544,6 +1547,7 @@ class Dashboard(App[None]):
         on_switch: Callable[[str, str | None], None] | None = None,
         on_service: Callable[[], bool] | None = None,
         on_runner: Callable[[], bool] | None = None,
+        on_review: Callable[[ReviewTarget], ReviewResult] | None = None,
         artifacts_root: str | Path = ARTIFACTS_DIR,
         refresh_interval: float | None = REFRESH_INTERVAL,
     ) -> None:
@@ -1552,6 +1556,7 @@ class Dashboard(App[None]):
         self._on_switch = on_switch  # supervisor hook: record the pick + detach (None standalone)
         self._on_service = on_service  # `s` hook: switch to the service session; True if one exists
         self._on_runner = on_runner  # `u` hook: switch to the runner session; True if one exists
+        self._on_review = on_review  # `v` hook: open tarot on the task's work (None standalone)
         self._artifacts_root = artifacts_root  # for `a`'s `e` local-open (co-located store)
         self._refresh_interval = (
             refresh_interval  # change-feed long-poll wait (0/None → manual only)
@@ -1931,6 +1936,54 @@ class Dashboard(App[None]):
         webbrowser.open(url)
         self.notify(f"opened {url}")
 
+    def action_review(self) -> None:
+        """`v`: open tarot to review the highlighted task's work, handing off the terminal.
+
+        Creates (or re-attaches) a `panopticon-review-<id>` tmux session running tarot and hands
+        the terminal to it via the same switch-file detach/attach `t` uses (``on_review`` records
+        the pick + detaches); quitting tarot (`q`) returns to this same live dashboard (ADR 0009).
+        **Read-only wrt the task** — no turn/claim/state is touched. Reviews the task's local clone
+        in place (`--base origin/<default_base>`, respecting a clone's own `tarot.base`); falls back
+        to `tarot <url>` when the clone isn't on this host (remote runner/reaped). Standalone (no
+        supervisor) there is nothing to hand off to."""
+        if self._current is None:
+            return
+        if self._on_review is None:
+            self.notify(
+                "Review is available when run via `panopticon console`.", severity="warning"
+            )
+            return
+        task = self._tasks.get(self._current)
+        if task is None:
+            return
+        # default_base drives the local-clone `--base`; best-effort (a down service / unknown repo
+        # just falls back to "main", never crashing the `v` press).
+        default_base = "main"
+        repo_id = task.get("repo_id")
+        if repo_id:
+            with contextlib.suppress(Exception):
+                repo = self._client.get_repo(str(repo_id))
+                default_base = str(repo.get("default_base") or "main")
+        result = self._on_review(
+            ReviewTarget(
+                task_id=self._current,
+                clone=task.get("clone"),
+                url=task.get("url"),
+                runner_host=task.get("runner_host"),
+                default_base=default_base,
+            )
+        )
+        if result is ReviewResult.NO_TAROT:
+            self.notify(
+                "tarot isn't installed on this host — install it to review from the dashboard.",
+                severity="warning",
+            )
+        elif result is ReviewResult.NOTHING_TO_REVIEW:
+            self.notify("No local clone and no URL to review yet.", severity="warning")
+        elif result is ReviewResult.REATTACHED:
+            self.notify("Re-attaching to the open review session.")
+        # LAUNCHED → the terminal is handing off to tarot; no notify.
+
     def _copy_to_clipboard(self, text: str) -> None:
         """Copy ``text`` to the clipboard two ways, best-effort: an OSC 52 emit (Textual's
         ``copy_to_clipboard`` — terminal-forwarded, so it survives tmux/ssh and needs no external
@@ -2108,15 +2161,18 @@ def run(
     on_switch: Callable[[str, str | None], None] | None = None,
     on_service: Callable[[], bool] | None = None,
     on_runner: Callable[[], bool] | None = None,
+    on_review: Callable[[ReviewTarget], ReviewResult] | None = None,
     artifacts_root: str | Path = ARTIFACTS_DIR,
 ) -> None:
-    """Run the dashboard. ``on_switch``/``on_service``/``on_runner`` are the supervisor's `t`/`s`/`u`
-    hooks (ADR 0009); all ``None`` standalone. ``artifacts_root`` is the local artifact-store root
-    `a`'s `e` opens files from when the dashboard shares the task service's filesystem."""
+    """Run the dashboard. ``on_switch``/``on_service``/``on_runner``/``on_review`` are the
+    supervisor's `t`/`s`/`u`/`v` hooks (ADR 0009); all ``None`` standalone. ``artifacts_root`` is
+    the local artifact-store root `a`'s `e` opens files from when the dashboard shares the task
+    service's filesystem."""
     Dashboard(
         client,
         on_switch=on_switch,
         on_service=on_service,
         on_runner=on_runner,
+        on_review=on_review,
         artifacts_root=artifacts_root,
     ).run()
