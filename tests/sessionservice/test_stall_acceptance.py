@@ -64,7 +64,7 @@ _SOCKET = "panopticon-stall-itest"
 # real claude's own installed-binary shape (`CLAUDE_CODE_EXECPATH` points at a real binary, not a
 # shebang script) far more faithfully than a raw script would.
 _FAKE_CLAUDE = """
-proj=/home/panopticon/.claude/projects
+proj=/home/panopticon/.claude/projects/-workspace
 mkdir -p "$proj"
 echo '{"type":"assistant","message":{"model":"claude","usage":{}}}' > "$proj/session.jsonl"
 if [ "$FAKE_CLAUDE_SPAWN_TOOL" = "1" ]; then
@@ -355,7 +355,7 @@ def test_recovery_cap_surfaces_loudly_then_a_manual_bump_clears_it(image: str) -
                 "sh",
                 "-c",
                 'echo \'{"type":"assistant","message":{"model":"claude","usage":{}}}\''
-                " >> /home/panopticon/.claude/projects/session.jsonl",
+                " >> /home/panopticon/.claude/projects/-workspace/session.jsonl",
             ],
             check=True,
         )
