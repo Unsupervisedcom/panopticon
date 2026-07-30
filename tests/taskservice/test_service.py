@@ -542,6 +542,16 @@ async def test_re_slug_swaps_the_alias(tmp_path: Path) -> None:
     assert (tmp_path / "tasks" / "new-name" / "plan.md").read_bytes() == b"# Plan\n"
 
 
+async def test_set_starting_model(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    await svc.set_starting_model(task.id, "sonnet")
+    assert (await svc.get_task(task.id)).starting_model == "sonnet"
+    # None is the explicit escape hatch (claude's own default) — settable back mid-task too.
+    await svc.set_starting_model(task.id, None)
+    assert (await svc.get_task(task.id)).starting_model is None
+
+
 # -- artifacts ----------------------------------------------------------------------
 
 

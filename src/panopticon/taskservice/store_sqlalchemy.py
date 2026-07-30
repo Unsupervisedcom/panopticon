@@ -398,6 +398,7 @@ class SqlAlchemyStore(Store):
             row.claimed_by = task.claimed_by
             row.tokens_used = task.tokens_used
             row.token_estimate = task.token_estimate
+            row.starting_model = task.starting_model
             row.governor_task_id = task.governor_task_id
             row.updated_at = task.updated_at
             row.depends_on_task_ids = list(task.depends_on_task_ids)

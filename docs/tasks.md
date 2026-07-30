@@ -66,7 +66,7 @@ See [Provisioning](#provisioning) below.
 | `claimed_by` | The runner (session service) that has **claimed** the task — the spawn gate, so exactly one host runs it. `None` if unclaimed. |
 | `container_status` | *(computed)* The single status the dashboard shows, folding spawn progress with liveness. See [Container status](#container-status). |
 | `runner_host` | *(computed, at query time)* The host of the claiming runner, used to attach to remote sessions. |
-| `starting_model` | The model the agent starts with (e.g. `opus`), seeded from the workflow's default. |
+| `starting_model` | The model the agent starts with (e.g. `opus`), seeded from the workflow's default at creation. Passed to `claude --model` on **every** launch — first run, `--continue` resumes, and any later fresh session alike — so the task record stays the model of record; `None` means claude's own default, on every launch. Changeable mid-task via `PUT /tasks/{id}/starting-model`, taking effect on the task's next spawn. |
 
 ### Bookkeeping and relationships
 

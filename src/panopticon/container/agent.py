@@ -134,10 +134,14 @@ def _claude_argv(
     the agent's turn (``turn == "agent"``), :data:`INTERRUPT_PROMPT` is appended instead so the
     agent automatically picks up where it left off rather than waiting for user input.
 
-    ``starting_model`` (e.g. ``"opus"``) is passed as ``--model`` on the **first run only** — on
-    resume claude uses whichever model the conversation was already using.
+    ``starting_model`` (e.g. ``"opus"``) is passed as ``--model`` on **every** launch — first run,
+    ``--continue`` resumes, and any later fresh session alike — so the task record stays the model
+    of record instead of drifting to whatever the CLI's own account default happens to be.
+    ``None`` means no preference: claude picks its own default, every launch.
     """
     argv = ["claude", "--dangerously-skip-permissions"]
+    if starting_model:
+        argv += ["--model", starting_model]
     overview = config_dir / WORKFLOW_OVERVIEW_FILE
     if overview.exists():  # the whole-workflow map → claude's system prompt (so it knows the shape)
         argv += ["--append-system-prompt", overview.read_text()]
@@ -150,10 +154,6 @@ def _claude_argv(
         if turn == "agent":
             argv.append(INTERRUPT_PROMPT)  # positional: auto-resume after container restart
     else:
-        if (
-            starting_model
-        ):  # first run only — on resume claude uses the conversation's existing model
-            argv += ["--model", starting_model]
         if initial_prompt:
             argv.append(
                 initial_prompt

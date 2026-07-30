@@ -319,6 +319,17 @@ def test_set_slug(client: TestClient) -> None:
     assert resp.json()["slug"] == "fix-widget"
 
 
+def test_set_starting_model(client: TestClient) -> None:
+    task_id = _new_task(client)
+    resp = client.put(f"/tasks/{task_id}/starting-model", json={"starting_model": "sonnet"})
+    assert resp.status_code == 200
+    assert resp.json()["starting_model"] == "sonnet"
+    # None is the explicit escape hatch (claude's own default) — settable back mid-task too.
+    resp = client.put(f"/tasks/{task_id}/starting-model", json={"starting_model": None})
+    assert resp.status_code == 200
+    assert resp.json()["starting_model"] is None
+
+
 def test_set_turn_and_blocked(client: TestClient) -> None:
     task_id = _new_task(client)  # turn=agent, blocked=false
     turned = client.put(f"/tasks/{task_id}/turn", json={"turn": "user"})
