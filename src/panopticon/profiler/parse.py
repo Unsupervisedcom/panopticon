@@ -61,7 +61,6 @@ class _AssistantTurn:
 class _UserEvent:
     ts: float
     tool_result_ts: dict[str, float]  # tool_use_id -> the ts this result arrived
-    is_real_prompt: bool  # no tool_result blocks at all -> a genuine human message
 
 
 _Event = _AssistantTurn | _UserEvent
@@ -152,9 +151,7 @@ def _session_events(records: list[dict[str, Any]]) -> list[_Event]:
                         tool_use_id = block.get("tool_use_id")
                         if isinstance(tool_use_id, str):
                             tool_result_ts[tool_use_id] = ts
-            events.append(
-                _UserEvent(ts=ts, tool_result_ts=tool_result_ts, is_real_prompt=not tool_result_ts)
-            )
+            events.append(_UserEvent(ts=ts, tool_result_ts=tool_result_ts))
         else:
             continue  # structural noise: mode, permission-mode, file-history-snapshot, attachment, …
     flush_turn()
