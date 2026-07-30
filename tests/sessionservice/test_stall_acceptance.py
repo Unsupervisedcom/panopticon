@@ -11,7 +11,8 @@ elsewhere (`test_spawner.py`, `test_host.py`, `test_api.py`). The four scenarios
 plan's VERIFICATION section: (a) alive-idle stall → detect → inject retry → the agent responds;
 (b) claude's process killed in a live container → detected and routed to respawn; (c) a
 still-running tool call → no intervention (the false-positive guard); (d) the recovery cap →
-loud surface, cleared by a manual bump.
+loud surface. The "then a manual bump clears it" half of (d) is unit-tested only (see that
+test's own docstring for why a real container can't exercise it alongside the cap).
 
 The clock `StallMonitor` uses is **injected** (advanced synthetically between ticks, exactly like
 `test_stall.py`'s unit tests), so these tests don't wait out real idle windows or backoff — only
@@ -316,7 +317,15 @@ def test_a_live_tool_call_suppresses_detection(image: str) -> None:
         runner.stop(container)
 
 
-def test_recovery_cap_surfaces_loudly_then_a_manual_bump_clears_it(image: str) -> None:
+def test_recovery_cap_surfaces_loudly(image: str) -> None:
+    # The "then a manual bump clears it" half of this scenario is deliberately *not* re-verified
+    # here: doing so would need the synthetic clock to cross the hardcoded backoff (>=120s,
+    # `_backoff_seconds`) yet still read a *real* file write as fresh afterward — those two
+    # requirements are mutually exclusive once the clock has drifted that far ahead of real time.
+    # `test_stall.py::test_tick_fully_resets_once_the_transcript_resumes_growing` already covers
+    # that half precisely, with a fake runner giving exact control over the reported mtime instead
+    # of a real one. This test's job is the real-container half: cap enforcement against a real
+    # docker/tmux stall that never actually clears.
     task_id = "stall-d"
     runner, container = _spawn(image, task_id, extra_env={"FAKE_CLAUDE_MODE": "unresponsive"})
     try:
@@ -350,27 +359,5 @@ def test_recovery_cap_surfaces_loudly_then_a_manual_bump_clears_it(image: str) -
         assert detail is not None
         assert "1/1 auto-recoveries exhausted" in detail
         assert "needs manual bump" in detail
-
-        # a manual bump: an operator (or us, simulating one) types directly into the pane —
-        # fake-claude in "unresponsive" mode still won't advance the transcript, but a *real*
-        # agent would; simulate that half by writing a fresh transcript entry directly, the same
-        # observable effect a real recovery has.
-        subprocess.run(
-            [
-                "docker",
-                "exec",
-                "--user",
-                "panopticon",
-                container,
-                "sh",
-                "-c",
-                'echo \'{"type":"assistant","message":{"model":"claude","usage":{}}}\''
-                " >> /home/panopticon/.claude/projects/-workspace/session.jsonl",
-            ],
-            check=True,
-        )
-        clock["t"] += 2.0
-        monitor.tick(task)  # fresh transcript activity — resolves and clears
-        assert client.cleared[-1] == task_id
     finally:
         runner.stop(container)
