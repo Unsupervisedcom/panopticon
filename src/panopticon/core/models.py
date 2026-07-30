@@ -53,6 +53,8 @@ class LifecyclePhase(str, Enum):
     STARTING = "starting"  # docker run + the tmux session coming up
     AWAITING = "awaiting"  # container + tmux up; waiting for it to open its /live registration
     FAILED = "failed"  # a spawn step raised (carries a detail string)
+    STALLED = "stalled"  # a live agent has gone idle/unresponsive; the stall monitor is
+    # detecting/recovering it (carries a detail string — cause, retry count, ETA)
 
 
 class ContainerStatus(str, Enum):
@@ -75,6 +77,15 @@ class ContainerStatus(str, Enum):
     DOWN = "down"  # claimed, runner live, container gone and unregistered → respawn with `R`
     FAILED = "failed"  # a spawn step raised
     DISCONNECTED = "disconnected"  # claimed by a runner no longer connected to the task service
+    STALLED = "stalled"  # a live agent has gone idle/unresponsive; see LifecyclePhase.STALLED
+
+
+#: Phases that must show through even when a registration is open — the container/agent holds
+#: its own ``/live`` connection independent of whether it's actually making progress, so
+#: ``registered`` alone can't be trusted to mean "healthy" for these. Currently just ``STALLED``:
+#: a task whose container/tmux/registration are all fine but whose agent has gone idle or died
+#: mid-turn must not read as plain ``live`` (see :mod:`panopticon.sessionservice.stall`).
+_OVERRIDES_LIVE = frozenset({LifecyclePhase.STALLED})
 
 
 def compose_container_status(
@@ -89,16 +100,19 @@ def compose_container_status(
 
     Order matters (first match wins): a terminal task has no container; an unclaimed one is
     ``QUEUED``; an open container registration is ``LIVE`` regardless of anything else (the
-    container holds its own ``/live`` connection independent of its runner); a claim held by a
-    runner that's no longer connected is ``DISCONNECTED`` (even if it left a stale phase behind);
-    otherwise a reported spawn ``phase`` shows through; and a claimed task with a live runner but
-    no phase and no registration is ``DOWN`` (came up and vanished, or never reported).
+    container holds its own ``/live`` connection independent of its runner) **unless** the
+    reported phase is one that must override it (:data:`_OVERRIDES_LIVE` — today just
+    ``STALLED``, since a stalled agent's container/registration are otherwise indistinguishable
+    from a healthy one); a claim held by a runner that's no longer connected is ``DISCONNECTED``
+    (even if it left a stale phase behind); otherwise a reported spawn ``phase`` shows through;
+    and a claimed task with a live runner but no phase and no registration is ``DOWN`` (came up
+    and vanished, or never reported).
     """
     if terminal:
         return ContainerStatus.NONE
     if not claimed:
         return ContainerStatus.QUEUED
-    if registered:
+    if registered and phase not in _OVERRIDES_LIVE:
         return ContainerStatus.LIVE
     if not runner_live:
         return ContainerStatus.DISCONNECTED

@@ -1,7 +1,9 @@
 # Base task-container image (ADR 0005 base layer). Workflow- and repo-specific layers stack on top
 # later. Holds enough to run the entrypoint and the agent: Python, git, bash (the tmux pane's
 # shell), the panopticon package, and the `claude` CLI the agent launcher execs. `gh` arrives via
-# the github-peer-reviewed workflow layer.
+# the github-peer-reviewed workflow layer. `procps` (GNU `ps`) is here for the session service's
+# stall monitor (ADR 0014), which `docker exec`s into the container to read its process tree
+# (`sessionservice/local_runner.py`'s `process_snapshot`) — `python:3.13-slim` doesn't include it.
 #
 # The task runs **unprivileged**: a baked `panopticon` user that the entrypoint remaps to the
 # invoking host user's uid/gid at start (so /workspace files are host-owned), then drops to via
@@ -9,7 +11,7 @@
 FROM python:3.13-slim
 
 RUN apt-get update \
- && apt-get install --yes --no-install-recommends git bash curl ca-certificates gosu passwd vim \
+ && apt-get install --yes --no-install-recommends git bash curl ca-certificates gosu passwd vim procps \
  && rm --recursive --force /var/lib/apt/lists/*
 
 # The unprivileged account the task runs as. The entrypoint remaps it to the invoking uid/gid at
