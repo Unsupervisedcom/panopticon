@@ -277,8 +277,12 @@ class Task:
     token_estimate: int | None = None
     #: The model the agent should start with — e.g. ``"opus"``. Seeded from
     #: :attr:`~panopticon.core.workflow.Workflow.default_model` when the task is created;
-    #: injected as ``PANOPTICON_STARTING_MODEL`` at spawn so the agent can pass ``--model``
-    #: to ``claude`` on first launch. ``None`` means no model preference (claude picks its default).
+    #: injected as ``PANOPTICON_STARTING_MODEL`` on every spawn so the agent passes ``--model``
+    #: to ``claude`` on every launch (first run, ``--continue`` resumes, and any later fresh
+    #: session alike) — the task record is the model of record. Updatable mid-task via
+    #: :meth:`~panopticon.taskservice.service.TaskService.set_starting_model`, taking effect on
+    #: the task's next spawn. ``None`` means no model preference (claude picks its default),
+    #: on every launch.
     starting_model: str | None = None
     #: The task that *governs* (oversees) this one — its ``id``. Set by the orchestrator on the
     #: tasks it creates so the relationship is recorded; also settable manually via

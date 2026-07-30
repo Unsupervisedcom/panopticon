@@ -584,6 +584,17 @@ class TaskService:
         await self._save_task(task)
         return task
 
+    async def set_starting_model(self, task_id: str, starting_model: str | None) -> Task:
+        """Change the model the agent starts with (e.g. ``"opus"``, or ``None`` for claude's own
+        default). A plain recorded fact, like the slug — no transition, no git. The spawner reads
+        ``starting_model`` off the task record at spawn time (not just at creation), so this takes
+        effect on the task's next spawn — a respawn after `down`, or any later fresh session."""
+        task = await self.get_task(task_id)
+        task.starting_model = starting_model
+        await self._save_task(task)
+        _log.info("task %s: starting_model → %s", task_id, starting_model)
+        return task
+
     async def set_turn(self, task_id: str, turn: Actor) -> Task:
         """Flip who holds the turn within a state (the in-container hooks' callback).
 

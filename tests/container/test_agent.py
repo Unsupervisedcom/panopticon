@@ -161,11 +161,35 @@ def test_claude_argv_passes_model_on_first_run(tmp_path: Path) -> None:
     assert argv == ["claude", "--dangerously-skip-permissions", "--model", "opus"]
 
 
-def test_claude_argv_omits_model_on_resume(tmp_path: Path) -> None:
+def test_claude_argv_passes_model_on_resume(tmp_path: Path) -> None:
+    # A resumed session (--continue) must still be pinned — otherwise the task record's model
+    # silently diverges from what's actually running (the bug this guards against).
     project = tmp_path / "projects" / "-work-repo"
     project.mkdir(parents=True)
     (project / "session.jsonl").write_text("{}")
     argv = agent._claude_argv(tmp_path, Path("/work/repo"), starting_model="opus")
+    assert argv == ["claude", "--dangerously-skip-permissions", "--model", "opus", "--continue"]
+
+
+def test_claude_argv_passes_model_on_a_later_fresh_session(tmp_path: Path) -> None:
+    # No prior transcript at all — e.g. a restart later in the task's life that can't resume.
+    # Same code path as a genuine first run, but exercised here as its own scenario per the ask.
+    project = tmp_path / "projects" / "-work-repo"
+    project.mkdir(parents=True)  # present, but no *.jsonl written yet
+    argv = agent._claude_argv(tmp_path, Path("/work/repo"), starting_model="opus")
+    assert argv == ["claude", "--dangerously-skip-permissions", "--model", "opus"]
+
+
+def test_claude_argv_omits_model_when_none_on_first_run(tmp_path: Path) -> None:
+    argv = agent._claude_argv(tmp_path, Path("/work/repo"), starting_model=None)
+    assert "--model" not in argv
+
+
+def test_claude_argv_omits_model_when_none_on_resume(tmp_path: Path) -> None:
+    project = tmp_path / "projects" / "-work-repo"
+    project.mkdir(parents=True)
+    (project / "session.jsonl").write_text("{}")
+    argv = agent._claude_argv(tmp_path, Path("/work/repo"), starting_model=None)
     assert "--model" not in argv
     assert "--continue" in argv
 

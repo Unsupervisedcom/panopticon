@@ -249,6 +249,10 @@ class TokenEstimateIn(BaseModel):
     token_estimate: int
 
 
+class StartingModelIn(BaseModel):
+    starting_model: str | None
+
+
 class StateIn(BaseModel):
     state: str
 
@@ -616,6 +620,10 @@ def create_app(service: TaskService) -> FastAPI:
         return TaskOut.model_validate(
             await service.set_token_estimate(task_id, body.token_estimate)
         )
+
+    @app.put("/tasks/{task_id}/starting-model")
+    async def set_starting_model(task_id: str, body: StartingModelIn) -> TaskOut:
+        return _task_out(await service.set_starting_model(task_id, body.starting_model))
 
     @app.put("/tasks/{task_id}/turn")
     async def set_turn(task_id: str, body: TurnIn) -> TaskOut:

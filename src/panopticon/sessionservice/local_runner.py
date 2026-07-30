@@ -163,7 +163,7 @@ class LocalRunner(Runner):
         agent launcher can send :data:`~panopticon.container.agent.INTERRUPT_PROMPT` on respawn when
         the agent holds the turn. ``starting_model`` is the model the agent should start with
         (e.g. ``"opus"``); passed as ``PANOPTICON_STARTING_MODEL`` so the agent launcher can pass
-        ``--model`` to ``claude`` on first launch. ``progress`` (optional) is called with each spawn
+        ``--model`` to ``claude`` on every launch. ``progress`` (optional) is called with each spawn
         phase the runner passes through (``STARTING`` before ``docker run``, ``AWAITING`` once the
         tmux session is up) so the caller can surface it — see
         :class:`~panopticon.core.models.LifecyclePhase`."""

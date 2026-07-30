@@ -101,8 +101,9 @@ class Workflow(ABC):
     hidden: ClassVar[bool] = False
     #: The model the agent starts with when working on tasks created by this workflow. Seeded onto
     #: :attr:`~panopticon.core.models.Task.starting_model` at task creation; the runner injects it
-    #: so ``claude --model`` is set on first launch. Defaults to ``"opus"`` for all built-in
-    #: workflows; override per-workflow to change the default.
+    #: so ``claude --model`` is set on every launch (first run, resume, and any later fresh
+    #: session). Defaults to ``"opus"`` for all built-in workflows; override per-workflow to
+    #: change the default.
     default_model: ClassVar[str] = "opus"
     #: How this workflow's tasks are executed by the session service. ``"docker"`` (default)
     #: spawns the base → workflow → repo container image and runs the in-container agent (the
