@@ -109,7 +109,12 @@ RUN cp /bin/sh /usr/local/bin/claude-agent
 RUN echo '{_b64(_FAKE_CLAUDE)}' | base64 --decode > /usr/local/bin/fake-claude.sh
 RUN echo '{_b64(_AGENT_WRAPPER)}' | base64 --decode > /usr/local/bin/agent-wrapper
 RUN chmod +x /usr/local/bin/claude-agent /usr/local/bin/fake-claude.sh /usr/local/bin/agent-wrapper
-ENTRYPOINT ["sleep", "3600"]
+# A fresh named volume mounted at a path with no pre-existing content in the image (CONFIG_MOUNT
+# here) comes up owned by root — the real base image's entrypoint chowns it as part of the uid
+# remap dance (ADR 0011); this minimal image has no such entrypoint, so it does the chown itself,
+# as root (the default here — no USER directive), before `fake-claude` (running unprivileged via
+# `docker exec --user panopticon`) needs to write into it.
+ENTRYPOINT ["sh", "-c", "chown -R panopticon:panopticon /home/panopticon/.claude && exec sleep 3600"]
 """
 
 
@@ -191,6 +196,9 @@ def _spawn(
         agent_command=["/usr/local/bin/agent-wrapper"],
         tmux_socket=_SOCKET,
         extra_env=extra_env,
+        # This minimal image has no uid-remap entrypoint for the real readiness probe to wait on
+        # (the container-start ENTRYPOINT above does its own one-shot chown instead) — skip it.
+        ready_timeout=0,
     )
     container = runner.spawn(task_id)
     assert _poll(lambda: runner.is_running(task_id), timeout=15.0), "container never came up"
