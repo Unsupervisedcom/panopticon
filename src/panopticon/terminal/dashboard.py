@@ -24,7 +24,10 @@ artifacts — Enter opens the selected
 one with the host's default handler (`xdg-open`/`open`) by fetching it over REST to a temp file, `e`
 opens the on-disk file in place when the dashboard shares the artifact store, `y` **copies the
 task's slug** and `Y` its **id** to the clipboard (OSC 52 + the host's `pbcopy`/`xclip`/`wl-copy`,
-so it works on Linux and macOS). Drop is the only state
+so it works on Linux and macOS), and `P` **time-profiles** the highlighted task (reads its session
+transcripts via docker, `panopticon.sessionservice.transcripts`) and shows a one-line llm/tool/wait
+summary in the detail pane — on demand only (never automatic — see `action_profile`), since it
+shells out to docker per task. Drop is the only state
 *transition* the dashboard drives: every other transition starts a new agentic turn, so it's
 triggered by an in-container agent skill (`advance` over REST/MCP; going back to coding is a free
 `set_state` move), not the operator (ADR 0004).
@@ -101,9 +104,12 @@ from textual.worker import get_current_worker
 from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.dirs import ARTIFACTS_DIR
 from panopticon.core.state import TERMINAL_LABELS
+from panopticon.profiler.parse import profile_transcripts
 from panopticon.sessionservice.local_runner import session_name
+from panopticon.sessionservice.transcripts import task_session_paths
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 from panopticon.terminal.setup_repo_task import create_setup_repo_task
+from panopticon.terminal.task_profile import format_time_summary
 
 
 def _make_sort_key(
@@ -361,14 +367,19 @@ def _repo_cell(task: JsonObj, repo_names: dict[str, str]) -> str:
     return repo_names.get(repo_id, repo_id) if repo_id else "?"
 
 
-def render_detail(task: JsonObj) -> str:
+def render_detail(task: JsonObj, *, time_summary: str | None = None) -> str:
     """The right-pane text for one task: identity, state/turn, and history.
 
     **Plain text** — the caller wraps it in a Rich ``Text`` so it renders literally. We deliberately
     do *not* use console markup here: a field can contain a stray ``[`` (e.g. a docker command
     captured in ``lifecycle_detail`` — ``['--add-host', …]``, or a memo), and markup-parsing that
     string crashes the whole pane. (Rich's escaper + Textual's markup parser also disagree on which
-    ``[`` is a tag, so escaping isn't reliable — rendering literally is.)"""
+    ``[`` is a tag, so escaping isn't reliable — rendering literally is.)
+
+    ``time_summary`` (``format_time_summary`` of a profiled task) is opt-in and supplied by the
+    caller, never computed here — it means shelling out to docker to read the task's session
+    transcripts, which is too expensive to do on every highlight/refresh (see `P` /
+    ``action_profile``)."""
     turn = f"{task['turn']}{' (blocked)' if task.get('blocked') else ''}"
     claim = f"    claimed: {task['claimed_by']}" if task.get("claimed_by") else ""
     lines = [
@@ -388,6 +399,8 @@ def render_detail(task: JsonObj) -> str:
         used = _short_tokens(task.get("tokens_used"))
         est = _short_tokens(task.get("token_estimate"))
         lines += ["", f"tokens (wt): {used} used / {est} est"]
+    if time_summary:
+        lines += ["", time_summary]
     lines += ["", "history:"]
     for entry in task.get("history") or []:
         line = f"  {entry['from_state'] or '∅'} → {entry['to_state']}"
@@ -1440,6 +1453,13 @@ HOTKEYS: tuple[Hotkey, ...] = (
     Hotkey("y", "copy_slug", "Copy slug", "Copy the task's slug to the clipboard", show=False),
     Hotkey("Y", "copy_id", "Copy id", "Copy the task's id to the clipboard", show=False),
     Hotkey(
+        "P",
+        "profile",
+        "Profile",
+        "Time-profile the highlighted task's session transcripts (llm/tool/wait split)",
+        show=False,
+    ),
+    Hotkey(
         "escape",
         "clear_search",
         "Clear search",
@@ -1574,6 +1594,10 @@ class Dashboard(App[None]):
         # one reused scratch dir for `a`'s REST-open (lazily made, cleaned on exit) — so opening
         # many artifacts doesn't leak a temp dir each.
         self._artifact_tmp: tempfile.TemporaryDirectory[str] | None = None
+        # task id -> its last-computed `format_time_summary` line, populated only by `P`
+        # (action_profile) — never automatically, since it shells out to docker per task and would
+        # be far too slow to redo on every highlight/refresh (see render_detail's time_summary).
+        self._profile_summaries: dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -1814,8 +1838,9 @@ class Dashboard(App[None]):
                 )  # fall back to summary when the service is unreachable
         # wrap in Text so the pane renders literally — never parse task content as console markup
         # (a "[" in e.g. a docker-command lifecycle_detail would otherwise crash the whole dashboard)
+        summary = self._profile_summaries.get(task_id) if task_id else None
         self.query_one("#detail", Static).update(
-            Text(render_detail(task)) if task else Text("no tasks")
+            Text(render_detail(task, time_summary=summary)) if task else Text("no tasks")
         )
 
     def action_new_task(self) -> None:
@@ -1960,6 +1985,31 @@ class Dashboard(App[None]):
             return
         self._copy_to_clipboard(self._current)
         self.notify(f"copied id: {self._current}")
+
+    def action_profile(self) -> None:
+        """`P`: time-profile the highlighted task and show a summary line in the detail pane.
+
+        On-demand rather than automatic — unlike the rest of the detail pane, this shells out to
+        docker to read the task's session transcripts (:mod:`panopticon.sessionservice.transcripts`),
+        which is too expensive to redo on every arrow-key highlight. Caches the rendered summary per
+        task id so re-selecting the same task doesn't recompute it; press `P` again to refresh."""
+        if self._current is None:
+            return
+        task_id = self._current
+        try:
+            paths = task_session_paths(task_id)
+            if not paths:
+                self.notify("No session transcripts found for this task.", severity="warning")
+                return
+            profile = profile_transcripts(paths)
+        except Exception as exc:
+            self.notify(f"Can't profile task: {exc}", severity="error")
+            return
+        self._profile_summaries[task_id] = format_time_summary(profile)
+        if not self._detail_visible:  # reveal the pane — the point of `P` is to see the summary
+            self.action_toggle_detail()
+        else:
+            self._update_detail(task_id)
 
     def action_toggle_sort(self) -> None:
         """`o`: toggle between sorting by creation time or update time."""

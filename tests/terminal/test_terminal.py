@@ -4,6 +4,7 @@ test_client.py; the dashboard in test_dashboard.py. Quickstart helpers are in te
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -20,6 +21,22 @@ def test_cli_tasks_lists(capsys: pytest.CaptureFixture[str]) -> None:
     out = capsys.readouterr().out
     assert rc == 0
     assert "t1" in out and "ITERATING" in out and "agent" in out
+
+
+def test_cli_profile_dispatches_task_and_all_tasks_flag() -> None:
+    # `main` only wires argparse -> run_profile_command; the command's own logic (task/slug
+    # resolution, formatting) is covered directly in test_task_profile.py.
+    with patch("panopticon.terminal.task_profile.run_profile_command", return_value=0) as mock_run:
+        assert cli.main(["profile", "my-task"], client=_FakeClient()) == 0  # type: ignore[arg-type]
+    _client, kwargs = mock_run.call_args.args[0], mock_run.call_args.kwargs
+    assert kwargs["task_ref"] == "my-task"
+    assert kwargs["all_tasks"] is False
+
+    with patch("panopticon.terminal.task_profile.run_profile_command", return_value=0) as mock_run:
+        assert cli.main(["profile", "--all-tasks"], client=_FakeClient()) == 0  # type: ignore[arg-type]
+    kwargs = mock_run.call_args.kwargs
+    assert kwargs["task_ref"] is None
+    assert kwargs["all_tasks"] is True
 
 
 def test_dashboard_under_supervisor_wires_the_switch_hooks(monkeypatch: pytest.MonkeyPatch) -> None:

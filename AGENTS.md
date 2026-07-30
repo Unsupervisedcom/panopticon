@@ -8,7 +8,7 @@ slice at a time (see ROADMAP "Definition of done — every slice").
 
 The control plane makes **no LLM calls**. All LLM calls happen **inside task containers**.
 
-- LLM-free packages: `core`, `taskservice`, `sessionservice`, `terminal`, `workflows`.
+- LLM-free packages: `core`, `taskservice`, `sessionservice`, `terminal`, `workflows`, `profiler`.
 - The **only** LLM-bearing package is `container/` (the agent runs there).
 
 If you add a package that orchestrates or renders, keep it LLM-free.
@@ -48,7 +48,22 @@ src/panopticon/
                    # description, unsent); daemon.py = the provision-only pull loop;
                    # host.py = the unified per-host daemon (spawn + provision each pass;
                    # `python -m panopticon.sessionservice.host`); `python -m panopticon.sessionservice`
-                   # spawns one task
+                   # spawns one task; transcripts.py = host-side read of a task's session
+                   # transcripts out of its per-task config volume, after the container is gone
+                   # (docker run + find/cat, injectable command-runner) — feeds `profiler/`
+  profiler/        # task time-profiler: pure gap-analysis over a claude session transcript's own
+                   # timestamps (no agent-side instrumentation) — categories.py = the tool-time
+                   # category table (one place, easily extended: Bash sub-classified by regex —
+                   # tests/vcs/deps/pty-verify —, Read/Write/Edit/Grep/Glob → code-nav, Task/Agent →
+                   # subagents [one bucket; its sidechain is never walked separately], mcp__* →
+                   # orchestration); parse.py = profile_transcripts(paths) -> a profile dict: merges
+                   # same-message.id assistant lines into one turn, classifies every gap as LLM time
+                   # (user→assistant), tool time (assistant-with-tool_use→its tool_result, by
+                   # category), or operator/system wait (assistant-with-no-tool_use→next user, incl.
+                   # AskUserQuestion spans and a same-file restart's abandoned-tool_result→
+                   # "interrupted, continue" gap) — between-session gaps (multiple transcript files)
+                   # reported separately; defensive throughout (malformed/old-format lines →
+                   # unattributed, never a crash)
   container/       # entrypoint (`python -m panopticon.container` = connect/register/slug/
                    # heartbeat liveness) + agent.py (`-m panopticon.container.agent` = the tmux
                    # pane's launcher: render skills + operations, point claude at the /mcp server,
@@ -219,6 +234,20 @@ on every PR (the same commands the Makefile wraps).
 - `tests/test_multi_workflow_acceptance.py` — Slice 8 acceptance: over REST (via `build_app`), a
   path-discovered workflow is selectable with no core change, and GithubPeerReviewed + the
   free-form (spike) workflow run concurrently with workflow-specific skills. No Docker, no LLM.
+- `tests/profiler/test_parse.py` — the golden spec for the **time-profiler**'s gap-analysis: a
+  hand-built fixture transcript exercises every category, an `AskUserQuestion` span (must land in
+  operator-wait, not a tool category), a `Task` subagent call (one bucket), a same-`message.id`
+  multi-line assistant turn, parallel tool calls, a mid-session restart (two consecutive `user`
+  lines, no assistant turn between — also operator-wait), a between-sessions restart, and
+  defensive old-format/malformed input (never crashes); `test_categories.py` covers the category
+  table's matcher rules in isolation.
+- `tests/sessionservice/test_transcripts.py` — unit tests pin the emitted `docker volume
+  inspect`/`docker run … find`/`cat` commands via a fake command-runner (incl. never issuing a
+  bare `docker run --volume <missing-name>`, which would silently create an empty volume); a
+  `skipif` no-docker integration test round-trips a real volume.
+- `tests/terminal/test_task_profile.py` — golden-output tests for the `panopticon profile` CLI's
+  formatting (single-task, `--all-tasks`, and the dashboard's one-line summary) plus
+  `run_profile_command`'s wiring (fake client + an injected session-path lookup, no real docker).
 
 ## Glossary
 
