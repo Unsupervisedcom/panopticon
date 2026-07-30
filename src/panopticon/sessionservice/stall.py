@@ -327,6 +327,12 @@ class StallMonitor:
         state.recovery_count += 1
         state.last_recovery_at = now
         state.next_action_at = now + _backoff_seconds(state.recovery_count)
+        # The action itself changes the pane — `send_keys` types visibly (echoed by the pty, or by
+        # claude's own input rendering) and a respawn tears down this pane entirely — so the *next*
+        # probe must not compare against the pre-action baseline (it would see "the pane changed"
+        # and wrongly resolve a stall that was never actually fixed, after only one attempt). Force
+        # a fresh baseline; genuine continued silence still resolves to stalled on the probe after.
+        state.last_pane_text = None
         if snapshot.claude_present:
             self._runner.send_keys(task_id, self._retry_text)
             action = "send-keys retry"

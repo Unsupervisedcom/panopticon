@@ -478,6 +478,10 @@ def test_tick_caps_recoveries_then_surfaces_loudly() -> None:
     monitor.tick(task)  # recovery #1 (the only one allowed)
     assert len(runner.sent_keys) == 1
 
+    clock["t"] += 61.0
+    monitor.tick(task)  # the action reset the pane baseline — this re-establishes it, no action
+    assert len(runner.sent_keys) == 1
+
     clock["t"] += 200.0  # past backoff(1) = 120s
     monitor.tick(task)  # cap already reached — surfaced, not attempted again
     assert len(runner.sent_keys) == 1

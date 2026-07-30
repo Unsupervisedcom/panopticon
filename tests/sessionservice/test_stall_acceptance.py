@@ -341,6 +341,8 @@ def test_recovery_cap_surfaces_loudly_then_a_manual_bump_clears_it(image: str) -
         assert client.phases[-1][1] == "stalled"
         assert "auto-retry 1/1" in (client.phases[-1][2] or "")
 
+        clock["t"] += 2.0
+        monitor.tick(task)  # the retry's own echo reset the pane baseline — re-establishes it
         clock["t"] += 200.0  # past backoff(1) = 120s
         monitor.tick(task)  # cap reached — surfaced loudly, not attempted again
         _, phase, detail = client.phases[-1]
