@@ -63,9 +63,12 @@ class GithubForgeWorkflow(PlannedWorkflow):
                 "open-pr",
                 "Open a draft PR for this task's branch.",
                 f"1. Push the task's branch.\n"
-                f"2. Open a **draft** PR against the repo's base branch with "
-                f"`gh pr create --draft`. Title it for the change and reference the plan artifact "
-                f"(`{self.PLAN_ARTIFACT_NAME}`).\n"
+                f"2. Look up the repo's base branch — `default_base` on your task's repo record "
+                f"(`GET /repos/<repo_id>` on the task service) — and open a **draft** PR against "
+                f"it explicitly: `gh pr create --draft --base <default_base>`. A bare `gh pr "
+                f"create` targets the forge's default branch, which is NOT always the intended "
+                f"base (integration branches). Title the PR for the change and reference the "
+                f"plan artifact (`{self.PLAN_ARTIFACT_NAME}`).\n"
                 f"3. Call the `set_url` MCP tool with the PR URL returned by `gh pr create`, "
                 f"so the dashboard's `p` hotkey opens it and the `url-recorded` responsibility "
                 f"can be resolved.",
