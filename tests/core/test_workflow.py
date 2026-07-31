@@ -18,6 +18,7 @@ from panopticon.core import (
     IllegalTransition,
     InitialState,
     InvalidWorkflow,
+    Repo,
     ResponsibilitiesNotMet,
     Responsibility,
     State,
@@ -254,6 +255,88 @@ def test_ungated_state_needs_no_responsibilities() -> None:
     task = WF.start_task("t1", "r1", at="t0")
     WF.apply_transition(task, "WORKING", at="t1")  # PLAN has no responsibilities
     assert task.state == "WORKING"
+
+
+# -- responsibilities can vary by repo (optional context) ---------------------------
+
+
+class RepoAwareWorkflow(Workflow):
+    """A workflow that adds an extra WORKING responsibility for a repo opted into "extra".
+
+    A fresh `Workflow` (not a `GatedWorkflow` subclass): nested state classes are discovered via
+    `vars(type(self))` (not inherited-attribute lookup), so a subclass reusing a base's *states*
+    without redeclaring them would never resolve its own graph — this mirrors `GatedWorkflow`'s
+    shape directly instead.
+    """
+
+    name = "repo-aware-test"
+
+    EXTRA: Responsibility = Responsibility(key="extra-check", description="An extra check")
+
+    class Plan(InitialState):
+        label = "PLAN"
+        transitions = ("WORKING",)
+
+    class Working(State):
+        label = "WORKING"
+        advanced_by = Actor.AGENT
+        responsibilities = (
+            Responsibility(key="tests-pass", description="Tests pass"),
+            Responsibility(key="pr-opened", description="PR opened"),
+        )
+        transitions = (Complete,)
+
+    initial = Plan
+
+    def responsibilities(self, label, *, repo=None):  # type: ignore[no-untyped-def]
+        yield from super().responsibilities(label, repo=repo)
+        if label == "WORKING" and repo is not None and repo.capabilities.get("extra"):
+            yield self.EXTRA
+
+
+def _repo(**capabilities: bool) -> Repo:
+    return Repo(id="r1", name="r1", git_url="git@example.com:r1.git", capabilities=capabilities)
+
+
+def test_responsibilities_default_repo_is_none_and_inert() -> None:
+    # The base Workflow.responsibilities ignores `repo` entirely — passing one changes nothing
+    # unless a subclass overrides responsibilities() to look at it (see RepoAwareWorkflow below).
+    assert {r.key for r in WF.responsibilities("WORKING")} == {"tests-pass", "pr-opened"}
+    assert {r.key for r in WF.responsibilities("WORKING", repo=_repo(extra=True))} == {
+        "tests-pass",
+        "pr-opened",
+    }
+
+
+def test_responsibilities_adds_the_extra_one_only_for_an_opted_in_repo() -> None:
+    rwf = RepoAwareWorkflow()
+    assert "extra-check" not in {r.key for r in rwf.responsibilities("WORKING")}
+    assert "extra-check" not in {r.key for r in rwf.responsibilities("WORKING", repo=_repo())}
+    assert "extra-check" in {r.key for r in rwf.responsibilities("WORKING", repo=_repo(extra=True))}
+    # unaffected states (e.g. PLAN) are unchanged regardless of repo
+    assert list(rwf.responsibilities("PLAN", repo=_repo(extra=True))) == []
+
+
+def test_apply_transition_seeds_repo_conditional_responsibility() -> None:
+    rwf = RepoAwareWorkflow()
+    task = rwf.start_task("t1", "r1", at="t0")
+    rwf.apply_transition(task, "WORKING", at="t1", repo=_repo(extra=True))
+    assert {r.key for r in task.history[-1].responsibilities} == {
+        "tests-pass",
+        "pr-opened",
+        "extra-check",
+    }
+    # a non-opted-in repo doesn't get it
+    other = rwf.start_task("t2", "r1", at="t0")
+    rwf.apply_transition(other, "WORKING", at="t1", repo=_repo())
+    assert {r.key for r in other.history[-1].responsibilities} == {"tests-pass", "pr-opened"}
+
+
+def test_force_transition_seeds_repo_conditional_responsibility() -> None:
+    rwf = RepoAwareWorkflow()
+    task = rwf.start_task("t1", "r1", at="t0")
+    rwf.force_transition(task, "WORKING", at="t1", repo=_repo(extra=True))
+    assert "extra-check" in {r.key for r in task.history[-1].responsibilities}
 
 
 # -- history ------------------------------------------------------------------------
