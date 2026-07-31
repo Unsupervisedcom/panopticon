@@ -43,6 +43,13 @@ from panopticon.sessionservice.local_runner import DEFAULT_IMAGE, LocalRunner
 from panopticon.sessionservice.provisioner import Provisioner
 from panopticon.sessionservice.shell_runner import ShellRunner
 from panopticon.sessionservice.spawner import Spawner
+from panopticon.sessionservice.stall import (
+    DEFAULT_IDLE_SECONDS,
+    DEFAULT_MAX_RECOVERIES,
+    DEFAULT_PROBE_INTERVAL_SECONDS,
+    DEFAULT_RETRY_TEXT,
+    StallMonitor,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -56,20 +63,26 @@ class HostDaemon:
         spawner: Spawner,
         provisioner: Provisioner,
         *,
+        stall_monitor: StallMonitor | None = None,
         sleep: Callable[[float], None] = time.sleep,
         interval: float = 2.0,
     ) -> None:
         self._client = client
         self._spawner = spawner
         self._provisioner = provisioner
+        self._stall_monitor = stall_monitor
         self._sleep = sleep
         self._interval = interval
 
     def tick(self, tasks: list[JsonObj]) -> None:
         """One pass over a task snapshot: spawn each spawnable task, provision each slugged one,
-        reconcile each claimed one's container-lifecycle status (down-detection), and heal each
-        orphan (a claimed task whose tmux session is gone → respawn). All self-gate, so re-running
-        over an unchanged snapshot is a no-op.
+        reconcile each claimed one's container-lifecycle status (down-detection), heal each
+        orphan (a claimed task whose tmux session is gone → respawn), and probe each live one for
+        a stalled agent (ADR 0014 — a claimed, ``turn == "agent"`` task that's gone silent mid-turn,
+        alive-but-idle-errored or its process outright gone). All self-gate, so re-running over an
+        unchanged snapshot is a no-op. ``stall_monitor`` is optional purely for test ergonomics
+        (existing per-task fakes that predate it need not grow the new methods) — the real host
+        loop always constructs one (see :func:`run_host`).
 
         A cheap REST-only **pre-pass flags every orphan ``healing`` first**, before any respawn. The
         respawn loop below is serial (each :meth:`Spawner.heal` blocks on ``docker run`` + the tmux
@@ -88,6 +101,8 @@ class HostDaemon:
                 self._spawner.reconcile(task)
                 self._spawner.heal(task)
                 self._spawner.cleanup(task)
+                if self._stall_monitor is not None:
+                    self._stall_monitor.tick(task)
             except Exception:  # a transient git/REST/FS error on one task must not stall the others
                 _log.warning("host pass failed for task %s", task.get("id"), exc_info=True)
                 continue
@@ -173,11 +188,16 @@ def run_host(
     images: ImageBuilder | None = None,
     makedirs: Callable[[str], None] = lambda p: Path(p).mkdir(parents=True, exist_ok=True),
     interval: float = 2.0,
+    stall_idle_seconds: float = DEFAULT_IDLE_SECONDS,
+    stall_probe_interval_seconds: float = DEFAULT_PROBE_INTERVAL_SECONDS,
+    stall_max_recoveries: int = DEFAULT_MAX_RECOVERIES,
+    stall_retry_text: str = DEFAULT_RETRY_TEXT,
     until: Callable[[], bool] | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
-    """Wire the spawner + provisioner over a shared per-task-clone root and run the host loop."""
-    executions = WorkflowExecutions(client)  # one shared "how is this workflow run" cache for both
+    """Wire the spawner + provisioner + stall monitor over a shared per-task-clone root and run
+    the host loop (ADR 0014's detector shares the spawner's respawn path for shape B)."""
+    executions = WorkflowExecutions(client)  # one shared "how is this workflow run" cache for all
     spawner = Spawner(
         client,
         runner,
@@ -191,7 +211,20 @@ def run_host(
         makedirs=makedirs,
     )
     provisioner = Provisioner(client, clones_root=tasks_root, git=git, executions=executions)
-    HostDaemon(client, spawner, provisioner, interval=interval, sleep=sleep).run(until=until)
+    stall_monitor = StallMonitor(
+        client,
+        runner,
+        spawner,
+        runner_id=runner_id,
+        executions=executions,
+        idle_seconds=stall_idle_seconds,
+        probe_interval_seconds=stall_probe_interval_seconds,
+        max_recoveries=stall_max_recoveries,
+        retry_text=stall_retry_text,
+    )
+    HostDaemon(
+        client, spawner, provisioner, stall_monitor=stall_monitor, interval=interval, sleep=sleep
+    ).run(until=until)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -225,6 +258,28 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=2.0,
         help="change-feed long-poll wait, seconds (the keepalive ceiling between blocking calls)",
+    )
+    parser.add_argument(
+        "--stall-idle-minutes",
+        type=float,
+        default=float(os.environ.get("PANOPTICON_STALL_IDLE_MINUTES", DEFAULT_IDLE_SECONDS / 60)),
+        help="silence on the transcript (while turn=agent) before a task is a stall candidate (ADR 0014)",
+    )
+    parser.add_argument(
+        "--stall-probe-interval-seconds",
+        type=float,
+        default=float(
+            os.environ.get(
+                "PANOPTICON_STALL_PROBE_INTERVAL_SECONDS", DEFAULT_PROBE_INTERVAL_SECONDS
+            )
+        ),
+        help="how often a stall candidate is re-probed (docker exec + tmux capture-pane cost)",
+    )
+    parser.add_argument(
+        "--stall-max-recoveries",
+        type=int,
+        default=int(os.environ.get("PANOPTICON_STALL_MAX_RECOVERIES", DEFAULT_MAX_RECOVERIES)),
+        help="consecutive auto-recoveries allowed before a stall is surfaced instead of retried",
     )
     return parser
 
@@ -264,6 +319,9 @@ def main(
             base=args.image
         ),  # compose workflow layers onto the same base (ADR 0005)
         interval=args.interval,
+        stall_idle_seconds=args.stall_idle_minutes * 60,
+        stall_probe_interval_seconds=args.stall_probe_interval_seconds,
+        stall_max_recoveries=args.stall_max_recoveries,
     )
 
 

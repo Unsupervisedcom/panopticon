@@ -26,14 +26,10 @@ from pathlib import Path
 from panopticon.sessionservice.local_runner import (
     CONFIG_MOUNT,
     DEFAULT_IMAGE,
+    TRANSCRIPT_DIR,
     CommandRunner,
     _subprocess_run,
 )
-
-#: Where claude's transcripts live inside the config volume. The project directory is always this
-#: fixed path: `container/agent.py`'s `_claude_argv` keys it off `Path.cwd()`, which is always
-#: `/workspace` (ADR 0011's `WORKSPACE_MOUNT`), encoded as `-workspace`.
-_TRANSCRIPT_DIR = f"{CONFIG_MOUNT}/projects/-workspace"
 
 
 def _volume_name(task_id: str) -> str:
@@ -92,12 +88,12 @@ def task_session_paths(
 
     # `find`'s predicates have no long-option form (`-maxdepth`/`-name` are the only spelling; see
     # AGENTS.md's shelling-out rule), unlike the double-dash flags used elsewhere in this module.
-    listing = _reader("find", _TRANSCRIPT_DIR, "-maxdepth", "1", "-name", "*.jsonl")
+    listing = _reader("find", TRANSCRIPT_DIR, "-maxdepth", "1", "-name", "*.jsonl")
     names = sorted({Path(line).name for line in listing.splitlines() if line.strip()})
 
     paths = []
     for name in names:
-        content = _reader("cat", f"{_TRANSCRIPT_DIR}/{name}")
+        content = _reader("cat", f"{TRANSCRIPT_DIR}/{name}")
         out_path = dest_dir / name
         out_path.write_text(content)
         paths.append(out_path)

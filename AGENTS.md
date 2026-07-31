@@ -34,7 +34,9 @@ src/panopticon/
                    # adapter (in-memory or on-disk SQLite), filesystem artifact store, MCP
                    # server (mcp.py: operations=tools, artifacts=resources; FastMCP) mounted at /mcp
   sessionservice/  # the runner: Runner ABC + StubRunner (in-process) + LocalRunner
-                   # (real Docker+tmux via the CLIs) + ShellRunner (shell_runner.py = a workflow's
+                   # (real Docker+tmux via the CLIs; also the stall monitor's probes —
+                   # transcript_mtime/process_snapshot/pane_text via `docker exec`, send_keys via
+                   # `tmux send-keys`, ADR 0014) + ShellRunner (shell_runner.py = a workflow's
                    # shell_script in a host tmux session, no container — for `runner_type="shell"`
                    # workflows; the spawner routes on it, skipping the image + the clone unless the
                    # workflow opts in via clone_repo); images.py = ADR-0005 composed images
@@ -46,11 +48,22 @@ src/panopticon/
                    # task memo on a first spawn); prefill.py = the detached input-box prefill
                    # poller (mirrors cloude-cade: pipe-pane watch for ESC[?2004h → paste-buffer the
                    # description, unsent); daemon.py = the provision-only pull loop;
-                   # host.py = the unified per-host daemon (spawn + provision each pass;
-                   # `python -m panopticon.sessionservice.host`); `python -m panopticon.sessionservice`
-                   # spawns one task; transcripts.py = host-side read of a task's session
-                   # transcripts out of its per-task config volume, after the container is gone
-                   # (docker run + find/cat, injectable command-runner) — feeds `profiler/`
+                   # host.py = the unified per-host daemon (spawn + provision + stall-probe each
+                   # pass; `python -m panopticon.sessionservice.host`); `python -m
+                   # panopticon.sessionservice` spawns one task; transcripts.py = host-side read of
+                   # a task's session transcripts out of its per-task config volume, after the
+                   # container is gone (docker run + find/cat, injectable command-runner) — feeds
+                   # `profiler/`; stall.py = StallMonitor (ADR 0014: detects a claimed, turn=agent
+                   # task gone silent mid-turn — the transcript's staleness is the trigger, since
+                   # claude writes no error text of its own there; the container's process tree and
+                   # the tmux pane's content are suppression guards, not peer signals — an
+                   # in-flight tool call or a still-streaming generation explain a transcript gap
+                   # without a stall. Classifies the tmux pane — the only place claude's error text
+                   # exists — via classify_pane_text, then recovers: `tmux send-keys` a retry when
+                   # claude's process is still alive (shape A), Spawner.respawn() when it's gone
+                   # (shape B); a parsed usage-limit reset time schedules the retry instead of
+                   # acting immediately; bounded backoff otherwise; a recovery cap surfaces loudly
+                   # via a new LifecyclePhase/ContainerStatus.STALLED instead of looping forever)
   profiler/        # task time-profiler: pure gap-analysis over a claude session transcript's own
                    # timestamps (no agent-side instrumentation) — categories.py = the tool-time
                    # category table (one place, easily extended: Bash sub-classified by regex —
@@ -63,7 +76,10 @@ src/panopticon/
                    # AskUserQuestion spans and a same-file restart's abandoned-tool_result→
                    # "interrupted, continue" gap) — between-session gaps (multiple transcript files)
                    # reported separately; defensive throughout (malformed/old-format lines →
-                   # unattributed, never a crash)
+                   # unattributed, never a crash). NOTE (ADR 0014): a long user→assistant gap is
+                   # currently billed as `llm` time even when it's actually a detected stall (a
+                   # multi-hour API-error hang) — the stall monitor's classification isn't fed back
+                   # into this categorization yet; see BACKLOG.md.
   container/       # entrypoint (`python -m panopticon.container` = connect/register/slug/
                    # heartbeat liveness) + agent.py (`-m panopticon.container.agent` = the tmux
                    # pane's launcher: render skills + operations, point claude at the /mcp server,
@@ -73,7 +89,8 @@ src/panopticon/
                    # GitHub-forge workflows (`Repo.capabilities.tarot_review`, docs/repos.md) — runs
                    # `tarot strands check` / `tarot tour check` and denies `advance` on failure
 docker/Dockerfile  # base task-container image (ADR 0005 base layer): python + git + bash +
-                   # the panopticon package + the `claude` CLI the agent execs; runs as the
+                   # procps (the stall monitor's `docker exec ... ps`, ADR 0014) + the panopticon
+                   # package + the `claude` CLI the agent execs; runs as the
                    # unprivileged `panopticon` user. docker/entrypoint.sh = remap that user to the
                    # invoking host uid/gid (PANOPTICON_PUID/PGID) then drop via gosu
 ```
@@ -209,6 +226,24 @@ on every PR (the same commands the Makefile wraps).
   failing task and another pins that each pass also `heal`s every task; an integration test drives
   spawn → set slug → provision against the real task service over REST (claimed + spawned, then
   branched, no re-spawn).
+- `tests/test_stall.py` — the stall monitor (ADR 0014): `classify_pane_text` unit tests over
+  fixture pane text (usage-limit reset-time parsing incl. next-day rollover, `overloaded_error`/
+  `rate_limit_error`/`network_error`/`server_error`, and the lenient `unknown_error` fallback for
+  unrecognized text — recovery must not require an exhaustive signature list); `StallMonitor.tick`
+  unit tests with fakes + an injected clock (mirroring `test_spawner.py`'s crash-loop-budget
+  pattern) pin candidate gating, probe throttling independent of call frequency, both suppression
+  guards (a live tool call, a still-changing pane) resetting the candidate, shape A (`send_keys`)
+  vs shape B (`respawn`) routing, backoff between attempts, the recovery cap surfacing loudly, and
+  a full reset — recovery budget included — the moment the transcript resumes growing (a manual
+  bump or an organic recovery, requirement 4). `tests/test_stall_acceptance.py` is the `skipif`
+  (no docker/tmux) real-container counterpart: a POSIX-sh script stands in for `claude` (run as a
+  renamed copy of the shell binary itself, not shebang-executed, so its `comm` genuinely matches
+  `"claude" in comm.lower()` the way a real installed binary would) wrapped by a script standing in
+  for `container/agent.py` that lingers after it exits — so a killed fake claude leaves the
+  container/tmux session alive, the shape-B condition — driving real `docker exec`/`tmux
+  capture-pane`/`tmux send-keys` against real `StallMonitor` detection/classification/routing
+  (fakes only at the task-service-client/`Spawner` boundary, since the respawn mechanics and REST
+  layer are covered elsewhere) across the four VERIFICATION scenarios.
 - `tests/test_daemon.py` — the observe-and-provision loop + its launch: unit tests drive
   `tick`/`run` with fakes (branch watched tasks, skip a provisioned one, isolate a failing one,
   poll until a stop condition); integration tests over REST cover the loop (slug-set → branched →

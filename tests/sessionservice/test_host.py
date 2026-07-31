@@ -60,6 +60,9 @@ class _FakeRunner:
     def has_session(self, task_id: str) -> bool:
         return True  # session present (heal leaves a healthy task untouched)
 
+    def transcript_mtime(self, task_id: str) -> float | None:
+        return None  # no transcript yet — never a stall candidate in these fixtures
+
     def stop(self, container_id: str) -> None:
         pass
 
@@ -178,6 +181,92 @@ def test_tick_flags_every_orphan_healing_before_any_respawn() -> None:
 
     HostDaemon(_FakeClient([]), _Spawner(), _Provisioner()).tick([{"id": "t1"}, {"id": "t2"}])  # type: ignore[arg-type]
     assert events == ["mark:t1", "mark:t2", "heal:t1", "heal:t2"]  # all marks precede any respawn
+
+
+class _NoOpSpawner:
+    def mark_healing(self, task: JsonObj) -> None:
+        return None
+
+    def spawn_one(self, task: JsonObj) -> None:
+        return None
+
+    def reconcile(self, task: JsonObj) -> None:
+        return None
+
+    def heal(self, task: JsonObj) -> None:
+        return None
+
+    def cleanup(self, task: JsonObj) -> None:
+        return None
+
+
+class _NoOpProvisioner:
+    def provision(self, task: JsonObj) -> None:
+        return None
+
+
+def test_tick_probes_each_task_for_a_stall_alongside_spawn_and_heal() -> None:
+    # ADR 0014: every pass also probes for a stalled agent, the same as spawn/provision/heal.
+    probed: list[str] = []
+
+    class _StallMonitor:
+        def tick(self, task: JsonObj) -> None:
+            probed.append(task["id"])
+
+    HostDaemon(
+        _FakeClient([]),
+        _NoOpSpawner(),
+        _NoOpProvisioner(),
+        stall_monitor=_StallMonitor(),  # type: ignore[arg-type]
+    ).tick([{"id": "t1"}, {"id": "t2"}])
+    assert probed == ["t1", "t2"]
+
+
+def test_tick_is_a_no_op_when_no_stall_monitor_is_configured() -> None:
+    # Purely a test-ergonomics affordance (existing per-task fakes needn't grow the new methods);
+    # the real host loop (`run_host`) always wires one in.
+    HostDaemon(_FakeClient([]), _NoOpSpawner(), _NoOpProvisioner()).tick([{"id": "t1"}])
+
+
+def test_tick_isolates_a_failing_stall_probe_from_the_others() -> None:
+    seen: list[str] = []
+
+    class _StallMonitor:
+        def tick(self, task: JsonObj) -> None:
+            seen.append(task["id"])
+            if task["id"] == "t1":
+                raise RuntimeError("boom")
+
+    HostDaemon(
+        _FakeClient([]),
+        _NoOpSpawner(),
+        _NoOpProvisioner(),
+        stall_monitor=_StallMonitor(),  # type: ignore[arg-type]
+    ).tick([{"id": "t1"}, {"id": "t2"}])
+    assert seen == ["t1", "t2"]  # t1's error is logged + skipped; t2 still probed
+
+
+def test_build_arg_parser_stall_defaults() -> None:
+    args = build_arg_parser().parse_args([])
+    assert args.stall_idle_minutes == 8.0
+    assert args.stall_probe_interval_seconds == 60.0
+    assert args.stall_max_recoveries == 3
+
+
+def test_build_arg_parser_stall_flags_override_defaults() -> None:
+    args = build_arg_parser().parse_args(
+        [
+            "--stall-idle-minutes",
+            "5",
+            "--stall-probe-interval-seconds",
+            "30",
+            "--stall-max-recoveries",
+            "1",
+        ]
+    )
+    assert args.stall_idle_minutes == 5.0
+    assert args.stall_probe_interval_seconds == 30.0
+    assert args.stall_max_recoveries == 1
 
 
 def test_run_calls_startup_reclaim_once_on_first_successful_tick() -> None:

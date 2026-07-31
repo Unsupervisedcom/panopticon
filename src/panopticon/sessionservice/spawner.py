@@ -392,6 +392,14 @@ class Spawner:
         _log.warning(
             "self-healing orphaned task %s (no tmux session) — respawn %d", task_id, count + 1
         )
+        return self.respawn(task)
+
+    def respawn(self, task: JsonObj) -> str:
+        """Respawn an **already-claimed** task via the idempotent spawn path (kills any stale
+        session/container, then spawns fresh — ``agent.py`` resumes via ``--continue`` since the
+        per-task config volume persists). The primitive :meth:`heal` uses for a tmux-session
+        orphan, and :mod:`panopticon.sessionservice.stall` (shape B: claude's process is gone from
+        an otherwise-live container) reuses verbatim rather than duplicating it."""
         return self._spawn(task)
 
     def startup_reclaim(self, tasks: list[JsonObj]) -> None:

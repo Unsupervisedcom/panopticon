@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from panopticon.core.models import LifecyclePhase
-from panopticon.sessionservice.local_runner import LocalRunner
+from panopticon.sessionservice.local_runner import LocalRunner, parse_process_snapshot
 from panopticon.sessionservice.runner import Runner
 
 
@@ -146,9 +146,137 @@ def test_has_session_is_false_when_the_session_is_absent() -> None:
     assert runner.has_session("t1") is False
 
 
+def test_transcript_mtime_returns_the_newest_jsonl_mtime() -> None:
+    rec = _ReturningRecorder("1700000000.5\n1700000100.25\n1699999999.0\n")
+    runner = LocalRunner("http://svc:8000", run=rec)
+    assert runner.transcript_mtime("t1") == 1700000100.25
+    ((find, check),) = rec.calls
+    assert find == [
+        "docker",
+        "exec",
+        "--user",
+        "panopticon",
+        "panopticon-t1",
+        "find",
+        "/home/panopticon/.claude/projects/-workspace",
+        "-maxdepth",
+        "1",
+        "-name",
+        "*.jsonl",
+        "-printf",
+        "%T@\n",
+    ]
+    assert check is False  # tolerate a vanished container rather than raise
+
+
+def test_transcript_mtime_is_none_when_no_transcript_exists_yet() -> None:
+    runner = LocalRunner("http://svc:8000", run=_Recorder())  # empty stdout
+    assert runner.transcript_mtime("t1") is None
+
+
+def test_transcript_mtime_ignores_blank_and_unparsable_lines() -> None:
+    runner = LocalRunner("http://svc:8000", run=_ReturningRecorder("\n1700000000.0\nnot-a-float\n"))
+    assert runner.transcript_mtime("t1") == 1700000000.0
+
+
+def test_process_snapshot_queries_ps_and_parses_the_result() -> None:
+    rec = _ReturningRecorder("1 0 python3\n2 1 claude\n3 2 bash\n")
+    runner = LocalRunner("http://svc:8000", run=rec)
+    snapshot = runner.process_snapshot("t1")
+    assert snapshot.claude_present is True
+    assert snapshot.tool_active is True  # bash is a live child of claude
+    ((ps, check),) = rec.calls
+    assert ps == [
+        "docker",
+        "exec",
+        "--user",
+        "panopticon",
+        "panopticon-t1",
+        "ps",
+        "-eo",
+        "pid,ppid,comm",
+        "--no-headers",
+    ]
+    assert check is False
+
+
+def test_pane_text_captures_the_tmux_pane_with_short_flags() -> None:
+    rec = _ReturningRecorder("some error\n$ \n")
+    runner = LocalRunner("http://svc:8000", run=rec)
+    assert runner.pane_text("t1") == "some error\n$ \n"
+    ((capture, check),) = rec.calls
+    assert capture == [
+        "tmux",
+        "-L",
+        "panopticon",
+        "capture-pane",
+        "-p",
+        "-t",
+        "panopticon-t1",
+        "-S",
+        "-200",
+    ]
+    assert check is False
+
+
+def test_pane_text_accepts_a_custom_scrollback_length() -> None:
+    rec = _ReturningRecorder("")
+    LocalRunner("http://svc:8000", run=rec).pane_text("t1", lines=50)
+    assert rec.calls[0][0][-1] == "-50"
+
+
+def test_send_keys_types_text_then_enter_into_the_live_pane() -> None:
+    rec = _Recorder()
+    LocalRunner("http://svc:8000", run=rec).send_keys("t1", "try again")
+    ((send, check),) = rec.calls
+    assert send == [
+        "tmux",
+        "-L",
+        "panopticon",
+        "send-keys",
+        "-t",
+        "panopticon-t1",
+        "try again",
+        "Enter",
+    ]
+    assert check is False
+
+
+def test_parse_process_snapshot_finds_claude_with_no_children_as_idle() -> None:
+    snapshot = parse_process_snapshot("1 0 python3\n2 1 claude\n")
+    assert snapshot.claude_present is True
+    assert snapshot.tool_active is False
+
+
+def test_parse_process_snapshot_finds_a_transitive_tool_child_as_active() -> None:
+    # claude (pid 2) spawned bash (pid 3), which spawned pytest (pid 4) — a shape a tool call
+    # (e.g. the Bash tool running a test suite) commonly produces.
+    snapshot = parse_process_snapshot("1 0 python3\n2 1 claude\n3 2 bash\n4 3 pytest\n")
+    assert snapshot.claude_present is True
+    assert snapshot.tool_active is True
+
+
+def test_parse_process_snapshot_is_false_present_when_claude_is_gone() -> None:
+    snapshot = parse_process_snapshot("1 0 python3\n")
+    assert snapshot.claude_present is False
+    assert snapshot.tool_active is False
+
+
+def test_parse_process_snapshot_tolerates_blank_and_malformed_lines() -> None:
+    snapshot = parse_process_snapshot("\n1 0 python3\ngarbage line here\n2 1 claude\n")
+    assert snapshot.claude_present is True
+    assert snapshot.tool_active is False
+
+
+def test_parse_process_snapshot_matches_claude_by_substring() -> None:
+    # the CLI may show under a wrapping interpreter name rather than literally "claude"
+    snapshot = parse_process_snapshot("1 0 node\n2 1 claude-cli\n")
+    assert snapshot.claude_present is True
+
+
 def test_spawn_runs_container_unprivileged_as_the_invoking_user() -> None:
     rec = _Recorder()
-    LocalRunner("http://svc", run=rec).spawn("t1")
+    LocalRunner("http://svc", ready_timeout=0, run=rec).spawn("t1")
     docker_run = rec.calls[2][0]
     # the entrypoint adopts these and drops to the `panopticon` user (no root, no bare numeric uid)
     assert f"PANOPTICON_PUID={os.getuid()}" in docker_run
@@ -158,14 +286,14 @@ def test_spawn_runs_container_unprivileged_as_the_invoking_user() -> None:
 
 def test_spawn_user_can_be_overridden() -> None:
     rec = _Recorder()
-    LocalRunner("http://svc", user="1234:5678", run=rec).spawn("t1")
+    LocalRunner("http://svc", ready_timeout=0, user="1234:5678", run=rec).spawn("t1")
     docker_run = rec.calls[2][0]
     assert "PANOPTICON_PUID=1234" in docker_run and "PANOPTICON_PGID=5678" in docker_run
 
 
 def test_spawn_without_docker_in_docker_is_not_privileged() -> None:
     rec = _Recorder()
-    LocalRunner("http://svc", run=rec).spawn("t1")
+    LocalRunner("http://svc", ready_timeout=0, run=rec).spawn("t1")
     docker_run = rec.calls[2][0]
     assert "--privileged" not in docker_run
     assert "PANOPTICON_DOCKER_IN_DOCKER=1" not in docker_run
@@ -173,7 +301,7 @@ def test_spawn_without_docker_in_docker_is_not_privileged() -> None:
 
 def test_spawn_with_docker_in_docker_runs_privileged_and_flags_the_entrypoint() -> None:
     rec = _Recorder()
-    LocalRunner("http://svc", run=rec).spawn("t1", docker_in_docker=True)
+    LocalRunner("http://svc", ready_timeout=0, run=rec).spawn("t1", docker_in_docker=True)
     docker_run = rec.calls[2][0]
     assert "--privileged" in docker_run  # nested daemon needs it (repo capability, ADR 0005)
     assert "panopticon-dind-t1:/var/lib/docker" in docker_run  # per-task docker layer cache
@@ -182,9 +310,9 @@ def test_spawn_with_docker_in_docker_runs_privileged_and_flags_the_entrypoint() 
 
 def test_extra_env_is_forwarded() -> None:
     rec = _Recorder()
-    LocalRunner("http://svc", extra_env={"PANOPTICON_RECONNECT_BACKOFF": "0.5"}, run=rec).spawn(
-        "t1"
-    )
+    LocalRunner(
+        "http://svc", ready_timeout=0, extra_env={"PANOPTICON_RECONNECT_BACKOFF": "0.5"}, run=rec
+    ).spawn("t1")
     assert "PANOPTICON_RECONNECT_BACKOFF=0.5" in rec.calls[2][0]
 
 
@@ -192,7 +320,9 @@ def test_spawn_resolves_env_file_against_the_runners_secrets_dir() -> None:
     # env_file is a name relative to this runner's secrets dir (ADR 0007 / remote runners), so the
     # runner resolves it host-locally rather than trusting an absolute path from another host.
     rec = _Recorder()
-    LocalRunner("http://svc", secrets_dir="/host/secrets", run=rec).spawn("t1", env_file="r1.env")
+    LocalRunner("http://svc", ready_timeout=0, secrets_dir="/host/secrets", run=rec).spawn(
+        "t1", env_file="r1.env"
+    )
     docker_run = rec.calls[2][0]
     assert docker_run[docker_run.index("--env-file") + 1] == "/host/secrets/r1.env"
 
@@ -200,14 +330,14 @@ def test_spawn_resolves_env_file_against_the_runners_secrets_dir() -> None:
 def test_spawn_rejects_env_file_name_escaping_the_secrets_dir() -> None:
     rec = _Recorder()
     with pytest.raises(ValueError):
-        LocalRunner("http://svc", secrets_dir="/host/secrets", run=rec).spawn(
+        LocalRunner("http://svc", ready_timeout=0, secrets_dir="/host/secrets", run=rec).spawn(
             "t1", env_file="../evil.env"
         )
 
 
 def test_spawn_omits_secret_flags_when_repo_has_none() -> None:
     rec = _Recorder()
-    LocalRunner("http://svc", run=rec).spawn("t1")
+    LocalRunner("http://svc", ready_timeout=0, run=rec).spawn("t1")
     docker_run = rec.calls[2][0]
     assert "--env-file" not in docker_run  # no API-key env-file
     # (the per-task config volume is always mounted — that's not a per-repo secret)
@@ -215,7 +345,7 @@ def test_spawn_omits_secret_flags_when_repo_has_none() -> None:
 
 def test_spawn_mounts_the_per_task_clone_as_the_workspace() -> None:
     rec = _Recorder()
-    LocalRunner("http://svc", run=rec).spawn("t1", workspace="/tasks/t1")
+    LocalRunner("http://svc", ready_timeout=0, run=rec).spawn("t1", workspace="/tasks/t1")
     docker_run = rec.calls[2][0]
     assert "/tasks/t1:/workspace" in docker_run  # the per-task clone, read-write (ADR 0011)
     assert docker_run[docker_run.index("--workdir") + 1] == "/workspace"  # the agent's working dir
@@ -223,7 +353,7 @@ def test_spawn_mounts_the_per_task_clone_as_the_workspace() -> None:
 
 def test_spawn_mounts_a_per_task_config_volume_for_claude_history() -> None:
     rec = _Recorder()
-    LocalRunner("http://svc", run=rec).spawn("t1")
+    LocalRunner("http://svc", ready_timeout=0, run=rec).spawn("t1")
     docker_run = rec.calls[2][0]
     # a task-scoped named volume at the config dir → claude's transcripts survive respawn/recreate
     assert "panopticon-config-t1:/home/panopticon/.claude" in docker_run
@@ -231,7 +361,7 @@ def test_spawn_mounts_a_per_task_config_volume_for_claude_history() -> None:
 
 def test_spawn_passes_initial_prompt_as_env_var() -> None:
     rec = _Recorder()
-    runner = LocalRunner("http://svc", run=rec)
+    runner = LocalRunner("http://svc", ready_timeout=0, run=rec)
     runner.spawn("t1", initial_prompt="review your plan")
     docker_run = rec.calls[2][0]
     assert "PANOPTICON_INITIAL_PROMPT=review your plan" in docker_run
@@ -239,7 +369,7 @@ def test_spawn_passes_initial_prompt_as_env_var() -> None:
 
 def test_spawn_passes_turn_as_env_var() -> None:
     rec = _Recorder()
-    runner = LocalRunner("http://svc", run=rec)
+    runner = LocalRunner("http://svc", ready_timeout=0, run=rec)
     runner.spawn("t1", turn="agent")
     docker_run = rec.calls[2][0]
     assert "PANOPTICON_TASK_TURN=agent" in docker_run
@@ -247,7 +377,7 @@ def test_spawn_passes_turn_as_env_var() -> None:
 
 def test_spawn_omits_turn_env_var_when_not_set() -> None:
     rec = _Recorder()
-    LocalRunner("http://svc", run=rec).spawn("t1")
+    LocalRunner("http://svc", ready_timeout=0, run=rec).spawn("t1")
     docker_run = rec.calls[2][0]
     assert not any("PANOPTICON_TASK_TURN" in arg for arg in docker_run)
 
@@ -271,9 +401,9 @@ def test_stop_kills_session_and_force_removes_container_idempotently() -> None:
 
 def test_delete_workspace_contents_runs_root_container_to_empty_directory() -> None:
     rec = _Recorder()
-    LocalRunner("http://svc", image="panopticon-base", ready_timeout=0, run=rec).delete_workspace_contents(
-        "/tasks/t1"
-    )
+    LocalRunner(
+        "http://svc", image="panopticon-base", ready_timeout=0, run=rec
+    ).delete_workspace_contents("/tasks/t1")
     assert rec.calls == [
         (
             [
