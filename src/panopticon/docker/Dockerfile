@@ -8,8 +8,11 @@
 # gosu. claude is installed under that user's home so it's readable + self-manageable by it.
 FROM python:3.13-slim
 
+# tmux is for the Kubernetes backend (ADR 0014): a task pod has no host tmux server to hold the
+# agent's session, so it runs one itself and the operator reaches it with
+# `kubectl exec -it <pod> -- tmux attach`. A Docker task's session stays on the host, as before.
 RUN apt-get update \
- && apt-get install --yes --no-install-recommends git bash curl ca-certificates gosu passwd vim \
+ && apt-get install --yes --no-install-recommends git bash curl ca-certificates gosu passwd vim tmux \
  && rm --recursive --force /var/lib/apt/lists/*
 
 # The unprivileged account the task runs as. The entrypoint remaps it to the invoking uid/gid at

@@ -107,11 +107,22 @@ class Workflow(ABC):
     #: How this workflow's tasks are executed by the session service. ``"docker"`` (default)
     #: spawns the base → workflow → repo container image and runs the in-container agent (the
     #: determinism invariant — LLM calls happen there). ``"shell"`` runs :meth:`shell_script`
-    #: directly in a host tmux session with **no container** and no agent. Both run in the task's
-    #: own directory (``<tasks_root>/<task_id>``); a docker task always gets the repo cloned there,
-    #: a shell task only if :attr:`clone_repo`. Use ``"shell"`` for short operator utilities that
-    #: just need a host shell (e.g. minting an auth token). The runner picks the backend off this flag.
+    #: directly in a host tmux session with **no container** and no agent. ``"kubernetes"`` runs the
+    #: task image as a Job in the namespace of the agent-operator ``Agent`` named by
+    #: :attr:`operator_agent` (ADR 0014), where the pod clones its own workspace instead of mounting
+    #: a host one. A ``"docker"`` or ``"shell"`` task runs in the task's own directory
+    #: (``<tasks_root>/<task_id>``); a docker task always gets the repo cloned there, a shell task
+    #: only if :attr:`clone_repo`. Use ``"shell"`` for short operator utilities that just need a host
+    #: shell (e.g. minting an auth token). The runner picks the backend off this flag.
     runner_type: ClassVar[str] = "docker"
+    #: The agent-operator ``Agent`` this workflow's tasks run **as**, when :attr:`runner_type` is
+    #: ``"kubernetes"``: that agent's namespace holds the Job, its ``agent-runtime`` service account
+    #: is the task's identity, its ``ResourceQuota`` is the task's budget, and its
+    #: ``spec.credentials`` are the secrets the task gets. Naming the agent *here* rather than on the
+    #: host daemon is the point — which agent runs a task is a property of the work, so one host can
+    #: run a review workflow as one agent and a research workflow as another. Required for
+    #: ``"kubernetes"`` (checked when the class is defined), ignored by the other runner types.
+    operator_agent: ClassVar[str | None] = None
     #: Whether to ``git clone --local`` the repo into the task directory before the task runs.
     #: A ``"docker"`` task always clones (it mounts the checkout at ``/workspace``), so this only
     #: governs a ``"shell"`` task: default ``False`` (an empty task dir — the common case for a
@@ -121,6 +132,21 @@ class Workflow(ABC):
     #: ``None`` (default) runs in the task dir; set an absolute path for a workflow that operates
     #: somewhere else (e.g. the operator's home). Ignored for ``"docker"`` (which works in ``/workspace``).
     shell_workdir: ClassVar[str | None] = None
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        """Check the execution-backend attributes as soon as the class is defined.
+
+        The state graph is validated lazily (see :attr:`_graph`), but this pair is not part of the
+        graph and would otherwise fail far away from its cause — at spawn time, on the host, for one
+        task. A ``"kubernetes"`` workflow with no :attr:`operator_agent` has no namespace to run in,
+        so it is a definition error, not a runtime one.
+        """
+        super().__init_subclass__(**kwargs)
+        if cls.runner_type == "kubernetes" and not cls.operator_agent:
+            raise InvalidWorkflow(
+                f"{cls.__name__}: runner_type='kubernetes' requires operator_agent "
+                "(the agent-operator Agent whose namespace runs the task)"
+            )
 
     # -- build / validate (the resolution pass; answers "why not a free function?") -----
 

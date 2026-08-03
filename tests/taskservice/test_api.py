@@ -102,6 +102,37 @@ def test_workflow_image_layer_endpoint(client: TestClient) -> None:
     assert client.get("/workflows/spike/image-layer").json() == {"layer": ""}
 
 
+def test_workflow_execution_endpoint_carries_the_backend_and_its_agent(tmp_path: Path) -> None:
+    """The one call the session service makes to learn how to run a workflow — so a kubernetes
+    workflow's agent has to travel with its runner_type, or the host cannot route the spawn."""
+    from panopticon.core import Complete, InitialState, Workflow
+
+    class Research(Workflow):
+        name = "research"
+        runner_type = "kubernetes"
+        operator_agent = "researcher"
+        initial = "WORK"
+
+        class Work(InitialState):
+            label = "WORK"
+            transitions = (Complete,)
+
+    svc = TaskService(
+        SqlAlchemyStore(), {"research": Research()}, FilesystemArtifactStore(tmp_path)
+    )
+    with TestClient(create_app(svc)) as c:
+        spec = c.get("/workflows/research/execution").json()
+    assert spec["runner_type"] == "kubernetes"
+    assert spec["operator_agent"] == "researcher"
+
+
+def test_workflow_execution_endpoint_reports_no_agent_for_a_docker_workflow(
+    client: TestClient,
+) -> None:
+    spec = client.get("/workflows/spike/execution").json()
+    assert (spec["runner_type"], spec["operator_agent"]) == ("docker", None)
+
+
 def test_workflow_image_layer_surfaces_github_peer_revieweds_gh_layer(tmp_path: Path) -> None:
     from panopticon.workflows import GithubPeerReviewed
 

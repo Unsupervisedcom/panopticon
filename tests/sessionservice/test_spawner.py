@@ -95,6 +95,7 @@ class _FakeClient:
         shell_script: str = "",
         clone_repo: bool = False,
         shell_workdir: str | None = None,
+        operator_agent: str | None = None,
     ) -> None:
         self._repo = repo
         self._image_layer = image_layer
@@ -104,6 +105,7 @@ class _FakeClient:
             "script": shell_script,
             "clone_repo": clone_repo,
             "workdir": shell_workdir,
+            "operator_agent": operator_agent,
         }
         self.claims: list[tuple[str, str]] = []
         self._held_by: dict[str, str] = {}
@@ -1243,3 +1245,118 @@ def test_spawner_against_the_real_service(tmp_path: Path) -> None:
         assert spawner.spawn_one(task) == f"panopticon-{task_id}"
         assert client.get_task(task_id)["claimed_by"] == "host-1"  # claim recorded on the service
         assert spawnable_tasks(client)() == []  # now claimed → no longer spawnable
+
+
+# -- the kubernetes backend: a workflow's tasks run as its agent-operator Agent (ADR 0014) -------
+
+
+class _FakeKubernetesRunner:
+    """Records Job spawns; stands in for KubernetesRunner (pod liveness == session)."""
+
+    def __init__(self, *, running: bool = True) -> None:
+        self.spawned: list[dict[str, object]] = []
+        self._running = running
+
+    def spawn(
+        self,
+        task_id: str,
+        *,
+        operator_agent: str | None = None,
+        git_url: str | None = None,
+        image: str | None = None,
+        initial_prompt: str | None = None,
+        turn: str | None = None,
+        starting_model: str | None = None,
+        progress: Callable[[LifecyclePhase], None] | None = None,
+    ) -> str:
+        self.spawned.append(
+            {"task_id": task_id, "operator_agent": operator_agent, "git_url": git_url}
+        )
+        if progress is not None:
+            progress(LifecyclePhase.STARTING)
+            progress(LifecyclePhase.AWAITING)
+        return f"panopticon-{task_id}"
+
+    def is_running(self, task_id: str) -> bool:
+        return self._running
+
+    def has_session(self, task_id: str) -> bool:
+        return self._running
+
+    def stop(self, container_id: str) -> None:
+        pass
+
+
+def _kubernetes_spawner(client: object, runner: object, kubernetes: object) -> Spawner:
+    cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
+    return Spawner(
+        client,
+        runner,
+        runner_id="host-1",
+        cache=cache,
+        tasks_root="/tasks",  # type: ignore[arg-type]
+        kubernetes_runner=kubernetes,  # type: ignore[arg-type]
+        git=GitClones(run=_no_op_run),
+        images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        makedirs=lambda _p: None,
+    )
+
+
+_K8S_TASK: JsonObj = {
+    "id": "t1",
+    "repo_id": "r1",
+    "workflow": "research",
+    "state": "ITERATING",
+    "claimed_by": None,
+}
+
+
+def test_a_kubernetes_workflow_spawns_a_job_as_its_agent_and_skips_docker() -> None:
+    client = _FakeClient(repo=_REPO, runner_type="kubernetes", operator_agent="researcher")
+    runner, kubernetes = _FakeRunner(), _FakeKubernetesRunner()
+
+    cid = _kubernetes_spawner(client, runner, kubernetes).spawn_one(dict(_K8S_TASK))
+
+    assert cid == "panopticon-t1"
+    assert runner.spawned == []  # the Docker runner is never touched
+    assert kubernetes.spawned == [
+        {"task_id": "t1", "operator_agent": "researcher", "git_url": "https://forge/r1.git"}
+    ]
+
+
+def test_a_kubernetes_task_reports_preparing_then_starting_and_awaiting_but_never_building() -> (
+    None
+):
+    """The host neither clones the workspace nor composes an image — the pod clones itself."""
+    client = _FakeClient(repo=_REPO, runner_type="kubernetes", operator_agent="researcher")
+    _kubernetes_spawner(client, _FakeRunner(), _FakeKubernetesRunner()).spawn_one(dict(_K8S_TASK))
+
+    assert [phase for _, phase, _ in client.phases] == [
+        "claiming",
+        "preparing",
+        "starting",
+        "awaiting",
+    ]
+
+
+def test_a_kubernetes_task_fails_to_spawn_on_a_host_with_no_kubernetes_runner() -> None:
+    """Falling back to Docker would run the task under the host's identity instead of the agent's —
+    a silent downgrade of exactly the boundary the workflow asked for."""
+    client = _FakeClient(repo=_REPO, runner_type="kubernetes", operator_agent="researcher")
+    spawner = _spawner(client, _FakeRunner())
+
+    with pytest.raises(RuntimeError, match="no kubernetes runner configured"):
+        spawner.spawn_one(dict(_K8S_TASK))
+    assert ("t1", "failed", None) not in client.phases  # reported with the reason, not bare
+    assert [phase for _, phase, _ in client.phases][-1] == "failed"
+
+
+def test_liveness_probes_read_the_kubernetes_runner_for_a_kubernetes_task() -> None:
+    client = _FakeClient(repo=_REPO, runner_type="kubernetes", operator_agent="researcher")
+    kubernetes = _FakeKubernetesRunner(running=False)
+    spawner = _kubernetes_spawner(client, _FakeRunner(session=False), kubernetes)
+    task = {**_K8S_TASK, "claimed_by": "host-1", "container_status": "awaiting"}
+
+    spawner.reconcile(dict(task))
+
+    assert client.cleared == ["t1"]  # the pod is gone → the task composes `down`

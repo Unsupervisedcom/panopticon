@@ -34,7 +34,11 @@ src/panopticon/
                    # adapter (in-memory or on-disk SQLite), filesystem artifact store, MCP
                    # server (mcp.py: operations=tools, artifacts=resources; FastMCP) mounted at /mcp
   sessionservice/  # the runner: Runner ABC + StubRunner (in-process) + LocalRunner
-                   # (real Docker+tmux via the CLIs) + ShellRunner (shell_runner.py = a workflow's
+                   # (real Docker+tmux via the CLIs) + KubernetesRunner (kubernetes_runner.py = one
+                   # task Job in an agent-operator Agent's namespace, for a `runner_type="kubernetes"`
+                   # workflow; agent_operator.py resolves the Agent CR into the Job's namespace/
+                   # identity/credentials, kubectl.py is the command seam — ADR 0014)
+                   # + ShellRunner (shell_runner.py = a workflow's
                    # shell_script in a host tmux session, no container — for `runner_type="shell"`
                    # workflows; the spawner routes on it, skipping the image + the clone unless the
                    # workflow opts in via clone_repo); images.py = ADR-0005 composed images
@@ -49,7 +53,9 @@ src/panopticon/
                    # host.py = the unified per-host daemon (spawn + provision each pass;
                    # `python -m panopticon.sessionservice.host`); `python -m panopticon.sessionservice`
                    # spawns one task
-  container/       # entrypoint (`python -m panopticon.container` = connect/register/slug/
+  container/       # pod.py (`-m panopticon.container.pod` = the Kubernetes bootstrap: clone
+                   # /workspace, start the agent in an in-pod tmux session, then hold liveness) +
+                   # entrypoint (`python -m panopticon.container` = connect/register/slug/
                    # heartbeat liveness) + agent.py (`-m panopticon.container.agent` = the tmux
                    # pane's launcher: render skills + operations, point claude at the /mcp server,
                    # put the workflow overview in its system prompt → exec `claude`) — the ONLY LLM pkg

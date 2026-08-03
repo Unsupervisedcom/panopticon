@@ -270,10 +270,12 @@ class TaskService:
         """How the session service runs this workflow's tasks — everything the runner needs to route
         and launch, in one call so it fetches once and caches:
 
-        * ``runner_type`` — ``"docker"`` (a task container) or ``"shell"`` (a host shell script);
+        * ``runner_type`` — ``"docker"`` (a task container), ``"shell"`` (a host shell script), or
+          ``"kubernetes"`` (a Job in an agent-operator ``Agent``'s namespace, ADR 0014);
         * ``script`` — the shell script a ``"shell"`` workflow runs (empty for ``"docker"``);
         * ``clone_repo`` — whether to clone the repo into the task dir (``"docker"`` always does);
-        * ``workdir`` — a ``"shell"`` workflow's start-directory override (``None`` = the task dir).
+        * ``workdir`` — a ``"shell"`` workflow's start-directory override (``None`` = the task dir);
+        * ``operator_agent`` — the ``Agent`` a ``"kubernetes"`` workflow runs as (``None`` otherwise).
         """
         workflow = self._workflow(name)
         return {
@@ -281,6 +283,7 @@ class TaskService:
             "script": workflow.shell_script(),
             "clone_repo": workflow.clone_repo,
             "workdir": workflow.shell_workdir,
+            "operator_agent": workflow.operator_agent,
         }
 
     def _workflow(self, name: str) -> Workflow:

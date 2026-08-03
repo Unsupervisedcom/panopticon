@@ -28,6 +28,7 @@ from panopticon.core.state import TERMINAL_LABELS
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.executions import WorkflowExecutions
 from panopticon.sessionservice.images import ImageBuilder
+from panopticon.sessionservice.kubernetes_runner import KubernetesRunner
 from panopticon.sessionservice.local_runner import LocalRunner
 from panopticon.sessionservice.shell_runner import ShellRunner
 from panopticon.sessionservice.spawn import cleanup_workspace, prepare_workspace
@@ -93,6 +94,7 @@ class Spawner:
         cache: CloneCache,
         tasks_root: str,
         shell_runner: ShellRunner | None = None,
+        kubernetes_runner: KubernetesRunner | None = None,
         executions: WorkflowExecutions | None = None,
         git: object | None = None,
         images: ImageBuilder | None = None,
@@ -109,6 +111,10 @@ class Spawner:
         self._client = client
         self._runner = runner
         self._shell_runner = shell_runner
+        #: The Kubernetes backend, when this host is configured for one. ``None`` means a
+        #: ``"kubernetes"`` workflow's task cannot spawn here — reported as a failed spawn rather
+        #: than silently falling back to Docker, which would run the task under the wrong identity.
+        self._kubernetes_runner = kubernetes_runner
         self._runner_id = runner_id
         #: The cached "how is this workflow run" lookup (runner_type + shell details), shared with the
         #: provisioner so both agree on which tasks are shell. The per-pass calls (reconcile/cleanup/
@@ -161,7 +167,9 @@ class Spawner:
         """Spawn the execution backend for an **already claimed** task — the body shared by
         :meth:`spawn_one` (after it wins the claim) and :meth:`heal` (respawning an orphan this
         runner already holds). Routes on the workflow's ``runner_type``: a ``"shell"`` workflow runs
-        its script in a host tmux session (no clone, no image); otherwise the Docker container path.
+        its script in a host tmux session (no clone, no image), a ``"kubernetes"`` workflow becomes a
+        Job in its agent's namespace (no host clone either — the pod clones itself); otherwise the
+        Docker container path.
 
         Reports each phase (``CLAIMING`` → … → ``AWAITING``); a step raising is reported as
         ``FAILED`` (with the error) before re-raising, so the host daemon's per-task isolation still
@@ -173,6 +181,8 @@ class Spawner:
             repo = self._client.get_repo(task["repo_id"])
             if self._executions.is_shell(task["workflow"]):
                 return self._spawn_shell(task, repo)
+            if self._executions.is_kubernetes(task["workflow"]):
+                return self._spawn_kubernetes(task, repo)
             return self._spawn_container(task, repo)
         except Exception as exc:
             self._report(task_id, LifecyclePhase.FAILED, detail=str(exc))
@@ -271,14 +281,47 @@ class Spawner:
             progress=lambda phase: self._report(task_id, phase),  # STARTING then AWAITING
         )
 
-    def _runner_for(self, task: JsonObj) -> LocalRunner | ShellRunner:
-        """The runner that owns ``task``'s session — the shell runner for a shell workflow (when one
-        is configured), else the Docker runner. Lets the liveness probes (``is_running`` /
-        ``has_session``) in :meth:`reconcile`, :meth:`cleanup`, :meth:`startup_reclaim` and
-        :meth:`_is_orphan` check the right backend. Tasks without a ``workflow`` key (some internal
-        callers) fall back to the Docker runner."""
-        if self._shell_runner is not None and self._executions.is_shell(task.get("workflow")):
+    def _spawn_kubernetes(self, task: JsonObj, repo: JsonObj) -> str:
+        """The Kubernetes path: create the task's Job in its workflow's agent namespace (ADR 0014).
+
+        Reports ``PREPARING`` → ``STARTING`` → ``AWAITING``, skipping ``BUILDING``: the host neither
+        clones the workspace nor composes an image. The pod clones the repo from its ``git_url`` into
+        its own ``emptyDir`` (:mod:`panopticon.container.pod`), because the host has nothing to mount
+        into a pod that may land on any node — the one real difference from the Docker path.
+
+        The repo's ``env_file`` is deliberately *not* passed: host-local secrets (ADR 0007) do not
+        cross into a cluster. A Kubernetes task's credentials are the ones its agent-operator
+        ``Agent`` already declares, projected by the operator into the namespace."""
+        task_id = task["id"]
+        if self._kubernetes_runner is None:
+            raise RuntimeError(
+                f"task {task_id!r} uses kubernetes workflow {task['workflow']!r} "
+                "but this host has no kubernetes runner configured"
+            )
+        agent = self._executions.operator_agent(task["workflow"])
+        _log.info("task %s: creating job (workflow=%s, agent=%s)", task_id, task["workflow"], agent)
+        self._report(task_id, LifecyclePhase.PREPARING)
+        return self._kubernetes_runner.spawn(
+            task_id,
+            operator_agent=agent,
+            git_url=repo.get("git_url"),  # the pod clones this itself — there is no host checkout
+            initial_prompt=task.get("initial_prompt"),
+            turn=task.get("turn"),
+            starting_model=task.get("starting_model"),
+            progress=lambda phase: self._report(task_id, phase),  # STARTING then AWAITING
+        )
+
+    def _runner_for(self, task: JsonObj) -> LocalRunner | ShellRunner | KubernetesRunner:
+        """The runner that owns ``task``'s session — the shell runner for a shell workflow, the
+        Kubernetes runner for a kubernetes one (when each is configured), else the Docker runner.
+        Lets the liveness probes (``is_running`` / ``has_session``) in :meth:`reconcile`,
+        :meth:`cleanup`, :meth:`startup_reclaim` and :meth:`_is_orphan` check the right backend.
+        Tasks without a ``workflow`` key (some internal callers) fall back to the Docker runner."""
+        workflow = task.get("workflow")
+        if self._shell_runner is not None and self._executions.is_shell(workflow):
             return self._shell_runner
+        if self._kubernetes_runner is not None and self._executions.is_kubernetes(workflow):
+            return self._kubernetes_runner
         return self._runner
 
     def _report(self, task_id: str, phase: LifecyclePhase, detail: str | None = None) -> None:
@@ -320,7 +363,7 @@ class Spawner:
             return False
         if self._executions.is_shell(task.get("workflow")):
             return False
-        return not self._runner.has_session(task["id"])
+        return not self._runner_for(task).has_session(task["id"])
 
     def _respawn_count(self, task_id: str, now: float) -> int:
         """The task's respawn count for the crash-loop guard, with the survivor-window reset applied

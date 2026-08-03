@@ -431,3 +431,41 @@ def test_hidden_does_not_bleed_across_subclasses() -> None:
 
     assert A.hidden is True
     assert B.hidden is False
+
+
+# -- execution backend (runner_type + operator_agent, checked at class definition) ---------
+
+
+def test_a_kubernetes_workflow_must_name_the_agent_it_runs_as() -> None:
+    """A kubernetes workflow with no agent has no namespace to run in — a definition error, caught
+    where the class is written rather than at spawn time, on one host, for one task."""
+    with pytest.raises(InvalidWorkflow, match="requires operator_agent"):
+
+        class Homeless(Workflow):
+            name = "homeless-test"
+            runner_type = "kubernetes"
+            initial = "WORK"
+
+            class Work(InitialState):
+                label = "WORK"
+                transitions = (Complete,)
+
+
+def test_a_kubernetes_workflow_carries_its_agent() -> None:
+    class Researching(Workflow):
+        name = "researching-test"
+        runner_type = "kubernetes"
+        operator_agent = "researcher"
+        initial = "WORK"
+
+        class Work(InitialState):
+            label = "WORK"
+            transitions = (Complete,)
+
+    assert Researching().operator_agent == "researcher"
+    assert Researching().labels()  # the graph still validates as usual
+
+
+def test_the_other_backends_need_no_agent() -> None:
+    assert GatedWorkflow.runner_type == "docker"
+    assert GatedWorkflow.operator_agent is None

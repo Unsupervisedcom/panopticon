@@ -96,3 +96,40 @@ def test_spec_reraises_server_errors() -> None:
     execs = WorkflowExecutions(client)  # type: ignore[arg-type]
     with pytest.raises(httpx.HTTPStatusError):
         execs.spec("some-workflow")
+
+
+def test_is_kubernetes_and_operator_agent_route_a_kubernetes_workflow() -> None:
+    client = _FakeClient(
+        {
+            "k8s": {
+                "runner_type": "kubernetes",
+                "script": "",
+                "clone_repo": False,
+                "workdir": None,
+                "operator_agent": "researcher",
+            }
+        }
+    )
+    execs = WorkflowExecutions(client)  # type: ignore[arg-type]
+
+    assert execs.is_kubernetes("k8s") is True
+    assert execs.is_shell("k8s") is False
+    assert execs.operator_agent("k8s") == "researcher"
+
+
+def test_a_kubernetes_workflow_without_an_agent_is_refused_not_guessed() -> None:
+    """The workflow class already refuses to be defined this way, so reaching here means the host
+    and the task service disagree about the registry — better loud than spawned somewhere random."""
+    client = _FakeClient(
+        {
+            "k8s": {
+                "runner_type": "kubernetes",
+                "script": "",
+                "clone_repo": False,
+                "workdir": None,
+                "operator_agent": None,
+            }
+        }
+    )
+    with pytest.raises(ValueError, match="declares no operator_agent"):
+        WorkflowExecutions(client).operator_agent("k8s")  # type: ignore[arg-type]

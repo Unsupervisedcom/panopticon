@@ -61,6 +61,32 @@ Each state is advanced by either **you** or the **agent**:
 - **Hidden utilities.** `setup-repo` is hidden from the pickers entirely; you launch it
   from the repos screen's setup hotkey, not by creating an ordinary task.
 
+## Where a workflow's tasks run
+
+Most workflows run their tasks in a container on your own machine. A workflow can instead run each
+task as a Kubernetes Job **in the namespace of an [agent-operator](https://github.com/ai-outfitter/agent-operator)
+`Agent`** — so the task acts as that agent, with the agent's own credentials, inside the agent's
+resource quota, on a cluster rather than your laptop:
+
+```python
+class Research(Workflow):
+    name = "research"
+    runner_type = "kubernetes"     # a Job, not a local container
+    operator_agent = "researcher"  # the Agent whose namespace, identity and budget it runs in
+    ...
+```
+
+Which agent runs a task is a property of the **work**, not of the machine you happen to be running
+the daemon on: one host can run a review workflow as the reviewing agent and a research workflow as
+the research agent. The task pod clones its own checkout and runs the agent in an in-pod tmux
+session, so you attach with `kubectl exec -it <pod> -- tmux attach` rather than the dashboard's `t`.
+
+Start the host daemon with `--kubernetes` (and `--kubernetes-service-url`, the address a pod uses to
+reach the task service) to enable the backend. Without it such a task fails to spawn rather than
+quietly running under your identity instead of the agent's. The repo's own secrets file is never
+sent to the cluster — a Kubernetes task's credentials are the ones its `Agent` declares. See
+[ADR 0014](../design/decisions/0014-agent-operator-workflows.md).
+
 ## Adding your own
 
 Workflows are just `Workflow` subclasses. Drop a module defining one into

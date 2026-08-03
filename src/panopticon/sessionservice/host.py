@@ -39,6 +39,7 @@ from panopticon.sessionservice._migration import migrate_session_dirs
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.executions import WorkflowExecutions
 from panopticon.sessionservice.images import ImageBuilder
+from panopticon.sessionservice.kubernetes_runner import KubernetesRunner
 from panopticon.sessionservice.local_runner import DEFAULT_IMAGE, LocalRunner
 from panopticon.sessionservice.provisioner import Provisioner
 from panopticon.sessionservice.shell_runner import ShellRunner
@@ -170,6 +171,7 @@ def run_host(
     cache: CloneCache,
     git: GitClones,
     shell_runner: ShellRunner | None = None,
+    kubernetes_runner: KubernetesRunner | None = None,
     images: ImageBuilder | None = None,
     makedirs: Callable[[str], None] = lambda p: Path(p).mkdir(parents=True, exist_ok=True),
     interval: float = 2.0,
@@ -185,6 +187,7 @@ def run_host(
         cache=cache,
         tasks_root=tasks_root,
         shell_runner=shell_runner,
+        kubernetes_runner=kubernetes_runner,
         executions=executions,
         git=git,
         images=images,
@@ -221,6 +224,34 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--image", default=DEFAULT_IMAGE)
     parser.add_argument(
+        "--kubernetes",
+        action="store_true",
+        default=bool(os.environ.get("PANOPTICON_KUBERNETES")),
+        help=(
+            "enable the Kubernetes backend, so workflows with runner_type='kubernetes' can spawn "
+            "here as Jobs in their agent-operator Agent's namespace (ADR 0014). Off by default: "
+            "without it such a task fails to spawn rather than running under the wrong identity."
+        ),
+    )
+    parser.add_argument(
+        "--kubernetes-image",
+        default=os.environ.get("PANOPTICON_KUBERNETES_IMAGE"),
+        help="task image for Kubernetes Jobs (default: --image; a registry the cluster can pull from)",
+    )
+    parser.add_argument(
+        "--kubernetes-service-url",
+        default=os.environ.get("PANOPTICON_KUBERNETES_SERVICE_URL"),
+        help=(
+            "task service URL a task pod calls back to (the cluster's view of the control plane, "
+            "which stays outside the cluster). Default: --container-service-url"
+        ),
+    )
+    parser.add_argument(
+        "--kubectl-context",
+        default=os.environ.get("PANOPTICON_KUBECTL_CONTEXT"),
+        help="kubeconfig context for the cluster holding the agents (default: the current context)",
+    )
+    parser.add_argument(
         "--interval",
         type=float,
         default=2.0,
@@ -242,6 +273,18 @@ def main(
     # A shell workflow runs directly on the host (no container), so it reaches the task service at
     # the host's own view (--service-url), not the in-container host.docker.internal address.
     shell_runner = ShellRunner(args.service_url, runner_id=args.runner_id)
+    # A task pod reaches the control plane from inside the cluster; only the pods move there, so the
+    # daemon, the task service, and the dashboard all stay where they already run.
+    kubernetes_runner = (
+        KubernetesRunner(
+            args.kubernetes_service_url or args.container_service_url,
+            image=args.kubernetes_image or args.image,
+            runner_id=args.runner_id,
+            context=args.kubectl_context,
+        )
+        if args.kubernetes
+        else None
+    )
     # Hold this host's liveness connection for the daemon's whole life, alongside the spawn/provision
     # loop, so the control plane knows the host is alive (and can reclaim its claims when it isn't).
     # A daemon thread: it dies with the process, dropping the connection (a clean deregister).
@@ -260,6 +303,7 @@ def main(
         cache=CloneCache(CLONE_CACHE_DIR),
         git=GitClones(),
         shell_runner=shell_runner,
+        kubernetes_runner=kubernetes_runner,
         images=ImageBuilder(
             base=args.image
         ),  # compose workflow layers onto the same base (ADR 0005)
