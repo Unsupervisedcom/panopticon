@@ -51,7 +51,15 @@ def _subprocess_run(args: Sequence[str], *, check: bool = True) -> None:
 
 
 def _tmux_has_session(session: str) -> bool:
-    return subprocess.run(["tmux", "has-session", "-t", session], check=False).returncode == 0
+    # Output is captured, not inherited: this runs on every liveness tick, and once the agent is
+    # gone tmux writes "no server running" every time — which would fill the pod log a reader goes
+    # to for the *reason* the agent went away.
+    return (
+        subprocess.run(
+            ["tmux", "has-session", "-t", session], check=False, capture_output=True
+        ).returncode
+        == 0
+    )
 
 
 def clone_workspace(
