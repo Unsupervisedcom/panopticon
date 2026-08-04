@@ -56,6 +56,10 @@ POD_USER = 1000
 #: ``ResourceQuota``, so finished Jobs must not accumulate in it.
 DEFAULT_TTL_SECONDS = 3600
 
+#: Pod phases that mean the task is alive. ``Pending`` is included deliberately — see
+#: :meth:`KubernetesRunner.is_running`. ``Succeeded``/``Failed`` (and no pod at all) mean it is not.
+LIVE_POD_PHASES = frozenset({"Pending", "Running"})
+
 #: Marks a Job as this task's. The label a human greps for, and how :meth:`KubernetesRunner.stop`
 #: and the liveness probes find the Job without keeping cluster state locally.
 TASK_LABEL = "panopticon.task"
@@ -164,7 +168,7 @@ class KubernetesRunner(Runner):
         )
         # Delete-then-apply rather than a plain apply: a Job's pod template is immutable, so
         # applying over a Job whose template changed (a new image, a new prompt) is rejected.
-        self._delete_job(job, agent.namespace)
+        self._delete_job(job, agent.namespace, wait=True)
         _report(LifecyclePhase.STARTING)
         self._run(
             self._kubectl_argv("apply", "--filename", "-", namespace=agent.namespace),
@@ -283,10 +287,17 @@ class KubernetesRunner(Runner):
             "spec": job_spec,
         }
 
-    def _delete_job(self, job: str, namespace: str) -> None:
+    def _delete_job(self, job: str, namespace: str, *, wait: bool = False) -> None:
+        """Delete a task's Job. ``wait`` blocks until it is gone — required before re-creating one
+        of the same name (a respawn), because an apply is rejected while the old Job terminates."""
         self._run(
             self._kubectl_argv(
-                "delete", "job", job, "--ignore-not-found", "--wait=false", namespace=namespace
+                "delete",
+                "job",
+                job,
+                "--ignore-not-found",
+                f"--wait={'true' if wait else 'false'}",
+                namespace=namespace,
             ),
             check=False,
         )
@@ -311,13 +322,20 @@ class KubernetesRunner(Runner):
         self._namespaces.pop(task_id, None)
 
     def is_running(self, task_id: str) -> bool:
-        """Whether the task's pod is currently running in its agent's namespace.
+        """Whether the task's pod is alive in its agent's namespace — scheduling or running.
 
         Reads the **pod**, not the Job: a Job stays present while its pod fails or completes, so a
         Job-level check would report a dead task as up and defeat the daemon's down-detection.
+
+        ``Pending`` counts as alive (:data:`LIVE_POD_PHASES`). This is the one place the Kubernetes
+        backend cannot borrow the local runner's intuition: ``docker run --detach`` returns with the
+        container already running, but a pod spends seconds being scheduled and pulling its image.
+        Reading that gap as "not running" makes the host daemon see a **brand-new task as an
+        orphan** and respawn it — and since respawn deletes and recreates the Job, the task never
+        gets far enough to run. A pod that exists and has not finished is a task that is coming up.
         """
         for namespace in self._namespaces_for(task_id):
-            phase = self._run(
+            phases = self._run(
                 self._kubectl_argv(
                     "get",
                     "pod",
@@ -329,7 +347,7 @@ class KubernetesRunner(Runner):
                 ),
                 check=False,
             )
-            if "Running" in phase.split():
+            if LIVE_POD_PHASES.intersection(phases.split()):
                 return True
         return False
 

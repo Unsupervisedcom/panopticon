@@ -1,0 +1,64 @@
+# A minimal agent-operator Agent for exercising the Kubernetes backend locally (ADR 0014).
+#
+# panopticon does not own this resource in production — an Agent is declared out of band, by whoever
+# runs the fleet. It is checked in here so the local dev loop has one to point at, and so the shape a
+# panopticon task depends on is written down: a namespace, the agent-runtime service account, a
+# quota, and the credentials the task inherits.
+#
+# The agent's own always-on Deployment will not become healthy without a catalog it can resolve.
+# That is fine and deliberate for this loop: a task Job needs the namespace, the service account, the
+# quota and the credentials — none of which depend on that Deployment running.
+apiVersion: link.aioutfitter.com/v1alpha1
+kind: Organization
+metadata:
+  name: panopticon-dev
+spec:
+  displayName: panopticon local development
+  agentCatalogs:
+    - name: link-operator-agents
+      github: ncrmro/link-operator
+      revision: f69338a4b1e7c3db0dcb4d0383beb22cd95448aa
+      path: .agents
+---
+apiVersion: link.aioutfitter.com/v1alpha1
+kind: Agent
+metadata:
+  name: panopticon
+spec:
+  memberships:
+    - organization: panopticon-dev
+  profile:
+    agent: researcher
+    harness: pi
+  credentials:
+    # The task's agent CLI reads CLAUDE_CODE_OAUTH_TOKEN from here. This is the whole point of
+    # running as an Agent: the credential belongs to the agent and lives in its namespace, instead
+    # of being read off the operator's disk and injected at spawn (ADR 0007's env_file, which the
+    # Kubernetes backend deliberately does not send to a cluster).
+    - secret: panopticon-credentials
+      as: env
+  workspace:
+    resourceQuota:
+      hard:
+        requests.cpu: "2"
+        requests.memory: 4Gi
+        limits.cpu: "4"
+        limits.memory: 8Gi
+        # the agent's own workspace (10Gi) + its persistent Nix store (20Gi)
+        requests.storage: 40Gi
+        persistentvolumeclaims: "4"
+        count/pods: "10"
+        count/jobs.batch: "20"
+        count/services: "5"
+        count/configmaps: "20"
+        count/secrets: "10"
+    limitRange:
+      container:
+        defaultRequest:
+          cpu: 100m
+          memory: 128Mi
+        default:
+          cpu: "1"
+          memory: 2Gi
+    volume:
+      size: 10Gi

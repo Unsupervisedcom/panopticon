@@ -66,3 +66,11 @@ def test_a_task_without_a_git_url_still_gets_an_agent(tmp_path: Path) -> None:
     pod.bootstrap(_env(PANOPTICON_WORKSPACE=str(tmp_path)), run=rec)
 
     assert [call[0] for call in rec.calls] == ["tmux"]
+
+
+def test_liveness_is_held_only_while_the_agent_session_lives(tmp_path: Path) -> None:
+    """A pod has no host-side tmux session to lose, so without this the process would hold the
+    liveness connection open with nothing running behind it and the task would read live while
+    being unattachable."""
+    assert pod.session_alive("panopticon-t1", probe=lambda _s: True) is True
+    assert pod.session_alive("panopticon-t1", probe=lambda _s: False) is False

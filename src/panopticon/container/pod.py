@@ -9,7 +9,9 @@ container. A task Job has no such host, so this module does both jobs from insid
 2. **start the agent** in an *in-pod* tmux session named like the Job, so
    ``kubectl exec -it <pod> -- tmux attach -t panopticon-<task_id>`` reaches the live agent;
 3. **hold the liveness connection** by handing off to the ordinary container entrypoint — the same
-   protocol, and therefore the same task-service view, as a Docker task.
+   protocol, and therefore the same task-service view, as a Docker task — but only for as long as
+   that tmux session lives, so a dead agent reads as a down task rather than a live one nobody is
+   home in (see :func:`main`).
 
 Everything before the handoff is deterministic setup: this module makes no LLM call. The agent it
 starts does, in the tmux session, exactly as on the Docker path.
@@ -23,6 +25,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
 
+from panopticon.container.entrypoint import _until_signalled
 from panopticon.container.entrypoint import main as serve_liveness
 
 #: The in-pod tmux session's pane command: the agent launcher (it renders the workflow's skills and
@@ -36,8 +39,19 @@ class CommandRunner(Protocol):
     def __call__(self, args: Sequence[str], *, check: bool = True) -> None: ...
 
 
+class SessionProbe(Protocol):
+    """Answers whether a tmux session exists. Separate from :class:`CommandRunner` because this one
+    reports a **result** rather than running a command that must succeed."""
+
+    def __call__(self, session: str) -> bool: ...
+
+
 def _subprocess_run(args: Sequence[str], *, check: bool = True) -> None:
     subprocess.run(list(args), check=check)
+
+
+def _tmux_has_session(session: str) -> bool:
+    return subprocess.run(["tmux", "has-session", "-t", session], check=False).returncode == 0
 
 
 def clone_workspace(
@@ -94,10 +108,26 @@ def bootstrap(
     start_agent_session(env["PANOPTICON_CONTAINER_ID"], workspace, run=run)
 
 
+def session_alive(session: str, *, probe: SessionProbe = _tmux_has_session) -> bool:
+    """Whether the in-pod tmux session still exists — i.e. whether the agent is still there."""
+    return probe(session)
+
+
 def main() -> None:
-    """``python -m panopticon.container.pod`` — bootstrap, then serve liveness until signalled."""
-    bootstrap(os.environ)
-    serve_liveness()
+    """``python -m panopticon.container.pod`` — bootstrap, then hold liveness while the agent lives.
+
+    Liveness is held only **while the tmux session exists**. On the Docker path a dead agent takes
+    its host tmux session with it, and the host daemon reads that missing session as a task to heal.
+    A pod has no host-side session to lose: this process would happily go on holding the connection
+    with nothing running behind it, and the task would read **live** while being unattachable. So the
+    session is the liveness condition here — when it ends, the connection closes, the task reads
+    down, and the daemon respawns it exactly as it would a dead container.
+    """
+    env = os.environ
+    bootstrap(env)
+    session = env["PANOPTICON_CONTAINER_ID"]
+    signalled = _until_signalled()
+    serve_liveness(running=lambda: signalled() and session_alive(session))
 
 
 if __name__ == "__main__":  # pragma: no cover

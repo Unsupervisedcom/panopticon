@@ -104,6 +104,13 @@ both, and moving the daemon to another machine changes nothing about who a task 
   identity, credentials, and budget; the *harness* is panopticon's. Converging those — a Job that
   runs `outfitter run <agent>` against a typed task input — needs Outfitter's headless task contract
   and is deliberately not attempted here.
+- **Liveness is the in-pod session, not the pod.** A Docker task's agent dying takes its host tmux
+  session with it, which is what the daemon heals on. A pod has no host-side session to lose, so the
+  bootstrap holds the liveness connection only while its tmux session exists; otherwise a task whose
+  agent died would read `live` and be unattachable. Found by running it (see Validation).
+- **`--kubernetes-image` must be a reference the cluster itself resolves.** A bare `panopticon-base`
+  is expanded by containerd to `docker.io/library/panopticon-base`, which does not exist. Locally
+  that means tagging under `localhost/` before importing; in a real cluster it is a registry path.
 - The terminal supervisor's `attach_command` (`terminal/attach.py`) still builds a plain or
   ssh-wrapped `tmux` attach. `KubernetesRunner.attach_command` emits the `kubectl exec` form;
   wiring the supervisor to ask the runner for it is a follow-up, so until then a kubernetes task is
@@ -114,9 +121,18 @@ both, and moving the daemon to another machine changes nothing about who a task 
 
 ## Validation
 
-Against a cluster with agent-operator installed and an `Agent` applied (so the namespace is genuinely
-operator-provisioned): run the task service and host daemon locally with `--kubernetes` and a
-`--kubernetes-service-url` the cluster can reach, create a task on a workflow whose
-`runner_type = "kubernetes"`, and observe the Job appear in `agent-<name>`, the pod register liveness
-back to the local service, `kubectl exec … tmux attach` reach the agent, and `stop` delete the Job
-with the namespace untouched.
+`dev/k8s-local.sh` sets this up against agent-operator's own microVM dev cluster: it applies
+`dev/k8s-agent.yaml`, seeds the agent's credentials secret, ships the task image into the cluster,
+and prints the two commands to run. `dev/workflows/k8s_spike.py` is a `runner_type = "kubernetes"`
+workflow to create tasks on.
+
+Run on 2026-08-04 against k3s v1.35.6, observed end to end: the Job created in `agent-panopticon`;
+the pod cloning its own `/workspace`; `LINK_AGENT`/`LINK_AGENT_SLUG`/`LINK_ORGANIZATION` and the
+agent's credentials reaching the container from the `Agent` CR; the container running as uid 1000;
+the pod registering liveness back to the control plane **outside** the cluster (`10.0.2.2:8000`, the
+microVM's slirp gateway); `claude` live in the pod's tmux session over `kubectl exec -it … tmux
+attach`; and `stop` deleting the Job with the namespace untouched.
+
+Two defects it caught, both now fixed and covered by tests: a `Pending` pod read as "no session", so
+the daemon healed every brand-new task into a delete-and-recreate loop; and a dead agent leaving the
+pod holding liveness, so a task with no working agent read `live`.

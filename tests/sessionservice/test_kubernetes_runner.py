@@ -104,6 +104,8 @@ def test_spawn_deletes_a_stale_job_first_so_a_respawn_replaces_it() -> None:
     delete, apply = cluster.argv("delete")[-1], cluster.argv("apply")[-1]
     assert "--ignore-not-found" in delete and "panopticon-t1" in delete
     assert cluster.calls.index(delete) < cluster.calls.index(apply)
+    # and it waits: an apply is rejected while the Job it replaces is still terminating
+    assert "--wait=true" in delete
 
 
 def test_the_pod_runs_as_the_agent_and_reaches_the_control_plane_outside_the_cluster() -> None:
@@ -228,6 +230,19 @@ def test_is_running_reads_the_pod_not_the_job() -> None:
     assert "--selector" in probe and "panopticon.task=t1" in probe
 
 
+def test_a_pending_pod_counts_as_running_so_a_new_task_is_not_healed_as_an_orphan() -> None:
+    """The regression that matters: `docker run --detach` returns with the container already up, but
+    a pod spends seconds scheduling and pulling. Reading Pending as down makes the host daemon treat
+    a brand-new task as an orphan and respawn it — and respawn deletes and recreates the Job, so the
+    task never gets far enough to run."""
+    cluster = _Cluster(pod_phase="Pending")
+    runner = KubernetesRunner("http://control-plane:8000", run=cluster)
+    runner.spawn("t1", operator_agent="researcher")
+
+    assert runner.is_running("t1") is True
+    assert runner.has_session("t1") is True
+
+
 def test_a_succeeded_pod_is_not_running() -> None:
     cluster = _Cluster(pod_phase="Succeeded")
     runner = KubernetesRunner("http://control-plane:8000", run=cluster)
@@ -256,6 +271,7 @@ def test_stop_deletes_the_job_and_only_the_job() -> None:
 
     deletes = cluster.argv("delete")
     assert deletes and all("job" in call for call in deletes)  # never the namespace itself
+    # nothing follows a stop, so it does not block on the Job going away
     assert deletes[-1][-3:] == ["panopticon-t1", "--ignore-not-found", "--wait=false"]
 
 

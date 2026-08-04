@@ -81,6 +81,27 @@ the daemon on: one host can run a review workflow as the reviewing agent and a r
 the research agent. The task pod clones its own checkout and runs the agent in an in-pod tmux
 session, so you attach with `kubectl exec -it <pod> -- tmux attach` rather than the dashboard's `t`.
 
+### Trying it locally
+
+`dev/k8s-local.sh` wires the whole loop against agent-operator's own microVM dev cluster — it applies
+a dev `Agent`, seeds its credentials secret, ships the task image in, and prints the two commands to
+run. `dev/workflows/k8s_spike.py` is a ready-made kubernetes workflow to create tasks on:
+
+```sh
+cd ~/repos/ai-outfitter/agent-operator          # the dev cluster and the operator
+devenv processes up -d cluster && devenv tasks run operator:install
+
+cd -                                            # back to this checkout
+export CLAUDE_CODE_OAUTH_TOKEN=$(claude setup-token)   # becomes the agent's credential
+dev/k8s-local.sh                                       # then run the two commands it prints
+```
+
+The token goes into a Secret in the agent's namespace, not into a file on your machine: a task pod
+gets it because its `Agent` declares it. Without one the pod still starts, and the task reports
+`failed` with that as the reason.
+
+### Enabling it
+
 Start the host daemon with `--kubernetes` (and `--kubernetes-service-url`, the address a pod uses to
 reach the task service) to enable the backend. Without it such a task fails to spawn rather than
 quietly running under your identity instead of the agent's. The repo's own secrets file is never
