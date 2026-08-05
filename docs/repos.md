@@ -103,9 +103,39 @@ When the session service spawns a task, it uses the repo's fields in order:
 5. **`docker run`** the container with the repo's config: `--env-file` from `env_file`, the
    `/workspace` mount, and `--privileged` when `capabilities.docker_in_docker` is set.
 
-## Managing repos
+## Managing repos from the dashboard
 
-Repos are managed over the task service's REST API:
+`panopticon quickstart` registers the repo you run it in and enables the matching workflow. To
+add or reconfigure *other* repos, use the dashboard's repos modal.
+
+Press **`g`** to open it. It lists your repos; from there:
+
+- **`n`** — add a repo.
+- **`e`** — edit the highlighted repo.
+- **`s`** — run the highlighted repo's [`setup-repo`](workflows/setup-repo.md) task, which mints
+  its `claude` token (see [`auth.md`](auth.md)).
+- **`esc`** — close.
+
+`n` and `e` open the repo form, which has two tabs. **Space** toggles a checkbox; **Enter** (or
+**Ctrl+S**) saves from any field; **Esc** cancels.
+
+**general** — the repo's core fields:
+
+- `git_url` — the git remote. It leads: in create mode, blank `id` and `name` auto-fill from it.
+- `id` — stable identifier. Editable only when creating; shown read-only when editing.
+- `name` — human label.
+- `default_base` — base branch for new tasks (defaults to `main`).
+- `env_file`, `image_layer_file`, `hook_file` — the reference fields described above.
+- **privileged docker (docker-in-docker)** — a checkbox for the one capability the form edits; it
+  maps to `capabilities.docker_in_docker`. Other capability keys are left untouched on save.
+
+**workflows** — a checklist of the workflows this repo can offer. This is where you turn on
+`github-self-reviewed`, `github-peer-reviewed`, and the rest. An opt-in workflow is off until you
+check it; an opt-out one is on until you uncheck it.
+
+## Managing repos over REST
+
+Repos are also managed over the task service's REST API:
 
 - `POST /repos` — create a repo (validates that `env_file` exists).
 - `GET /repos` / `GET /repos/{id}` — list or fetch.

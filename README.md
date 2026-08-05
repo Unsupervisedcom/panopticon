@@ -108,8 +108,9 @@ On the dashboard:
    coding workflow that matches your repo: `github-peer-reviewed` for a GitHub repo (opens a PR), or
    `local-git-self-reviewed` for a local-only one (keeps commits local). `spike` (open-ended, no
    gates) is always available too. To use a different workflow, enable it for your repo in the
-   repos form (press `g`, edit the repo, and check the workflows you want). GitHub workflows need a
-   `GH_TOKEN` in the repo's env-file so the container's `gh` can open PRs (see
+   repos form (press `g`, edit the repo, and check the workflows you want — see
+   [managing repos from the dashboard](docs/repos.md#managing-repos-from-the-dashboard)). GitHub
+   workflows need a `GH_TOKEN` in the repo's env-file so the container's `gh` can open PRs (see
    [`docs/auth.md`](docs/auth.md)). Describe the work in a sentence or two; the
    [workflow catalog](docs/workflows/README.md) explains how to choose.
 2. **Watch it start.** The task's `container` column moves `queued → … → live` as the runner
