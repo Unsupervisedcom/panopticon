@@ -48,7 +48,8 @@ The `turn` column is color-coded live — green when the agent is working, yello
 move, red (`⚠`) when a task is blocked waiting on you — so you can tell at a glance which agents
 need you. The `container` column tracks each agent's sandbox as it spawns (`queued → … → live`,
 or `down` when one needs a respawn), and governed sub-tasks nest under their governor (`└─`).
-Press `t` to drop into any task's session, `?` for the full key list.
+Press `t` to drop into any task's session, `?` for the full key list — or see
+[the keybinding reference](docs/dashboard.md).
 
 ## Requirements
 
