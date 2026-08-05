@@ -134,7 +134,8 @@ This page is the map; these guides are the detail:
   how to add your own).
 - **[Tasks](tasks.md)** — the task object in full: its properties, states, and lifecycle.
 - **[Containers](container.md)** — the container lifecycle, every dashboard status, and recovery.
-- **[Repos](repos.md)** — configuring a repo: secrets, image layers, and capabilities.
+- **[Repos](repos.md)** — configuring a repo: secrets, image layers, and capabilities, and
+  [adding more from the dashboard](repos.md#managing-repos-from-the-dashboard).
 - **[Container auth](auth.md)** — giving each repo's agents their Claude token (and a GitHub token for PRs).
 - **[Image layers](layers.md)** — the composed `base → workflow → repo` image, and adding your own.
 - **[Hooks](hooks.md)** — the per-repo host hook that runs before a container spawns.
