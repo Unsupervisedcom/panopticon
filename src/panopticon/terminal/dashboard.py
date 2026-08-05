@@ -12,8 +12,8 @@ The task table, the repo table (`g`), and the `OptionList` pickers (`n`'s repo/w
 
 The footer legend shows only the essential, most-used keys — `t` hands off to the task's
 container tmux, `n` creates a task (pick repo → workflow → describe the work), `x` **drops** it,
-`/` searches, `d` **toggles the detail pane** (hidden by default so the table gets the full
-width, press to reveal it), `q` quits, and `?` opens the **help screen** (a modal listing every key). The
+`/` searches, `d` opens the **task detail** as a modal (identity, state/turn, history — Escape to
+close), `q` quits, and `?` opens the **help screen** (a modal listing every key). The
 rest still work but are hidden from the legend (both the footer bindings and `HelpScreen` derive
 from the single ``HOTKEYS`` keymap): `r` refreshes from the task service over REST, `R` **respawns**
 a down task (releases its claim so the host runner re-spawns it), `p` opens the task's `url` in the
@@ -77,7 +77,7 @@ from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult, SuspendNotSupported
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widget import Widget
@@ -1428,7 +1428,7 @@ HOTKEYS: tuple[Hotkey, ...] = (
     Hotkey("n", "new_task", "New task", "New task (pick repo → workflow → describe)"),
     Hotkey("x", "drop", "Drop", "Drop the highlighted task"),
     Hotkey("/", "search", "Search", "Search tasks as you type"),
-    Hotkey("d", "toggle_detail", "Detail", "Show/hide the detail pane"),
+    Hotkey("d", "toggle_detail", "Detail", "Show the task detail (modal)"),
     Hotkey("o", "toggle_sort", "Sort order", "Toggle sort: created ↔ updated", show=False),
     Hotkey("r", "refresh", "Refresh", "Refresh from the task service now", show=False),
     Hotkey("R", "respawn", "Respawn", "Respawn a down task (release its claim)", show=False),
@@ -1507,6 +1507,38 @@ class HelpScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
+class TaskDetailScreen(ModalScreen[None]):
+    """A modal showing one task's full detail (identity, state/turn, container, memo, url, tokens,
+    history). Escape / `d` / `q` close it.
+
+    The body is wrapped in a Rich ``Text`` and rendered **literally** — never console markup: a
+    field can carry a stray ``[`` (e.g. a docker command in ``lifecycle_detail``), and markup-parsing
+    that would crash the pane (see ``render_detail``). ``VerticalScroll`` keeps a long history in
+    reach."""
+
+    CSS = """
+    TaskDetailScreen { align: center middle; }
+    #task-detail-box { width: 80%; height: auto; max-height: 90%; padding: 1 2; border: round $accent; background: $surface; }
+    """
+    BINDINGS = [
+        ("escape", "close", "Close"),
+        ("d", "close", "Close"),
+        ("q", "close", "Close"),
+    ]
+
+    def __init__(self, task: JsonObj | None) -> None:
+        super().__init__()
+        self._detail_task = task  # NB: not `_task` — that collides with MessagePump's asyncio task
+
+    def compose(self) -> ComposeResult:
+        task = self._detail_task
+        with VerticalScroll(id="task-detail-box"):
+            yield Static(Text(render_detail(task)) if task else Text("no tasks"))
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
 def _setup_task_columns(table: DataTable[Any], *, multi_runner: bool) -> None:
     """Add the task table's columns. Includes a "runner" column when tasks span multiple hosts."""
     if multi_runner:
@@ -1520,11 +1552,7 @@ class Dashboard(App[None]):
     ``on_service``/``on_runner`` for the task-service / session-service runner sessions) and stays
     running; the supervisor handles the attach/detach (ADR 0009)."""
 
-    CSS = (
-        "#tasks { width: 3fr; } #detail { width: 2fr; padding: 0 1; display: none; } "
-        "#search { display: none; } "
-        "#task-counter { dock: right; width: auto; padding: 0 1; }"
-    )
+    CSS = "#search { display: none; } #task-counter { dock: right; width: auto; padding: 0 1; }"
     # The change-feed long-poll's ``wait`` ceiling: the feed worker parks each request up to this
     # many seconds before re-polling, so a quiet feed reconnects this often (no redraw) while a
     # change still returns — and redraws — immediately. It also bounds how long quitting waits on
@@ -1559,11 +1587,8 @@ class Dashboard(App[None]):
         self._version = 0  # the change-feed cursor (X-Tasks-Version) the worker long-polls against
         self._tasks: dict[str, JsonObj] = {}
         self._repo_names: dict[str, str] = {}  # repo id → name; populated by _load_repo_names
-        self._current: str | None = None
+        self._current: str | None = None  # highlighted task id; `d` opens its detail modal
         self._query: str = ""  # active search filter ("" → no filter); see action_search
-        self._detail_visible = (
-            False  # detail pane hidden by default; `d` toggles it (action_toggle_detail)
-        )
         self._collapsed: set[str] = set()  # governor IDs whose ensembles are currently collapsed
         self._first_refresh: bool = True  # seed _collapsed with all governors on first refresh
         self._governors: set[str] = set()  # governor IDs visible in the current table build
@@ -1577,9 +1602,7 @@ class Dashboard(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Horizontal():
-            yield _VimDataTable(id="tasks")
-            yield Static(id="detail")
+        yield _VimDataTable(id="tasks")  # full-width; task detail is a modal (`d`), not a side pane
         yield Input(id="search", placeholder="search tasks…")  # hidden until `/` (CSS display:none)
         yield _StatusFooter()
 
@@ -1769,16 +1792,16 @@ class Dashboard(App[None]):
         target = selected if selected in self._tasks else next(iter(self._tasks), None)
         if target is not None:
             table.move_cursor(row=table.get_row_index(target))
-        self._update_detail(target)
+        self._current = target  # `d` opens the detail modal for whatever's highlighted
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         key = event.row_key.value
         if isinstance(key, str) and key.startswith(_ENSEMBLE_KEY_PREFIX):
             # Keyboard navigation skips ensemble sentinels (see _VimDataTable), so this only
-            # fires for a mouse hover/click onto the placeholder — leave the detail pane as-is
-            # rather than trying to render a non-task.
+            # fires for a mouse hover/click onto the placeholder — leave the highlighted task as-is
+            # rather than pointing the detail modal at a non-task.
             return
-        self._update_detail(str(key) if key is not None else None)
+        self._current = str(key) if key is not None else None
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         """`Enter` on a governing task collapses or expands its **ensemble** of governed children.
@@ -1799,24 +1822,6 @@ class Dashboard(App[None]):
         else:
             self._collapsed.add(key)
         self.action_refresh()
-
-    def _update_detail(self, task_id: str | None) -> None:
-        self._current = task_id
-        if not self._detail_visible:
-            return
-        task: JsonObj | None = None
-        if task_id:
-            try:
-                task = self._client.get_task(task_id)
-            except Exception:
-                task = self._tasks.get(
-                    task_id
-                )  # fall back to summary when the service is unreachable
-        # wrap in Text so the pane renders literally — never parse task content as console markup
-        # (a "[" in e.g. a docker-command lifecycle_detail would otherwise crash the whole dashboard)
-        self.query_one("#detail", Static).update(
-            Text(render_detail(task)) if task else Text("no tasks")
-        )
 
     def action_new_task(self) -> None:
         """`n`: create a task — pick a repo, a workflow, describe the work, then POST it."""
@@ -1967,15 +1972,16 @@ class Dashboard(App[None]):
         self.action_refresh()
 
     def action_toggle_detail(self) -> None:
-        """`d`: show/hide the right-hand detail pane. It starts hidden (``display: none``) so the
-        task table — the only remaining row child — takes the full width; pressing `d` reveals the
-        pane (with the current task's detail already rendered), and `d` again hides it."""
-        self._detail_visible = not self._detail_visible
-        self.query_one("#detail", Static).styles.display = (
-            "block" if self._detail_visible else "none"
-        )
-        if self._detail_visible:
-            self._update_detail(self._current)
+        """`d`: open the detail modal for the highlighted task (Escape/`d`/`q` closes it). The task
+        is refetched fresh so the modal shows current state, falling back to the cached summary when
+        the service is unreachable."""
+        task: JsonObj | None = None
+        if self._current:
+            try:
+                task = self._client.get_task(self._current)
+            except Exception:
+                task = self._tasks.get(self._current)  # fall back to summary if the service is down
+        self.push_screen(TaskDetailScreen(task))
 
     def action_help(self) -> None:
         """`?`: open the help screen — the full keymap (the footer shows only the essentials)."""

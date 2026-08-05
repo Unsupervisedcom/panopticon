@@ -20,6 +20,7 @@ from panopticon.terminal.dashboard import (
     _ENSEMBLE_KEY_PREFIX,
     Dashboard,
     SpaceCheckbox,
+    TaskDetailScreen,
     _dim,
     _group_by_governor,
     _group_section,
@@ -292,11 +293,10 @@ async def test_dashboard_detail_survives_a_bracketed_lifecycle_detail() -> None:
     app = Dashboard(_FakeClient([task]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:  # would raise here if the detail crashed the app
         await pilot.pause()
-        await pilot.press("d")  # open the detail pane to trigger the fetch
+        await pilot.press("d")  # open the detail modal to trigger the fetch + render
         await pilot.pause()
-        assert "--add-host" in str(
-            app.query_one("#detail", Static).render()
-        )  # rendered, didn't crash
+        assert isinstance(app.screen, TaskDetailScreen)
+        assert "--add-host" in str(app.screen.query_one(Static).render())  # rendered, didn't crash
 
 
 def test_render_detail_shows_the_tokens_used() -> None:
@@ -336,35 +336,34 @@ async def test_dashboard_mounts_lists_tasks_and_shows_detail() -> None:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
         assert table.row_count == 1
-        # detail pane is hidden by default — open it, then check content
+        # `d` opens the detail as a modal — check its content is the highlighted task's
         await pilot.press("d")
         await pilot.pause()
-        detail = app.query_one("#detail", Static)
-        assert "WORKING" in str(detail.render())
+        assert isinstance(app.screen, TaskDetailScreen)
+        assert "WORKING" in str(app.screen.query_one(Static).render())
 
 
-async def test_detail_pane_is_hidden_by_default() -> None:
-    # the detail pane starts hidden so the task table gets the full width; `d` reveals it.
+async def test_no_detail_modal_is_open_by_default() -> None:
+    # the detail is a modal, not a side pane: nothing overlays the table until `d`.
     app = Dashboard(_FakeClient([_TASK]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        detail = app.query_one("#detail", Static)
-        assert not app._detail_visible and detail.styles.display == "none"
+        assert len(app.screen_stack) == 1
+        assert not isinstance(app.screen, TaskDetailScreen)
 
 
-async def test_pressing_d_toggles_the_detail_pane() -> None:
-    # `d` reveals the (hidden-by-default) detail pane and hides it again.
+async def test_pressing_d_opens_the_detail_modal_and_escape_closes_it() -> None:
+    # `d` pushes the detail modal; Escape dismisses it, returning to the base screen.
     app = Dashboard(_FakeClient([_TASK]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        detail = app.query_one("#detail", Static)
-        assert not app._detail_visible and detail.styles.display == "none"
-        await pilot.press("d")  # show
+        await pilot.press("d")  # open
         await pilot.pause()
-        assert app._detail_visible and detail.styles.display == "block"
-        await pilot.press("d")  # hide again
+        assert isinstance(app.screen, TaskDetailScreen)
+        await pilot.press("escape")  # close
         await pilot.pause()
-        assert not app._detail_visible and detail.styles.display == "none"
+        assert len(app.screen_stack) == 1
+        assert not isinstance(app.screen, TaskDetailScreen)
 
 
 async def test_tasks_are_sorted_active_then_terminal_in_creation_order() -> None:
@@ -588,9 +587,10 @@ async def test_dashboard_with_no_tasks() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         assert app.query_one("#tasks", DataTable).row_count == 0
-        await pilot.press("d")  # open the detail pane
+        await pilot.press("d")  # open the detail modal with no task highlighted
         await pilot.pause()
-        assert str(app.query_one("#detail", Static).render()) == "no tasks"
+        assert isinstance(app.screen, TaskDetailScreen)
+        assert str(app.screen.query_one(Static).render()) == "no tasks"
 
 
 async def test_pressing_t_signals_the_pick_and_keeps_the_dashboard_running() -> None:
