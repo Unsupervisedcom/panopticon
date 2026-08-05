@@ -252,6 +252,10 @@ class Task:
     #: (cloude-cade's ``pr_url``). Set via :meth:`TaskService.set_url`; the dashboard's ``p``
     #: hotkey opens it. ``None`` until something records one (e.g. the ``open-pr`` skill).
     url: str | None = None
+    #: An operator-owned attention mute deadline, recorded exactly as an ISO-8601 timestamp.
+    #: ``None`` means not snoozed; display code alone decides whether a finite deadline is active
+    #: (the control plane never compares it to a clock). Set via :meth:`TaskService.set_snooze`.
+    snoozed_until: str | None = None
     #: The git refs the session service provisions for this task once the slug is set (ADR
     #: 0010/0011): the slug-named branch and the path of the per-task ``clone`` it works in **on
     #: the host where the container runs**. The task service only records these — it does no git

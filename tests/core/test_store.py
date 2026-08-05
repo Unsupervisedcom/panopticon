@@ -227,6 +227,20 @@ async def test_token_estimate_round_trips(store: Store) -> None:
     assert (await store.get_task("t1")).token_estimate == 500_000  # type: ignore[union-attr]
 
 
+async def test_snoozed_until_round_trips(store: Store) -> None:
+    await _seed_repo(store)
+    task = await _new_task(store)
+    assert (await store.get_task("t1")).snoozed_until is None  # type: ignore[union-attr]
+    task.snoozed_until = "2026-08-06T03:00:00+00:00"
+    await store.save_task(task)
+    assert (
+        await store.get_task("t1")  # type: ignore[union-attr]
+    ).snoozed_until == "2026-08-06T03:00:00+00:00"
+    task.snoozed_until = None
+    await store.save_task(task)
+    assert (await store.get_task("t1")).snoozed_until is None  # type: ignore[union-attr]
+
+
 async def test_blocked_marker_round_trips(store: Store) -> None:
     await _seed_repo(store)
     task = await _new_task(store)
@@ -482,6 +496,7 @@ def _fully_populated_task() -> Task:
         initial_prompt="review your plan",
         slug="fix-the-widget",
         url="https://github.com/acme/widgets/pull/7",
+        snoozed_until="2026-08-06T03:00:00+00:00",
         branch="panopticon/fix-the-widget",
         clone="/clones/t-full",
         claimed_by="local",

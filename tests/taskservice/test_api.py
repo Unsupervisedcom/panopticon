@@ -330,6 +330,29 @@ def test_set_turn_and_blocked(client: TestClient) -> None:
     assert blocked.json()["turn"] == "user"  # flip-independent: the block left the turn alone
 
 
+def test_set_snooze_records_deadline_verbatim(client: TestClient) -> None:
+    task_id = _new_task(client)  # turn=agent, blocked=false, snoozed_until=None
+    before = client.get(f"/tasks/{task_id}").json()
+    assert before["snoozed_until"] is None
+
+    snoozed = client.put(f"/tasks/{task_id}/snooze", json={"until": "2026-08-06T03:00:00+00:00"})
+    assert snoozed.status_code == 200
+    body = snoozed.json()
+    assert body["snoozed_until"] == "2026-08-06T03:00:00+00:00"
+    # lifecycle is untouched — snooze is a plain recorded fact
+    assert body["state"] == before["state"]
+    assert body["turn"] == before["turn"]
+    assert body["blocked"] == before["blocked"]
+
+    # the reserved indefinite value is treated as an opaque string and round-trips verbatim
+    indefinite = client.put(f"/tasks/{task_id}/snooze", json={"until": "9999-12-31T23:59:59+00:00"})
+    assert indefinite.json()["snoozed_until"] == "9999-12-31T23:59:59+00:00"
+
+    # null clears it
+    cleared = client.put(f"/tasks/{task_id}/snooze", json={"until": None})
+    assert cleared.json()["snoozed_until"] is None
+
+
 def test_claim_release_over_rest(client: TestClient) -> None:
     task_id = _new_task(client)
     assert client.get(f"/tasks/{task_id}").json()["claimed_by"] is None
