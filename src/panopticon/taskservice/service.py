@@ -603,6 +603,19 @@ class TaskService:
         _log.debug("task %s: blocked=%s", task_id, blocked)
         return task
 
+    async def set_snooze(self, task_id: str, until: str | None) -> Task:
+        """Record or clear an operator snooze deadline without interpreting the clock.
+
+        The value is stored verbatim (any ISO-8601 string, or ``None`` to clear); whether a finite
+        deadline is active is decided by the dashboard alone. Leaves ``state``/``turn``/``blocked``
+        untouched — a plain recorded fact, like the url.
+        """
+        task = await self.get_task(task_id)
+        task.snoozed_until = until
+        await self._save_task(task)
+        _log.debug("task %s: snoozed_until → %s", task_id, until)
+        return task
+
     async def set_governor(self, task_id: str, governor_task_id: str | None) -> Task:
         """Set or clear the governor task for ``task_id``.
 

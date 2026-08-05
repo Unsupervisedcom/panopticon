@@ -78,6 +78,7 @@ class TaskSummaryOut(BaseModel):
     initial_prompt: str | None
     slug: str | None
     url: str | None
+    snoozed_until: str | None = None
     branch: str | None
     clone: str | None
     claimed_by: str | None
@@ -111,6 +112,9 @@ class TaskOut(BaseModel):
     initial_prompt: str | None  # optional text prefilled into Claude's input box on first spawn
     slug: str | None
     url: str | None  # an optional external URL (PR, issue, …); the dashboard's `p` hotkey opens it
+    snoozed_until: str | None = (
+        None  # operator-owned attention mute deadline (ISO-8601); None = not snoozed
+    )
     branch: str | None
     clone: str | None
     claimed_by: str | None  # the runner that owns this task (the spawn gate), or None
@@ -272,6 +276,10 @@ class TurnIn(BaseModel):
 
 class BlockedIn(BaseModel):
     blocked: bool
+
+
+class SnoozeIn(BaseModel):
+    until: str | None
 
 
 class ClaimIn(BaseModel):
@@ -624,6 +632,10 @@ def create_app(service: TaskService) -> FastAPI:
     @app.put("/tasks/{task_id}/blocked")
     async def set_blocked(task_id: str, body: BlockedIn) -> TaskOut:
         return _task_out(await service.set_blocked(task_id, body.blocked))
+
+    @app.put("/tasks/{task_id}/snooze")
+    async def set_snooze(task_id: str, body: SnoozeIn) -> TaskOut:
+        return _task_out(await service.set_snooze(task_id, body.until))
 
     @app.put("/tasks/{task_id}/governor")
     async def set_governor(task_id: str, body: GovernorIn) -> TaskOut:
