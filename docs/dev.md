@@ -25,6 +25,26 @@ A [`Makefile`](../Makefile) wraps the `uv` commands; `make help` lists every tar
 make sync        # uv sync — create the venv and install deps (incl. the dev group)
 ```
 
+### Or let devenv supply the tools
+
+If you'd rather not install `uv`, `tmux`, `git`, `gh` and `curl` yourself — or you're on a
+system that has none of them globally, like NixOS — [`devenv`](https://devenv.sh) provides
+them all:
+
+```sh
+devenv shell     # a shell with the toolchain on PATH
+make sync        # then the ordinary loop, unchanged
+make start
+```
+
+`direnv allow` makes it automatic on `cd`. `devenv test` asserts every tool is present.
+
+Two things the shell deliberately leaves to your machine, both explained in
+[`devenv.nix`](../devenv.nix): the **container runtime** (the local runner talks to whatever
+daemon you run, and a client from the shell would shadow it) and the **Python interpreter**
+(uv resolves it from `pyproject.toml` into `.venv`). It declares no `processes` either —
+panopticon runs its own tmux server, and one supervisor per set of sessions is enough.
+
 ## The check loop
 
 `make check` is the inner loop — it's exactly what CI runs, so if it's green locally the PR

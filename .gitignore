@@ -14,3 +14,9 @@ build/
 
 # Node
 node_modules/
+
+# devenv (the dev shell's state and per-machine overrides)
+.devenv*
+devenv.local.nix
+devenv.local.yaml
+.direnv

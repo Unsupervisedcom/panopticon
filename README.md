@@ -65,6 +65,9 @@ shells out to a few host tools. You need:
   subscription or Console login**; an `ANTHROPIC_API_KEY` works instead. See
   [`docs/auth.md`](docs/auth.md).
 
+Everything on that list except Docker and the `claude` CLI comes from `devenv shell` if you'd
+rather not install them — see [`docs/dev.md`](docs/dev.md#or-let-devenv-supply-the-tools).
+
 `panopticon quickstart` checks these first; run `panopticon doctor` to re-check any time. On macOS
 you need Docker **Desktop** specifically; see [`docs/macos-setup.md`](docs/macos-setup.md).
 
