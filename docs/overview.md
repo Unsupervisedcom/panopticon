@@ -136,6 +136,7 @@ This page is the map; these guides are the detail:
 - **[Containers](container.md)** — the container lifecycle, every dashboard status, and recovery.
 - **[Repos](repos.md)** — configuring a repo: secrets, image layers, and capabilities.
 - **[Container auth](auth.md)** — giving each repo's agents their Claude token (and a GitHub token for PRs).
+- **[Security posture](security.md)** — the trust model: sandboxing, secrets, what leaves the machine, and current limits.
 - **[Image layers](layers.md)** — the composed `base → workflow → repo` image, and adding your own.
 - **[Hooks](hooks.md)** — the per-repo host hook that runs before a container spawns.
 - **[macOS setup](macos-setup.md)** — the Docker Desktop specifics for running on a Mac.
