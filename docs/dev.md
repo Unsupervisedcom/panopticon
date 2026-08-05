@@ -32,12 +32,19 @@ system that has none of them globally, like NixOS — [`devenv`](https://devenv.
 them all:
 
 ```sh
-devenv shell     # a shell with the toolchain on PATH
+direnv allow     # the toolchain is on PATH from now on, every time you cd in
 make sync        # then the ordinary loop, unchanged
 make start
 ```
 
-`direnv allow` makes it automatic on `cd`. `devenv test` asserts every tool is present.
+The checked-in [`.envrc`](../.envrc) activates the shell on `cd`; `devenv shell` gives you the
+same environment as a one-off if you'd rather not use direnv. `devenv test` asserts every tool
+is present.
+
+`use devenv` is not a direnv builtin, and the nix-direnv most people already have does not
+define it — so `.envrc` sources the function from whichever devenv is on your PATH rather than
+pinning a hashed copy fetched over the network. You need [devenv
+installed](https://devenv.sh/getting-started/); it tells you so if it isn't.
 
 Two things the shell deliberately leaves to your machine, both explained in
 [`devenv.nix`](../devenv.nix): the **container runtime** (the local runner talks to whatever

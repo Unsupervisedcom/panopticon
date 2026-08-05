@@ -28,10 +28,6 @@
   # holds every task session, and what `make stop` tears down. Declaring those as devenv processes
   # would put two supervisors on one set of sessions, and the one that owns them is panopticon.
 
-  enterShell = ''
-    echo "panopticon dev shell — 'make sync' first, then 'make start' (or 'make host' for no dashboard)"
-  '';
-
   # `devenv test`: the toolchain is the whole contract this shell exists to provide, so assert it.
   enterTest = ''
     set -e
