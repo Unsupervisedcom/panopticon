@@ -754,7 +754,7 @@ wheels = [
 
 [[package]]
 name = "panopticon-app"
-version = "0.0.3"
+version = "0.0.4"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -781,7 +781,7 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.18.4" },
     { name = "fastapi", specifier = ">=0.110" },
     { name = "httpx", specifier = ">=0.27" },
-    { name = "mcp", specifier = ">=1.27.2" },
+    { name = "mcp", specifier = ">=1.27.2,<2" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.50" },
     { name = "textual", specifier = ">=8.2.7" },
     { name = "uvicorn", specifier = ">=0.29" },
