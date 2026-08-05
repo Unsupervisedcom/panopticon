@@ -133,6 +133,7 @@ This page is the map; these guides are the detail:
 - **[Workflow catalog](workflows/README.md)** — the built-in workflows and how to choose (and
   how to add your own).
 - **[Tasks](tasks.md)** — the task object in full: its properties, states, and lifecycle.
+- **[Dashboard keys](dashboard.md)** — every dashboard keybinding, grouped by context.
 - **[Containers](container.md)** — the container lifecycle, every dashboard status, and recovery.
 - **[Repos](repos.md)** — configuring a repo: secrets, image layers, and capabilities.
 - **[Container auth](auth.md)** — giving each repo's agents their Claude token (and a GitHub token for PRs).
