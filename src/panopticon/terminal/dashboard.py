@@ -68,7 +68,8 @@ import time
 import webbrowser
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
+from math import ceil
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -80,6 +81,7 @@ from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
+from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import (
     Checkbox,
@@ -314,7 +316,64 @@ def _matches(task: JsonObj, query: str) -> bool:
 # Turn-column colors, matching cloude-cade's dashboard ball tags: agent=green,
 # user=yellow, blocked=red. Blocked takes precedence (cloude-cade draws it as its own
 # red tag); here it keeps the turn value but appends ⚠ and colors the whole cell red.
-def _turn_cell(task: JsonObj) -> Text:
+# Fixed operator snooze controls: `e` means "not today"; `E` records the reserved sticky value.
+# A snooze always mutes until it expires — there is no attention/piercing here (that field was
+# deliberately dropped from this fork), so the turn-column precedence is just: snoozed > normal.
+_SNOOZE_DURATION = timedelta(hours=12)
+_INDEFINITE_SNOOZE_UNTIL = "9999-12-31T23:59:59+00:00"
+
+
+def _snooze_remaining(task: JsonObj, now: datetime) -> float | None:
+    """Active seconds remaining; +inf for the reserved sticky deadline; None if inactive."""
+    raw = task.get("snoozed_until")
+    if not isinstance(raw, str):
+        return None
+    if raw == _INDEFINITE_SNOOZE_UNTIL:
+        return float("inf")
+    try:
+        deadline = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    seconds = (deadline - now).total_seconds()
+    if seconds <= 0:
+        return None
+    return seconds
+
+
+def _snooze_label(task: JsonObj, now: datetime) -> str | None:
+    """The active snooze label at ``now``; expired or invalid facts are inactive (None)."""
+    seconds = _snooze_remaining(task, now)
+    if seconds is None:
+        return None
+    if seconds == float("inf"):
+        return "snoozed"
+    if seconds < 60:
+        remaining = "<1m"
+    elif seconds < 3600:
+        remaining = f"{ceil(seconds / 60)}m"
+    else:
+        remaining = f"{ceil(seconds / 3600)}h"
+    return f"snoozed · {remaining} left"
+
+
+def _snooze_refresh_delay(task: JsonObj, now: datetime) -> float | None:
+    """Seconds until a finite snooze's displayed duration changes or expires (None if none)."""
+    seconds = _snooze_remaining(task, now)
+    if seconds is None or seconds == float("inf"):
+        return None
+    if seconds < 60:
+        return seconds
+    unit = 60 if seconds < 3600 else 3600
+    return max(0.05, seconds - (ceil(seconds / unit) - 1) * unit)
+
+
+def _turn_cell(task: JsonObj, now: datetime | None = None) -> Text:
+    if now is not None and (label := _snooze_label(task, now)) is not None:
+        return Text(label, style="dim")
     if task.get("blocked"):
         return Text(f"{task['turn']} ⚠", style="red")
     color = "green" if task["turn"] == "agent" else "yellow"
@@ -1433,6 +1492,14 @@ HOTKEYS: tuple[Hotkey, ...] = (
     Hotkey("r", "refresh", "Refresh", "Refresh from the task service now", show=False),
     Hotkey("R", "respawn", "Respawn", "Respawn a down task (release its claim)", show=False),
     Hotkey("p", "open_url", "Open URL", "Open the task's URL in the browser", show=False),
+    Hotkey("e", "snooze", "Snooze", "Snooze the highlighted task for 12 hours", show=False),
+    Hotkey(
+        "E",
+        "snooze_indefinitely",
+        "Snooze sticky",
+        "Snooze the highlighted task indefinitely",
+        show=False,
+    ),
     Hotkey("g", "repos", "Repos", "Repo config (list / create / edit repos)", show=False),
     Hotkey("a", "artifacts", "Artifacts", "List the task's artifacts", show=False),
     Hotkey("s", "service", "Service", "Switch to the task-service session", show=False),
@@ -1574,9 +1641,14 @@ class Dashboard(App[None]):
         on_runner: Callable[[], bool] | None = None,
         artifacts_root: str | Path = ARTIFACTS_DIR,
         refresh_interval: float | None = REFRESH_INTERVAL,
+        now: Callable[[], datetime] | None = None,
     ) -> None:
         super().__init__()
         self._client = client
+        self._now = now or (lambda: datetime.now(UTC))  # injectable display clock (snooze seam)
+        self._snooze_timer: Timer | None = (
+            None  # one-shot: repaint when a finite snooze ticks/expires
+        )
         self._on_switch = on_switch  # supervisor hook: record the pick + detach (None standalone)
         self._on_service = on_service  # `s` hook: switch to the service session; True if one exists
         self._on_runner = on_runner  # `u` hook: switch to the runner session; True if one exists
@@ -1669,6 +1741,9 @@ class Dashboard(App[None]):
                     return
 
     def on_unmount(self) -> None:
+        if self._snooze_timer is not None:  # stop the pending snooze-display repaint
+            self._snooze_timer.stop()
+            self._snooze_timer = None
         if self._artifact_tmp is not None:  # remove the REST-open scratch dir on exit
             self._artifact_tmp.cleanup()
             self._artifact_tmp = None
@@ -1682,6 +1757,7 @@ class Dashboard(App[None]):
     def action_refresh(self) -> None:
         table = self.query_one("#tasks", DataTable)
         selected = self._current  # keep the operator's highlight across the rebuild (feed refresh)
+        display_now = self._now()  # one clock read per repaint drives every snooze label/dimming
         table.clear()
         ordered = sorted(self._client.list_tasks(), key=_make_sort_key(self._sort_by_updated))
         new_multi_runner = (
@@ -1759,7 +1835,7 @@ class Dashboard(App[None]):
                 )
             else:
                 state_cell: Text | str = task["state"]
-                turn_cell = _turn_cell(task)
+                turn_cell = _turn_cell(task, display_now)
                 status_cell = _status_cell(task)
                 runner_cell: Text | None = (
                     Text(task.get("runner_host") or "") if self._multi_runner else None
@@ -1767,6 +1843,15 @@ class Dashboard(App[None]):
                 repo_cell: Text | str = _repo_cell(task, self._repo_names)
                 slug_cell_real = _slug_cell(task, prefix)
                 if task["state"] in TERMINAL_LABELS:
+                    state_cell = _dim(state_cell)
+                    turn_cell = _dim(turn_cell)
+                    status_cell = _dim(status_cell)
+                    if runner_cell is not None:
+                        runner_cell = _dim(runner_cell)
+                    repo_cell = _dim(repo_cell)
+                    slug_cell_real = _dim(slug_cell_real)
+                elif _snooze_label(task, display_now) is not None:
+                    # An active snooze mutes the whole row (the turn cell already carries the label).
                     state_cell = _dim(state_cell)
                     turn_cell = _dim(turn_cell)
                     status_cell = _dim(status_cell)
@@ -1793,6 +1878,29 @@ class Dashboard(App[None]):
         if target is not None:
             table.move_cursor(row=table.get_row_index(target))
         self._current = target  # `d` opens the detail modal for whatever's highlighted
+        self._schedule_snooze_refresh(display_now)
+
+    def _schedule_snooze_refresh(self, now: datetime) -> None:
+        """(Re)arm a one-shot timer for the soonest finite-snooze display change.
+
+        A snooze ticking down or expiring is a clock-only change — the task service emits no event
+        for it — so the change-feed worker won't repaint. This timer fills that gap; an indefinite
+        snooze never changes, so it contributes no delay."""
+        if self._snooze_timer is not None:
+            self._snooze_timer.stop()
+            self._snooze_timer = None
+        delays = [
+            delay
+            for task in self._tasks.values()
+            if (delay := _snooze_refresh_delay(task, now)) is not None
+        ]
+        if delays:
+            self._snooze_timer = self.set_timer(min(delays), self._refresh_snooze_display)
+
+    def _refresh_snooze_display(self) -> None:
+        """Repaint when a finite snooze's label is due to change (fired by the one-shot timer)."""
+        self._snooze_timer = None
+        self.action_refresh()
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         key = event.row_key.value
@@ -1875,6 +1983,42 @@ class Dashboard(App[None]):
             self.notify(f"Can't drop: {detail}", severity="error")
             return
         self.action_refresh()
+
+    def action_snooze(self) -> None:
+        """`e`: toggle a fixed twelve-hour operator snooze on the highlighted task.
+
+        Snoozing a task mutes it (dims the row, shows `snoozed · Nh left`) until the deadline; a
+        second `e` while it's active clears it. The 12h window is a hard constant."""
+        task_id = self._current
+        if task_id is None:
+            return
+        task = self._tasks.get(task_id)
+        if task is None:
+            return
+        now = self._now()
+        # Active (finite or indefinite) → toggle off; otherwise record now + 12h.
+        until = (
+            None if _snooze_label(task, now) is not None else (now + _SNOOZE_DURATION).isoformat()
+        )
+        if self._set_snooze(task_id, until):
+            self.action_refresh()
+
+    def action_snooze_indefinitely(self) -> None:
+        """`E`: record the reserved sticky snooze deadline (mute until explicitly un-snoozed)."""
+        task_id = self._current
+        if task_id is None:
+            return
+        if self._set_snooze(task_id, _INDEFINITE_SNOOZE_UNTIL):
+            self.action_refresh()
+
+    def _set_snooze(self, task_id: str, until: str | None) -> bool:
+        """Persist one snooze fact; a failed REST write notifies rather than taking down the TUI."""
+        try:
+            self._client.set_snooze(task_id, until)
+            return True
+        except httpx.HTTPStatusError as exc:
+            self.notify(f"Can't snooze: {_detail(exc)}", severity="error")
+            return False
 
     def action_respawn(self) -> None:
         """`R`: kill any running container/session for this task and respawn it.

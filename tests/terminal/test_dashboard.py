@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import threading
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,8 @@ from textual.widgets import Checkbox, DataTable, Input, Select, Static
 from panopticon.terminal import dashboard
 from panopticon.terminal.dashboard import (
     _ENSEMBLE_KEY_PREFIX,
+    _INDEFINITE_SNOOZE_UNTIL,
+    _SNOOZE_DURATION,
     Dashboard,
     SpaceCheckbox,
     TaskDetailScreen,
@@ -29,6 +32,7 @@ from panopticon.terminal.dashboard import (
     _repo_cell,
     _short_tokens,
     _slug_cell,
+    _snooze_label,
     _status_cell,
     _turn_cell,
     render_detail,
@@ -112,6 +116,7 @@ class _FakeClient:
         self.created: list[tuple[str, str, str | None]] = []
         self.applied: list[tuple[str, str]] = []
         self.released: list[str] = []
+        self.snoozed: list[tuple[str, str | None]] = []
         self.created_repos: list[dict[str, Any]] = []
         self.updated_repos: list[tuple[str, dict[str, Any]]] = []
         # When set, create_repo/update_repo raise a 400 carrying this detail (mimics the task
@@ -227,6 +232,13 @@ class _FakeClient:
     def apply_operation(self, task_id: str, operation: str) -> dict[str, Any]:
         self.applied.append((task_id, operation))
         return {"id": task_id}
+
+    def set_snooze(self, task_id: str, until: str | None) -> dict[str, Any]:
+        self.snoozed.append((task_id, until))
+        for t in self._tasks:  # reflect the write in list_tasks (as the real service does)
+            if t["id"] == task_id:
+                t["snoozed_until"] = until
+        return {"id": task_id, "snoozed_until": until}
 
     def get_task(self, task_id: str) -> dict[str, Any]:
         for t in self._tasks:
@@ -520,6 +532,102 @@ def test_dim_helper_str_and_text() -> None:
     # original is unmodified
     assert t.plain == "world"
     assert str(t.style) == "green"
+
+
+# --- snooze: fixed 12h `e` / indefinite `E`, dim presentation, clock-driven label ---------------
+
+_NOW = datetime(2026, 8, 5, 12, 0, 0, tzinfo=UTC)
+
+
+def _at(hours: float) -> str:
+    """An ISO deadline `hours` from the fixed test clock."""
+    return (_NOW + timedelta(hours=hours)).isoformat()
+
+
+def test_snooze_label_buckets_hours_minutes_and_indefinite() -> None:
+    # A finite deadline renders "snoozed · Nh/Nm left"; the reserved value renders bare "snoozed".
+    assert _snooze_label({"snoozed_until": _at(4)}, _NOW) == "snoozed · 4h left"
+    assert _snooze_label({"snoozed_until": _at(4.5)}, _NOW) == "snoozed · 5h left"  # ceil
+    assert _snooze_label({"snoozed_until": (_NOW + timedelta(minutes=30)).isoformat()}, _NOW) == (
+        "snoozed · 30m left"
+    )
+    assert _snooze_label({"snoozed_until": (_NOW + timedelta(seconds=20)).isoformat()}, _NOW) == (
+        "snoozed · <1m left"
+    )
+    assert _snooze_label({"snoozed_until": _INDEFINITE_SNOOZE_UNTIL}, _NOW) == "snoozed"
+
+
+def test_snooze_label_inactive_for_past_missing_or_invalid() -> None:
+    assert _snooze_label({"snoozed_until": _at(-1)}, _NOW) is None  # already elapsed
+    assert _snooze_label({}, _NOW) is None  # no fact
+    assert _snooze_label({"snoozed_until": None}, _NOW) is None
+    assert _snooze_label({"snoozed_until": "not-a-date"}, _NOW) is None
+
+
+def test_snooze_keys_are_bound_exactly_once() -> None:
+    keys = [hk.key for hk in dashboard.HOTKEYS]
+    assert keys.count("e") == 1
+    assert keys.count("E") == 1
+
+
+async def test_pressing_e_records_a_twelve_hour_snooze() -> None:
+    client = _FakeClient([dict(_TASK)])  # copy: set_snooze mutates the task dict in place
+    app = Dashboard(client, now=lambda: _NOW)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+    # Exactly 12h after the injected clock — the window is a hard constant, no config surface.
+    assert client.snoozed == [("task-abcdef0123", (_NOW + _SNOOZE_DURATION).isoformat())]
+    assert timedelta(hours=12) == _SNOOZE_DURATION
+
+
+async def test_pressing_e_again_toggles_the_snooze_off() -> None:
+    client = _FakeClient([{**_TASK, "snoozed_until": _at(6)}])  # already actively snoozed
+    app = Dashboard(client, now=lambda: _NOW)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+    assert client.snoozed == [("task-abcdef0123", None)]  # cleared, not re-armed
+
+
+async def test_pressing_capital_e_records_the_indefinite_snooze() -> None:
+    client = _FakeClient([dict(_TASK)])  # copy: set_snooze mutates the task dict in place
+    app = Dashboard(client, now=lambda: _NOW)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("E")
+        await pilot.pause()
+    assert client.snoozed == [("task-abcdef0123", _INDEFINITE_SNOOZE_UNTIL)]
+
+
+async def test_active_snooze_dims_the_row_and_labels_the_turn_cell() -> None:
+    task = {**_TASK, "snoozed_until": _at(4)}
+    app = Dashboard(_FakeClient([task]), now=lambda: _NOW)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        row = table.get_row("task-abcdef0123")
+        assert row[1].plain == "snoozed · 4h left"  # turn cell carries the label
+        for cell in row:  # the whole row is muted
+            assert cell._spans and all(s.style == "dim" for s in cell._spans)
+
+
+async def test_expired_snooze_resumes_normal_presentation_without_mutating() -> None:
+    task = {**_TASK, "snoozed_until": _at(-1)}  # deadline already passed at _NOW
+    client = _FakeClient([task])
+    app = Dashboard(client, now=lambda: _NOW)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        row = table.get_row("task-abcdef0123")
+        assert row[1].plain == "agent" and row[1].style == "green"  # ordinary turn derivation
+        slug_cell = row[4]
+        assert not any(s.style == "dim" for s in slug_cell._spans)  # not muted
+    # Expiry is display-only: the dashboard never wrote the stored fact.
+    assert client.snoozed == []
+    assert task["snoozed_until"] == _at(-1)
 
 
 async def _settle(pilot: Any, predicate: Any, *, tries: int = 100, step: float = 0.02) -> None:
@@ -2170,7 +2278,7 @@ def test_footer_shows_only_the_essential_keys() -> None:
     shown = {b.key for b in Dashboard.BINDINGS if b.show}
     hidden = {b.key for b in Dashboard.BINDINGS if not b.show}
     assert shown == {"t", "n", "x", "/", "d", "question_mark", "q"}
-    assert hidden == {"o", "r", "R", "p", "g", "a", "s", "u", "y", "Y", "escape"}
+    assert hidden == {"o", "r", "R", "p", "e", "E", "g", "a", "s", "u", "y", "Y", "escape"}
 
 
 def test_bindings_and_help_derive_from_the_single_hotkey_table() -> None:
