@@ -2441,6 +2441,94 @@ def test_group_by_governor_tree_connectors_nested() -> None:
     assert terminal == []
 
 
+# --- snooze demotion in the sort key (REQ-038): active > snoozed-active root > terminal ----------
+
+
+def test_snoozed_root_sorts_after_active_before_terminal_both_modes() -> None:
+    # An actively-snoozed ungoverned task sinks to the end of the active section — after ordinary
+    # non-terminal tasks but still above COMPLETE/DROPPED — in BOTH sort modes.
+    active = {**_TASK, "id": "act", "slug": "active", "created_at": _at(-1)}
+    snoozed = {
+        **_TASK,
+        "id": "snz",
+        "slug": "snoozed",
+        "snoozed_until": _at(4),
+        "created_at": _at(-2),
+    }
+    terminal = {**_TASK, "id": "trm", "slug": "done", "state": "COMPLETE", "created_at": _at(-3)}
+    for by_updated in (False, True):
+        order = [
+            t["id"]
+            for t in sorted([snoozed, terminal, active], key=_make_sort_key(by_updated, _NOW))
+        ]
+        assert order == ["act", "snz", "trm"], f"by_updated={by_updated}"
+
+
+def test_expired_snooze_keeps_ordinary_active_ordering() -> None:
+    # An expired snooze is inactive → the task is NOT demoted; it sorts as an ordinary active task
+    # (section 0), unlike a live snooze (section 1).
+    key = _make_sort_key(now=_NOW)
+    expired = {**_TASK, "id": "exp", "snoozed_until": _at(-1)}  # deadline already passed
+    live = {**_TASK, "id": "liv", "snoozed_until": _at(4)}
+    plain = {**_TASK, "id": "pln"}
+    assert key(expired)[0] == 0  # not demoted
+    assert key(plain)[0] == 0
+    assert key(live)[0] == 1  # demoted
+
+
+def test_snooze_demotion_ignores_now_none() -> None:
+    # Regression guard: with no display clock, no task is treated as snoozed, so the section
+    # collapses to the pre-snooze active(0)-before-terminal(2) split — identical ordering to before.
+    key = _make_sort_key(now=None)
+    snoozed = {**_TASK, "id": "snz", "snoozed_until": _at(4)}
+    plain = {**_TASK, "id": "pln"}
+    terminal = {**_TASK, "id": "trm", "state": "DROPPED"}
+    assert key(snoozed)[0] == key(plain)[0] == 0  # snooze ignored → not demoted
+    assert key(terminal)[0] == 2
+
+
+def test_snoozed_governed_child_does_not_split_ensemble() -> None:
+    # A snooze on a governed child must NOT demote it out of its ensemble — the exemption is gated
+    # on having no governor. The child stays adjacent to its (unsnoozed) governor.
+    governor = {
+        **_TASK,
+        "id": "gov",
+        "slug": "orch",
+        "governor_task_id": None,
+        "created_at": _at(-1),
+    }
+    child = {
+        **_TASK,
+        "id": "chd",
+        "slug": "worker",
+        "governor_task_id": "gov",
+        "snoozed_until": _at(4),  # actively snoozed, but governed → not demoted
+    }
+    other = {**_TASK, "id": "oth", "slug": "solo", "governor_task_id": None, "created_at": _at(-2)}
+    sorted_tasks = sorted([governor, child, other], key=_make_sort_key(now=_NOW))
+    active, terminal = _group_by_governor(sorted_tasks)
+    assert [(t["id"], p) for t, p in active] == [("gov", ""), ("chd", "└─ "), ("oth", "")]
+    assert terminal == []
+
+
+def test_snoozed_governor_root_carries_children_below_active() -> None:
+    # A snoozed governor *root* is demoted to the end of the active section, carrying its children
+    # with it (the ensemble travels as a unit, ordered by the root's key).
+    governor = {
+        **_TASK,
+        "id": "gov",
+        "slug": "orch",
+        "governor_task_id": None,
+        "snoozed_until": _at(4),
+    }
+    child = {**_TASK, "id": "chd", "slug": "worker", "governor_task_id": "gov"}
+    other = {**_TASK, "id": "oth", "slug": "solo", "governor_task_id": None}  # ordinary active root
+    sorted_tasks = sorted([governor, child, other], key=_make_sort_key(now=_NOW))
+    active, terminal = _group_by_governor(sorted_tasks)
+    assert [(t["id"], p) for t, p in active] == [("oth", ""), ("gov", ""), ("chd", "└─ ")]
+    assert terminal == []
+
+
 def test_slug_cell_prefix_tree_connectors() -> None:
     task = {**_TASK, "slug": "worker", "memo": None}
     assert _slug_cell(task).plain == "worker"  # no prefix (root)

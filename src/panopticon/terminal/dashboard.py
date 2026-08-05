@@ -110,10 +110,17 @@ from panopticon.terminal.setup_repo_task import create_setup_repo_task
 
 def _make_sort_key(
     by_updated: bool = False,
-) -> Callable[[JsonObj], tuple[bool, bool, float, str]]:
+    now: datetime | None = None,
+) -> Callable[[JsonObj], tuple[int, bool, float, str]]:
     """Return a sort key function for the task table.
 
-    1. non-terminal before terminal — COMPLETE/DROPPED sink to the bottom.
+    1. section: active (0) before snoozed-active roots (1) before terminal (2). An actively
+       snoozed, ungoverned task is not demanding attention, so it sinks to the end of the active
+       section — after ordinary non-terminal tasks but still above COMPLETE/DROPPED. Requires
+       ``now`` (the display clock); with ``now=None`` no task is treated as snoozed, so the section
+       collapses to the original active-before-terminal split. Governed children are exempt so an
+       ensemble is never split by a child's snooze — they stay adjacent to their governor via the
+       later grouping step.
     2. turn priority: for active tasks the user's turn comes first (operator action needed);
        for terminal tasks the agent's turn comes first (task just finished).
     3. timestamp:
@@ -124,8 +131,15 @@ def _make_sort_key(
     4. id as a stable tiebreaker.
     """
 
-    def key(task: JsonObj) -> tuple[bool, bool, float, str]:
+    def key(task: JsonObj) -> tuple[int, bool, float, str]:
         is_terminal = task["state"] in TERMINAL_LABELS
+        is_snoozed_root = (
+            not is_terminal
+            and now is not None
+            and not task.get("governor_task_id")
+            and _snooze_label(task, now) is not None
+        )
+        section = 2 if is_terminal else int(is_snoozed_root)  # 0 active, 1 snoozed root, 2 terminal
         turn_first = "agent" if is_terminal else "user"
         turn_after_priority = task["turn"] != turn_first  # False (priority) sorts before True
         if is_terminal or by_updated:
@@ -142,7 +156,7 @@ def _make_sort_key(
             except ValueError:
                 ts = 0.0
         return (
-            is_terminal,  # False (active) before True (terminal)
+            section,  # 0 active, 1 snoozed-active root, 2 terminal
             turn_after_priority,  # priority turn sorts first within each section
             ts,
             task["id"],  # stable tiebreaker
@@ -1759,7 +1773,9 @@ class Dashboard(App[None]):
         selected = self._current  # keep the operator's highlight across the rebuild (feed refresh)
         display_now = self._now()  # one clock read per repaint drives every snooze label/dimming
         table.clear()
-        ordered = sorted(self._client.list_tasks(), key=_make_sort_key(self._sort_by_updated))
+        ordered = sorted(
+            self._client.list_tasks(), key=_make_sort_key(self._sort_by_updated, display_now)
+        )
         new_multi_runner = (
             len({r.get("host") for r in self._client.live_runners() if r.get("host")}) > 1
         )
