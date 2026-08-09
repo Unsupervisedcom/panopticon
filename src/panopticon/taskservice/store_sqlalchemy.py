@@ -368,6 +368,28 @@ class SqlAlchemyStore(Store):
             )
             return [r.to_domain() for r in result.scalars()]
 
+    async def _find_task_by_branch(self, repo_id: str, branch: str) -> Task | None:
+        async with self._session() as s:
+            result = await s.execute(
+                select(_TaskRow)
+                .options(noload(_TaskRow.history))
+                .where(_TaskRow.repo_id == repo_id, _TaskRow.branch == branch)
+                .order_by(_TaskRow.created_at.desc(), _TaskRow.id)
+            )
+            row = result.scalars().first()
+            return row.to_domain() if row is not None else None
+
+    async def _find_task_by_url(self, url: str) -> Task | None:
+        async with self._session() as s:
+            result = await s.execute(
+                select(_TaskRow)
+                .options(noload(_TaskRow.history))
+                .where(_TaskRow.url == url)
+                .order_by(_TaskRow.created_at.desc(), _TaskRow.id)
+            )
+            row = result.scalars().first()
+            return row.to_domain() if row is not None else None
+
     async def _create_task(self, task: Task) -> None:
         async with self._session.begin() as s:
             if await s.get(_TaskRow, task.id) is not None:

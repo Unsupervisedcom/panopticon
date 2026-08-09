@@ -405,3 +405,88 @@ def test_cli_preps_the_workspace_then_spawns_with_secrets_and_mount(
         tmp_path / "secrets" / "r1.env"
     )  # repo's secrets
     assert f"{tasks_root}/t1:/workspace" in docker_run  # the per-task clone mounted as /workspace
+
+
+class _OutputRecorder:
+    """A CommandRunner that records calls and returns a canned stdout (for probe commands)."""
+
+    def __init__(self, output: str = "") -> None:
+        self.output = output
+        self.calls: list[list[str]] = []
+
+    def __call__(
+        self,
+        args: Sequence[str],
+        *,
+        check: bool = True,
+        interactive: bool = False,
+        verbose: bool = False,
+    ) -> str:
+        self.calls.append(list(args))
+        return self.output
+
+
+def test_spawn_passes_ask_prompt_as_env_var() -> None:
+    # ask-the-author: a parked/terminal task resumed to answer a reviewer's question carries the
+    # question as PANOPTICON_ASK_PROMPT, which the agent launcher appends to `claude --continue`.
+    rec = _Recorder()
+    runner = LocalRunner("http://svc:8000", image="img:1", run=rec)
+    runner.spawn("t1", ask_prompt="Reviewer asks: why?")
+    docker_run = next(c for c, _ in rec.calls if c[:2] == ["docker", "run"])
+    assert "PANOPTICON_ASK_PROMPT=Reviewer asks: why?" in docker_run
+
+
+def test_spawn_omits_ask_prompt_env_when_none() -> None:
+    rec = _Recorder()
+    LocalRunner("http://svc:8000", image="img:1", run=rec).spawn("t1")
+    docker_run = next(c for c, _ in rec.calls if c[:2] == ["docker", "run"])
+    assert not any(a.startswith("PANOPTICON_ASK_PROMPT=") for a in docker_run)
+
+
+def test_config_volume_exists_probes_docker_volume() -> None:
+    # Present: `docker volume inspect` echoes the volume name → True.
+    present = _OutputRecorder(output="panopticon-config-t1\n")
+    runner = LocalRunner("http://svc:8000", run=present)
+    assert runner.config_volume_exists("t1") is True
+    assert present.calls[-1] == [
+        "docker",
+        "volume",
+        "inspect",
+        "--format",
+        "{{.Name}}",
+        "panopticon-config-t1",
+    ]
+    # Reaped: empty output (nonzero exit) → False.
+    absent = _OutputRecorder(output="")
+    assert LocalRunner("http://svc:8000", run=absent).config_volume_exists("t1") is False
+
+
+def test_send_to_session_sets_buffer_pastes_then_submits() -> None:
+    rec = _Recorder()
+    runner = LocalRunner("http://svc:8000", run=rec)
+    runner.send_to_session("t1", "hello\nworld")
+    set_buffer, paste, enter = (c for c, _ in rec.calls)
+    # The multi-line text is one argv element (set-buffer takes the data as an argument).
+    assert set_buffer == [
+        "tmux",
+        "-L",
+        "panopticon",
+        "set-buffer",
+        "-b",
+        "panopticon-ask-t1",
+        "hello\nworld",
+    ]
+    # Bracketed paste (-p, so claude receives one block) into the task's pane, deleting the buffer (-d).
+    assert paste == [
+        "tmux",
+        "-L",
+        "panopticon",
+        "paste-buffer",
+        "-b",
+        "panopticon-ask-t1",
+        "-t",
+        "panopticon-t1",
+        "-p",
+        "-d",
+    ]
+    assert enter == ["tmux", "-L", "panopticon", "send-keys", "-t", "panopticon-t1", "Enter"]

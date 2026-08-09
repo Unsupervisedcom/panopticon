@@ -35,6 +35,21 @@ class Status(str, Enum):
     FAILED = "failed"  # could not be satisfied; requires a comment
 
 
+class AskStatus(str, Enum):
+    """The lifecycle of a reviewer's *ask* (ask-the-author) — a question delivered to a task's
+    implementing agent, tracked so a review tool can poll for the answer.
+
+    ``PENDING`` → the session service delivers it → ``DELIVERED`` → the agent's Stop hook records
+    its reply → ``ANSWERED``. ``GONE`` is terminal too: the task's config volume was reaped, so the
+    session can't be resumed and the ask is undeliverable (the API surfaces it as HTTP 410).
+    """
+
+    PENDING = "pending"  # created; the session service hasn't delivered it to the container yet
+    DELIVERED = "delivered"  # handed to the agent (tmux inject / --continue resume); awaiting Stop
+    ANSWERED = "answered"  # the agent's reply was extracted from the transcript and recorded
+    GONE = "gone"  # the config volume is gone (reaped) — the session can't be resumed (→ 410)
+
+
 class LifecyclePhase(str, Enum):
     """A step the **session service** reports as it brings a task's container up (ADR 0008).
 
@@ -336,3 +351,27 @@ class Task:
         its comment, so it never lingers here.
         """
         return [r for r in self.current_entry.responsibilities if r.status is Status.PENDING]
+
+
+@dataclass
+class Ask:
+    """A reviewer's question delivered to a task's implementing agent (ask-the-author).
+
+    The tarot review tool POSTs a question; the session service delivers it to the task's claude
+    session (tmux inject if live, ``--continue`` resume if parked) and the agent's reply is
+    extracted from the transcript after its Stop. An ask is **conversation, not a transition**: it
+    never changes the task's state or seeds responsibilities (the turn may flip agent↔user as the
+    agent answers, exactly as in any turn).
+
+    Ephemeral, like a registration or a lifecycle phase: held in the task service's memory, not the
+    store — so it never bumps the store's version and is lost on a service restart (a review-time
+    conversation; the review tool re-asks). Identity is ``id``; ``created_at`` orders a task's asks.
+    """
+
+    id: str
+    task_id: str
+    question: str
+    context: str = ""
+    status: AskStatus = AskStatus.PENDING
+    answer: str | None = None
+    created_at: str | None = None

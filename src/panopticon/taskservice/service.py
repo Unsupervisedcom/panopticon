@@ -24,6 +24,8 @@ from panopticon.core.dirs import secrets_file_path
 from panopticon.core.layers import LayerStore
 from panopticon.core.models import (
     Actor,
+    Ask,
+    AskStatus,
     ContainerStatus,
     LifecyclePhase,
     Repo,
@@ -59,6 +61,14 @@ class AlreadyClaimed(Exception):
 class NotAuthorized(Exception):
     """Raised when a task attempts an operation its workflow isn't permitted (e.g. a
     non-orchestration workflow trying to create other tasks)."""
+
+
+class AskInProgress(Exception):
+    """Raised when creating an ask for a task that already has an unanswered one (cap: 1 per task)."""
+
+
+class AskGone(Exception):
+    """Raised when reading an ask whose task's config volume was reaped — undeliverable (→ 410)."""
 
 
 @dataclass
@@ -131,6 +141,10 @@ class TaskService:
         self._registrations: dict[str, Registration] = {}
         self._runner_registrations: dict[str, RunnerRegistration] = {}
         self._lifecycles: dict[str, ContainerLifecycle] = {}
+        #: Ephemeral ask-the-author records (question → delivery → answer), keyed by ask id. Held in
+        #: memory like registrations/lifecycles — a review-time conversation, not stored task state,
+        #: so it never bumps the store version (ephemeral changes wake the feed via ``_notify_change``).
+        self._asks: dict[str, Ask] = {}
         # Ephemeral liveness (registrations, runner liveness, lifecycle phases) lives outside the
         # store, so it doesn't bump the store's version. But the dashboard's change-feed long-poll
         # only wakes on a version change — so a container going live or a phase advancing wouldn't
@@ -687,6 +701,120 @@ class TaskService:
         await self._save_task(task)
         _log.info("task %s: provisioned (branch=%s)", task_id, branch)
         return task
+
+    # -- asks (ask-the-author: a reviewer interrogates a task's agent) ---------------------
+    #
+    # Ephemeral like a registration/lifecycle: a review-time question delivered to the task's claude
+    # session and its answer, held in memory (:attr:`_asks`) — never a workflow transition, so it
+    # neither changes state nor seeds responsibilities. The **session service** does the delivery
+    # (tmux inject / ``--continue`` resume) and the container's Stop hook records the answer; the task
+    # service only tracks the record and enforces the one-unanswered-ask-per-task cap.
+
+    _UNANSWERED = frozenset({AskStatus.PENDING, AskStatus.DELIVERED})
+
+    def _task_asks(self, task_id: str) -> list[Ask]:
+        """This task's asks, oldest first (created_at is an ISO string, so lexical == chronological)."""
+        asks = [a for a in self._asks.values() if a.task_id == task_id]
+        return sorted(asks, key=lambda a: a.created_at or "")
+
+    def _get_ask(self, task_id: str, ask_id: str) -> Ask:
+        ask = self._asks.get(ask_id)
+        if ask is None or ask.task_id != task_id:
+            raise NotFound(f"ask {ask_id!r} does not exist for task {task_id!r}")
+        return ask
+
+    async def create_ask(self, task_id: str, question: str, context: str = "") -> Ask:
+        """Create a pending ask for a task (the session service delivers it). Enforces the cap of one
+        unanswered ask per task (raises :class:`AskInProgress`). Wakes the change feed so the host
+        daemon's ask worker picks it up."""
+        await self.get_task(task_id)  # ensure the task exists (raises NotFound)
+        if any(a.status in self._UNANSWERED for a in self._task_asks(task_id)):
+            raise AskInProgress(f"task {task_id!r} already has an unanswered ask")
+        ask = Ask(
+            id=self._id(),
+            task_id=task_id,
+            question=question,
+            context=context,
+            created_at=self._clock(),
+        )
+        self._asks[ask.id] = ask
+        self._notify_change()  # wake the host daemon's ask worker (it reads pending_ask_id)
+        _log.info("task %s: ask %s created", task_id, ask.id)
+        return ask
+
+    def get_ask(self, task_id: str, ask_id: str) -> Ask:
+        """The ask (raises :class:`NotFound` if unknown; :class:`AskGone` if its volume was reaped)."""
+        ask = self._get_ask(task_id, ask_id)
+        if ask.status is AskStatus.GONE:
+            raise AskGone(
+                f"ask {ask_id!r}: the task's container/volume is gone; the agent can't be resumed"
+            )
+        return ask
+
+    def outstanding_ask(self, task_id: str) -> Ask | None:
+        """The task's newest unanswered ask (pending or delivered), or ``None`` — what the container
+        Stop hook checks to know whether a reply it should record is being produced."""
+        unanswered = [a for a in self._task_asks(task_id) if a.status in self._UNANSWERED]
+        return unanswered[-1] if unanswered else None
+
+    def pending_ask_id(self, task_id: str) -> str | None:
+        """The id of the task's oldest **undelivered** ask, or ``None`` — overlaid on the task's
+        serialized form so the host daemon's ask worker can spot deliverable asks without a per-task
+        request (it clears the moment the worker marks the ask delivered or gone)."""
+        for ask in self._task_asks(task_id):
+            if ask.status is AskStatus.PENDING:
+                return ask.id
+        return None
+
+    def mark_ask_delivered(self, task_id: str, ask_id: str) -> Ask:
+        """Mark an ask delivered (the session service handed it to the agent); wakes the feed."""
+        ask = self._get_ask(task_id, ask_id)
+        ask.status = AskStatus.DELIVERED
+        self._notify_change()
+        _log.info("task %s: ask %s delivered", task_id, ask_id)
+        return ask
+
+    def mark_ask_gone(self, task_id: str, ask_id: str) -> Ask:
+        """Mark an ask undeliverable because the task's config volume was reaped (→ 410)."""
+        ask = self._get_ask(task_id, ask_id)
+        ask.status = AskStatus.GONE
+        self._notify_change()
+        _log.info("task %s: ask %s gone (volume reaped)", task_id, ask_id)
+        return ask
+
+    def record_ask_answer(self, task_id: str, ask_id: str, answer: str) -> Ask:
+        """Record the agent's reply (the container Stop hook extracts it from the transcript)."""
+        ask = self._get_ask(task_id, ask_id)
+        ask.answer = answer
+        ask.status = AskStatus.ANSWERED
+        self._notify_change()
+        _log.info("task %s: ask %s answered", task_id, ask_id)
+        return ask
+
+    async def lookup_task(
+        self, *, repo_id: str | None = None, branch: str | None = None, url: str | None = None
+    ) -> Task:
+        """Find the task matching a branch (with its repo) or a URL — the review tool's entry point.
+
+        Exactly one selector is expected: ``repo_id`` + ``branch``, or ``url``. Raises
+        :class:`ValueError` for a malformed request and :class:`NotFound` if nothing matches. Returns
+        the full task (history included), so the review tool gets the same shape as ``GET /tasks/{id}``.
+        """
+        if url is not None:
+            if repo_id is not None or branch is not None:
+                raise ValueError("pass either url, or repo_id + branch — not both")
+            found = await self._store.find_task_by_url(url)
+            if found is None:
+                raise NotFound(f"no task with url {url!r}")
+        elif repo_id is not None and branch is not None:
+            found = await self._store.find_task_by_branch(repo_id, branch)
+            if found is None:
+                raise NotFound(f"no task on repo {repo_id!r} with branch {branch!r}")
+        else:
+            raise ValueError("pass either url, or repo_id + branch")
+        return await self.get_task(
+            found.id
+        )  # re-read for full history (the lookup is history-less)
 
     # -- artifacts ----------------------------------------------------------------
 
