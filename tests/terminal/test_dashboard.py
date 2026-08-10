@@ -956,6 +956,40 @@ async def test_memo_ctrl_a_attaches_a_file_as_an_artifact(tmp_path: Path) -> Non
     assert fake.created_artifacts == [{"notes.md": "hello world"}]
 
 
+async def test_memo_ctrl_a_preserves_spaces_in_the_filename(tmp_path: Path) -> None:
+    # A spaced filename keeps its name (spaces are valid artifact names); the MCP read path
+    # percent-encodes it (see tests/taskservice/test_mcp.py).
+    src = tmp_path / "my notes.md"
+    src.write_text("spaced")
+    fake = _FakeClient(
+        [],
+        repos=["r1"],
+        workflows=[{"name": "spike", "when_to_use": ""}],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")  # repo
+        await pilot.pause()
+        await pilot.press("enter")  # workflow
+        await pilot.pause()
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, dashboard.ArtifactsScreen)
+        screen.query_one("#artifacts-path", Input).value = str(src)
+        await pilot.press("enter")  # add the file
+        await pilot.pause()
+        assert "my notes.md" in screen._artifacts
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("enter")  # submit an empty memo
+        await pilot.pause()
+    assert fake.created_artifacts == [{"my notes.md": "spaced"}]
+
+
 async def test_memo_ctrl_a_can_remove_a_queued_file(tmp_path: Path) -> None:
     # Selecting a queued file in the attach-files modal removes it, so it isn't seeded on create.
     src = tmp_path / "notes.md"

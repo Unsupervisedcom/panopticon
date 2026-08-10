@@ -8,6 +8,7 @@ that maps ``(task_id, name)`` to a path and an MCP URI so every surface agrees.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from urllib.parse import quote, unquote
 
 MCP_URI_SCHEME = "panopticon"
 
@@ -30,10 +31,21 @@ def validate_segment(segment: str) -> None:
 
 
 def mcp_uri(task_id: str, name: str) -> str:
-    """The canonical MCP resource URI for an artifact (the shared resolver)."""
+    """The canonical MCP resource URI for an artifact (the shared resolver).
+
+    The ``task_id`` and ``name`` are **percent-encoded** into the path so a name with spaces or
+    other URI-reserved characters (``my notes.md``, ``a+b.md``) yields a valid, unambiguous URI.
+    :func:`decode_segment` reverses this in the resource handler — the two must stay paired."""
     validate_segment(task_id)
     validate_segment(name)
-    return f"{MCP_URI_SCHEME}://tasks/{task_id}/artifacts/{name}"
+    return f"{MCP_URI_SCHEME}://tasks/{quote(task_id, safe='')}/artifacts/{quote(name, safe='')}"
+
+
+def decode_segment(segment: str) -> str:
+    """Percent-decode a path segment extracted from an MCP artifact URI, reversing the encoding
+    :func:`mcp_uri` applied. The MCP resource layer matches the URI template but does **not**
+    decode the captured segments, so the handler must (e.g. ``my%20notes.md`` → ``my notes.md``)."""
+    return unquote(segment)
 
 
 class ArtifactStore(ABC):

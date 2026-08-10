@@ -107,6 +107,21 @@ async def test_list_artifacts_returns_names_and_readable_uris(tmp_path: Path) ->
         assert res.contents[0].text == "# Plan"  # type: ignore[union-attr]
 
 
+async def test_artifact_with_spaces_in_name_round_trips_over_mcp(tmp_path: Path) -> None:
+    # A name with spaces/reserved chars must list with a valid (percent-encoded) URI that reads
+    # back — the resource handler decodes the segment the MCP layer captures encoded.
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike", artifacts={"my notes.md": "hello world"})
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        result = await s.call_tool("list_artifacts", {"task_id": task.id})
+        listed = result.structuredContent["result"]  # type: ignore[index]
+        uri = {entry["name"]: entry["uri"] for entry in listed}["my notes.md"]
+        assert uri == f"panopticon://tasks/{task.id}/artifacts/my%20notes.md"
+        res = await s.read_resource(uri)
+        assert res.contents[0].text == "hello world"  # type: ignore[union-attr]
+
+
 async def test_list_artifacts_is_empty_when_none(tmp_path: Path) -> None:
     svc = await _service(tmp_path)
     task = await svc.create_task("r1", "spike")
