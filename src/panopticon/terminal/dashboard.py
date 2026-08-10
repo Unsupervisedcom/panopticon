@@ -11,7 +11,8 @@ The task table, the repo table (`g`), and the `OptionList` pickers (`n`'s repo/w
 `a`'s artifact list) all accept vim-style `h`/`j`/`k`/`l` as well as the arrow keys.
 
 The footer legend shows only the essential, most-used keys — `t` hands off to the task's
-container tmux, `n` creates a task (pick repo → workflow → describe the work), `x` **drops** it,
+container tmux, `n` creates a task (pick repo → workflow → describe the work — `ctrl+a` on the
+memo prompt attaches local files as the new task's artifacts), `x` **drops** it,
 `/` searches, `d` opens the **task detail** as a modal (identity, state/turn, history — Escape to
 close), `q` quits, and `?` opens the **help screen** (a modal listing every key). The
 rest still work but are hidden from the legend (both the footer bindings and `HelpScreen` derive
@@ -101,6 +102,7 @@ from textual.widgets._select import NoSelection as _SelectNoSelection
 from textual.worker import get_current_worker
 
 from panopticon.client import JsonObj, TaskServiceClient
+from panopticon.core.artifacts import InvalidArtifactName, validate_segment
 from panopticon.core.dirs import ARTIFACTS_DIR
 from panopticon.core.state import TERMINAL_LABELS
 from panopticon.sessionservice.local_runner import session_name
@@ -671,6 +673,10 @@ class MemoTextArea(TextArea):
             event.prevent_default()
             event.stop()  # set the memo without submitting it as an initial prompt
             self.screen.action_set_only()  # type: ignore[attr-defined]
+        elif event.key == "ctrl+a":
+            event.prevent_default()
+            event.stop()  # open the attach-files modal rather than the TextArea's own ctrl+a
+            self.screen.action_attach_files()  # type: ignore[attr-defined]
         else:
             await super()._on_key(event)
 
@@ -679,12 +685,14 @@ class MemoTextArea(TextArea):
         self.styles.height = min(lines, self.MAX_LINES)
 
 
-class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
+class MemoScreen(ModalScreen["tuple[str, bool, dict[str, str]] | None"]):
     """Memo prompt for task creation.
 
-    Dismisses ``(text, submit)`` where ``submit`` says whether to deliver the memo as the
-    agent's initial prompt, or ``None`` on cancel (Escape). **Enter always submits** the memo
-    as an initial prompt; **ctrl+s sets the memo without submitting** it (an unsent paste).
+    Dismisses ``(text, submit, artifacts)`` where ``submit`` says whether to deliver the memo as
+    the agent's initial prompt and ``artifacts`` is a ``name → content`` map of files attached via
+    ``ctrl+a``, or ``None`` on cancel (Escape). **Enter always submits** the memo as an initial
+    prompt; **ctrl+s sets the memo without submitting** it (an unsent paste); **ctrl+a** opens the
+    attach-files modal (:class:`ArtifactsScreen`).
 
     Uses :class:`MemoTextArea` so Enter submits rather than inserting a newline — same UX
     as the original single-line ``Input``, but the field can display multi-line content
@@ -695,32 +703,62 @@ class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
     #memo-box { width: 64; height: auto; padding: 1 2; border: round $accent; background: $surface; }
     #memo-box MemoTextArea { height: 1; margin-bottom: 1; }
     #memo-box .memo-hint { color: $text-muted; }
+    #memo-attached { color: $text-muted; }
     """
     BINDINGS = [
         ("escape", "cancel", "Cancel"),
         ("ctrl+g", "edit_in_editor", "Edit"),
         ("ctrl+s", "set_only", "Set"),
+        ("ctrl+a", "attach_files", "Attach files"),
         ("enter", "submit", "Create"),
     ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        # name → (source path, content) for the files the operator attaches via ctrl+a. Keyed by
+        # the artifact name (the path's basename) so a re-attach of the same name overwrites.
+        self._artifacts: dict[str, tuple[str, str]] = {}
 
     def compose(self) -> ComposeResult:
         with Vertical(id="memo-box"):
             yield MemoTextArea(compact=True)
+            yield Label("", id="memo-attached")
             yield Label("enter: submit", classes="memo-hint")
             yield Label("ctrl+s: set without submitting", classes="memo-hint")
             yield Label("ctrl+g: edit in $EDITOR", classes="memo-hint")
+            yield Label("ctrl+a: attach files as artifacts", classes="memo-hint")
 
     def on_mount(self) -> None:
         self.query_one(MemoTextArea).focus()
+        self._refresh_attached()
+
+    def _refresh_attached(self) -> None:
+        """Update the "attached" line summarising the files the operator has queued."""
+        label = self.query_one("#memo-attached", Label)
+        n = len(self._artifacts)
+        label.update("" if n == 0 else f"attached: {', '.join(sorted(self._artifacts))}")
+        label.display = n > 0
+
+    def _content_map(self) -> dict[str, str]:
+        return {name: content for name, (_path, content) in self._artifacts.items()}
 
     def action_submit(self) -> None:
-        self.dismiss((self.query_one(MemoTextArea).text, True))
+        self.dismiss((self.query_one(MemoTextArea).text, True, self._content_map()))
 
     def action_set_only(self) -> None:
-        self.dismiss((self.query_one(MemoTextArea).text, False))
+        self.dismiss((self.query_one(MemoTextArea).text, False, self._content_map()))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+    def action_attach_files(self) -> None:
+        def done(artifacts: dict[str, tuple[str, str]] | None) -> None:
+            if artifacts is not None:
+                self._artifacts = artifacts
+                self._refresh_attached()
+            self.query_one(MemoTextArea).focus()
+
+        self.app.push_screen(ArtifactsScreen(dict(self._artifacts)), done)
 
     def action_edit_in_editor(self) -> None:
         ta = self.query_one(MemoTextArea)
@@ -732,6 +770,95 @@ class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
             return
         ta.load_text(result)
         ta.focus()
+
+
+class ArtifactsScreen(ModalScreen["dict[str, tuple[str, str]] | None"]):
+    """Attach-files modal reached from :class:`MemoScreen` with ``ctrl+a``.
+
+    Lets the operator queue local files to seed as the new task's artifacts: type a path + Enter
+    to add one (read now, from the dashboard host), select a queued file + Enter to remove it.
+    Escape dismisses the ``name → (path, content)`` map back to the memo screen (which reopens with
+    the queue preserved); the map is keyed by the artifact **name** (the path's basename), so
+    attaching two paths with the same basename keeps the latter.
+
+    Works on a copy of the memo screen's queue, so cancelling (there is no cancel — Escape commits
+    the edits) is moot; the queue only ever grows or shrinks explicitly."""
+
+    CSS = """
+    ArtifactsScreen { align: center middle; }
+    #artifacts-box { width: 72; height: auto; max-height: 80%; padding: 1 2; border: round $accent; background: $surface; }
+    #artifacts-box Input { margin-bottom: 1; }
+    #artifacts-list { height: auto; max-height: 12; margin-bottom: 1; }
+    #artifacts-error { color: $error; }
+    #artifacts-box .artifacts-hint { color: $text-muted; }
+    """
+    BINDINGS = [("escape", "done", "Done")]
+
+    def __init__(self, artifacts: dict[str, tuple[str, str]]) -> None:
+        super().__init__()
+        self._artifacts = artifacts
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="artifacts-box"):
+            yield Label("attach files")
+            yield Input(placeholder="path to a file — enter to add", id="artifacts-path")
+            yield _VimOptionList(id="artifacts-list")
+            yield Static("", id="artifacts-error")
+            yield Label(
+                "path + enter: add · select + enter: remove · esc: done", classes="artifacts-hint"
+            )
+
+    def on_mount(self) -> None:
+        self._rebuild_list()
+        self.query_one("#artifacts-path", Input).focus()
+
+    def _rebuild_list(self) -> None:
+        option_list = self.query_one("#artifacts-list", OptionList)
+        option_list.clear_options()
+        for name in sorted(self._artifacts):
+            path, _content = self._artifacts[name]
+            option_list.add_option(f"{name}  ←  {path}")
+
+    def _set_error(self, message: str) -> None:
+        self.query_one("#artifacts-error", Static).update(message)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        raw = event.value.strip()
+        if not raw:
+            return
+        path = Path(raw).expanduser()
+        try:
+            resolved = path.resolve()
+        except OSError as exc:
+            self._set_error(f"{raw}: {exc}")
+            return
+        if not resolved.is_file():
+            self._set_error(f"not a file: {raw}")
+            return
+        name = resolved.name
+        try:
+            validate_segment(name)
+        except InvalidArtifactName:
+            self._set_error(f"invalid artifact name: {name!r}")
+            return
+        try:
+            content = resolved.read_text()
+        except (OSError, UnicodeDecodeError) as exc:
+            self._set_error(f"can't read {raw}: {exc}")
+            return
+        self._artifacts[name] = (str(resolved), content)
+        self._set_error("")
+        self.query_one("#artifacts-path", Input).value = ""
+        self._rebuild_list()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        name = str(event.option.prompt).split("  ←  ", 1)[0]
+        self._artifacts.pop(name, None)
+        self._set_error("")
+        self._rebuild_list()
+
+    def action_done(self) -> None:
+        self.dismiss(self._artifacts)
 
 
 def _repo_name_from_git_url(url: str) -> str:
@@ -1966,17 +2093,21 @@ class Dashboard(App[None]):
                 if workflow is None:
                     return
 
-                def create(result: tuple[str, bool] | None) -> None:
+                def create(result: tuple[str, bool, dict[str, str]] | None) -> None:
                     if result is None:  # backed out
                         return
-                    memo_text, submit = result
+                    memo_text, submit, artifacts = result
                     stripped = memo_text.strip()
                     if _apply_memo_filter(stripped):
                         return
                     if submit and stripped:
-                        self._client.create_task(repo, workflow, stripped, initial_prompt=stripped)
+                        self._client.create_task(
+                            repo, workflow, stripped, initial_prompt=stripped, artifacts=artifacts
+                        )
                     else:
-                        self._client.create_task(repo, workflow, stripped or None)
+                        self._client.create_task(
+                            repo, workflow, stripped or None, artifacts=artifacts
+                        )
                     self.action_refresh()
 
                 self.push_screen(MemoScreen(), create)
