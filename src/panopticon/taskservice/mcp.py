@@ -16,7 +16,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from panopticon.core.artifacts import mcp_uri
+from panopticon.core.artifacts import decode_segment, mcp_uri
 from panopticon.core.models import Actor, Status
 from panopticon.taskservice.api import TaskOut
 from panopticon.taskservice.service import TaskService
@@ -174,6 +174,9 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
 
     @mcp.resource(ARTIFACT_URI, description="A task's file-backed artifact (plan, notes).")
     async def artifact(task_id: str, name: str) -> str:
+        # The MCP layer captures the URI-template segments without percent-decoding them, so a name
+        # with spaces/reserved chars arrives encoded (``my%20notes.md``). Reverse mcp_uri's encoding.
+        task_id, name = decode_segment(task_id), decode_segment(name)
         data = await service.get_artifact(task_id, name)
         if data is None:
             raise FileNotFoundError(f"no artifact {name!r} for task {task_id!r}")

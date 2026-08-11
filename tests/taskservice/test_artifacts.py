@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from panopticon.core.artifacts import InvalidArtifactName, mcp_uri
+from panopticon.core.artifacts import InvalidArtifactName, decode_segment, mcp_uri
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 
 
@@ -138,3 +138,17 @@ def test_mcp_uri_resolver() -> None:
     assert mcp_uri("t1", ".hidden") == "panopticon://tasks/t1/artifacts/.hidden"
     with pytest.raises(InvalidArtifactName):
         mcp_uri("t1", "../escape")
+
+
+def test_mcp_uri_percent_encodes_reserved_characters() -> None:
+    # A name with spaces or URI-reserved characters must yield a valid, unambiguous URI so the
+    # resource handler can round-trip it — a raw space would otherwise be an invalid URI.
+    assert mcp_uri("t1", "my notes.md") == "panopticon://tasks/t1/artifacts/my%20notes.md"
+    assert mcp_uri("t1", "a+b&c.md") == "panopticon://tasks/t1/artifacts/a%2Bb%26c.md"
+
+
+def test_decode_segment_reverses_mcp_uri_encoding() -> None:
+    # The MCP layer captures template segments without decoding them, so the handler decodes.
+    for name in ("plan.md", "my notes.md", "a+b&c.md", ".hidden"):
+        encoded = mcp_uri("t1", name).rsplit("/", 1)[1]
+        assert decode_segment(encoded) == name

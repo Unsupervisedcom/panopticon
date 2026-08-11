@@ -114,6 +114,7 @@ class _FakeClient:
         self._change = threading.Event()
         self.list_tasks_calls = 0  # how many times the table was (re)built — counts feed refreshes
         self.created: list[tuple[str, str, str | None]] = []
+        self.created_artifacts: list[dict[str, str] | None] = []
         self.applied: list[tuple[str, str]] = []
         self.released: list[str] = []
         self.snoozed: list[tuple[str, str | None]] = []
@@ -225,8 +226,10 @@ class _FakeClient:
         memo: str | None = None,
         *,
         initial_prompt: str | None = None,
+        artifacts: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         self.created.append((repo_id, workflow, memo, initial_prompt))
+        self.created_artifacts.append(artifacts)
         return {"id": "new"}
 
     def apply_operation(self, task_id: str, operation: str) -> dict[str, Any]:
@@ -916,6 +919,142 @@ async def test_memo_textarea_expands_for_multiline_content(monkeypatch: Any) -> 
         await pilot.press("enter")  # submit
         await pilot.pause()
         assert fake.created == [("r1", "spike", three_lines, three_lines)]
+
+
+async def test_memo_ctrl_a_attaches_a_file_as_an_artifact(tmp_path: Path) -> None:
+    # ctrl+a opens the attach-files modal; a queued file is seeded as the task's artifact on create.
+    src = tmp_path / "notes.md"
+    src.write_text("hello world")
+    fake = _FakeClient(
+        [],
+        repos=["r1"],
+        workflows=[{"name": "spike", "when_to_use": ""}],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")  # repo
+        await pilot.pause()
+        await pilot.press("enter")  # workflow
+        await pilot.pause()
+        await pilot.press("f", "i", "x")  # type a memo
+        await pilot.press("ctrl+a")  # open the attach-files modal
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, dashboard.ArtifactsScreen)
+        screen.query_one("#artifacts-path", Input).value = str(src)
+        await pilot.press("enter")  # add the file
+        await pilot.pause()
+        assert "notes.md" in screen._artifacts
+        await pilot.press("escape")  # back to the memo screen
+        await pilot.pause()
+        await pilot.press("enter")  # submit
+        await pilot.pause()
+    assert fake.created == [("r1", "spike", "fix", "fix")]
+    assert fake.created_artifacts == [{"notes.md": "hello world"}]
+
+
+async def test_memo_ctrl_a_preserves_spaces_in_the_filename(tmp_path: Path) -> None:
+    # A spaced filename keeps its name (spaces are valid artifact names); the MCP read path
+    # percent-encodes it (see tests/taskservice/test_mcp.py).
+    src = tmp_path / "my notes.md"
+    src.write_text("spaced")
+    fake = _FakeClient(
+        [],
+        repos=["r1"],
+        workflows=[{"name": "spike", "when_to_use": ""}],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")  # repo
+        await pilot.pause()
+        await pilot.press("enter")  # workflow
+        await pilot.pause()
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, dashboard.ArtifactsScreen)
+        screen.query_one("#artifacts-path", Input).value = str(src)
+        await pilot.press("enter")  # add the file
+        await pilot.pause()
+        assert "my notes.md" in screen._artifacts
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("enter")  # submit an empty memo
+        await pilot.pause()
+    assert fake.created_artifacts == [{"my notes.md": "spaced"}]
+
+
+async def test_memo_ctrl_a_can_remove_a_queued_file(tmp_path: Path) -> None:
+    # Selecting a queued file in the attach-files modal removes it, so it isn't seeded on create.
+    src = tmp_path / "notes.md"
+    src.write_text("hello world")
+    fake = _FakeClient(
+        [],
+        repos=["r1"],
+        workflows=[{"name": "spike", "when_to_use": ""}],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")  # repo
+        await pilot.pause()
+        await pilot.press("enter")  # workflow
+        await pilot.pause()
+        await pilot.press("ctrl+a")  # open the attach-files modal
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, dashboard.ArtifactsScreen)
+        screen.query_one("#artifacts-path", Input).value = str(src)
+        await pilot.press("enter")  # add the file
+        await pilot.pause()
+        assert "notes.md" in screen._artifacts
+        option_list = screen.query_one("#artifacts-list", dashboard._VimOptionList)
+        option_list.focus()
+        option_list.highlighted = 0
+        await pilot.press("enter")  # select the highlighted file → remove it
+        await pilot.pause()
+        assert screen._artifacts == {}
+        await pilot.press("escape")  # back to the memo screen
+        await pilot.pause()
+        await pilot.press("enter")  # submit an empty memo
+        await pilot.pause()
+    assert fake.created == [("r1", "spike", None, None)]
+    assert fake.created_artifacts == [{}]
+
+
+async def test_memo_ctrl_a_rejects_a_missing_path(tmp_path: Path) -> None:
+    # A path that isn't a file shows an inline error and queues nothing.
+    fake = _FakeClient(
+        [],
+        repos=["r1"],
+        workflows=[{"name": "spike", "when_to_use": ""}],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")  # repo
+        await pilot.pause()
+        await pilot.press("enter")  # workflow
+        await pilot.pause()
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, dashboard.ArtifactsScreen)
+        screen.query_one("#artifacts-path", Input).value = str(tmp_path / "nope.md")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert screen._artifacts == {}
+        assert "not a file" in str(screen.query_one("#artifacts-error", Static).render())
 
 
 async def test_dashboard_drives_drop() -> None:

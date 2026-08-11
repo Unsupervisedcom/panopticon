@@ -163,10 +163,13 @@ class TaskServiceClient:
         memo: str | None = None,
         *,
         initial_prompt: str | None = None,
+        artifacts: dict[str, str] | None = None,
     ) -> JsonObj:
         body: JsonObj = {"repo_id": repo_id, "workflow": workflow, "memo": memo}
         if initial_prompt is not None:
             body["initial_prompt"] = initial_prompt
+        if artifacts:
+            body["artifacts"] = artifacts
         return cast(JsonObj, self._json(self._http.post("/tasks", json=body)))
 
     def set_slug(self, task_id: str, slug: str) -> JsonObj:
