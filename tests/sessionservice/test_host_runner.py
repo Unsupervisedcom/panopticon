@@ -9,6 +9,7 @@ from pathlib import Path
 from panopticon.core.models import LifecyclePhase
 from panopticon.sessionservice.host_runner import (
     AGENT_MODULE,
+    DEFAULT_PERMISSION_MODE,
     LIVENESS_MODULE,
     HostRunner,
     task_home,
@@ -222,3 +223,26 @@ def test_delete_workspace_contents_empties_without_docker(tmp_path: Path) -> Non
 
     assert workspace.is_dir() and list(workspace.iterdir()) == []
     assert rec.calls == []  # no docker, no subprocess at all
+
+
+def test_spawn_asks_the_launcher_for_a_permission_mode_not_the_container_default(
+    tmp_path: Path,
+) -> None:
+    """The container's blanket skip is right for a throwaway box and wrong for a process running as
+    the operator, so the host backend names a mode and the launcher passes it to claude."""
+    rec = _Recorder()
+    runner = HostRunner("http://svc:8000", run=rec, homes_root=tmp_path)
+
+    runner.spawn("t1", workspace="/tasks/t1")
+
+    assert "export PANOPTICON_PERMISSION_MODE=auto" in _pane_command(rec.calls)
+    assert DEFAULT_PERMISSION_MODE == "auto"
+
+
+def test_permission_mode_is_overridable_per_runner(tmp_path: Path) -> None:
+    rec = _Recorder()
+    runner = HostRunner("http://svc:8000", run=rec, homes_root=tmp_path, permission_mode="plan")
+
+    runner.spawn("t1", workspace="/tasks/t1")
+
+    assert "export PANOPTICON_PERMISSION_MODE=plan" in _pane_command(rec.calls)

@@ -109,6 +109,16 @@ def trust_workspace(config_dir: Path, cwd: Path) -> Path:
 INTERRUPT_PROMPT = "You were interrupted. Continue."
 
 
+def _permission_argv(mode: str | None) -> list[str]:
+    """How the agent answers permission prompts: an explicit ``mode``, else skip them entirely.
+
+    ``mode`` is passed through to ``claude --permission-mode`` unvalidated — the CLI owns that
+    vocabulary (``auto``, ``acceptEdits``, ``plan``, …) and rejecting an unknown value here would
+    only duplicate its error a version out of date.
+    """
+    return ["--permission-mode", mode] if mode else ["--dangerously-skip-permissions"]
+
+
 def _claude_argv(
     config_dir: Path,
     cwd: Path,
@@ -116,12 +126,17 @@ def _claude_argv(
     initial_prompt: str | None = None,
     turn: str | None = None,
     starting_model: str | None = None,
+    permission_mode: str | None = None,
 ) -> list[str]:
     """`claude` argv, resuming the project's most recent conversation if one exists.
 
-    The agent runs unattended in a throwaway container on a per-task clone, so it launches with
-    ``--dangerously-skip-permissions`` — there's no operator to answer permission prompts, and the
-    blast radius is the task's own checkout. claude keeps per-project transcripts under
+    **Permissions depend on what is around the agent, so the backend chooses them.** In a
+    throwaway container on a per-task clone there is no operator to answer prompts and the blast
+    radius is the checkout, so the default is ``--dangerously-skip-permissions``. A backend that
+    runs the agent somewhere with a wider blast radius — the host runner, where the agent *is* the
+    operator — passes ``permission_mode`` instead (``PANOPTICON_PERMISSION_MODE``, e.g. ``auto``)
+    and gets ``--permission-mode`` in its place. The cost is that an unattended task can now stop
+    and wait for a decision; that is the point. claude keeps per-project transcripts under
     ``<config>/projects/<cwd with '/' → '-'>``; when one is there we ``--continue`` it instead of
     starting fresh. The config dir is a **per-task volume** (the runner mounts it; ``CONFIG_MOUNT``),
     so this resumes both within a container's life and **across respawn/recreate** — claude history
@@ -137,7 +152,7 @@ def _claude_argv(
     ``starting_model`` (e.g. ``"opus"``) is passed as ``--model`` on the **first run only** — on
     resume claude uses whichever model the conversation was already using.
     """
-    argv = ["claude", "--dangerously-skip-permissions"]
+    argv = ["claude", *_permission_argv(permission_mode)]
     overview = config_dir / WORKFLOW_OVERVIEW_FILE
     if overview.exists():  # the whole-workflow map → claude's system prompt (so it knows the shape)
         argv += ["--append-system-prompt", overview.read_text()]
@@ -170,12 +185,14 @@ def _run_claude(config_dir: Path) -> None:  # pragma: no cover - real LLM; skipi
     initial_prompt = os.environ.get("PANOPTICON_INITIAL_PROMPT") or None
     turn = os.environ.get("PANOPTICON_TASK_TURN") or None
     starting_model = os.environ.get("PANOPTICON_STARTING_MODEL") or None
+    permission_mode = os.environ.get("PANOPTICON_PERMISSION_MODE") or None
     argv = _claude_argv(
         config_dir,
         Path.cwd(),
         initial_prompt=initial_prompt,
         turn=turn,
         starting_model=starting_model,
+        permission_mode=permission_mode,
     )
     subprocess.run(argv, env={**os.environ, "CLAUDE_CONFIG_DIR": str(config_dir)})
 

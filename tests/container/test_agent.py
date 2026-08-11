@@ -297,3 +297,20 @@ def test_main_returns_early_without_lifecycle_call_when_runner_id_absent(
     )
     assert launched == []  # still returns early without launching
     assert fake.lifecycle_calls == []  # no lifecycle call when runner_id absent
+
+
+def test_permission_argv_defaults_to_skipping_prompts_in_a_container() -> None:
+    """No operator to ask and a throwaway box around a per-task clone — the container's posture."""
+    from panopticon.container.agent import _permission_argv
+
+    assert _permission_argv(None) == ["--dangerously-skip-permissions"]
+
+
+def test_permission_argv_uses_the_backend_s_mode_when_it_names_one() -> None:
+    """The host backend runs the agent as the operator, so it names a mode instead of skipping."""
+    from panopticon.container.agent import _claude_argv, _permission_argv
+
+    assert _permission_argv("auto") == ["--permission-mode", "auto"]
+    argv = _claude_argv(Path("/cfg"), Path("/ws"), permission_mode="auto")
+    assert argv[:3] == ["claude", "--permission-mode", "auto"]
+    assert "--dangerously-skip-permissions" not in argv

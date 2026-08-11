@@ -42,6 +42,15 @@ LIVENESS_MODULE = "panopticon.container"
 #: See :func:`panopticon.container.host._end_pane`.
 AGENT_MODULE = "panopticon.container.host"
 
+#: How a host task's agent answers permission prompts. The container backend skips them outright —
+#: it is a throwaway box around a per-task clone, so there is nothing to protect and no operator to
+#: ask. Here the agent runs **as the operator**, so skipping them would put the whole machine inside
+#: the blast radius of an unattended prompt injection. ``auto`` keeps the agent moving on ordinary
+#: work and stops it on the rest, which is the only honest default when the boundary is a judgement
+#: call rather than a container. It is a classifier, not a sandbox: it narrows the blast radius, it
+#: does not close it — the isolation caveat on :meth:`HostRunner.spawn` still stands in full.
+DEFAULT_PERMISSION_MODE = "auto"
+
 
 def task_home(task_id: str, *, homes_root: str | Path | None = None) -> str:
     """The task's private ``HOME`` — ``$PANOPTICON_DATA/homes/<task_id>`` by default.
@@ -69,6 +78,7 @@ class HostRunner(Runner):
         runner_id: str = "local",
         tmux_socket: str | None = TMUX_SOCKET,
         python: str | None = None,
+        permission_mode: str = DEFAULT_PERMISSION_MODE,
         secrets_dir: str | Path | None = None,
         homes_root: str | Path | None = None,
         run: CommandRunner = _subprocess_run,
@@ -81,6 +91,10 @@ class HostRunner(Runner):
         # service, so a host task uses the same panopticon install as the daemon that spawned it
         # (a bare `python` would resolve against the operator's shell, which may be another venv).
         self._python = python or sys.executable
+        # Passed to `claude --permission-mode`; see DEFAULT_PERMISSION_MODE for why it is not the
+        # container's blanket skip. An operator who wants a stricter posture (`plan`) or a looser
+        # one on a machine they treat as disposable can say so here.
+        self._permission_mode = permission_mode
         # Root the repo's `env_file` name resolves against — this host's secrets dir (ADR 0007).
         self._secrets_dir = secrets_dir
         self._homes_root = homes_root
@@ -118,7 +132,9 @@ class HostRunner(Runner):
         operator's filesystem, credentials and network — it can reach every repo on the machine and
         the secrets dir itself. The container and Kubernetes backends put a boundary there; this one
         trades that boundary for a task that starts in seconds and uses the repo's own toolchain.
-        Choose it per workflow (``runner_type = "host"``), knowingly.
+        Because of that it launches with ``--permission-mode`` (see :data:`DEFAULT_PERMISSION_MODE`)
+        rather than the container's blanket skip — a narrower blast radius, not a closed one. Choose
+        this backend per workflow (``runner_type = "host"``), knowingly.
 
         Idempotent: a stale session of the same name is killed first, so a respawn is a restart that
         resumes from the task's home (its claude history), not a second session.
@@ -141,6 +157,10 @@ class HostRunner(Runner):
             "PANOPTICON_RUNNER_ID": self._runner_id,
             # The task's private config root — see `task_home`. Set last-wins over the env-file.
             "HOME": home,
+            # The agent launcher turns this into `claude --permission-mode`; without it the
+            # launcher falls back to the container's `--dangerously-skip-permissions`, which is
+            # exactly the wrong default for a process running as the operator.
+            "PANOPTICON_PERMISSION_MODE": self._permission_mode,
         }
         if initial_prompt:
             env["PANOPTICON_INITIAL_PROMPT"] = initial_prompt
