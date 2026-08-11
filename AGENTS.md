@@ -41,7 +41,14 @@ src/panopticon/
                    # + ShellRunner (shell_runner.py = a workflow's
                    # shell_script in a host tmux session, no container — for `runner_type="shell"`
                    # workflows; the spawner routes on it, skipping the image + the clone unless the
-                   # workflow opts in via clone_repo); images.py = ADR-0005 composed images
+                   # workflow opts in via clone_repo)
+                   # + HostRunner (host_runner.py = the *agent* in a host tmux session, for a
+                   # `runner_type="host"` workflow: the Docker path minus the image, so the same
+                   # clone/liveness/self-heal but the operator's own toolchain — and no isolation,
+                   # since it runs as the operator; the pane pairs a backgrounded
+                   # panopticon.container with panopticon.container.host, whose only job is to
+                   # replace the launcher's "signal PID 1" exit — on a host that is init)
+                   # images.py = ADR-0005 composed images
                    # (base→workflow→repo); provisioner.py = host-side provisioning
                    # (ADR 0011: branch the per-task clone on slug, record it back); clones.py =
                    # per-repo clone cache; spawn.py = spawn-prep (clone --local the per-task

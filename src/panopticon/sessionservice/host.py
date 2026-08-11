@@ -38,6 +38,7 @@ from panopticon.core.git import GitClones
 from panopticon.sessionservice._migration import migrate_session_dirs
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.executions import WorkflowExecutions
+from panopticon.sessionservice.host_runner import HostRunner
 from panopticon.sessionservice.images import ImageBuilder
 from panopticon.sessionservice.kubernetes_runner import KubernetesRunner
 from panopticon.sessionservice.local_runner import DEFAULT_IMAGE, LocalRunner
@@ -171,6 +172,7 @@ def run_host(
     cache: CloneCache,
     git: GitClones,
     shell_runner: ShellRunner | None = None,
+    host_runner: HostRunner | None = None,
     kubernetes_runner: KubernetesRunner | None = None,
     images: ImageBuilder | None = None,
     makedirs: Callable[[str], None] = lambda p: Path(p).mkdir(parents=True, exist_ok=True),
@@ -187,6 +189,7 @@ def run_host(
         cache=cache,
         tasks_root=tasks_root,
         shell_runner=shell_runner,
+        host_runner=host_runner,
         kubernetes_runner=kubernetes_runner,
         executions=executions,
         git=git,
@@ -273,6 +276,10 @@ def main(
     # A shell workflow runs directly on the host (no container), so it reaches the task service at
     # the host's own view (--service-url), not the in-container host.docker.internal address.
     shell_runner = ShellRunner(args.service_url, runner_id=args.runner_id)
+    # A host workflow's agent runs on this machine too, so it reaches the task service the same way
+    # the shell runner does. Always constructed: unlike Kubernetes it needs no cluster and no flag —
+    # if a workflow asks for it, this host can serve it.
+    host_runner = HostRunner(args.service_url, runner_id=args.runner_id)
     # A task pod reaches the control plane from inside the cluster; only the pods move there, so the
     # daemon, the task service, and the dashboard all stay where they already run.
     kubernetes_runner = (
@@ -303,6 +310,7 @@ def main(
         cache=CloneCache(CLONE_CACHE_DIR),
         git=GitClones(),
         shell_runner=shell_runner,
+        host_runner=host_runner,
         kubernetes_runner=kubernetes_runner,
         images=ImageBuilder(
             base=args.image

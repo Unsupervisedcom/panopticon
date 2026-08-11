@@ -27,6 +27,7 @@ from panopticon.core.models import ContainerStatus, LifecyclePhase
 from panopticon.core.state import TERMINAL_LABELS
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.executions import WorkflowExecutions
+from panopticon.sessionservice.host_runner import HostRunner
 from panopticon.sessionservice.images import ImageBuilder
 from panopticon.sessionservice.kubernetes_runner import KubernetesRunner
 from panopticon.sessionservice.local_runner import LocalRunner
@@ -94,6 +95,7 @@ class Spawner:
         cache: CloneCache,
         tasks_root: str,
         shell_runner: ShellRunner | None = None,
+        host_runner: HostRunner | None = None,
         kubernetes_runner: KubernetesRunner | None = None,
         executions: WorkflowExecutions | None = None,
         git: object | None = None,
@@ -111,6 +113,11 @@ class Spawner:
         self._client = client
         self._runner = runner
         self._shell_runner = shell_runner
+        #: The containerless backend, when this host is configured for one. ``None`` means a
+        #: ``"host"`` workflow's task cannot spawn here — reported as a failed spawn rather than
+        #: silently falling back to Docker, which would give the task an isolation boundary its
+        #: workflow did not ask for and a toolchain from the image rather than the operator's shell.
+        self._host_runner = host_runner
         #: The Kubernetes backend, when this host is configured for one. ``None`` means a
         #: ``"kubernetes"`` workflow's task cannot spawn here — reported as a failed spawn rather
         #: than silently falling back to Docker, which would run the task under the wrong identity.
@@ -181,6 +188,8 @@ class Spawner:
             repo = self._client.get_repo(task["repo_id"])
             if self._executions.is_shell(task["workflow"]):
                 return self._spawn_shell(task, repo)
+            if self._executions.is_host(task["workflow"]):
+                return self._spawn_host(task, repo)
             if self._executions.is_kubernetes(task["workflow"]):
                 return self._spawn_kubernetes(task, repo)
             return self._spawn_container(task, repo)
@@ -281,6 +290,42 @@ class Spawner:
             progress=lambda phase: self._report(task_id, phase),  # STARTING then AWAITING
         )
 
+    def _spawn_host(self, task: JsonObj, repo: JsonObj) -> str:
+        """The host path: the Docker path without the image (reports ``PREPARING`` → ``STARTING`` →
+        ``AWAITING``, skipping ``BUILDING``).
+
+        Identical to :meth:`_spawn_container` up to the runner call — the same per-task clone, the
+        same repo hook, the same secrets reference — and then diverges by having nothing to build:
+        the agent runs in a tmux pane on this machine with the operator's toolchain, so there is no
+        base layer to ensure and no composed image to pass. A repo's ``docker_in_docker`` capability
+        and its ``image_layer_file`` are meaningless here and are not consulted; a repo that needs
+        either wants the container backend.
+        """
+        task_id = task["id"]
+        if self._host_runner is None:
+            raise RuntimeError(
+                f"task {task_id!r} uses host workflow {task['workflow']!r} "
+                "but this host has no host runner configured"
+            )
+        workspace = self._prepare_task_dir(task, repo, clone=True)  # the agent's working dir
+        if hook_path := hook_file_path(repo.get("hook_file"), hooks_dir=self._hooks_dir):
+            self._run_hook(hook_path, task_id, repo["name"], workspace)
+        _log.info(
+            "task %s: starting host session (workflow=%s, workspace=%s)",
+            task_id,
+            task["workflow"],
+            workspace,
+        )
+        return self._host_runner.spawn(
+            task_id,
+            env_file=repo.get("env_file"),  # per-repo secrets, sourced into the pane (ADR 0007)
+            workspace=workspace,
+            initial_prompt=task.get("initial_prompt"),
+            turn=task.get("turn"),  # agent's turn → INTERRUPT_PROMPT on respawn
+            starting_model=task.get("starting_model"),
+            progress=lambda phase: self._report(task_id, phase),  # STARTING then AWAITING
+        )
+
     def _spawn_kubernetes(self, task: JsonObj, repo: JsonObj) -> str:
         """The Kubernetes path: create the task's Job in its workflow's agent namespace (ADR 0014).
 
@@ -311,15 +356,20 @@ class Spawner:
             progress=lambda phase: self._report(task_id, phase),  # STARTING then AWAITING
         )
 
-    def _runner_for(self, task: JsonObj) -> LocalRunner | ShellRunner | KubernetesRunner:
-        """The runner that owns ``task``'s session — the shell runner for a shell workflow, the
-        Kubernetes runner for a kubernetes one (when each is configured), else the Docker runner.
+    def _runner_for(
+        self, task: JsonObj
+    ) -> LocalRunner | ShellRunner | HostRunner | KubernetesRunner:
+        """The runner that owns ``task``'s session — the shell runner for a shell workflow, the host
+        runner for a host one, the Kubernetes runner for a kubernetes one (when each is configured),
+        else the Docker runner.
         Lets the liveness probes (``is_running`` / ``has_session``) in :meth:`reconcile`,
         :meth:`cleanup`, :meth:`startup_reclaim` and :meth:`_is_orphan` check the right backend.
         Tasks without a ``workflow`` key (some internal callers) fall back to the Docker runner."""
         workflow = task.get("workflow")
         if self._shell_runner is not None and self._executions.is_shell(workflow):
             return self._shell_runner
+        if self._host_runner is not None and self._executions.is_host(workflow):
+            return self._host_runner
         if self._kubernetes_runner is not None and self._executions.is_kubernetes(workflow):
             return self._kubernetes_runner
         return self._runner
@@ -499,6 +549,11 @@ class Spawner:
             rmtree=self._rmtree,
             docker_cleanup=self._docker_cleanup,
         )
+        if self._host_runner is not None:
+            # A host task's config dir lives outside the workspace (it is a git checkout), so
+            # `cleanup_workspace` cannot reach it — see `host_runner.task_home`. Unconditional and
+            # self-gating: a task that never ran on this backend simply has no home to remove.
+            self._host_runner.delete_home(task["id"])
 
     def _compose_image(self, workflow: str, repo: JsonObj) -> str | None:
         """Compose the task's image (base → workflow → repo layers, ADR 0005) and return its tag;

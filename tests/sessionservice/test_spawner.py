@@ -1360,3 +1360,141 @@ def test_liveness_probes_read_the_kubernetes_runner_for_a_kubernetes_task() -> N
     spawner.reconcile(dict(task))
 
     assert client.cleared == ["t1"]  # the pod is gone → the task composes `down`
+
+
+class _FakeHostRunner:
+    """Records host-session spawns; stands in for HostRunner. Mimics its ``progress`` callbacks
+    (STARTING then AWAITING, never BUILDING) and its session-is-liveness probes."""
+
+    def __init__(self, *, session: bool = True) -> None:
+        self.spawned: list[dict[str, object]] = []
+        self.deleted_homes: list[str] = []
+        self._session = session
+
+    def spawn(
+        self,
+        task_id: str,
+        *,
+        env_file: str | None = None,
+        workspace: str | None = None,
+        initial_prompt: str | None = None,
+        turn: str | None = None,
+        starting_model: str | None = None,
+        progress: Callable[[LifecyclePhase], None] | None = None,
+    ) -> str:
+        self.spawned.append(
+            {
+                "task_id": task_id,
+                "env_file": env_file,
+                "workspace": workspace,
+                "initial_prompt": initial_prompt,
+                "turn": turn,
+                "starting_model": starting_model,
+            }
+        )
+        if progress is not None:
+            progress(LifecyclePhase.STARTING)
+            progress(LifecyclePhase.AWAITING)
+        return f"panopticon-{task_id}"
+
+    def is_running(self, task_id: str) -> bool:
+        return self._session
+
+    def has_session(self, task_id: str) -> bool:
+        return self._session
+
+    def delete_home(self, task_id: str) -> None:
+        self.deleted_homes.append(task_id)
+
+    def stop(self, session_id: str) -> None:
+        pass
+
+
+def _host_spawner(client: object, runner: object, host_runner: object) -> Spawner:
+    cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
+    return Spawner(
+        client,
+        runner,
+        runner_id="host-1",
+        cache=cache,
+        tasks_root="/tasks",  # type: ignore[arg-type]
+        host_runner=host_runner,
+        git=GitClones(run=_no_op_run),
+        images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        makedirs=lambda _p: None,
+    )
+
+
+_HOST_TASK: JsonObj = {
+    "id": "t1",
+    "repo_id": "r1",
+    "workflow": "host-spike",
+    "state": "RUNNING",
+    "claimed_by": None,
+    "initial_prompt": "do the thing",
+    "turn": "agent",
+    "starting_model": "opus",
+}
+
+
+def test_spawn_one_host_workflow_clones_and_skips_docker_entirely() -> None:
+    client = _FakeClient(repo=_REPO, runner_type="host")
+    runner, host = _FakeRunner(), _FakeHostRunner()
+
+    cid = _host_spawner(client, runner, host).spawn_one(dict(_HOST_TASK))
+
+    assert cid == "panopticon-t1"
+    assert runner.spawned == []  # the Docker runner is never touched for a host workflow
+    assert host.spawned[0]["task_id"] == "t1"
+    # the same per-task clone a container gets — a host task is an ordinary agent task, unboxed
+    assert host.spawned[0]["workspace"] == "/tasks/t1"
+    assert host.spawned[0]["env_file"] == "r1.env"  # per-repo secrets, sourced into the pane
+    # first-run prompting, respawn interruption and model selection behave as in a container
+    assert host.spawned[0]["initial_prompt"] == "do the thing"
+    assert host.spawned[0]["turn"] == "agent"
+    assert host.spawned[0]["starting_model"] == "opus"
+
+
+def test_spawn_one_host_reports_phases_without_building() -> None:
+    """A host task has no image, so BUILDING never appears — it is not a step that is skipped
+    silently, it does not exist for this backend."""
+    client = _FakeClient(repo=_REPO, runner_type="host")
+    _host_spawner(client, _FakeRunner(), _FakeHostRunner()).spawn_one(dict(_HOST_TASK))
+
+    # PREPARING stays — the per-task clone is still readied; only the image step falls away.
+    assert [p for _, p, _ in client.phases] == ["claiming", "preparing", "starting", "awaiting"]
+
+
+def test_spawn_one_host_workflow_fails_loudly_without_a_host_runner() -> None:
+    """Falling back to Docker would hand the task an isolation boundary its workflow did not ask
+    for, and a toolchain from the image rather than the operator's shell."""
+    client = _FakeClient(repo=_REPO, runner_type="host")
+    runner = _FakeRunner()
+    spawner = Spawner(
+        client,
+        runner,
+        runner_id="host-1",
+        cache=CloneCache(
+            "/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None
+        ),  # type: ignore[arg-type]
+        tasks_root="/tasks",  # type: ignore[arg-type]
+        git=GitClones(run=_no_op_run),
+        images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        makedirs=lambda _p: None,
+    )
+
+    with pytest.raises(RuntimeError, match="no host runner"):
+        spawner.spawn_one(dict(_HOST_TASK))
+    assert runner.spawned == []
+
+
+def test_cleanup_removes_a_host_task_home() -> None:
+    """The home lives outside the workspace (it is a git checkout), so workspace cleanup cannot
+    reach it — without this it accumulates one directory per task forever."""
+    client = _FakeClient(repo=_REPO, runner_type="host")
+    host = _FakeHostRunner(session=False)
+    terminal = {**_HOST_TASK, "state": "COMPLETE", "claimed_by": "host-1"}
+
+    _host_spawner(client, _FakeRunner(), host).cleanup(dict(terminal))
+
+    assert host.deleted_homes == ["t1"]

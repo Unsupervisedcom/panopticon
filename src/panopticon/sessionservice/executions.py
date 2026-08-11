@@ -1,7 +1,7 @@
 """A cache of each workflow's execution spec — the one place that answers "how does the session
 service run this workflow's tasks?".
 
-A workflow's ``runner_type`` (``"docker"``/``"shell"``/``"kubernetes"``), shell ``script``,
+A workflow's ``runner_type`` (``"docker"``/``"shell"``/``"host"``/``"kubernetes"``), shell ``script``,
 ``clone_repo``, shell ``workdir`` override, and ``operator_agent`` are static per workflow, so the
 session service fetches them once over REST (``GET /workflows/{name}/execution``) and caches them.
 Both the :class:`~panopticon.sessionservice.spawner.Spawner` and the
@@ -57,6 +57,15 @@ class WorkflowExecutions:
         """Whether ``workflow`` runs as a host shell script (no container). ``None``/missing → False
         (the docker default), so callers can pass a task's ``workflow`` field straight through."""
         return self._runner_type(workflow) == "shell"
+
+    def is_host(self, workflow: str | None) -> bool:
+        """Whether ``workflow`` runs its agent directly on this machine, with no container.
+
+        ``None``/missing → False, the docker default, matching :meth:`is_shell`. Distinct from
+        ``"shell"``, which runs a *script* and no agent: a ``"host"`` task is an ordinary agent task
+        that happens to have no image around it, so it clones, holds liveness, and self-heals like a
+        container one."""
+        return self._runner_type(workflow) == "host"
 
     def is_kubernetes(self, workflow: str | None) -> bool:
         """Whether ``workflow`` runs as a Job in an agent-operator ``Agent``'s namespace (ADR 0014).

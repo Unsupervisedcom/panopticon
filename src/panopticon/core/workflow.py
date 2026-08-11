@@ -107,13 +107,16 @@ class Workflow(ABC):
     #: How this workflow's tasks are executed by the session service. ``"docker"`` (default)
     #: spawns the base → workflow → repo container image and runs the in-container agent (the
     #: determinism invariant — LLM calls happen there). ``"shell"`` runs :meth:`shell_script`
-    #: directly in a host tmux session with **no container** and no agent. ``"kubernetes"`` runs the
-    #: task image as a Job in the namespace of the agent-operator ``Agent`` named by
+    #: directly in a host tmux session with **no container** and no agent. ``"host"`` runs the
+    #: *agent* in a host tmux session with no container either: the same clone, liveness and
+    #: self-heal as ``"docker"``, but no image to build and therefore the operator's own toolchain —
+    #: and, deliberately, no isolation, since the agent runs as the operator. ``"kubernetes"`` runs
+    #: the task image as a Job in the namespace of the agent-operator ``Agent`` named by
     #: :attr:`operator_agent` (ADR 0014), where the pod clones its own workspace instead of mounting
-    #: a host one. A ``"docker"`` or ``"shell"`` task runs in the task's own directory
-    #: (``<tasks_root>/<task_id>``); a docker task always gets the repo cloned there, a shell task
-    #: only if :attr:`clone_repo`. Use ``"shell"`` for short operator utilities that just need a host
-    #: shell (e.g. minting an auth token). The runner picks the backend off this flag.
+    #: a host one. A ``"docker"``, ``"host"`` or ``"shell"`` task runs in the task's own directory
+    #: (``<tasks_root>/<task_id>``); docker and host tasks always get the repo cloned there, a shell
+    #: task only if :attr:`clone_repo`. Use ``"shell"`` for short operator utilities that just need a
+    #: host shell (e.g. minting an auth token). The runner picks the backend off this flag.
     runner_type: ClassVar[str] = "docker"
     #: The agent-operator ``Agent`` this workflow's tasks run **as**, when :attr:`runner_type` is
     #: ``"kubernetes"``: that agent's namespace holds the Job, its ``agent-runtime`` service account
