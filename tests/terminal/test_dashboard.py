@@ -1152,12 +1152,12 @@ async def test_memo_ctrl_a_accepts_a_quoted_path(tmp_path: Path) -> None:
         await pilot.press("enter")  # add the file
         await pilot.pause()
         assert "my notes.md" in screen._artifacts
-        assert screen._artifacts["my notes.md"] == (str(src), "quoted")
+        assert screen._artifacts["my notes.md"] == (str(src), b"quoted")
         await pilot.press("escape")
         await pilot.pause()
         await pilot.press("enter")  # submit an empty memo
         await pilot.pause()
-    assert fake.created_artifacts == [{"my notes.md": "quoted"}]
+    assert fake.created_artifacts_b64 == [{"my notes.md": _b64("quoted")}]
 
 
 async def test_dashboard_drives_drop() -> None:
