@@ -241,6 +241,18 @@ async def test_snoozed_until_round_trips(store: Store) -> None:
     assert (await store.get_task("t1")).snoozed_until is None  # type: ignore[union-attr]
 
 
+async def test_sort_weight_defaults_to_zero_and_round_trips(store: Store) -> None:
+    await _seed_repo(store)
+    task = await _new_task(store)
+    assert (await store.get_task("t1")).sort_weight == 0  # type: ignore[union-attr]  # default
+    task.sort_weight = 10
+    await store.save_task(task)
+    assert (await store.get_task("t1")).sort_weight == 10  # type: ignore[union-attr]
+    task.sort_weight = -3
+    await store.save_task(task)
+    assert (await store.get_task("t1")).sort_weight == -3  # type: ignore[union-attr]
+
+
 async def test_blocked_marker_round_trips(store: Store) -> None:
     await _seed_repo(store)
     task = await _new_task(store)
@@ -506,6 +518,7 @@ def _fully_populated_task() -> Task:
         governor_task_id="t-governor",
         created_at="t1",
         updated_at="t2",
+        sort_weight=5,
         depends_on_task_ids=["t-dep"],
         history=[
             HistoryEntry(

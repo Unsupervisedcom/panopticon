@@ -88,6 +88,7 @@ class TaskSummaryOut(BaseModel):
     governor_task_id: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    sort_weight: int = 0
     depends_on_task_ids: list[str] = []
     provisioned: bool
     container_status: str = "–"
@@ -133,6 +134,9 @@ class TaskOut(BaseModel):
     )
     updated_at: str | None = (
         None  # ISO-8601 timestamp of the last mutation, stamped by the task service
+    )
+    sort_weight: int = (
+        0  # operator sort priority: ranks above updated_at but below state/turn; higher sorts first
     )
     depends_on_task_ids: list[
         str
@@ -280,6 +284,10 @@ class BlockedIn(BaseModel):
 
 class SnoozeIn(BaseModel):
     until: str | None
+
+
+class SortWeightIn(BaseModel):
+    sort_weight: int
 
 
 class ClaimIn(BaseModel):
@@ -636,6 +644,10 @@ def create_app(service: TaskService) -> FastAPI:
     @app.put("/tasks/{task_id}/snooze")
     async def set_snooze(task_id: str, body: SnoozeIn) -> TaskOut:
         return _task_out(await service.set_snooze(task_id, body.until))
+
+    @app.put("/tasks/{task_id}/sort-weight")
+    async def set_sort_weight(task_id: str, body: SortWeightIn) -> TaskOut:
+        return _task_out(await service.set_sort_weight(task_id, body.sort_weight))
 
     @app.put("/tasks/{task_id}/governor")
     async def set_governor(task_id: str, body: GovernorIn) -> TaskOut:

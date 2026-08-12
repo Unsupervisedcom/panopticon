@@ -616,6 +616,18 @@ class TaskService:
         _log.debug("task %s: snoozed_until → %s", task_id, until)
         return task
 
+    async def set_sort_weight(self, task_id: str, sort_weight: int) -> Task:
+        """Set the task's dashboard sort weight (default 0; higher sorts first).
+
+        A plain recorded fact, like the url: ranks above the ``updated_at`` timestamp but below
+        state/turn in the dashboard ordering. Leaves ``state``/``turn``/``blocked`` untouched.
+        """
+        task = await self.get_task(task_id)
+        task.sort_weight = sort_weight
+        await self._save_task(task)
+        _log.debug("task %s: sort_weight → %s", task_id, sort_weight)
+        return task
+
     async def set_governor(self, task_id: str, governor_task_id: str | None) -> Task:
         """Set or clear the governor task for ``task_id``.
 

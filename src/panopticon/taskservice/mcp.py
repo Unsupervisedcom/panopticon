@@ -98,6 +98,15 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
 
     @mcp.tool(
         description=(
+            "Set the task's dashboard sort weight (default 0; higher sorts first). "
+            "Ranks above the last-updated timestamp but below state/turn."
+        )
+    )
+    async def set_sort_weight(task_id: str, sort_weight: int) -> dict[str, Any]:
+        return _task(await service.set_sort_weight(task_id, sort_weight))
+
+    @mcp.tool(
+        description=(
             "Replace the task's dependency list with the given task IDs. "
             "Each ID must reference an existing task; pass an empty list to clear all dependencies. "
             "Dependencies are tracking only — the state machine does not enforce them."

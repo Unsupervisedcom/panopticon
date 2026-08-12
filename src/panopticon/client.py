@@ -226,6 +226,15 @@ class TaskServiceClient:
             self._json(self._http.put(f"/tasks/{task_id}/snooze", json={"until": until})),
         )
 
+    def set_sort_weight(self, task_id: str, sort_weight: int) -> JsonObj:
+        """Set the task's dashboard sort weight (default 0; higher sorts first)."""
+        return cast(
+            JsonObj,
+            self._json(
+                self._http.put(f"/tasks/{task_id}/sort-weight", json={"sort_weight": sort_weight})
+            ),
+        )
+
     def set_governor(self, task_id: str, governor_task_id: str | None) -> JsonObj:
         """Set or clear the governor task (the task that oversees this one)."""
         return cast(

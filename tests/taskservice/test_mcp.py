@@ -60,6 +60,7 @@ async def test_tools_are_exposed_and_drive_the_task(tmp_path: Path) -> None:
             "resolve_responsibility",
             "set_turn",
             "set_blocked",
+            "set_sort_weight",
             "put_artifact",
             "list_artifacts",
         } <= names
@@ -196,6 +197,17 @@ async def test_set_token_estimate_via_tool(tmp_path: Path) -> None:
     assert (
         await svc.get_task(task.id)
     ).token_estimate == 500000  # the tool actually mutated the task
+
+
+async def test_set_sort_weight_via_tool(tmp_path: Path) -> None:
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        result = await s.call_tool("set_sort_weight", {"task_id": task.id, "sort_weight": 7})
+        assert result.structuredContent is not None
+        assert result.structuredContent["sort_weight"] == 7
+    assert (await svc.get_task(task.id)).sort_weight == 7  # the tool actually mutated the task
 
 
 # -- orchestration tools (gated to workflows whose `orchestrates` is set) --------------------

@@ -353,6 +353,24 @@ def test_set_snooze_records_deadline_verbatim(client: TestClient) -> None:
     assert cleared.json()["snoozed_until"] is None
 
 
+def test_set_sort_weight_over_rest(client: TestClient) -> None:
+    task_id = _new_task(client)
+    before = client.get(f"/tasks/{task_id}").json()
+    assert before["sort_weight"] == 0  # default
+
+    weighted = client.put(f"/tasks/{task_id}/sort-weight", json={"sort_weight": 10})
+    assert weighted.status_code == 200
+    body = weighted.json()
+    assert body["sort_weight"] == 10
+    # a plain recorded fact — lifecycle untouched
+    assert body["state"] == before["state"]
+    assert body["turn"] == before["turn"]
+
+    assert client.get(f"/tasks/{task_id}").json()["sort_weight"] == 10  # persisted
+    reset = client.put(f"/tasks/{task_id}/sort-weight", json={"sort_weight": 0})
+    assert reset.json()["sort_weight"] == 0
+
+
 def test_claim_release_over_rest(client: TestClient) -> None:
     task_id = _new_task(client)
     assert client.get(f"/tasks/{task_id}").json()["claimed_by"] is None

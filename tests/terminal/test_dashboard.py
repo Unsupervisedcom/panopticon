@@ -2626,6 +2626,47 @@ def test_snooze_demotion_ignores_now_none() -> None:
     assert key(terminal)[0] == 2
 
 
+def test_sort_weight_outranks_timestamp_within_section_and_turn() -> None:
+    # A higher sort_weight rises above a newer timestamp within the same section+turn group.
+    key = _make_sort_key()
+    newer_light = {**_TASK, "id": "new", "turn": "user", "created_at": _at(-1), "sort_weight": 0}
+    older_heavy = {**_TASK, "id": "old", "turn": "user", "created_at": _at(-5), "sort_weight": 10}
+    order = [t["id"] for t in sorted([newer_light, older_heavy], key=key)]
+    assert order == ["old", "new"]  # weight beats a newer timestamp
+
+
+def test_sort_weight_ties_fall_back_to_timestamp() -> None:
+    # Equal weights leave the timestamp as the tiebreaker (newest first) — unchanged behavior.
+    key = _make_sort_key()
+    newer = {**_TASK, "id": "new", "turn": "user", "created_at": _at(-1), "sort_weight": 5}
+    older = {**_TASK, "id": "old", "turn": "user", "created_at": _at(-5), "sort_weight": 5}
+    order = [t["id"] for t in sorted([older, newer], key=key)]
+    assert order == ["new", "old"]
+
+
+def test_sort_weight_does_not_override_state_or_turn() -> None:
+    # sort_weight ranks BELOW state/turn: a heavy terminal task still sorts after a light active one,
+    # and a heavy agent-turn task still sorts after a light user-turn (priority) one.
+    key = _make_sort_key()
+    active_light = {**_TASK, "id": "act", "state": "ITERATING", "turn": "user", "sort_weight": 0}
+    terminal_heavy = {**_TASK, "id": "trm", "state": "COMPLETE", "turn": "user", "sort_weight": 99}
+    assert [t["id"] for t in sorted([terminal_heavy, active_light], key=key)] == ["act", "trm"]
+
+    user_light = {**_TASK, "id": "usr", "state": "ITERATING", "turn": "user", "sort_weight": 0}
+    agent_heavy = {**_TASK, "id": "agt", "state": "ITERATING", "turn": "agent", "sort_weight": 99}
+    assert [t["id"] for t in sorted([agent_heavy, user_light], key=key)] == ["usr", "agt"]
+
+
+def test_sort_weight_defaults_to_zero_when_absent() -> None:
+    # Regression guard: a task dict without sort_weight is treated as weight 0 — no crash, and the
+    # timestamp ordering is unchanged.
+    assert "sort_weight" not in _TASK
+    key = _make_sort_key()
+    a = {**_TASK, "id": "a", "turn": "user", "created_at": _at(-1)}
+    b = {**_TASK, "id": "b", "turn": "user", "created_at": _at(-2)}
+    assert [t["id"] for t in sorted([b, a], key=key)] == ["a", "b"]  # newest first
+
+
 def test_snoozed_governed_child_does_not_split_ensemble() -> None:
     # A snooze on a governed child must NOT demote it out of its ensemble — the exemption is gated
     # on having no governor. The child stays adjacent to its (unsnoozed) governor.
