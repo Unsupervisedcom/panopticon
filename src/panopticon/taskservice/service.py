@@ -316,6 +316,7 @@ class TaskService:
         artifacts: dict[str, str] | None = None,
         artifacts_b64: dict[str, str] | None = None,
         depends_on_task_ids: list[str] | None = None,
+        sort_weight: int = 0,
     ) -> Task:
         repo = await self.get_repo(repo_id)  # ensure exists (raises NotFound)
         if governor_task_id is not None:
@@ -326,6 +327,7 @@ class TaskService:
         now = self._clock()
         task = wf.start_task(self._id(), repo_id, at=now, memo=memo, initial_prompt=initial_prompt)
         task.governor_task_id = governor_task_id
+        task.sort_weight = sort_weight
         task.created_at = now
         task.updated_at = now  # creation time = first mutation
         await self._store.create_task(task)
@@ -363,6 +365,7 @@ class TaskService:
         artifacts: dict[str, str] | None = None,
         artifacts_b64: dict[str, str] | None = None,
         depends_on_task_ids: list[str] | None = None,
+        sort_weight: int = 0,
     ) -> Task:
         """Create a task **on behalf of an orchestrator task** — gated to orchestration workflows.
 
@@ -382,6 +385,7 @@ class TaskService:
             artifacts=artifacts,
             artifacts_b64=artifacts_b64,
             depends_on_task_ids=depends_on_task_ids,
+            sort_weight=sort_weight,
         )
 
     async def workflow_names_as(self, actor_task_id: str) -> list[str]:
@@ -619,6 +623,18 @@ class TaskService:
         task.snoozed_until = until
         await self._save_task(task)
         _log.debug("task %s: snoozed_until → %s", task_id, until)
+        return task
+
+    async def set_sort_weight(self, task_id: str, sort_weight: int) -> Task:
+        """Set the task's dashboard sort weight (default 0; higher sorts first).
+
+        A plain recorded fact, like the url: ranks above the ``updated_at`` timestamp but below
+        state/turn in the dashboard ordering. Leaves ``state``/``turn``/``blocked`` untouched.
+        """
+        task = await self.get_task(task_id)
+        task.sort_weight = sort_weight
+        await self._save_task(task)
+        _log.debug("task %s: sort_weight → %s", task_id, sort_weight)
         return task
 
     async def set_governor(self, task_id: str, governor_task_id: str | None) -> Task:

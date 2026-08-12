@@ -98,6 +98,15 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
 
     @mcp.tool(
         description=(
+            "Set the task's dashboard sort weight (default 0; higher sorts first). "
+            "Ranks above the last-updated timestamp but below state/turn."
+        )
+    )
+    async def set_sort_weight(task_id: str, sort_weight: int) -> dict[str, Any]:
+        return _task(await service.set_sort_weight(task_id, sort_weight))
+
+    @mcp.tool(
+        description=(
             "Replace the task's dependency list with the given task IDs. "
             "Each ID must reference an existing task; pass an empty list to clear all dependencies. "
             "Dependencies are tracking only — the state machine does not enforce them."
@@ -128,7 +137,9 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
             '{"plan.md": "..."}) — written before the call returns so the spawner always '
             "finds them present. `artifacts_b64` (optional) is the same for binary artifacts "
             "(e.g. a screenshot), name→base64. The new task's governor_task_id is set to "
-            "orchestrator_task_id automatically. Returns the new task."
+            "orchestrator_task_id automatically. `sort_weight` (optional, default 0) is the "
+            "task's dashboard sort priority — higher sorts first, ranking above the last-updated "
+            "timestamp but below state/turn. Returns the new task."
         )
     )
     async def create_task(
@@ -138,6 +149,7 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
         initial_prompt: str | None = None,
         artifacts: dict[str, str] | None = None,
         artifacts_b64: dict[str, str] | None = None,
+        sort_weight: int = 0,
     ) -> dict[str, Any]:
         _log.debug("mcp create_task orchestrator=%s workflow=%s", orchestrator_task_id, workflow)
         return _task(
@@ -148,6 +160,7 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
                 initial_prompt=initial_prompt,
                 artifacts=artifacts,
                 artifacts_b64=artifacts_b64,
+                sort_weight=sort_weight,
             )
         )
 

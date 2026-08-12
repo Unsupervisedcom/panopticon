@@ -114,7 +114,7 @@ from panopticon.terminal.setup_repo_task import create_setup_repo_task
 def _make_sort_key(
     by_updated: bool = False,
     now: datetime | None = None,
-) -> Callable[[JsonObj], tuple[int, bool, float, str]]:
+) -> Callable[[JsonObj], tuple[int, bool, int, float, str]]:
     """Return a sort key function for the task table.
 
     1. section: active (0) before snoozed-active roots (1) before terminal (2). An actively
@@ -126,15 +126,18 @@ def _make_sort_key(
        later grouping step.
     2. turn priority: for active tasks the user's turn comes first (operator action needed);
        for terminal tasks the agent's turn comes first (task just finished).
-    3. timestamp:
+    3. sort_weight: an operator-set priority (default 0) descending — a higher weight rises first.
+       Ranks below state/turn but above the timestamp, so it reorders within a section+turn group
+       without pulling a task out of it. Ties fall back to the timestamp.
+    4. timestamp:
        - Active, ``by_updated=False`` (default): ``created_at`` descending — newest first
          (stable: ``created_at`` never changes, so rows don't reorder when a task updates).
        - Active, ``by_updated=True``: ``updated_at`` descending — most recently updated rises first.
        - Terminal (always): ``updated_at`` descending — most recently completed rises first.
-    4. id as a stable tiebreaker.
+    5. id as a stable tiebreaker.
     """
 
-    def key(task: JsonObj) -> tuple[int, bool, float, str]:
+    def key(task: JsonObj) -> tuple[int, bool, int, float, str]:
         is_terminal = task["state"] in TERMINAL_LABELS
         is_snoozed_root = (
             not is_terminal
@@ -161,6 +164,7 @@ def _make_sort_key(
         return (
             section,  # 0 active, 1 snoozed-active root, 2 terminal
             turn_after_priority,  # priority turn sorts first within each section
+            -int(task.get("sort_weight") or 0),  # higher weight sorts first (below turn, above ts)
             ts,
             task["id"],  # stable tiebreaker
         )

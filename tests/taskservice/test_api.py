@@ -228,6 +228,20 @@ def test_create_task_records_the_memo(client: TestClient) -> None:
     assert got.json()["memo"] == "make it green"
 
 
+def test_create_task_defaults_sort_weight_to_zero(client: TestClient) -> None:
+    resp = client.post("/tasks", json={"repo_id": "r1", "workflow": "spike"})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["sort_weight"] == 0
+
+
+def test_create_task_accepts_sort_weight(client: TestClient) -> None:
+    resp = client.post("/tasks", json={"repo_id": "r1", "workflow": "spike", "sort_weight": 7})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["sort_weight"] == 7
+    got = client.get(f"/tasks/{resp.json()['id']}")  # and it survives a reload
+    assert got.json()["sort_weight"] == 7
+
+
 def test_get_missing_task_404(client: TestClient) -> None:
     assert client.get("/tasks/ghost").status_code == 404
 
@@ -352,6 +366,24 @@ def test_set_snooze_records_deadline_verbatim(client: TestClient) -> None:
     # null clears it
     cleared = client.put(f"/tasks/{task_id}/snooze", json={"until": None})
     assert cleared.json()["snoozed_until"] is None
+
+
+def test_set_sort_weight_over_rest(client: TestClient) -> None:
+    task_id = _new_task(client)
+    before = client.get(f"/tasks/{task_id}").json()
+    assert before["sort_weight"] == 0  # default
+
+    weighted = client.put(f"/tasks/{task_id}/sort-weight", json={"sort_weight": 10})
+    assert weighted.status_code == 200
+    body = weighted.json()
+    assert body["sort_weight"] == 10
+    # a plain recorded fact — lifecycle untouched
+    assert body["state"] == before["state"]
+    assert body["turn"] == before["turn"]
+
+    assert client.get(f"/tasks/{task_id}").json()["sort_weight"] == 10  # persisted
+    reset = client.put(f"/tasks/{task_id}/sort-weight", json={"sort_weight": 0})
+    assert reset.json()["sort_weight"] == 0
 
 
 def test_claim_release_over_rest(client: TestClient) -> None:

@@ -61,6 +61,7 @@ async def test_tools_are_exposed_and_drive_the_task(tmp_path: Path) -> None:
             "resolve_responsibility",
             "set_turn",
             "set_blocked",
+            "set_sort_weight",
             "put_artifact",
             "list_artifacts",
         } <= names
@@ -238,6 +239,17 @@ async def test_set_token_estimate_via_tool(tmp_path: Path) -> None:
     ).token_estimate == 500000  # the tool actually mutated the task
 
 
+async def test_set_sort_weight_via_tool(tmp_path: Path) -> None:
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        result = await s.call_tool("set_sort_weight", {"task_id": task.id, "sort_weight": 7})
+        assert result.structuredContent is not None
+        assert result.structuredContent["sort_weight"] == 7
+    assert (await svc.get_task(task.id)).sort_weight == 7  # the tool actually mutated the task
+
+
 # -- orchestration tools (gated to workflows whose `orchestrates` is set) --------------------
 
 
@@ -282,6 +294,21 @@ async def test_create_task_as_sets_governor_task_id(tmp_path: Path) -> None:
         child_id = result.structuredContent["id"]  # type: ignore[index]
     child = await svc.get_task(child_id)
     assert child.governor_task_id == boss.id  # auto-wired to the orchestrator
+
+
+async def test_create_task_seeds_sort_weight(tmp_path: Path) -> None:
+    svc = await _service(tmp_path)
+    boss = await svc.create_task("r1", "orchestrator")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        result = await s.call_tool(
+            "create_task",
+            {"orchestrator_task_id": boss.id, "workflow": "spike", "sort_weight": 9},
+        )
+        assert result.isError is False
+        assert result.structuredContent["sort_weight"] == 9  # type: ignore[index]
+        child_id = result.structuredContent["id"]  # type: ignore[index]
+    assert (await svc.get_task(child_id)).sort_weight == 9  # persisted
 
 
 async def test_create_task_rejected_for_non_orchestrator(tmp_path: Path) -> None:
