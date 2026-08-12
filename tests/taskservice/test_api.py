@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -417,6 +418,52 @@ def test_artifact_put_get_list(client: TestClient) -> None:
 def test_artifact_missing_404(client: TestClient) -> None:
     task_id = _new_task(client)
     assert client.get(f"/tasks/{task_id}/artifacts/plan.md").status_code == 404
+
+
+def test_artifact_download_content_type_from_extension(client: TestClient) -> None:
+    # A binary artifact downloads byte-exact with a type derived from its extension (so a browser
+    # renders a screenshot), while text keeps its own type; unknown/extensionless falls back.
+    task_id = _new_task(client)
+    png = b"\x89PNG\r\n\x1a\n\x00\xff\xfe\x01"
+    client.put(f"/tasks/{task_id}/artifacts/shot.png", content=png)
+    client.put(f"/tasks/{task_id}/artifacts/plan.md", content=b"# Plan")
+    client.put(f"/tasks/{task_id}/artifacts/blob", content=b"\x00\x01")
+
+    shot = client.get(f"/tasks/{task_id}/artifacts/shot.png")
+    assert shot.content == png
+    assert shot.headers["content-type"] == "image/png"
+    assert (
+        client.get(f"/tasks/{task_id}/artifacts/plan.md")
+        .headers["content-type"]
+        .startswith("text/markdown")
+    )
+    assert (
+        client.get(f"/tasks/{task_id}/artifacts/blob").headers["content-type"]
+        == "application/octet-stream"
+    )
+
+
+def test_create_task_seeds_binary_artifacts_from_base64(client: TestClient) -> None:
+    png = b"\x89PNG\r\n\x1a\n\x00\xff\xfe\x01binary"
+    resp = client.post(
+        "/tasks",
+        json={
+            "repo_id": "r1",
+            "workflow": "spike",
+            "artifacts_b64": {"shot.png": base64.b64encode(png).decode()},
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    task_id = resp.json()["id"]
+    assert client.get(f"/tasks/{task_id}/artifacts/shot.png").content == png
+
+
+def test_create_task_rejects_malformed_base64_artifact(client: TestClient) -> None:
+    resp = client.post(
+        "/tasks",
+        json={"repo_id": "r1", "workflow": "spike", "artifacts_b64": {"x.bin": "not base64!!"}},
+    )
+    assert resp.status_code == 400, resp.text
 
 
 # -- liveness -----------------------------------------------------------------------

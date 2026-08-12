@@ -164,6 +164,7 @@ class TaskServiceClient:
         *,
         initial_prompt: str | None = None,
         artifacts: dict[str, str] | None = None,
+        artifacts_b64: dict[str, str] | None = None,
         sort_weight: int = 0,
     ) -> JsonObj:
         body: JsonObj = {"repo_id": repo_id, "workflow": workflow, "memo": memo}
@@ -171,6 +172,8 @@ class TaskServiceClient:
             body["initial_prompt"] = initial_prompt
         if artifacts:
             body["artifacts"] = artifacts
+        if artifacts_b64:
+            body["artifacts_b64"] = artifacts_b64
         if sort_weight:
             body["sort_weight"] = sort_weight
         return cast(JsonObj, self._json(self._http.post("/tasks", json=body)))
