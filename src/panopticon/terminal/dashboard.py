@@ -482,6 +482,47 @@ def _open_command() -> str:
     return "open" if sys.platform == "darwin" else "xdg-open"
 
 
+def _artifact_path_candidates(raw: str) -> list[str]:
+    """Ordered, de-duplicated interpretations of an artifact-path field value, most-literal first.
+
+    Terminals hand paths over shell-quoted — dragging a file in, or tab-completing a name with a
+    space, yields ``'my notes.md'`` / ``"my notes.md"`` / ``my\\ notes.md`` rather than the bare
+    path. A literal ``Path("'my notes.md'")`` never matches the real file, so the caller tries each
+    candidate in turn and takes the first that names a file that actually exists. Candidates, in
+    priority order:
+
+    1. ``raw`` verbatim — the ordinary unquoted path, including one with legitimate interior spaces,
+       so a path that already exists as typed is never mangled by the interpretations below.
+    2. ``raw.strip()`` — stray whitespace from a paste.
+    3. When the stripped value is wrapped in a **matching** single- or double-quote pair, its inner
+       content and that content stripped (the "quoted ... spaces stripped" case).
+    4. ``shlex.split`` when it yields exactly one token — handles both quote styles *and*
+       backslash-escaped spaces; a multi-token split (an unquoted ``a b.md``) is ignored so we never
+       silently pick just ``a``, and an unbalanced quote (``ValueError``) is skipped.
+    """
+    candidates: list[str] = [raw]
+    stripped = raw.strip()
+    candidates.append(stripped)
+    for quote in ("'", '"'):
+        if len(stripped) >= 2 and stripped[0] == quote and stripped[-1] == quote:
+            inner = stripped[1:-1]
+            candidates.append(inner)
+            candidates.append(inner.strip())
+    try:
+        tokens = shlex.split(stripped)
+    except ValueError:
+        tokens = []
+    if len(tokens) == 1:
+        candidates.append(tokens[0])
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for c in candidates:
+        if c.strip() and c not in seen:
+            seen.add(c)
+            ordered.append(c)
+    return ordered
+
+
 def _open_path(path: str) -> None:
     """Hand ``path`` to the host's default handler, non-blocking (don't freeze the TUI). Raises
     ``FileNotFoundError`` when the opener isn't installed (e.g. headless host, no ``xdg-open``);
@@ -809,7 +850,9 @@ class ArtifactsScreen(ModalScreen["dict[str, tuple[str, bytes]] | None"]):
     def compose(self) -> ComposeResult:
         with Vertical(id="artifacts-box"):
             yield Label("attach files")
-            yield Input(placeholder="path to a file — enter to add", id="artifacts-path")
+            yield Input(
+                placeholder="path to a file (quotes ok) — enter to add", id="artifacts-path"
+            )
             yield _VimOptionList(id="artifacts-list")
             yield Static("", id="artifacts-error")
             yield Label(
@@ -834,13 +877,18 @@ class ArtifactsScreen(ModalScreen["dict[str, tuple[str, bytes]] | None"]):
         raw = event.value.strip()
         if not raw:
             return
-        path = Path(raw).expanduser()
-        try:
-            resolved = path.resolve()
-        except OSError as exc:
-            self._set_error(f"{raw}: {exc}")
-            return
-        if not resolved.is_file():
+        # Try each interpretation of the (possibly shell-quoted) input and take the first that
+        # names a file that actually exists; a candidate whose resolution raises is just skipped.
+        resolved: Path | None = None
+        for candidate in _artifact_path_candidates(event.value):
+            try:
+                path = Path(candidate).expanduser().resolve()
+            except OSError:
+                continue
+            if path.is_file():
+                resolved = path
+                break
+        if resolved is None:
             self._set_error(f"not a file: {raw}")
             return
         name = resolved.name
