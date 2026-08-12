@@ -1098,6 +1098,68 @@ async def test_memo_ctrl_a_rejects_a_missing_path(tmp_path: Path) -> None:
         assert "not a file" in str(screen.query_one("#artifacts-error", Static).render())
 
 
+def test_artifact_path_candidates_orders_literal_first_and_dedups() -> None:
+    # The bare value is always tried first (an unquoted path with real spaces is never mangled),
+    # then the stripped form; identical candidates collapse.
+    assert dashboard._artifact_path_candidates("a b.md") == ["a b.md"]
+    assert dashboard._artifact_path_candidates("  a.md  ") == ["  a.md  ", "a.md"]
+
+
+def test_artifact_path_candidates_strips_matching_quotes() -> None:
+    # Single/double quotes are unwrapped (and the inner content stripped) as extra candidates
+    # after the literal value.
+    assert dashboard._artifact_path_candidates("'my notes.md'") == ["'my notes.md'", "my notes.md"]
+    assert dashboard._artifact_path_candidates('"my notes.md"') == ['"my notes.md"', "my notes.md"]
+    assert dashboard._artifact_path_candidates("' spaced.md '") == [
+        "' spaced.md '",
+        " spaced.md ",
+        "spaced.md",
+    ]
+
+
+def test_artifact_path_candidates_handles_escaped_spaces_and_bad_quotes() -> None:
+    # A backslash-escaped space resolves via shlex to a single token; an unquoted multi-word value
+    # never yields a lone first word; an unbalanced quote just falls back to the literal value.
+    assert "my notes.md" in dashboard._artifact_path_candidates(r"my\ notes.md")
+    assert dashboard._artifact_path_candidates("a b.md") == ["a b.md"]
+    assert dashboard._artifact_path_candidates("'unbalanced.md") == ["'unbalanced.md"]
+    assert dashboard._artifact_path_candidates("   ") == []
+
+
+async def test_memo_ctrl_a_accepts_a_quoted_path(tmp_path: Path) -> None:
+    # A shell-quoted path (as a terminal hands over a name with a space) resolves to the real file.
+    src = tmp_path / "my notes.md"
+    src.write_text("quoted")
+    fake = _FakeClient(
+        [],
+        repos=["r1"],
+        workflows=[{"name": "spike", "when_to_use": ""}],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")  # repo
+        await pilot.pause()
+        await pilot.press("enter")  # workflow
+        await pilot.pause()
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, dashboard.ArtifactsScreen)
+        screen.query_one("#artifacts-path", Input).value = f"'{src}'"
+        await pilot.press("enter")  # add the file
+        await pilot.pause()
+        assert "my notes.md" in screen._artifacts
+        assert screen._artifacts["my notes.md"] == (str(src), "quoted")
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("enter")  # submit an empty memo
+        await pilot.pause()
+    assert fake.created_artifacts == [{"my notes.md": "quoted"}]
+
+
 async def test_dashboard_drives_drop() -> None:
     # Drop is the one transition the operator drives; advance and the rest are agent skills, so
     # they aren't dashboard actions (no `a`/`i` bindings).
