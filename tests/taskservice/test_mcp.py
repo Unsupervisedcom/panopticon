@@ -3,6 +3,7 @@ client (no LLM, no HTTP). The HTTP hosting is mounted on the runnable server (Sl
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
 from mcp.shared.memory import create_connected_server_and_client_session as connect
@@ -81,6 +82,45 @@ async def test_artifacts_round_trip_via_tool_and_resource(tmp_path: Path) -> Non
         res = await s.read_resource(f"panopticon://tasks/{task.id}/artifacts/plan.md")
         assert res.contents[0].text == "# Plan"  # type: ignore[union-attr]
     assert await svc.get_artifact(task.id, "plan.md") == b"# Plan"
+
+
+async def test_binary_artifact_round_trips_via_base64_tool_and_blob_resource(
+    tmp_path: Path,
+) -> None:
+    # A screenshot's bytes aren't valid UTF-8: write via content_base64, read back as a base64 blob
+    # (JSON can't carry raw bytes, so the resource returns a BlobResourceContents, not text).
+    png = b"\x89PNG\r\n\x1a\n\x00\xff\xfe\x01binary\x00data"
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        await s.call_tool(
+            "put_artifact",
+            {
+                "task_id": task.id,
+                "name": "shot.png",
+                "content_base64": base64.b64encode(png).decode(),
+            },
+        )
+        res = await s.read_resource(f"panopticon://tasks/{task.id}/artifacts/shot.png")
+        blob = res.contents[0].blob  # type: ignore[union-attr]
+        assert base64.b64decode(blob) == png
+    assert await svc.get_artifact(task.id, "shot.png") == png
+
+
+async def test_put_artifact_requires_exactly_one_content_argument(tmp_path: Path) -> None:
+    # Exactly one of content / content_base64 — neither (nor both) is a usage error.
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        neither = await s.call_tool("put_artifact", {"task_id": task.id, "name": "x"})
+        assert neither.isError is True
+        both = await s.call_tool(
+            "put_artifact",
+            {"task_id": task.id, "name": "x", "content": "hi", "content_base64": "aGk="},
+        )
+        assert both.isError is True
 
 
 async def test_list_artifacts_returns_names_and_readable_uris(tmp_path: Path) -> None:
