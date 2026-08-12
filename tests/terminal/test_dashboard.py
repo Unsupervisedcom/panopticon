@@ -5,6 +5,7 @@ real HTTP client is covered in test_terminal.py."""
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import threading
 from datetime import UTC, datetime, timedelta
@@ -114,7 +115,7 @@ class _FakeClient:
         self._change = threading.Event()
         self.list_tasks_calls = 0  # how many times the table was (re)built — counts feed refreshes
         self.created: list[tuple[str, str, str | None]] = []
-        self.created_artifacts: list[dict[str, str] | None] = []
+        self.created_artifacts_b64: list[dict[str, str] | None] = []
         self.applied: list[tuple[str, str]] = []
         self.released: list[str] = []
         self.snoozed: list[tuple[str, str | None]] = []
@@ -227,9 +228,10 @@ class _FakeClient:
         *,
         initial_prompt: str | None = None,
         artifacts: dict[str, str] | None = None,
+        artifacts_b64: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         self.created.append((repo_id, workflow, memo, initial_prompt))
-        self.created_artifacts.append(artifacts)
+        self.created_artifacts_b64.append(artifacts_b64)
         return {"id": "new"}
 
     def apply_operation(self, task_id: str, operation: str) -> dict[str, Any]:
@@ -953,7 +955,11 @@ async def test_memo_ctrl_a_attaches_a_file_as_an_artifact(tmp_path: Path) -> Non
         await pilot.press("enter")  # submit
         await pilot.pause()
     assert fake.created == [("r1", "spike", "fix", "fix")]
-    assert fake.created_artifacts == [{"notes.md": "hello world"}]
+    assert fake.created_artifacts_b64 == [{"notes.md": _b64("hello world")}]
+
+
+def _b64(text: str) -> str:
+    return base64.b64encode(text.encode()).decode()
 
 
 async def test_memo_ctrl_a_preserves_spaces_in_the_filename(tmp_path: Path) -> None:
@@ -987,7 +993,42 @@ async def test_memo_ctrl_a_preserves_spaces_in_the_filename(tmp_path: Path) -> N
         await pilot.pause()
         await pilot.press("enter")  # submit an empty memo
         await pilot.pause()
-    assert fake.created_artifacts == [{"my notes.md": "spaced"}]
+    assert fake.created_artifacts_b64 == [{"my notes.md": _b64("spaced")}]
+
+
+async def test_memo_ctrl_a_attaches_a_binary_file(tmp_path: Path) -> None:
+    # A non-UTF-8 file (e.g. a screenshot) queues intact and seeds via the base64 wire — the old
+    # read_text() path rejected it with a decode error.
+    png = b"\x89PNG\r\n\x1a\n\x00\xff\xfe\x01binary\x00data"
+    src = tmp_path / "shot.png"
+    src.write_bytes(png)
+    fake = _FakeClient(
+        [],
+        repos=["r1"],
+        workflows=[{"name": "spike", "when_to_use": ""}],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")  # repo
+        await pilot.pause()
+        await pilot.press("enter")  # workflow
+        await pilot.pause()
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, dashboard.ArtifactsScreen)
+        screen.query_one("#artifacts-path", Input).value = str(src)
+        await pilot.press("enter")  # add the file
+        await pilot.pause()
+        assert "shot.png" in screen._artifacts  # no decode error
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("enter")  # submit an empty memo
+        await pilot.pause()
+    assert fake.created_artifacts_b64 == [{"shot.png": base64.b64encode(png).decode()}]
 
 
 async def test_memo_ctrl_a_can_remove_a_queued_file(tmp_path: Path) -> None:
@@ -1027,7 +1068,7 @@ async def test_memo_ctrl_a_can_remove_a_queued_file(tmp_path: Path) -> None:
         await pilot.press("enter")  # submit an empty memo
         await pilot.pause()
     assert fake.created == [("r1", "spike", None, None)]
-    assert fake.created_artifacts == [{}]
+    assert fake.created_artifacts_b64 == [{}]
 
 
 async def test_memo_ctrl_a_rejects_a_missing_path(tmp_path: Path) -> None:

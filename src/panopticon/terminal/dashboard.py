@@ -56,6 +56,7 @@ to Textual workers is a refinement (docs/design/BACKLOG.md).
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import functools
 import os
@@ -688,9 +689,10 @@ class MemoTextArea(TextArea):
 class MemoScreen(ModalScreen["tuple[str, bool, dict[str, str]] | None"]):
     """Memo prompt for task creation.
 
-    Dismisses ``(text, submit, artifacts)`` where ``submit`` says whether to deliver the memo as
-    the agent's initial prompt and ``artifacts`` is a ``name → content`` map of files attached via
-    ``ctrl+a``, or ``None`` on cancel (Escape). **Enter always submits** the memo as an initial
+    Dismisses ``(text, submit, artifacts_b64)`` where ``submit`` says whether to deliver the memo as
+    the agent's initial prompt and ``artifacts_b64`` is a ``name → base64`` map of files attached via
+    ``ctrl+a`` (base64 so binary files like screenshots seed intact), or ``None`` on cancel
+    (Escape). **Enter always submits** the memo as an initial
     prompt; **ctrl+s sets the memo without submitting** it (an unsent paste); **ctrl+a** opens the
     attach-files modal (:class:`ArtifactsScreen`).
 
@@ -715,9 +717,10 @@ class MemoScreen(ModalScreen["tuple[str, bool, dict[str, str]] | None"]):
 
     def __init__(self) -> None:
         super().__init__()
-        # name → (source path, content) for the files the operator attaches via ctrl+a. Keyed by
-        # the artifact name (the path's basename) so a re-attach of the same name overwrites.
-        self._artifacts: dict[str, tuple[str, str]] = {}
+        # name → (source path, raw bytes) for the files the operator attaches via ctrl+a. Keyed by
+        # the artifact name (the path's basename) so a re-attach of the same name overwrites. Bytes,
+        # not text, so binary files (screenshots, PDFs) attach intact.
+        self._artifacts: dict[str, tuple[str, bytes]] = {}
 
     def compose(self) -> ComposeResult:
         with Vertical(id="memo-box"):
@@ -739,20 +742,24 @@ class MemoScreen(ModalScreen["tuple[str, bool, dict[str, str]] | None"]):
         label.update("" if n == 0 else f"attached: {', '.join(sorted(self._artifacts))}")
         label.display = n > 0
 
-    def _content_map(self) -> dict[str, str]:
-        return {name: content for name, (_path, content) in self._artifacts.items()}
+    def _artifacts_b64(self) -> dict[str, str]:
+        # base64 the raw bytes for the create wire — JSON can't carry raw bytes (a binary artifact).
+        return {
+            name: base64.b64encode(content).decode()
+            for name, (_path, content) in self._artifacts.items()
+        }
 
     def action_submit(self) -> None:
-        self.dismiss((self.query_one(MemoTextArea).text, True, self._content_map()))
+        self.dismiss((self.query_one(MemoTextArea).text, True, self._artifacts_b64()))
 
     def action_set_only(self) -> None:
-        self.dismiss((self.query_one(MemoTextArea).text, False, self._content_map()))
+        self.dismiss((self.query_one(MemoTextArea).text, False, self._artifacts_b64()))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
 
     def action_attach_files(self) -> None:
-        def done(artifacts: dict[str, tuple[str, str]] | None) -> None:
+        def done(artifacts: dict[str, tuple[str, bytes]] | None) -> None:
             if artifacts is not None:
                 self._artifacts = artifacts
                 self._refresh_attached()
@@ -772,12 +779,13 @@ class MemoScreen(ModalScreen["tuple[str, bool, dict[str, str]] | None"]):
         ta.focus()
 
 
-class ArtifactsScreen(ModalScreen["dict[str, tuple[str, str]] | None"]):
+class ArtifactsScreen(ModalScreen["dict[str, tuple[str, bytes]] | None"]):
     """Attach-files modal reached from :class:`MemoScreen` with ``ctrl+a``.
 
     Lets the operator queue local files to seed as the new task's artifacts: type a path + Enter
     to add one (read now, from the dashboard host), select a queued file + Enter to remove it.
-    Escape dismisses the ``name → (path, content)`` map back to the memo screen (which reopens with
+    Files are read as raw bytes, so binary files (screenshots, PDFs) attach intact.
+    Escape dismisses the ``name → (path, bytes)`` map back to the memo screen (which reopens with
     the queue preserved); the map is keyed by the artifact **name** (the path's basename), so
     attaching two paths with the same basename keeps the latter.
 
@@ -794,7 +802,7 @@ class ArtifactsScreen(ModalScreen["dict[str, tuple[str, str]] | None"]):
     """
     BINDINGS = [("escape", "done", "Done")]
 
-    def __init__(self, artifacts: dict[str, tuple[str, str]]) -> None:
+    def __init__(self, artifacts: dict[str, tuple[str, bytes]]) -> None:
         super().__init__()
         self._artifacts = artifacts
 
@@ -842,8 +850,8 @@ class ArtifactsScreen(ModalScreen["dict[str, tuple[str, str]] | None"]):
             self._set_error(f"invalid artifact name: {name!r}")
             return
         try:
-            content = resolved.read_text()
-        except (OSError, UnicodeDecodeError) as exc:
+            content = resolved.read_bytes()
+        except OSError as exc:
             self._set_error(f"can't read {raw}: {exc}")
             return
         self._artifacts[name] = (str(resolved), content)
@@ -2096,17 +2104,21 @@ class Dashboard(App[None]):
                 def create(result: tuple[str, bool, dict[str, str]] | None) -> None:
                     if result is None:  # backed out
                         return
-                    memo_text, submit, artifacts = result
+                    memo_text, submit, artifacts_b64 = result
                     stripped = memo_text.strip()
                     if _apply_memo_filter(stripped):
                         return
                     if submit and stripped:
                         self._client.create_task(
-                            repo, workflow, stripped, initial_prompt=stripped, artifacts=artifacts
+                            repo,
+                            workflow,
+                            stripped,
+                            initial_prompt=stripped,
+                            artifacts_b64=artifacts_b64,
                         )
                     else:
                         self._client.create_task(
-                            repo, workflow, stripped or None, artifacts=artifacts
+                            repo, workflow, stripped or None, artifacts_b64=artifacts_b64
                         )
                     self.action_refresh()
 

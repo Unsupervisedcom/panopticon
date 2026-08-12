@@ -7,7 +7,9 @@ that maps ``(task_id, name)`` to a path and an MCP URI so every surface agrees.
 
 from __future__ import annotations
 
+import binascii
 from abc import ABC, abstractmethod
+from base64 import b64decode
 from urllib.parse import quote, unquote
 
 MCP_URI_SCHEME = "panopticon"
@@ -19,6 +21,20 @@ class ArtifactError(Exception):
 
 class InvalidArtifactName(ArtifactError):
     """Raised for an artifact name (or task id) that could escape its directory."""
+
+
+class InvalidArtifactContent(ArtifactError):
+    """Raised for artifact content that can't be decoded (e.g. malformed base64)."""
+
+
+def decode_b64_artifact(name: str, encoded: str) -> bytes:
+    """Decode a base64-encoded artifact value to raw bytes, raising :class:`ArtifactError` on
+    malformed input. This is how binary artifacts (screenshots, PDFs) cross the JSON surfaces
+    (REST create body, MCP tools) — JSON can't carry raw bytes, so the value is base64."""
+    try:
+        return b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise InvalidArtifactContent(f"artifact {name!r}: invalid base64: {exc}") from exc
 
 
 def validate_segment(segment: str) -> None:

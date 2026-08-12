@@ -10,6 +10,7 @@ plane serves REST and MCP. ``create_app`` builds an app around an injected
 from __future__ import annotations
 
 import asyncio
+import mimetypes
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from typing import Any
@@ -214,6 +215,7 @@ class CreateTaskIn(BaseModel):
     governor_task_id: str | None = None
     initial_prompt: str | None = None
     artifacts: dict[str, str] | None = None
+    artifacts_b64: dict[str, str] | None = None  # binary artifacts, name → base64
     depends_on_task_ids: list[str] = []
 
 
@@ -513,6 +515,7 @@ def create_app(service: TaskService) -> FastAPI:
                 governor_task_id=body.governor_task_id,
                 initial_prompt=body.initial_prompt,
                 artifacts=body.artifacts,
+                artifacts_b64=body.artifacts_b64,
                 depends_on_task_ids=body.depends_on_task_ids or None,
             )
         )
@@ -687,7 +690,10 @@ def create_app(service: TaskService) -> FastAPI:
         content = await service.get_artifact(task_id, name)
         if content is None:
             raise HTTPException(status_code=404, detail=f"artifact {name!r} not found")
-        return Response(content=content, media_type="application/octet-stream")
+        # Type the download from the name's extension so a screenshot serves as image/png etc.;
+        # unknown/extensionless names fall back to octet-stream.
+        media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        return Response(content=content, media_type=media_type)
 
     # -- liveness -----------------------------------------------------------------
 
