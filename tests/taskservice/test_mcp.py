@@ -256,6 +256,21 @@ async def test_create_task_as_sets_governor_task_id(tmp_path: Path) -> None:
     assert child.governor_task_id == boss.id  # auto-wired to the orchestrator
 
 
+async def test_create_task_seeds_sort_weight(tmp_path: Path) -> None:
+    svc = await _service(tmp_path)
+    boss = await svc.create_task("r1", "orchestrator")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        result = await s.call_tool(
+            "create_task",
+            {"orchestrator_task_id": boss.id, "workflow": "spike", "sort_weight": 9},
+        )
+        assert result.isError is False
+        assert result.structuredContent["sort_weight"] == 9  # type: ignore[index]
+        child_id = result.structuredContent["id"]  # type: ignore[index]
+    assert (await svc.get_task(child_id)).sort_weight == 9  # persisted
+
+
 async def test_create_task_rejected_for_non_orchestrator(tmp_path: Path) -> None:
     svc = await _service(tmp_path)
     task = await svc.create_task("r1", "spike")  # spike does not orchestrate

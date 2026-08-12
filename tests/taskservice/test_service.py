@@ -273,6 +273,13 @@ async def test_blocked_marker_survives_turn_flips(tmp_path: Path) -> None:
     assert (await svc.set_blocked(task.id, False)).blocked is False  # cleared only explicitly
 
 
+async def test_create_task_seeds_sort_weight(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    task = await svc.create_task("r1", "spike", sort_weight=8)
+    assert task.sort_weight == 8
+    assert (await svc.get_task(task.id)).sort_weight == 8  # persisted
+
+
 async def test_set_sort_weight_defaults_to_zero_and_persists(tmp_path: Path) -> None:
     svc = await make_service(tmp_path)
     task = await svc.create_task("r1", "spike")

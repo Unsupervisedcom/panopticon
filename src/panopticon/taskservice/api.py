@@ -219,6 +219,7 @@ class CreateTaskIn(BaseModel):
     initial_prompt: str | None = None
     artifacts: dict[str, str] | None = None
     depends_on_task_ids: list[str] = []
+    sort_weight: int = 0
 
 
 class DependenciesIn(BaseModel):
@@ -522,6 +523,7 @@ def create_app(service: TaskService) -> FastAPI:
                 initial_prompt=body.initial_prompt,
                 artifacts=body.artifacts,
                 depends_on_task_ids=body.depends_on_task_ids or None,
+                sort_weight=body.sort_weight,
             )
         )
 

@@ -227,6 +227,20 @@ def test_create_task_records_the_memo(client: TestClient) -> None:
     assert got.json()["memo"] == "make it green"
 
 
+def test_create_task_defaults_sort_weight_to_zero(client: TestClient) -> None:
+    resp = client.post("/tasks", json={"repo_id": "r1", "workflow": "spike"})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["sort_weight"] == 0
+
+
+def test_create_task_accepts_sort_weight(client: TestClient) -> None:
+    resp = client.post("/tasks", json={"repo_id": "r1", "workflow": "spike", "sort_weight": 7})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["sort_weight"] == 7
+    got = client.get(f"/tasks/{resp.json()['id']}")  # and it survives a reload
+    assert got.json()["sort_weight"] == 7
+
+
 def test_get_missing_task_404(client: TestClient) -> None:
     assert client.get("/tasks/ghost").status_code == 404
 
