@@ -53,6 +53,21 @@ UPGRADE_EVALUATED = Responsibility(
     ),
 )
 
+#: MERGING responsibility specific to the dependency-bump lifecycle: the bump PR is approved (via
+#: `approve-dependabot-pr`) so branch protection's required-review gate is satisfied and the bump
+#: can land. Gated as an explicit, dashboard-visible promise rather than folded into the shared
+#: `babysit-merge` skill. Dependabot authored the PR, so the agent's token — a different identity —
+#: may approve it; this is scoped to this workflow (on the self/peer-reviewed lifecycles the agent
+#: is effectively the author and must not self-approve). Module scope for the same reason as
+#: UPGRADE_EVALUATED: the nested `Merging` body can't see the enclosing class's namespace.
+PR_APPROVED = Responsibility(
+    key="pr-approved",
+    description=(
+        "The Dependabot bump PR is approved (`gh pr review --approve`, via `approve-dependabot-pr`) "
+        "so branch protection's required-review gate is satisfied and the bump can land."
+    ),
+)
+
 
 class GithubDependabot(GithubForgeWorkflow):
     """The github-dependabot lifecycle: a Dependabot dependency-bump PR (the task memo is the
@@ -70,6 +85,9 @@ class GithubDependabot(GithubForgeWorkflow):
 
     #: Re-export of the module-level evaluation responsibility (see :data:`UPGRADE_EVALUATED`).
     UPGRADE_EVALUATED: ClassVar[Responsibility] = UPGRADE_EVALUATED
+
+    #: Re-export of the module-level MERGING approval responsibility (see :data:`PR_APPROVED`).
+    PR_APPROVED: ClassVar[Responsibility] = PR_APPROVED
 
     class Planning(InitialState):
         label = "PLANNING"
@@ -126,29 +144,28 @@ class GithubDependabot(GithubForgeWorkflow):
 
     class Merging(State):
         label = "MERGING"
-        description = "Add the PR to the merge queue. If the PR exits the merge queue, re-add it."
+        description = (
+            "First run `approve-dependabot-pr` to approve the bump PR (Dependabot authored it, so "
+            "the agent's token is a different identity and may approve it) — this satisfies branch "
+            "protection's required review so the bump can land. Then add the PR to the merge queue "
+            "with `babysit-merge`; if the PR exits the merge queue, re-add it."
+        )
         advanced_by = Actor.AGENT  # background: the agent shepherds the merge and advances itself
-        responsibilities = (Responsibility(key="pr-merged", description="The PR is merged."),)
+        responsibilities = (
+            # The bump PR is approved so branch protection's required-review gate is satisfied.
+            # Gated here (not folded into `babysit-merge`) so the approval is an explicit, dashboard-
+            # visible promise the agent must resolve — not a line of prose it could skim past.
+            PR_APPROVED,
+            Responsibility(key="pr-merged", description="The PR is merged."),
+        )
         transitions = (Complete,)  # the happy path; `advance` derives → COMPLETE
 
     initial = Planning
 
-    def _merge_approval_step(self) -> str:
-        """Auto-approve the bump PR in MERGING, spliced into the shared `babysit-merge` skill just
-        before it queues the PR. Dependabot authored the PR, so the agent's token is a *different*
-        identity and may approve it — this satisfies branch protection's required-review gate so
-        the bump can land through the merge queue without a human clicking Approve. (Scoped to this
-        workflow: on the self/peer-reviewed lifecycles the agent is effectively the author and the
-        base returns an empty string, leaving their `babysit-merge` unchanged.)"""
-        return (
-            "first approve the PR so branch protection's required review is satisfied — "
-            "`gh pr review <pr> --approve` (the agent's token is not the Dependabot author, so it "
-            "may approve); then "
-        )
-
     def skills(self) -> Sequence[Skill]:
         """Swap the inherited ``open-pr`` (the PR already exists) for ``checkout-dependabot-pr``,
-        and reuse the inherited ``babysit-ci`` / ``babysit-merge`` verbatim."""
+        add the dependabot-only ``approve-dependabot-pr`` (MERGING's ``pr-approved`` gate), and
+        reuse the inherited ``babysit-ci`` / ``babysit-merge`` verbatim."""
         forge = {skill.name: skill for skill in super().skills()}
         return (
             Skill(
@@ -168,6 +185,20 @@ class GithubDependabot(GithubForgeWorkflow):
                 "to put the tree back on the PR branch.)\n"
                 "4. Call the `set_url` MCP tool with the PR URL so the dashboard's `p` hotkey "
                 "opens it and the `url-recorded` responsibility can be resolved.",
+            ),
+            Skill(
+                "approve-dependabot-pr",
+                "Approve the Dependabot bump PR so branch protection's required review is met.",
+                "Run this **once at the start of MERGING**, before `babysit-merge` queues the PR — "
+                "an approving review is what satisfies branch protection so the bump can land.\n"
+                "Dependabot is the PR author and the agent's token is a *different* identity, so it "
+                "may approve the PR (this is not a self-approval, and is scoped to this "
+                "dependency-bump workflow).\n"
+                "1. Read the PR URL from the task memo (or the recorded task URL).\n"
+                "2. Approve it: `gh pr review <url> --approve` (run in `/workspace`). If it reports "
+                "the PR is already approved by you, that's fine — treat it as done.\n"
+                "3. Resolve the `pr-approved` responsibility (`resolve_responsibility`, MET), then "
+                "run `babysit-merge` to shepherd the PR through the merge queue.",
             ),
             forge["babysit-ci"],
             forge["babysit-merge"],

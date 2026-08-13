@@ -55,14 +55,6 @@ class GithubForgeWorkflow(PlannedWorkflow):
         """The forge skills shell out to `gh`, so layer it onto the base image (ADR 0005)."""
         return "RUN apt-get update && apt-get install --yes --no-install-recommends gh"
 
-    def _merge_approval_step(self) -> str:
-        """A pre-queue clause spliced into `babysit-merge`'s "queue the PR" branch, immediately
-        before `gh pr merge --auto`. Empty by default (the agent is effectively the PR author on
-        the self/peer-reviewed lifecycles, so it must not approve its own PR) — the rendered skill
-        text is then byte-for-byte the shared version. `GithubDependabot` overrides it to
-        auto-approve the bump PR (Dependabot is the author, so the agent's token may approve it)."""
-        return ""
-
     def skills(self) -> Sequence[Skill]:
         """The forge skills (ADR 0004 — remote VCS is workflow-specific). The agent runs these
         in the container against `gh`/CI, calling back over MCP/REST."""
@@ -191,8 +183,7 @@ class GithubForgeWorkflow(PlannedWorkflow):
                 "delete the state artifact; stop.\n"
                 "- `autoMergeRequest` is non-null, or the PR is already in the merge queue → "
                 "**skip** `gh pr merge --auto` (do not double-queue); go directly to step 4.\n"
-                f"- Otherwise → {self._merge_approval_step()}run `gh pr merge --squash --auto`; "
-                "increment `requeue_count` in "
+                "- Otherwise → run `gh pr merge --squash --auto`; increment `requeue_count` in "
                 "the state artifact. If `requeue_count` > 5, bail to the user and stop.\n\n"
                 "**4. Arm background watcher:**\n"
                 "```\n"
