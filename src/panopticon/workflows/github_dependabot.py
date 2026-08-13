@@ -6,17 +6,21 @@ graph as :class:`~panopticon.workflows.github_self_reviewed.GithubSelfReviewed` 
 `ITERATING`), specialised for Dependabot:
 
 - The **PR already exists** — Dependabot opened it, and the task's **memo is a link to that PR**.
-  There is nothing to *open*; instead of the inherited ``open-pr`` skill, this workflow provides
-  a ``checkout-dependabot-pr`` skill that puts the working tree on the PR's head branch
-  (``gh pr checkout``) and records its URL. Any recommended supporting changes are then committed
-  and pushed onto that same branch, updating the Dependabot PR. Provisioning is unchanged (the
-  ``panopticon/<slug>`` branch is simply unused), so ``core``/``taskservice``/``sessionservice``
-  need no changes.
+  Its URL and its checked-out tree are therefore **inputs**, established during PLANNING, not
+  ITERATING outputs. There is nothing to *open*; instead of the inherited ``open-pr`` skill, this
+  workflow provides a ``checkout-dependabot-pr`` skill that (once the task is provisioned) puts the
+  working tree on the PR's head branch (``gh pr checkout``) and records its URL — run during
+  PLANNING so the evaluation happens against the actual upgraded tree. Any recommended supporting
+  changes are then committed and pushed onto that same branch during ITERATING, updating the
+  Dependabot PR. Provisioning is unchanged (the ``panopticon/<slug>`` branch is simply unused), so
+  ``core``/``taskservice``/``sessionservice`` need no changes.
 - **PLANNING produces an evaluation**, not an implementation plan. The plan (`plan.md`) must
   evaluate the five points captured by :data:`GithubDependabot.UPGRADE_EVALUATED`: how the
   upgraded module is used, how relevant the change is to this repo, how risky it is (semver scope
   + breaking changes), whether it addresses a security advisory (and how urgent), and any
-  recommended supporting changes — *none is an acceptable answer*.
+  recommended supporting changes — *none is an acceptable answer*. Because the PR URL is a known
+  input (the memo), the shared ``url-recorded`` responsibility is gated here too — recorded in
+  PLANNING via ``checkout-dependabot-pr``, not in ITERATING.
 
 The forge plumbing (the ``gh`` tool, its image layer, and the ``babysit-ci``/``babysit-merge``
 skills) is shared with the other forge lifecycles via
@@ -70,28 +74,32 @@ class GithubDependabot(GithubForgeWorkflow):
     class Planning(InitialState):
         label = "PLANNING"
         description = (
-            "Read the linked Dependabot PR from the task memo (its diff, changelog, and release "
-            "notes). Produce a plan (`plan.md`) that evaluates the bump on five axes: how the "
-            "upgraded module is used in this repo, how relevant the change is to that usage, how "
-            "risky it is (semver scope + breaking changes), whether it addresses a security "
-            "advisory / CVE and how urgent it is, and any recommended supporting changes "
-            "(concluding that none are needed is acceptable)."
+            "Name the task (`/provision`), then run `checkout-dependabot-pr` to put the working "
+            "tree on the linked PR's head branch and record its URL — the PR URL (the task memo) "
+            "and its checked-out tree are inputs to the evaluation, not outputs. Read the PR (its "
+            "diff, changelog, and release notes) and produce a plan (`plan.md`) that evaluates the "
+            "bump on five axes against that checked-out tree: how the upgraded module is used in "
+            "this repo, how relevant the change is to that usage, how risky it is (semver scope + "
+            "breaking changes — a build/test spot-check against the upgraded tree is the strongest "
+            "risk signal), whether it addresses a security advisory / CVE and how urgent it is, "
+            "and any recommended supporting changes (concluding that none are needed is acceptable)."
         )
-        responsibilities = (  # shared plan/token promises + the dependabot-specific evaluation
-            GithubForgeWorkflow.PLAN_WRITTEN,
+        responsibilities = (  # shared plan/token promises + the dependabot-specific evaluation +
+            GithubForgeWorkflow.PLAN_WRITTEN,  # the PR URL, a known input (the memo), recorded here
             GithubForgeWorkflow.TOKEN_ESTIMATED,
             UPGRADE_EVALUATED,
+            GithubForgeWorkflow.URL_RECORDED,
         )
         transitions = ("ITERATING",)  # advance; + DROPPED inherited
 
     class Iterating(State):
         label = "ITERATING"
         description = (
-            "Check out the Dependabot PR branch (`checkout-dependabot-pr`). Implement any "
-            "recommended supporting changes from the plan (or none, if the plan recommended "
-            "none). Implement any additional user requests or feedback. Keep tests green and "
-            "push to the Dependabot PR branch. The user self-reviews the evaluation and the "
-            "change and approves by advancing to MERGING."
+            "The PR branch is already checked out from PLANNING (re-run `checkout-dependabot-pr` "
+            "if the container was respawned). Implement any recommended supporting changes from "
+            "the plan (or none, if the plan recommended none). Implement any additional user "
+            "requests or feedback. Keep tests green and push to the Dependabot PR branch. The user "
+            "self-reviews the evaluation and the change and approves by advancing to MERGING."
         )
         responsibilities = (
             Responsibility(
@@ -113,8 +121,7 @@ class GithubDependabot(GithubForgeWorkflow):
                 key="ci-passing",
                 description="CI tests are passing, or any failures are irrelevant flakes.",
             ),
-            GithubForgeWorkflow.URL_RECORDED,
-        )
+        )  # url-recorded is gated in PLANNING (the URL is an input — the memo — not an output)
         transitions = ("MERGING",)  # no REVIEW: the user self-reviews, then advances to MERGING
 
     class Merging(State):
@@ -133,13 +140,20 @@ class GithubDependabot(GithubForgeWorkflow):
         return (
             Skill(
                 "checkout-dependabot-pr",
-                "Check out the Dependabot PR branch and record its URL.",
-                "The Dependabot PR already exists and its URL is the task memo.\n"
-                "1. Read the PR URL from the task memo.\n"
-                "2. Put the working tree on the PR's head branch with "
-                "`gh pr checkout <url>` (run in `/workspace`). Commit and push any recommended "
-                "supporting changes onto this branch — that updates the Dependabot PR itself.\n"
-                "3. Call the `set_url` MCP tool with the PR URL so the dashboard's `p` hotkey "
+                "Check out the Dependabot PR branch (for evaluation) and record its URL.",
+                "The Dependabot PR already exists and its URL is the task memo — its URL and "
+                "checked-out tree are inputs. Run this during PLANNING so you evaluate the bump "
+                "against the actual upgraded tree.\n"
+                "1. Make sure the task is provisioned first (`/provision` — set the slug) so "
+                "`origin` points at the forge; `gh pr checkout` needs the forge remote.\n"
+                "2. Read the PR URL from the task memo.\n"
+                "3. Put the working tree on the PR's head branch with "
+                "`gh pr checkout <url>` (run in `/workspace`), so the evaluation and any "
+                "build/test spot-check of the bump run against the upgraded tree. During ITERATING, "
+                "commit and push any recommended supporting changes onto this branch — that updates "
+                "the Dependabot PR itself. (If a fresh container starts in ITERATING, re-run this "
+                "to put the tree back on the PR branch.)\n"
+                "4. Call the `set_url` MCP tool with the PR URL so the dashboard's `p` hotkey "
                 "opens it and the `url-recorded` responsibility can be resolved.",
             ),
             forge["babysit-ci"],

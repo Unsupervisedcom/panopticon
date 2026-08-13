@@ -62,16 +62,19 @@ def test_foreground_states_are_user_advanced_merging_is_agent_driven() -> None:
 
 
 def test_planning_gates_the_dependabot_evaluation() -> None:
-    # PLANNING carries the two shared promises (plan.md artifact + token estimate) plus the
-    # dependabot-specific `upgrade-evaluated`.
+    # PLANNING carries the two shared promises (plan.md artifact + token estimate), the
+    # dependabot-specific `upgrade-evaluated`, and `url-recorded` — the PR URL is a known input
+    # (the task memo), so it is recorded and gated here, not in ITERATING.
     by_key = {r.key: r for r in WF.responsibilities("PLANNING")}
-    assert set(by_key) == {"plan-written", "token-estimated", "upgrade-evaluated"}
+    assert set(by_key) == {"plan-written", "token-estimated", "upgrade-evaluated", "url-recorded"}
     # shared conventions, single-sourced on the forge/planned base
     assert (
         "plan.md" in by_key["plan-written"].description
         and "markdown" in by_key["plan-written"].description
     )
     assert "set_token_estimate" in by_key["token-estimated"].description
+    # the URL responsibility is the shared forge one, now gated in PLANNING
+    assert by_key["url-recorded"].description == GithubForgeWorkflow.URL_RECORDED.description
     # the evaluation responsibility names all five axes
     evaluation = by_key["upgrade-evaluated"].description.lower()
     assert "used" in evaluation  # (1) how the module is used
@@ -83,20 +86,18 @@ def test_planning_gates_the_dependabot_evaluation() -> None:
 
 def test_iterating_responsibilities_target_the_dependabot_pr() -> None:
     by_key = {r.key: r for r in WF.responsibilities("ITERATING")}
+    # `url-recorded` is gated in PLANNING (the URL is an input — the memo), not here.
     assert set(by_key) == {
         "plan-implemented",
         "requests-implemented",
         "tests-pass",
         "committed-pushed",
         "ci-passing",
-        "url-recorded",
     }
     # supporting changes are optional (the plan may recommend none)
     assert "none" in by_key["plan-implemented"].description.lower()
     # changes land on the Dependabot PR branch
     assert "Dependabot" in by_key["committed-pushed"].description
-    # the URL responsibility is the shared forge one
-    assert by_key["url-recorded"].description == GithubForgeWorkflow.URL_RECORDED.description
 
 
 def test_merging_responsibility() -> None:
@@ -161,8 +162,9 @@ def test_partial_resolution_still_gates() -> None:
     task = WF.start_task("t1", "r1", at="t0")
     task.resolve_responsibility(key="plan-written", status=Status.MET)
     task.resolve_responsibility(key="token-estimated", status=Status.MET)
+    task.resolve_responsibility(key="upgrade-evaluated", status=Status.MET)
     with pytest.raises(ResponsibilitiesNotMet):
-        WF.apply_transition(task, "ITERATING", at="t1")  # upgrade-evaluated still PENDING
+        WF.apply_transition(task, "ITERATING", at="t1")  # url-recorded (the PR input) still PENDING
 
 
 # -- iterate-back + drop ------------------------------------------------------------
