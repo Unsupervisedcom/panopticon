@@ -1610,12 +1610,13 @@ def _detail(exc: httpx.HTTPStatusError) -> str:
 
 class ArtifactScreen(_OptionListModal[tuple[str, str]]):
     """A modal list of a task's artifacts: Enter opens the highlighted one over REST, `e` opens
-    its local on-disk file in place; Escape cancels.
+    its local on-disk file in place, `ctrl+a` attaches new files; Escape cancels.
 
-    Dismisses ``(name, mode)`` where ``mode`` is ``"rest"`` (Enter) or ``"local"`` (`e`), or
+    Dismisses ``(name, mode)`` where ``mode`` is ``"rest"`` (Enter), ``"local"`` (`e`), or
+    ``"attach"`` (`ctrl+a`, ``name`` unused — the Dashboard then opens the file-picker), or
     ``None`` on cancel. Local-open is bound to `e` (as in "edit in place"), **not** Shift+Enter:
     many terminals can't deliver Shift+Enter distinctly from Enter, so the local mode would be
-    silently unreachable.
+    silently unreachable. Attach is `ctrl+a`, mirroring the task-creation memo's attach key.
 
     Dotfile artifacts (names starting with ``.``) are hidden by default.  A "Show hidden"
     checkbox appears when hidden artifacts exist; toggling it repopulates the list."""
@@ -1626,7 +1627,11 @@ class ArtifactScreen(_OptionListModal[tuple[str, str]]):
     #artifact-hint { color: $text-muted; }
     """
     BOX_ID = "artifact-box"
-    BINDINGS = [("escape", "cancel", "Cancel"), ("e", "open_local", "Open local")]
+    BINDINGS = [
+        ("escape", "cancel", "Cancel"),
+        ("e", "open_local", "Open local"),
+        ("ctrl+a", "attach", "Attach files"),
+    ]
 
     def __init__(self, title: str, all_names: list[str]) -> None:
         self._all_names = all_names
@@ -1634,7 +1639,9 @@ class ArtifactScreen(_OptionListModal[tuple[str, str]]):
         super().__init__(title, visible)
 
     def _extra_widgets(self) -> Iterable[Widget]:
-        yield Label("enter: open · e: open local file · esc: cancel", id="artifact-hint")
+        yield Label(
+            "enter: open · e: open local file · ctrl+a: attach · esc: cancel", id="artifact-hint"
+        )
         if any(n.startswith(".") for n in self._all_names):
             yield SpaceCheckbox("Show hidden", id="show-hidden")
 
@@ -1658,6 +1665,11 @@ class ArtifactScreen(_OptionListModal[tuple[str, str]]):
         if index is None:
             return
         self.dismiss((str(option_list.get_option_at_index(index).prompt), "local"))
+
+    def action_attach(self) -> None:
+        # The list may be empty (a task with no artifacts yet); attach doesn't depend on a
+        # selection. The Dashboard opens the file-picker (:class:`ArtifactsScreen`) and uploads.
+        self.dismiss(("", "attach"))
 
 
 # The full keymap, single source of truth for **both** the footer legend and the help screen
@@ -2354,9 +2366,11 @@ class Dashboard(App[None]):
     def action_artifacts(self) -> None:
         """`a`: open a modal listing the highlighted task's artifacts. Enter opens the selection
         with the host's default handler by fetching it over REST to a temp file; `e` opens the
-        on-disk file in place when the dashboard shares the artifact store (else warns).
+        on-disk file in place when the dashboard shares the artifact store (else warns); `ctrl+a`
+        attaches new local files as artifacts (reusing the task-creation file-picker).
 
-        Opens on the machine running the dashboard, like `p`."""
+        Opens on the machine running the dashboard, like `p`. The modal opens even when the task
+        has no artifacts yet, so attach is always reachable."""
         if self._current is None:
             return
         task_id = self._current
@@ -2365,15 +2379,15 @@ class Dashboard(App[None]):
         except httpx.HTTPStatusError as exc:
             self.notify(f"Can't list artifacts: {exc}", severity="error")
             return
-        if not names:
-            self.notify("No artifacts for this task.", severity="warning")
-            return
 
         def open_selected(choice: tuple[str, str] | None) -> None:
             if choice is None:  # cancelled
                 return
             name, mode = choice
             try:
+                if mode == "attach":  # open the file-picker, upload the queue, reopen the list
+                    self._attach_artifacts(task_id)
+                    return
                 if mode == "local":  # open the on-disk file in place (co-located store)
                     path = FilesystemArtifactStore(self._artifacts_root).path(task_id, name)
                     if path is None:
@@ -2392,6 +2406,29 @@ class Dashboard(App[None]):
                 self.notify(f"Can't open {name}: {exc}", severity="error")
 
         self.push_screen(ArtifactScreen("artifacts", names), open_selected)
+
+    def _attach_artifacts(self, task_id: str) -> None:
+        """Open the task-creation file-picker (:class:`ArtifactsScreen`) to queue local files, then
+        upload each to ``task_id`` over REST and reopen the artifact list so the additions show.
+
+        Reuses the same modal + shell-quoted-path parsing as the create-task attach flow (`ctrl+a`
+        in :class:`MemoScreen`); the only difference is the destination — an existing task's
+        artifacts via ``put_artifact`` rather than the create-task seed."""
+
+        def uploaded(queue: dict[str, tuple[str, bytes]] | None) -> None:
+            count = 0
+            for name, (_path, content) in (queue or {}).items():
+                try:
+                    self._client.put_artifact(task_id, name, content)
+                except httpx.HTTPStatusError as exc:
+                    self.notify(f"Can't attach {name}: {exc}", severity="error")
+                    continue
+                count += 1
+            if count:
+                self.notify(f"attached {count} file{'s' if count != 1 else ''}")
+            self.action_artifacts()  # reopen the list, now showing the additions
+
+        self.push_screen(ArtifactsScreen({}), uploaded)
 
     def action_service(self) -> None:
         """`s`: switch to the task-service tmux session, when one is running (ADR 0009).

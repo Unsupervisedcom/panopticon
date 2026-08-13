@@ -125,6 +125,7 @@ class _FakeClient:
         # service rejecting e.g. a non-existent env_file), to exercise the form's error path.
         self.repo_error: str | None = None
         self.fetched: list[tuple[str, str]] = []  # (task_id, name) passed to get_artifact
+        self.put_artifacts: list[tuple[str, str, bytes]] = []  # (task_id, name, content) uploads
 
     def list_tasks(self) -> list[dict[str, Any]]:
         self.list_tasks_calls += 1
@@ -164,6 +165,10 @@ class _FakeClient:
     def get_artifact(self, task_id: str, name: str) -> bytes:
         self.fetched.append((task_id, name))
         return self._artifact_content
+
+    def put_artifact(self, task_id: str, name: str, content: bytes) -> None:
+        self.put_artifacts.append((task_id, name, content))
+        self._artifacts.setdefault(task_id, []).append(name)  # reflect the upload in list_artifacts
 
     def list_repos(self) -> list[dict[str, Any]]:
         return self._repos
@@ -2498,7 +2503,8 @@ async def test_missing_opener_binary_is_handled_not_crashed(monkeypatch: Any) ->
         assert app.is_running  # handled, TUI survived
 
 
-async def test_pressing_a_with_no_artifacts_warns_and_opens_no_modal(monkeypatch: Any) -> None:
+async def test_pressing_a_with_no_artifacts_still_opens_the_modal(monkeypatch: Any) -> None:
+    # Even with zero artifacts the modal opens, so attach (ctrl+a) is reachable on a fresh task.
     calls = _record_popen(monkeypatch)
     fake = _FakeClient([_TASK], artifacts={})  # task has no artifacts
     app = Dashboard(fake)  # type: ignore[arg-type]
@@ -2507,8 +2513,99 @@ async def test_pressing_a_with_no_artifacts_warns_and_opens_no_modal(monkeypatch
         await pilot.press("a")
         await pilot.pause()
         assert calls == []
-        assert len(app.screen_stack) == 1  # the modal was not pushed
+        assert isinstance(app.screen, dashboard.ArtifactScreen)  # modal is up
         assert app.is_running
+
+
+async def test_ctrl_a_in_artifact_modal_attaches_a_file(tmp_path: Path) -> None:
+    # `a` opens the artifact list; `ctrl+a` opens the file-picker (the same modal task-creation
+    # uses); a queued file is uploaded to the running task via put_artifact.
+    src = tmp_path / "notes.md"
+    src.write_text("hello world")
+    fake = _FakeClient([_TASK], artifacts={_TASK["id"]: ["plan.md"]})
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")  # open the artifact list
+        await pilot.pause()
+        assert isinstance(app.screen, dashboard.ArtifactScreen)
+        await pilot.press("ctrl+a")  # open the attach-files picker
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, dashboard.ArtifactsScreen)
+        picker.query_one("#artifacts-path", Input).value = str(src)
+        await pilot.press("enter")  # add the file to the queue
+        await pilot.pause()
+        await pilot.press("escape")  # done → upload
+        await pilot.pause()
+    assert fake.put_artifacts == [(_TASK["id"], "notes.md", b"hello world")]
+
+
+async def test_ctrl_a_attaches_to_a_task_with_no_artifacts(tmp_path: Path) -> None:
+    # Attach is reachable even when the task starts with no artifacts (the list opens empty).
+    src = tmp_path / "notes.md"
+    src.write_text("first one")
+    fake = _FakeClient([_TASK], artifacts={})
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, dashboard.ArtifactsScreen)
+        picker.query_one("#artifacts-path", Input).value = str(src)
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+    assert fake.put_artifacts == [(_TASK["id"], "notes.md", b"first one")]
+
+
+async def test_ctrl_a_attaches_a_binary_file_intact(tmp_path: Path) -> None:
+    # A non-UTF-8 file (e.g. a screenshot) uploads byte-for-byte via the raw-bytes put_artifact.
+    png = b"\x89PNG\r\n\x1a\n\x00\xff\xfe\x01binary\x00data"
+    src = tmp_path / "shot.png"
+    src.write_bytes(png)
+    fake = _FakeClient([_TASK], artifacts={_TASK["id"]: ["plan.md"]})
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, dashboard.ArtifactsScreen)
+        picker.query_one("#artifacts-path", Input).value = str(src)
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+    assert fake.put_artifacts == [(_TASK["id"], "shot.png", png)]
+
+
+async def test_ctrl_a_resolves_a_shell_quoted_path(tmp_path: Path) -> None:
+    # The picker reuses _artifact_path_candidates, so a shell-quoted (spaced) path resolves.
+    src = tmp_path / "my notes.md"
+    src.write_text("quoted")
+    fake = _FakeClient([_TASK], artifacts={_TASK["id"]: ["plan.md"]})
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, dashboard.ArtifactsScreen)
+        picker.query_one("#artifacts-path", Input).value = f"'{src}'"  # single-quoted
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+    assert fake.put_artifacts == [(_TASK["id"], "my notes.md", b"quoted")]
 
 
 # -- help screen (`?`) --------------------------------------------------------------
