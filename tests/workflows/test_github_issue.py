@@ -1,11 +1,11 @@
-"""The GithubIssue workflow: `github-self-reviewed` specialised for fixing a linked GitHub issue.
+"""The GithubIssue workflow: `github-peer-reviewed` specialised for fixing a linked GitHub issue.
 
-The golden behavioral spec — the collapsed graph (`PLANNING → ITERATING → MERGING → COMPLETE`,
-no REVIEW), the foreground/background (advanced_by) policy, the issue-specific PLANNING
-comprehension responsibility (`issue-understood`, naming all five axes), the tailored skill set
-(a `read-issue` skill on top of the inherited `open-pr`/`babysit-ci`/`babysit-merge`), the
-inherited forge plumbing (`gh` tool + image layer), full-lifecycle gating, the iterate-back free
-move, the inability to skip straight to merging, and the universal drop.
+The golden behavioral spec — the peer-reviewed graph (`PLANNING → ITERATING → REVIEW → MERGING →
+COMPLETE`, with a peer-review gate), the foreground/background (advanced_by) policy, the
+issue-specific PLANNING comprehension responsibility (`issue-understood`, naming all five axes),
+the tailored skill set (a `read-issue` skill on top of the inherited `open-pr`/`babysit-ci`/
+`babysit-merge`), the inherited forge plumbing (`gh` tool + image layer), full-lifecycle gating,
+the iterate-back free move, the inability to skip straight to merging, and the universal drop.
 """
 
 from __future__ import annotations
@@ -43,18 +43,20 @@ def test_starts_in_planning_on_the_users_turn() -> None:
 
 
 def test_transition_graph_is_the_happy_path_plus_drop() -> None:
-    # No REVIEW state — ITERATING advances straight to MERGING (the user self-reviews the fix).
-    # Backward edges (iterate) are free moves, not declared transitions.
+    # A peer gates the merge — ITERATING advances to REVIEW, then MERGING. Backward edges
+    # (iterate) are free moves, not declared transitions.
     assert set(WF.transitions("PLANNING")) == {"ITERATING", "DROPPED"}
-    assert set(WF.transitions("ITERATING")) == {"MERGING", "DROPPED"}
+    assert set(WF.transitions("ITERATING")) == {"REVIEW", "DROPPED"}
+    assert set(WF.transitions("REVIEW")) == {"MERGING", "DROPPED"}
     assert set(WF.transitions("MERGING")) == {"COMPLETE", "DROPPED"}
     assert list(WF.transitions("COMPLETE")) == []
-    assert "REVIEW" not in set(WF.labels())  # no peer-review state
+    assert "REVIEW" in set(WF.labels())  # the peer-review gate
 
 
 def test_foreground_states_are_user_advanced_merging_is_agent_driven() -> None:
     assert WF.advanced_by("PLANNING") is Actor.USER
-    assert WF.advanced_by("ITERATING") is Actor.USER  # the user self-reviews, then advances
+    assert WF.advanced_by("ITERATING") is Actor.USER
+    assert WF.advanced_by("REVIEW") is Actor.USER  # a peer approves, then the user advances
     assert WF.advanced_by("MERGING") is Actor.AGENT  # background: agent shepherds the merge
 
 
@@ -83,9 +85,9 @@ def test_planning_gates_the_issue_comprehension() -> None:
     assert "tests" in understood and "regression" in understood  # (5) tests / regression guard
 
 
-def test_iterating_responsibilities_match_self_reviewed() -> None:
+def test_iterating_responsibilities_match_peer_reviewed() -> None:
     # A fresh PR is opened here, so `url-recorded` stays in ITERATING — the same 7 as
-    # github-self-reviewed.
+    # github-peer-reviewed.
     assert {r.key for r in WF.responsibilities("ITERATING")} == {
         "plan-implemented",
         "requests-implemented",
@@ -98,6 +100,10 @@ def test_iterating_responsibilities_match_self_reviewed() -> None:
     by_key = {r.key: r for r in WF.responsibilities("ITERATING")}
     assert "fix" in by_key["plan-implemented"].description.lower()  # implement the *fix*
     assert by_key["url-recorded"].description == GithubForgeWorkflow.URL_RECORDED.description
+
+
+def test_review_gates_a_peer_review() -> None:
+    assert {r.key for r in WF.responsibilities("REVIEW")} == {"pr-reviewed"}
 
 
 def test_merging_responsibility() -> None:
@@ -131,7 +137,8 @@ def test_inherits_the_gh_tool_and_image_layer() -> None:
 
 def test_core_operations_per_state() -> None:
     assert WF.operations("PLANNING") == {"advance": "ITERATING", "drop": "DROPPED"}
-    assert WF.operations("ITERATING") == {"advance": "MERGING", "drop": "DROPPED"}
+    assert WF.operations("ITERATING") == {"advance": "REVIEW", "drop": "DROPPED"}
+    assert WF.operations("REVIEW") == {"advance": "MERGING", "drop": "DROPPED"}
     assert WF.operations("MERGING") == {"advance": "COMPLETE", "drop": "DROPPED"}
     assert WF.operations("COMPLETE") == {}
 
@@ -141,10 +148,16 @@ def test_core_operations_per_state() -> None:
 
 def test_full_lifecycle_planning_to_complete() -> None:
     task = WF.start_task("t1", "r1", at="t0")
-    for nxt in ("ITERATING", "MERGING", "COMPLETE"):
+    for nxt in ("ITERATING", "REVIEW", "MERGING", "COMPLETE"):
         _advance(task, nxt)
     assert task.state == "COMPLETE"
-    assert [h.to_state for h in task.history] == ["PLANNING", "ITERATING", "MERGING", "COMPLETE"]
+    assert [h.to_state for h in task.history] == [
+        "PLANNING",
+        "ITERATING",
+        "REVIEW",
+        "MERGING",
+        "COMPLETE",
+    ]
     assert WF.is_terminal("COMPLETE")
 
 
@@ -168,18 +181,18 @@ def test_partial_resolution_still_gates() -> None:
 # -- iterate-back + drop ------------------------------------------------------------
 
 
-def test_free_move_back_from_merging_to_iterating() -> None:
+def test_free_move_back_from_review_to_iterating() -> None:
     task = WF.start_task("t1", "r1", at="t0")
-    for nxt in ("ITERATING", "MERGING"):
+    for nxt in ("ITERATING", "REVIEW"):
         _advance(task, nxt)
     WF.force_transition(task, "ITERATING", at="t3", trigger="set-state")  # free move, ungated
     assert task.state == "ITERATING"
 
 
 def test_drop_is_allowed_from_every_state_and_bypasses_gating() -> None:
-    for start in ("PLANNING", "ITERATING", "MERGING"):
+    for start in ("PLANNING", "ITERATING", "REVIEW", "MERGING"):
         task = WF.start_task("t1", "r1", at="t0")
-        path = ["ITERATING", "MERGING"]
+        path = ["ITERATING", "REVIEW", "MERGING"]
         for nxt in path[: path.index(start) + 1] if start != "PLANNING" else []:
             _advance(task, nxt)
         assert task.state == start

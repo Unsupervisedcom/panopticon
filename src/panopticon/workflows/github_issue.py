@@ -1,9 +1,8 @@
-"""The GithubIssue workflow — read a linked GitHub issue and land a fix for it.
+"""The GithubIssue workflow — read a linked GitHub issue and land a peer-reviewed fix for it.
 
-`PLANNING → ITERATING → MERGING → COMPLETE` (plus the inherited `DROPPED`). The same collapsed
-graph as :class:`~panopticon.workflows.github_self_reviewed.GithubSelfReviewed` (no peer
-`REVIEW` state — the user self-reviews the fix and approves it by advancing out of `ITERATING`),
-specialised for fixing a GitHub issue:
+`PLANNING → ITERATING → REVIEW → MERGING → COMPLETE` (plus the inherited `DROPPED`). The same
+peer-reviewed graph as :class:`~panopticon.workflows.github_peer_reviewed.GithubPeerReviewed`
+(a peer gates the merge via the `REVIEW` state), specialised for fixing a GitHub issue:
 
 - The **task memo is a link to a GitHub issue** — the thing to fix. Its URL is an **input**,
   read during PLANNING (via the ``read-issue`` skill, ``gh issue view``), not an ITERATING output.
@@ -11,10 +10,12 @@ specialised for fixing a GitHub issue:
   :data:`GithubIssue.ISSUE_UNDERSTOOD`: the reported problem, the root cause, how the fix is
   reproduced/confirmed, the fix approach, and the tests that prove it — so "understand the issue
   before coding" is a gated checkbox, not merely implied by a plan existing.
-- **The PR is still a fresh output**, opened during ITERATING with the inherited ``open-pr``
-  skill; its body closes the issue (``Closes #<n>``, noted by ``read-issue``). Because the PR URL
-  is produced in ITERATING (not a known input like Dependabot's), the shared ``url-recorded``
-  responsibility stays in ITERATING exactly as in ``github-self-reviewed``.
+- **The PR is a fresh output**, opened during ITERATING with the inherited ``open-pr`` skill; its
+  body closes the issue (``Closes #<n>``, noted by ``read-issue``). Because the PR URL is produced
+  in ITERATING (not a known input like Dependabot's), the shared ``url-recorded`` responsibility
+  is gated in ITERATING.
+- **A peer reviews the PR** in the ``REVIEW`` state (the ``pr-reviewed`` responsibility) before it
+  reaches the merge queue — the same gate as ``github-peer-reviewed``.
 
 The forge plumbing (the ``gh`` tool, its image layer, and the ``open-pr``/``babysit-ci``/
 ``babysit-merge`` skills) is shared with the other forge lifecycles via
@@ -55,15 +56,14 @@ ISSUE_UNDERSTOOD = Responsibility(
 class GithubIssue(GithubForgeWorkflow):
     """The github-issue lifecycle: the task memo is a link to a GitHub issue, which is **read**
     and turned into a fix plan during PLANNING, implemented in ITERATING as a fresh PR that
-    closes the issue, **user self-reviewed** and approved by advancing out of ITERATING, then
-    shepherded through the merge queue. Foreground states are user-advanced; MERGING is
-    agent-driven."""
+    closes the issue, **peer-reviewed** in REVIEW, then shepherded through the merge queue.
+    Foreground states are user-advanced; MERGING is agent-driven."""
 
     name: ClassVar[str] = "github-issue"
     opt_in: ClassVar[bool] = True
     when_to_use: ClassVar[str] = (
         "A GitHub issue to fix (task memo = the issue link) — read the issue, plan and implement "
-        "a fix, open a PR that closes it, and land it."
+        "a fix, open a PR that closes it, and land it after a peer review."
     )
 
     #: Re-export of the module-level issue-comprehension responsibility (see
@@ -94,8 +94,8 @@ class GithubIssue(GithubForgeWorkflow):
         description = (
             "Implement the fix per the plan. Open a PR (`open-pr`) whose body closes the linked "
             "issue (`Closes #<n>`, the number noted from `read-issue`). Implement any additional "
-            "user requests or feedback. Keep tests green and push. The user self-reviews the fix "
-            "and approves by advancing to MERGING."
+            "user requests or feedback. Keep tests green and push, then advance to REVIEW for a "
+            "peer review."
         )
         responsibilities = (
             Responsibility(
@@ -116,7 +116,15 @@ class GithubIssue(GithubForgeWorkflow):
             ),
             GithubForgeWorkflow.URL_RECORDED,  # the PR is opened here, so its URL is recorded here
         )
-        transitions = ("MERGING",)  # no REVIEW: the user self-reviews, then advances to MERGING
+        transitions = ("REVIEW",)  # a peer gates the merge
+
+    class Review(State):
+        label = "REVIEW"
+        description = "Wait for review or approval of the PR."
+        responsibilities = (
+            Responsibility(key="pr-reviewed", description="The PR has been reviewed."),
+        )
+        transitions = ("MERGING",)  # the happy path; `advance` derives from it
 
     class Merging(State):
         label = "MERGING"
