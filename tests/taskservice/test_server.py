@@ -25,6 +25,7 @@ def test_build_app_serves_default_wiring(tmp_path: Path) -> None:
         "github-peer-reviewed",
         "github-self-reviewed",
         "github-dependabot",
+        "github-issue",
         "local-git-self-reviewed",
         "orchestrator",
     }
