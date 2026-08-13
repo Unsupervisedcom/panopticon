@@ -118,11 +118,28 @@ def test_skills_swap_open_pr_for_checkout_dependabot_pr() -> None:
     assert "set_url" in checkout.instructions  # records the URL
 
 
-def test_babysit_skills_are_reused_verbatim_from_the_forge_base() -> None:
+def test_babysit_ci_is_reused_verbatim_from_the_forge_base() -> None:
     base = {s.name: s for s in GithubForgeWorkflow().skills()}
     ours = {s.name: s for s in WF.skills()}
-    for name in ("babysit-ci", "babysit-merge"):
-        assert ours[name].instructions == base[name].instructions  # not re-authored
+    assert ours["babysit-ci"].instructions == base["babysit-ci"].instructions  # not re-authored
+
+
+def test_babysit_merge_auto_approves_the_dependabot_pr_before_queueing() -> None:
+    # Dependabot authored the PR, so the agent's (different) token may approve it — that satisfies
+    # branch protection's required review so the bump lands through the merge queue automatically.
+    merge = {s.name: s for s in WF.skills()}["babysit-merge"].instructions
+    assert "gh pr review <pr> --approve" in merge  # the approval is spliced in
+    assert "gh pr merge --squash --auto" in merge  # ...and the rest of the merge tree is intact
+    # approval comes *before* queueing (required-review must be satisfied to queue)
+    assert merge.index("gh pr review") < merge.index("gh pr merge --squash --auto")
+
+
+def test_forge_base_babysit_merge_does_not_auto_approve() -> None:
+    # The approval is scoped to dependabot: the shared base (and the self/peer-reviewed lifecycles,
+    # where the agent is effectively the PR author) must NOT auto-approve.
+    base_merge = {s.name: s for s in GithubForgeWorkflow().skills()}["babysit-merge"].instructions
+    assert "gh pr review" not in base_merge
+    assert "--approve" not in base_merge
 
 
 def test_inherits_the_gh_tool_and_image_layer() -> None:

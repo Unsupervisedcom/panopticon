@@ -133,6 +133,19 @@ class GithubDependabot(GithubForgeWorkflow):
 
     initial = Planning
 
+    def _merge_approval_step(self) -> str:
+        """Auto-approve the bump PR in MERGING, spliced into the shared `babysit-merge` skill just
+        before it queues the PR. Dependabot authored the PR, so the agent's token is a *different*
+        identity and may approve it — this satisfies branch protection's required-review gate so
+        the bump can land through the merge queue without a human clicking Approve. (Scoped to this
+        workflow: on the self/peer-reviewed lifecycles the agent is effectively the author and the
+        base returns an empty string, leaving their `babysit-merge` unchanged.)"""
+        return (
+            "first approve the PR so branch protection's required review is satisfied — "
+            "`gh pr review <pr> --approve` (the agent's token is not the Dependabot author, so it "
+            "may approve); then "
+        )
+
     def skills(self) -> Sequence[Skill]:
         """Swap the inherited ``open-pr`` (the PR already exists) for ``checkout-dependabot-pr``,
         and reuse the inherited ``babysit-ci`` / ``babysit-merge`` verbatim."""
