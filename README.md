@@ -20,7 +20,8 @@ your repos. A ground-up rewrite of the [cloude-cade](https://github.com/tildesrc
 prototype.
 
 New here? [`docs/overview.md`](docs/overview.md) explains how the pieces fit together: the
-mental model behind the dashboard.
+mental model behind the dashboard. Running it beyond your own machine? Read
+[`docs/security.md`](docs/security.md) for the trust model and its current limits first.
 
 ## The dashboard
 
