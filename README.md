@@ -145,6 +145,9 @@ variable (resolution is `$PANOPTICON_*` → `$XDG_*_HOME/panopticon` → the def
   server. Your data under `~/.local/share/panopticon` is left in place.
 - **Check your host:** `panopticon doctor` verifies Python, Docker (and a running daemon), tmux,
   git, and the `claude` CLI, printing a line per check and exiting non-zero if anything is missing.
+- **Stuck?** [`docs/troubleshooting.md`](docs/troubleshooting.md) collects the common first-run
+  failures — auth, missing tokens, a task stuck at `awaiting`, missing services — and where to fix
+  each.
 - **Upgrade:** `pipx upgrade panopticon-app` (or `pip install --upgrade panopticon-app`), then
   `panopticon migrate` to apply any new database migrations.
 - **Uninstall:** `panopticon stop`, then `pipx uninstall panopticon-app`. To remove state too,
