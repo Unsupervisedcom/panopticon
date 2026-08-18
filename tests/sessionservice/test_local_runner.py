@@ -271,9 +271,9 @@ def test_stop_kills_session_and_force_removes_container_idempotently() -> None:
 
 def test_delete_workspace_contents_runs_root_container_to_empty_directory() -> None:
     rec = _Recorder()
-    LocalRunner("http://svc", image="panopticon-base", ready_timeout=0, run=rec).delete_workspace_contents(
-        "/tasks/t1"
-    )
+    LocalRunner(
+        "http://svc", image="panopticon-base", ready_timeout=0, run=rec
+    ).delete_workspace_contents("/tasks/t1")
     assert rec.calls == [
         (
             [
@@ -436,7 +436,7 @@ def test_spawn_passes_ask_prompt_as_env_var() -> None:
     # ask-the-author: a parked/terminal task resumed to answer a reviewer's question carries the
     # question as PANOPTICON_ASK_PROMPT, which the agent launcher appends to `claude --continue`.
     rec = _Recorder()
-    runner = LocalRunner("http://svc:8000", image="img:1", run=rec)
+    runner = LocalRunner("http://svc:8000", ready_timeout=0, image="img:1", run=rec)
     runner.spawn("t1", ask_prompt="Reviewer asks: why?")
     docker_run = next(c for c, _ in rec.calls if c[:2] == ["docker", "run"])
     assert "PANOPTICON_ASK_PROMPT=Reviewer asks: why?" in docker_run
@@ -444,7 +444,7 @@ def test_spawn_passes_ask_prompt_as_env_var() -> None:
 
 def test_spawn_omits_ask_prompt_env_when_none() -> None:
     rec = _Recorder()
-    LocalRunner("http://svc:8000", image="img:1", run=rec).spawn("t1")
+    LocalRunner("http://svc:8000", ready_timeout=0, image="img:1", run=rec).spawn("t1")
     docker_run = next(c for c, _ in rec.calls if c[:2] == ["docker", "run"])
     assert not any(a.startswith("PANOPTICON_ASK_PROMPT=") for a in docker_run)
 
