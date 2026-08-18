@@ -1,7 +1,7 @@
 {
   "id": "ask-the-author",
   "title": "Ask the author: a question's round trip",
-  "summary": "Follow one reviewer question from tarot to the implementing agent and back: lookup, create, compose, deliver (live / resume / gone), capture, record.",
+  "summary": "Panopticon runs AI agents that write PRs. This PR lets a reviewer send a question to the agent that wrote the code, and get the answer back inside the review. The tour follows one question the whole way: find the author, file it, wrap it, deliver it, collect the reply, hand it back.",
   "base_ref": "b85e4b71b754b363c848820bee8bb115f12c7518",
   "author": "agent:claude (review tour)",
   "steps": [
@@ -13,8 +13,8 @@
         4,
         false
       ],
-      "title": "1 \u00b7 The review tool finds the author",
-      "note": "Entry point: tarot resolves the PR it is reviewing to the implementing task -- GET /tasks/lookup by url, or repo_id+branch. Exactly one selector; returns the full task so the reviewer's side sees the same shape as GET /tasks/{id}.",
+      "title": "1 \u00b7 Who wrote this code?",
+      "note": "Background: panopticon is a system that runs AI agents, each working on its own task and opening a PR when done. This PR adds a way to ask the agent that wrote some code a question while you review it. Step one is finding that agent: the review tool sends the PR's web address here, and this function looks up which task (and so which agent) produced it.",
       "test_id": null,
       "invocation": null
     },
@@ -26,8 +26,8 @@
         4,
         false
       ],
-      "title": "2 \u00b7 One outstanding ask per task",
-      "note": "POST /tasks/{id}/ask creates the Ask. AskInProgress (409) if one is already outstanding, AskGone (410) if the agent's session is unrecoverable. Creating sets pending_ask_id on the task -- the delivery daemon's self-gating signal.",
+      "title": "2 \u00b7 Filing the question",
+      "note": "The reviewer's question gets saved as an 'ask' attached to the task. Only one question can be waiting per task at a time. If you try to file a second one too early you get a 'still working on the last one' error, and if the agent is long gone you get a 'nobody home' error so the review tool can offer a stand-in instead.",
       "test_id": null,
       "invocation": null
     },
@@ -39,8 +39,8 @@
         4,
         false
       ],
-      "title": "3 \u00b7 An ask's life in four states",
-      "note": "PENDING (created, undelivered) -> DELIVERED (injected into the agent) -> ANSWERED (reply recorded). GONE is the honest dead end: the claude session no longer exists, surfaced to tarot as a 410 so it can offer a surrogate instead.",
+      "title": "3 \u00b7 The four stages of a question",
+      "note": "A question moves through simple stages, like a package you can track. PENDING means filed but not yet handed to the agent. DELIVERED means the agent has it, and ANSWERED means the reply came back. GONE means the agent's saved session no longer exists, so this question can never be answered by the original author.",
       "test_id": null,
       "invocation": null
     },
@@ -52,8 +52,8 @@
         0,
         false
       ],
-      "title": "4 \u00b7 The letter, with a tracking number",
-      "note": "The delivered message: the ask marker first ([[...:ask_id]] -- the Stop hook anchors on it), then framing. Terminal tasks get the strict guardrail (answer only, touch nothing); in-flight tasks get a lighter note since a reviewer's question may legitimately prompt a fix.",
+      "title": "4 \u00b7 Writing the letter",
+      "note": "The question is wrapped in a letter before delivery. The letter starts with a tracking code, which is how the reply gets matched back to the question later. It also includes ground rules: if the agent's task is already finished, the letter says 'just answer, do not change any code'. For work still in progress the rules are softer, since a good question sometimes deserves a fix.",
       "test_id": null,
       "invocation": null
     },
@@ -65,8 +65,8 @@
         4,
         false
       ],
-      "title": "5 \u00b7 Delivery triage on the host daemon",
-      "note": "Each daemon pass calls deliver() per task; pending_ask_id makes it a no-op otherwise. Ownership guard first (sessions/volumes are host-local). Then: live tmux session -> inject; config volume gone -> mark GONE; otherwise resume the parked agent (step 6). Delivered is marked only after one of these succeeds.",
+      "title": "5 \u00b7 The mail carrier",
+      "note": "A background loop on each machine checks every task for a waiting question. If the agent is running right now, the letter is typed straight into its terminal. If the agent's saved memory was deleted, the question is marked GONE. If the agent is asleep but its memory survives, we wake it up, which is the next step.",
       "test_id": null,
       "invocation": null
     },
@@ -78,8 +78,8 @@
         4,
         false
       ],
-      "title": "6 \u00b7 Waking a finished author",
-      "note": "The deliberate difference from spawn_one: TERMINAL tasks are allowed -- asking a COMPLETE task's author is first-class. The config volume holds the claude session, so --continue resumes it with the ask as the prompt. Claim is compare-and-set; losing the race leaves the ask pending for the winning host.",
+      "title": "6 \u00b7 Waking up a retired author",
+      "note": "Agents whose work is merged are normally left alone, but asking them a question is a special case. Their conversation memory is kept on disk, so we can restart the agent from exactly where it left off, with the letter as the first thing it sees. If two machines try to wake the same agent, only one wins and the other backs off.",
       "test_id": null,
       "invocation": null
     },
@@ -91,8 +91,8 @@
         0,
         false
       ],
-      "title": "7 \u00b7 Reading the reply off the transcript",
-      "note": "The Stop hook fires when the agent finishes its turn. extract_answer finds the LAST user message carrying the marker and joins the assistant text up to the next user turn. Pure and fixture-testable; returns None until the reply exists -- recording is best-effort by design.",
+      "title": "7 \u00b7 Collecting the reply",
+      "note": "When the agent finishes talking, a small hook reads its conversation log. It looks for the letter with our tracking code and copies out everything the agent said in response, stopping at the next incoming message. If there is no reply yet it quietly returns nothing and tries again next time.",
       "test_id": null,
       "invocation": null
     },
@@ -104,8 +104,8 @@
         4,
         false
       ],
-      "title": "8 \u00b7 The answer lands",
-      "note": "The hook posts the reply; the ask flips to ANSWERED and pending_ask_id clears. tarot's PanopticonBackend has been polling GET .../asks/{id} -- the answer renders in the reviewer's A panel labeled author-claimed. Round trip complete.",
+      "title": "8 \u00b7 The answer comes home",
+      "note": "The reply is saved and the question is stamped ANSWERED. The review tool has been checking in on the question every few seconds, so the answer now pops up in the reviewer's answers panel. It is labeled as the author's claim rather than verified truth, because the agent is explaining its own work.",
       "test_id": null,
       "invocation": null
     }
