@@ -19,11 +19,13 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from panopticon.core.artifacts import ArtifactError
-from panopticon.core.models import Actor, LifecyclePhase, Repo, Status, Task
+from panopticon.core.models import Actor, Ask, AskStatus, LifecyclePhase, Repo, Status, Task
 from panopticon.core.store import AlreadyExists, NotFound, StoreError
 from panopticon.core.workflow import IllegalTransition, InvalidWorkflow, ResponsibilitiesNotMet
 from panopticon.taskservice.service import (
     AlreadyClaimed,
+    AskGone,
+    AskQueueFull,
     NotAuthorized,
     TaskService,
     UnknownWorkflow,
@@ -94,6 +96,9 @@ class TaskSummaryOut(BaseModel):
     runner_host: str | None = (
         None  # hostname the claiming runner registered with (M5: remote attach)
     )
+    pending_ask_id: str | None = (
+        None  # id of an undelivered ask-the-author question; the host daemon's ask worker delivers it
+    )
 
 
 class TaskOut(BaseModel):
@@ -143,6 +148,9 @@ class TaskOut(BaseModel):
     )
     runner_host: str | None = (
         None  # hostname the claiming runner registered with (M5: remote attach)
+    )
+    pending_ask_id: str | None = (
+        None  # id of an undelivered ask-the-author question; the host daemon's ask worker delivers it
     )
     history: list[HistoryOut]
 
@@ -256,6 +264,45 @@ class StateIn(BaseModel):
 class ProvisioningIn(BaseModel):
     branch: str
     clone: str
+
+
+class AskIn(BaseModel):
+    """A reviewer's question for a task's implementing agent (ask-the-author)."""
+
+    question: str
+    context: str = ""
+
+
+class AskCreatedOut(BaseModel):
+    """The id a reviewer polls with after posting an ask."""
+
+    ask_id: str
+
+
+class AskOut(BaseModel):
+    """An ask's public shape: ``status`` (pending/answered) and the ``answer`` once available. The
+    internal ``delivered`` status maps to ``pending`` on the wire — the review tool only distinguishes
+    "still working" from "answered". ``question``/``context`` are echoed for the session service.
+    ``queue_position``/``queue_length`` place this ask in the task's queue (head = 1, being answered
+    now; ``0`` once it has left the queue) so the review tool can show ``answering 1 of 3``."""
+
+    ask_id: str
+    status: str
+    answer: str | None = None
+    question: str
+    context: str
+    queue_position: int = 0
+    queue_length: int = 0
+
+
+class OutstandingAskOut(BaseModel):
+    """The task's in-flight (delivered, unanswered) ask (or ``ask_id=None``) — the Stop hook reads this."""
+
+    ask_id: str | None = None
+
+
+class AskAnswerIn(BaseModel):
+    answer: str
 
 
 class SkillOut(BaseModel):
@@ -381,6 +428,7 @@ def create_app(service: TaskService) -> FastAPI:
         out.lifecycle_detail = lifecycle.detail if lifecycle is not None else None
         if task.claimed_by is not None:
             out.runner_host = service.runner_host(task.claimed_by)
+        out.pending_ask_id = service.pending_ask_id(task.id)
         return out
 
     def _task_summary_out(task: Task) -> TaskSummaryOut:
@@ -391,6 +439,7 @@ def create_app(service: TaskService) -> FastAPI:
         out.lifecycle_detail = lifecycle.detail if lifecycle is not None else None
         if task.claimed_by is not None:
             out.runner_host = service.runner_host(task.claimed_by)
+        out.pending_ask_id = service.pending_ask_id(task.id)
         return out
 
     # -- error mapping: domain exceptions -> HTTP status --------------------------
@@ -414,6 +463,18 @@ def create_app(service: TaskService) -> FastAPI:
     @app.exception_handler(NotAuthorized)
     async def _not_authorized(_: Request, exc: NotAuthorized) -> JSONResponse:
         return JSONResponse(status_code=403, content={"detail": str(exc)})
+
+    @app.exception_handler(AskQueueFull)
+    async def _ask_queue_full(_: Request, exc: AskQueueFull) -> JSONResponse:
+        # The task's ask queue is at capacity — 409 with a "queue full" detail (asks are otherwise
+        # queued, never rejected for one being in flight).
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @app.exception_handler(AskGone)
+    async def _ask_gone(_: Request, exc: AskGone) -> JSONResponse:
+        # The task's config volume was reaped — the agent can't be resumed. The review tool has a
+        # documented fallback for this (the memo's guardrail); 410 Gone is the clear signal.
+        return JSONResponse(status_code=410, content={"detail": str(exc)})
 
     @app.exception_handler(UnknownWorkflow)
     async def _unknown_wf(_: Request, exc: UnknownWorkflow) -> JSONResponse:
@@ -543,6 +604,21 @@ def create_app(service: TaskService) -> FastAPI:
         response.headers[TASKS_VERSION_HEADER] = str(version)
         return tasks
 
+    @app.get("/tasks/lookup")
+    async def lookup_task(
+        repo_id: str | None = Query(default=None),
+        branch: str | None = Query(default=None),
+        url: str | None = Query(default=None),
+    ) -> TaskOut:
+        """Find the task working a branch (``?repo_id=&branch=``) or a PR/URL (``?url=``); 404 if none.
+        Declared before ``/tasks/{task_id}`` so ``lookup`` isn't captured as a task id. The review
+        tool (ask-the-author) uses this to resolve a task from what it's reviewing."""
+        try:
+            task = await service.lookup_task(repo_id=repo_id, branch=branch, url=url)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _task_out(task)
+
     @app.get("/tasks/{task_id}")
     async def get_task(task_id: str) -> TaskOut:
         return _task_out(await service.get_task(task_id))
@@ -658,6 +734,64 @@ def create_app(service: TaskService) -> FastAPI:
         except ValueError as exc:  # slug not set yet
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return _task_out(task)
+
+    # -- asks (ask-the-author) ----------------------------------------------------
+    #
+    # The review tool posts a question, then polls for the answer; the host daemon's ask worker
+    # delivers it to the task's claude session and the container Stop hook records the reply. An ask
+    # never transitions the task — it's conversation. Delivery/gone/answer are recorded by the
+    # session service + container (same-host trust), the poll is the review tool's.
+
+    def _ask_out(ask: Ask) -> AskOut:
+        # `delivered` is an internal step; the review tool only cares pending-vs-answered.
+        status = "pending" if ask.status is AskStatus.DELIVERED else ask.status.value
+        position, length = service.ask_position(ask.task_id, ask.id)
+        return AskOut(
+            ask_id=ask.id,
+            status=status,
+            answer=ask.answer,
+            question=ask.question,
+            context=ask.context,
+            queue_position=position,
+            queue_length=length,
+        )
+
+    @app.post("/tasks/{task_id}/ask", status_code=201)
+    async def create_ask(task_id: str, body: AskIn) -> AskCreatedOut:
+        """Queue a reviewer's question for a task's agent. Accepted while the queue has room;
+        409 only when the queue is full. Returns the ``ask_id`` to poll ``GET …/ask/{ask_id}`` with."""
+        ask = await service.create_ask(task_id, body.question, body.context)
+        return AskCreatedOut(ask_id=ask.id)
+
+    @app.get("/tasks/{task_id}/ask")
+    async def outstanding_ask(task_id: str) -> OutstandingAskOut:
+        """The task's in-flight (delivered, unanswered) ask id (or null) — the container Stop hook
+        reads this to know whether the reply it's about to finish should be recorded."""
+        await service.get_task(task_id)  # 404 if the task is unknown
+        ask = service.outstanding_ask(task_id)
+        return OutstandingAskOut(ask_id=ask.id if ask is not None else None)
+
+    @app.get("/tasks/{task_id}/ask/{ask_id}")
+    async def get_ask(task_id: str, ask_id: str) -> AskOut:
+        """Poll an ask: ``{status: pending|answered, answer}`` (plus the echoed question/context).
+        410 if the task's config volume was reaped (undeliverable)."""
+        return _ask_out(service.get_ask(task_id, ask_id))
+
+    @app.post("/tasks/{task_id}/ask/{ask_id}/delivered")
+    async def mark_ask_delivered(task_id: str, ask_id: str) -> AskOut:
+        """The session service reports it delivered the ask to the agent (tmux / --continue)."""
+        return _ask_out(service.mark_ask_delivered(task_id, ask_id))
+
+    @app.post("/tasks/{task_id}/ask/{ask_id}/gone")
+    async def mark_ask_gone(task_id: str, ask_id: str) -> OutstandingAskOut:
+        """The session service reports the config volume is gone — the ask is undeliverable (→ 410)."""
+        ask = service.mark_ask_gone(task_id, ask_id)
+        return OutstandingAskOut(ask_id=ask.id)
+
+    @app.post("/tasks/{task_id}/ask/{ask_id}/answer")
+    async def record_ask_answer(task_id: str, ask_id: str, body: AskAnswerIn) -> AskOut:
+        """The container Stop hook records the agent's reply, extracted from the transcript."""
+        return _ask_out(service.record_ask_answer(task_id, ask_id, body.answer))
 
     # -- artifacts ----------------------------------------------------------------
 

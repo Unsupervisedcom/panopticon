@@ -84,6 +84,9 @@ class _FakeClient:
         self.tokens.append((task_id, tokens_used))
         return {}
 
+    def outstanding_ask(self, task_id: str) -> str | None:
+        return None  # no ask outstanding in these tests → the stop hook records nothing
+
 
 def test_hook_flips_the_turn(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PANOPTICON_SERVICE_URL", "http://svc")
@@ -299,3 +302,100 @@ def test_user_prompt_submit_unaffected_by_background_tasks(
     assert hook.main(["agent", "prompt"], client=client, stdin=io.StringIO(payload)) == 0  # type: ignore[arg-type]
     assert client.calls == [("t1", "agent")]
     assert "PHASE BRIEFING" in capsys.readouterr().out
+
+
+# -- ask-the-author: extract the agent's reply and record it on Stop ---------------------------
+
+from panopticon.core.asking import ask_marker  # noqa: E402
+
+
+class _AskClient:
+    """A Stop-hook client that reports one outstanding ask and records the answer + turn flip."""
+
+    def __init__(self, ask_id: str | None) -> None:
+        self._ask_id = ask_id
+        self.answers: list[tuple[str, str, str]] = []
+        self.turns: list[tuple[str, str]] = []
+
+    def set_turn(self, task_id: str, turn: str) -> dict[str, object]:
+        self.turns.append((task_id, turn))
+        return {}
+
+    def set_tokens_used(self, task_id: str, tokens_used: int) -> dict[str, object]:
+        return {}
+
+    def outstanding_ask(self, task_id: str) -> str | None:
+        return self._ask_id
+
+    def record_ask_answer(self, task_id: str, ask_id: str, answer: str) -> dict[str, object]:
+        self.answers.append((task_id, ask_id, answer))
+        return {}
+
+
+def _ask_transcript(tmp_path: Path, ask_id: str) -> Path:
+    """A transcript where a marked user message (the delivered ask) is followed by the agent's reply
+    (a text block, plus a tool_use block that must be ignored)."""
+    lines = [
+        {"type": "user", "message": {"role": "user", "content": "earlier unrelated turn"}},
+        {"type": "assistant", "message": {"role": "assistant", "content": "earlier answer"}},
+        {"type": "user", "message": {"role": "user", "content": f"{ask_marker(ask_id)}\nwhy?"}},
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Because it is keyed by id."},
+                    {"type": "tool_use", "name": "Read", "input": {}},
+                ],
+            },
+        },
+    ]
+    path = tmp_path / "ask.jsonl"
+    path.write_text("\n".join(json.dumps(x) for x in lines))
+    return path
+
+
+def test_extract_answer_pulls_assistant_text_after_the_marker(tmp_path: Path) -> None:
+    path = _ask_transcript(tmp_path, "ask1")
+    assert hook.extract_answer(str(path), ask_marker("ask1")) == "Because it is keyed by id."
+
+
+def test_extract_answer_stops_at_the_next_user_turn(tmp_path: Path) -> None:
+    lines = [
+        {"type": "user", "message": {"role": "user", "content": f"{ask_marker('a')} q"}},
+        {"type": "assistant", "message": {"role": "assistant", "content": "the reply"}},
+        {"type": "user", "message": {"role": "user", "content": "a later question"}},
+        {"type": "assistant", "message": {"role": "assistant", "content": "unrelated"}},
+    ]
+    path = tmp_path / "t.jsonl"
+    path.write_text("\n".join(json.dumps(x) for x in lines))
+    assert hook.extract_answer(str(path), ask_marker("a")) == "the reply"
+
+
+def test_extract_answer_none_when_marker_absent(tmp_path: Path) -> None:
+    path = _ask_transcript(tmp_path, "ask1")
+    assert hook.extract_answer(str(path), ask_marker("other")) is None
+    assert hook.extract_answer("/no/such/file.jsonl", ask_marker("ask1")) is None
+
+
+def test_stop_hook_records_the_answer_when_an_ask_is_outstanding(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("PANOPTICON_SERVICE_URL", "http://svc")
+    monkeypatch.setenv("PANOPTICON_TASK_ID", "t1")
+    client = _AskClient(ask_id="ask1")
+    stdin = io.StringIO(json.dumps({"transcript_path": str(_ask_transcript(tmp_path, "ask1"))}))
+    assert hook.main(["user", "stop"], client=client, stdin=stdin) == 0  # type: ignore[arg-type]
+    assert client.answers == [("t1", "ask1", "Because it is keyed by id.")]
+    assert client.turns == [("t1", "user")]  # the turn still flips as normal after answering
+
+
+def test_stop_hook_records_nothing_when_no_ask_is_outstanding(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("PANOPTICON_SERVICE_URL", "http://svc")
+    monkeypatch.setenv("PANOPTICON_TASK_ID", "t1")
+    client = _AskClient(ask_id=None)
+    stdin = io.StringIO(json.dumps({"transcript_path": str(_ask_transcript(tmp_path, "ask1"))}))
+    assert hook.main(["user", "stop"], client=client, stdin=stdin) == 0  # type: ignore[arg-type]
+    assert client.answers == [] and client.turns == [("t1", "user")]

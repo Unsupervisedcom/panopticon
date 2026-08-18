@@ -63,6 +63,13 @@ CONTAINER_USER = "panopticon"
 CONFIG_MOUNT = "/home/panopticon/.claude"
 
 
+def config_volume_name(task_id: str) -> str:
+    """The Docker named volume holding a task's claude session (its transcripts). Persists across
+    respawn/recreate so the agent resumes via ``--continue``; when it's reaped an ask can't be
+    delivered (see :meth:`LocalRunner.config_volume_exists`)."""
+    return f"panopticon-config-{task_id}"
+
+
 class CommandRunner(Protocol):
     """Runs an external command and returns its stdout; ``check`` raises on non-zero exit.
 
@@ -156,6 +163,7 @@ class LocalRunner(Runner):
         initial_prompt: str | None = None,
         turn: str | None = None,
         starting_model: str | None = None,
+        ask_prompt: str | None = None,
         progress: Callable[[LifecyclePhase], None] | None = None,
     ) -> str:
         """Spawn the task container. ``env_file`` is the task's repo's secret reference (ADR
@@ -205,6 +213,10 @@ class LocalRunner(Runner):
             env["PANOPTICON_TASK_TURN"] = turn
         if starting_model:
             env["PANOPTICON_STARTING_MODEL"] = starting_model
+        if ask_prompt:
+            # A parked/terminal task resumed to answer a reviewer's ask: the agent launcher appends
+            # this as the positional prompt on a ``--continue`` session (ask-the-author).
+            env["PANOPTICON_ASK_PROMPT"] = ask_prompt
         docker_run = [
             "docker",
             "run",
@@ -233,7 +245,7 @@ class LocalRunner(Runner):
             ]
         # Per-task config volume: persists claude's session history across respawn/recreate (the
         # transcripts live in the config dir, which is otherwise thrown away with the container).
-        docker_run += ["--volume", f"panopticon-config-{task_id}:{CONFIG_MOUNT}"]
+        docker_run += ["--volume", f"{config_volume_name(task_id)}:{CONFIG_MOUNT}"]
         for key, value in env.items():
             docker_run += ["--env", f"{key}={value}"]
         docker_run.append(
@@ -335,6 +347,30 @@ class LocalRunner(Runner):
         session = session_name(task_id)
         sessions = self._run(self._tmux("list-sessions", "-F", "#{session_name}"), check=False)
         return session in sessions.splitlines()
+
+    def config_volume_exists(self, task_id: str) -> bool:
+        """Whether the task's per-task config volume (its claude session) still exists on this host.
+
+        ``docker volume inspect`` the named volume; empty output (a nonzero exit) means it was reaped
+        — the agent's session can't be resumed, so an ask is undeliverable. The ask worker uses this
+        to mark the ask ``gone`` (the API then returns 410, and the review tool falls back)."""
+        name = config_volume_name(task_id)
+        out = self._run(["docker", "volume", "inspect", "--format", "{{.Name}}", name], check=False)
+        return name in out.splitlines()
+
+    def send_to_session(self, task_id: str, text: str) -> None:
+        """Deliver ``text`` to the task's **live** claude session as a submitted user message.
+
+        The first tmux input path in the repo: set a per-task paste buffer to the text (passed as an
+        argument, so multi-line content stays intact), paste it into the pane with bracketed paste
+        (``-p``, so claude receives it as one pasted block rather than executing line-by-line) and
+        delete the buffer (``-d``), then send ``Enter`` to submit. Used to inject a reviewer's ask
+        into a running agent (ask-the-author); the caller checks :meth:`has_session` first."""
+        session = session_name(task_id)
+        buffer = f"panopticon-ask-{task_id}"
+        self._run(self._tmux("set-buffer", "-b", buffer, text))
+        self._run(self._tmux("paste-buffer", "-b", buffer, "-t", session, "-p", "-d"))
+        self._run(self._tmux("send-keys", "-t", session, "Enter"))
 
     def delete_workspace_contents(self, path: str) -> None:
         """Delete all files inside ``path`` by running a throwaway root Docker container.

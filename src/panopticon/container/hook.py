@@ -40,6 +40,7 @@ import httpx
 
 from panopticon.client import TaskServiceClient
 from panopticon.container.pricing import cost_weighted_tokens
+from panopticon.core.asking import ask_marker
 from panopticon.core.provisioning import PROVISION_NUDGE
 
 #: A background task's ``status`` value counts as *finished* (no longer in flight) only if it's one
@@ -124,6 +125,81 @@ def _line_tokens(line: str) -> int:
     return cost_weighted_tokens(int_usage, model)
 
 
+def _message_text(line: str, *, role: str) -> str | None:
+    """The text of a transcript line if it's a message from ``role`` (``"user"``/``"assistant"``),
+    else ``None``. Content is either a plain string or a list of blocks; only ``text`` blocks count
+    (tool calls/results are skipped). Tolerant of non-JSON / unexpected shapes (returns ``None``)."""
+    try:
+        obj = json.loads(line)
+        msg = obj.get("message") or {}
+        if not isinstance(msg, dict) or msg.get("role") != role:
+            return None
+        content = msg.get("content")
+    except (ValueError, AttributeError):
+        return None
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        texts = [
+            b["text"]
+            for b in content
+            if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)
+        ]
+        return "\n".join(texts)
+    return None
+
+
+def extract_answer(transcript_path: str, marker: str) -> str | None:
+    """The agent's reply to an ask, read from the session transcript (ask-the-author).
+
+    Finds the **last** user message carrying ``marker`` (the ask we delivered) and concatenates the
+    assistant ``text`` that follows it, up to the next user message (the boundary of that turn).
+    Returns the joined text, or ``None`` if the marker isn't present yet or produced no text — the
+    Stop hook then simply records nothing (best-effort). Pure + tolerant, so it's unit-testable with
+    a fixture transcript, like :func:`session_tokens`."""
+    try:
+        lines = Path(transcript_path).read_text().splitlines()
+    except OSError:
+        return None
+    start: int | None = None
+    for i, line in enumerate(lines):
+        text = _message_text(line, role="user")
+        if text is not None and marker in text:
+            start = i  # keep the last match — the most recent delivery of this ask
+    if start is None:
+        return None
+    parts: list[str] = []
+    for line in lines[start + 1 :]:
+        if _message_text(line, role="user") is not None:
+            break  # a new user turn began — the reply is complete
+        assistant_text = _message_text(line, role="assistant")
+        if assistant_text:
+            parts.append(assistant_text)
+    answer = "\n".join(parts).strip()
+    return answer or None
+
+
+def _maybe_record_ask_answer(
+    client: TaskServiceClient, task_id: str, payload: dict[str, Any]
+) -> None:
+    """If a reviewer's ask is outstanding, record the agent's just-finished reply (best-effort).
+
+    The Stop hook is the completion signal: the agent has answered, so we pull its reply from the
+    transcript the payload names and record it. Any failure — no transcript, no outstanding ask, a
+    REST error, an empty extraction — is swallowed so ask handling never breaks the turn flip the
+    hook exists for. This does **not** transition the task; recording an answer is a plain fact."""
+    transcript = payload.get("transcript_path")
+    if not isinstance(transcript, str):
+        return
+    with contextlib.suppress(httpx.HTTPError):
+        ask_id = client.outstanding_ask(task_id)
+        if ask_id is None:
+            return
+        answer = extract_answer(transcript, ask_marker(ask_id))
+        if answer:
+            client.record_ask_answer(task_id, ask_id, answer)
+
+
 def _report_tokens(client: TaskServiceClient, task_id: str, payload: dict[str, Any]) -> None:
     """Best-effort: total the transcript the Stop payload names and record it.
 
@@ -167,6 +243,8 @@ def main(
         _report_tokens(client, task_id, payload)
         if _has_live_background_task(payload):
             return 0
+        # A real stop (nothing in flight): if a reviewer's ask is outstanding, record the reply.
+        _maybe_record_ask_answer(client, task_id, payload)
     client.set_turn(task_id, actor)
     # `prompt` (UserPromptSubmit): ground the agent in its current phase, and (while the task is
     # unslugged) nudge toward provisioning. claude adds this hook's stdout to its context.

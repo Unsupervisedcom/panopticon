@@ -273,6 +273,62 @@ class TaskServiceClient:
             JsonObj, self._json(self._http.post(f"/tasks/{task_id}/responsibilities", json=body))
         )
 
+    # -- asks (ask-the-author) ----------------------------------------------------
+
+    def lookup_task(
+        self,
+        *,
+        repo_id: str | None = None,
+        branch: str | None = None,
+        url: str | None = None,
+    ) -> JsonObj | None:
+        """Find the task working a branch (``repo_id`` + ``branch``) or a URL/PR (``url``); ``None``
+        if none matches (404). The review tool's entry point."""
+        params = {
+            k: v
+            for k, v in {"repo_id": repo_id, "branch": branch, "url": url}.items()
+            if v is not None
+        }
+        resp = self._http.get("/tasks/lookup", params=params)
+        if resp.status_code == 404:
+            return None
+        return cast(JsonObj, self._json(resp))
+
+    def create_ask(self, task_id: str, question: str, context: str = "") -> str:
+        """Post a reviewer's question to a task's agent; return the ``ask_id`` to poll with."""
+        body: JsonObj = {"question": question, "context": context}
+        created = cast(JsonObj, self._json(self._http.post(f"/tasks/{task_id}/ask", json=body)))
+        return cast(str, created["ask_id"])
+
+    def get_ask(self, task_id: str, ask_id: str) -> JsonObj:
+        """Poll one ask: ``{ask_id, status, answer, question, context}``. Raises on 410 (gone)."""
+        return cast(JsonObj, self._json(self._http.get(f"/tasks/{task_id}/ask/{ask_id}")))
+
+    def outstanding_ask(self, task_id: str) -> str | None:
+        """The task's in-flight (delivered, unanswered) ask id, or ``None`` — the container Stop hook
+        uses this to attribute a reply. At most one at a time (delivery is serialized)."""
+        body = cast(JsonObj, self._json(self._http.get(f"/tasks/{task_id}/ask")))
+        return cast("str | None", body.get("ask_id"))
+
+    def mark_ask_delivered(self, task_id: str, ask_id: str) -> JsonObj:
+        """Report that the session service delivered the ask to the agent."""
+        return cast(
+            JsonObj, self._json(self._http.post(f"/tasks/{task_id}/ask/{ask_id}/delivered"))
+        )
+
+    def mark_ask_gone(self, task_id: str, ask_id: str) -> JsonObj:
+        """Report that the task's config volume is gone — the ask is undeliverable (→ 410)."""
+        return cast(JsonObj, self._json(self._http.post(f"/tasks/{task_id}/ask/{ask_id}/gone")))
+
+    def record_ask_answer(self, task_id: str, ask_id: str, answer: str) -> JsonObj:
+        """Record the agent's reply to an ask (the container Stop hook extracts it from the transcript)."""
+        return cast(
+            JsonObj,
+            self._json(
+                self._http.post(f"/tasks/{task_id}/ask/{ask_id}/answer", json={"answer": answer})
+            ),
+        )
+
     # -- artifacts ----------------------------------------------------------------
 
     def list_artifacts(self, task_id: str) -> list[str]:

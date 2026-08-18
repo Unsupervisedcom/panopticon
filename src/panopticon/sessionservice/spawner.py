@@ -157,11 +157,16 @@ class Spawner:
             raise
         return self._spawn(task)
 
-    def _spawn(self, task: JsonObj) -> str:
+    def _spawn(self, task: JsonObj, *, ask_prompt: str | None = None) -> str:
         """Spawn the execution backend for an **already claimed** task — the body shared by
-        :meth:`spawn_one` (after it wins the claim) and :meth:`heal` (respawning an orphan this
-        runner already holds). Routes on the workflow's ``runner_type``: a ``"shell"`` workflow runs
+        :meth:`spawn_one` (after it wins the claim), :meth:`heal` (respawning an orphan this
+        runner already holds), and :meth:`spawn_for_ask` (resuming a parked agent to answer a
+        reviewer's question). Routes on the workflow's ``runner_type``: a ``"shell"`` workflow runs
         its script in a host tmux session (no clone, no image); otherwise the Docker container path.
+
+        ``ask_prompt`` (ask-the-author) is passed to the container so the resumed agent processes the
+        reviewer's question as its ``--continue`` prompt; it is container-only (a shell task has no
+        agent to ask).
 
         Reports each phase (``CLAIMING`` → … → ``AWAITING``); a step raising is reported as
         ``FAILED`` (with the error) before re-raising, so the host daemon's per-task isolation still
@@ -173,10 +178,31 @@ class Spawner:
             repo = self._client.get_repo(task["repo_id"])
             if self._executions.is_shell(task["workflow"]):
                 return self._spawn_shell(task, repo)
-            return self._spawn_container(task, repo)
+            return self._spawn_container(task, repo, ask_prompt=ask_prompt)
         except Exception as exc:
             self._report(task_id, LifecyclePhase.FAILED, detail=str(exc))
             raise
+
+    def spawn_for_ask(self, task: JsonObj, ask_prompt: str) -> str | None:
+        """Resume a **parked** task's agent to answer a reviewer's ask (ask-the-author).
+
+        Unlike :meth:`spawn_one`, this deliberately allows a **terminal** task: asking a COMPLETE
+        task's author is a first-class case (the config volume — its claude session — persists, so
+        ``--continue`` resumes it). Claims the task for this host if it's unclaimed (compare-and-set;
+        a 409 means another host owns it → returns ``None`` and the ask stays pending for that host),
+        then spawns with the ask as the resume prompt. Returns the container id, or ``None`` if it
+        couldn't claim. The container answers, its Stop hook records the reply, and (for a terminal
+        task) :meth:`cleanup` reaps it once it exits — which it won't do while it's still running."""
+        if task.get("claimed_by") not in (None, self._runner_id):
+            return None  # another host owns it — leave the ask pending; that host will deliver it
+        if not task.get("claimed_by"):
+            try:
+                self._client.claim(task["id"], self._runner_id)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 409:
+                    return None
+                raise
+        return self._spawn(task, ask_prompt=ask_prompt)
 
     def _prepare_task_dir(self, task: JsonObj, repo: JsonObj, *, clone: bool) -> str:
         """The task's working directory (``<tasks_root>/<task_id>``) — shared by both backends.
@@ -205,9 +231,14 @@ class Spawner:
         self._makedirs(workdir)
         return workdir
 
-    def _spawn_container(self, task: JsonObj, repo: JsonObj) -> str:
+    def _spawn_container(
+        self, task: JsonObj, repo: JsonObj, *, ask_prompt: str | None = None
+    ) -> str:
         """The Docker path: clone the per-task workspace, compose base → workflow → repo, and spawn
-        the container (reports ``PREPARING`` → ``BUILDING`` → ``STARTING`` → ``AWAITING``)."""
+        the container (reports ``PREPARING`` → ``BUILDING`` → ``STARTING`` → ``AWAITING``).
+
+        ``ask_prompt`` (ask-the-author), when set, is passed to the runner so the resumed agent
+        answers a reviewer's question as its ``--continue`` prompt."""
         task_id = task["id"]
         workspace = self._prepare_task_dir(
             task, repo, clone=True
@@ -236,6 +267,7 @@ class Spawner:
             starting_model=task.get(
                 "starting_model"
             ),  # model selection passed to claude --model on first launch
+            ask_prompt=ask_prompt,  # ask-the-author: the resumed agent's --continue prompt
             progress=lambda phase: self._report(task_id, phase),  # STARTING then AWAITING
         )
 

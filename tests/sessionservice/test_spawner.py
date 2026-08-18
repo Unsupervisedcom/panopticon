@@ -51,6 +51,7 @@ class _FakeRunner:
         initial_prompt: str | None = None,
         turn: str | None = None,
         starting_model: str | None = None,
+        ask_prompt: str | None = None,
         progress: Callable[[LifecyclePhase], None] | None = None,
     ) -> str:
         self.spawned.append(
@@ -61,6 +62,7 @@ class _FakeRunner:
                 "image": image,
                 "docker_in_docker": docker_in_docker,
                 "initial_prompt": initial_prompt,
+                "ask_prompt": ask_prompt,
                 "turn": turn,
                 "starting_model": starting_model,
             }
