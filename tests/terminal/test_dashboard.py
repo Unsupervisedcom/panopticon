@@ -16,6 +16,7 @@ from textual.app import App
 from textual.widgets import Checkbox, DataTable, Input, Select, Static
 
 from panopticon.terminal import dashboard
+from panopticon.terminal.console import ReviewResult, ReviewTarget
 from panopticon.terminal.dashboard import (
     _ENSEMBLE_KEY_PREFIX,
     Dashboard,
@@ -159,6 +160,12 @@ class _FakeClient:
 
     def list_repos(self) -> list[dict[str, Any]]:
         return self._repos
+
+    def get_repo(self, repo_id: str) -> dict[str, Any]:
+        for repo in self._repos:
+            if repo["id"] == repo_id:
+                return repo
+        raise KeyError(repo_id)
 
     def create_repo(
         self,
@@ -309,6 +316,16 @@ def test_render_detail_shows_the_tokens_used() -> None:
 def test_render_detail_marks_blocked() -> None:
     assert "(blocked)" not in render_detail(_TASK)
     assert "turn: agent (blocked)" in render_detail({**_TASK, "blocked": True})
+
+
+def test_render_detail_shows_the_time_summary_only_when_supplied() -> None:
+    # time_summary is opt-in and caller-supplied (never computed inside render_detail — see `P` /
+    # action_profile) so a task with no profile yet just omits the line.
+    assert "waited on user" not in render_detail(_TASK)
+    out = render_detail(
+        _TASK, time_summary="agent 1.2h: llm 38% tests 27% tools 35% | waited on user 4.6h"
+    )
+    assert "agent 1.2h: llm 38% tests 27% tools 35% | waited on user 4.6h" in out
 
 
 def test_short_tokens_formats_human_short() -> None:
@@ -691,6 +708,96 @@ async def test_pressing_u_with_no_runner_session_does_nothing() -> None:
         assert app.is_running  # reported "none running"; stayed on the dashboard
 
 
+async def test_pressing_v_opens_review_with_the_tasks_clone_and_repo_base() -> None:
+    # `v` hands on_review the task's clone/url/runner_host and the repo's default_base — read-only:
+    # it touches no task state (no apply/release), and stays on the same live dashboard on LAUNCHED.
+    targets: list[ReviewTarget] = []
+    task = {
+        **_TASK,
+        "repo_id": "r1",
+        "clone": "/clones/task-abcdef0123",
+        "url": "https://forge/pr/7",
+        "runner_host": None,
+    }
+    fake = _FakeClient(
+        [task], repos=[{"id": "r1", "name": "r1", "git_url": "", "default_base": "develop"}]
+    )
+    app = Dashboard(fake, on_review=lambda t: targets.append(t) or ReviewResult.LAUNCHED)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("v")
+        await pilot.pause()
+        assert targets == [
+            ReviewTarget(
+                task_id="task-abcdef0123",
+                clone="/clones/task-abcdef0123",
+                url="https://forge/pr/7",
+                runner_host=None,
+                default_base="develop",  # from the repo record
+            )
+        ]
+        assert app.is_running  # LAUNCHED → handing off; the dashboard persists
+        assert fake.applied == [] and fake.released == []  # read-only wrt the task
+
+
+async def test_pressing_v_defaults_base_to_main_when_the_repo_lookup_fails() -> None:
+    # A down service / unknown repo must not crash the `v` press — default_base falls back to main.
+    targets: list[ReviewTarget] = []
+    task = {**_TASK, "repo_id": "gone", "clone": "/clones/x", "runner_host": None}
+    fake = _FakeClient([task])  # default repo id is "default", so "gone" isn't found
+    app = Dashboard(fake, on_review=lambda t: targets.append(t) or ReviewResult.LAUNCHED)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("v")
+        await pilot.pause()
+        assert targets[0].default_base == "main"
+        assert app.is_running
+
+
+@pytest.mark.parametrize(
+    ("result", "severity", "fragment"),
+    [
+        (ReviewResult.NO_TAROT, "warning", "tarot isn't installed"),
+        (ReviewResult.NOTHING_TO_REVIEW, "warning", "No local clone and no URL"),
+        (ReviewResult.REATTACHED, "information", "Re-attaching"),
+        (ReviewResult.LAUNCHED, None, None),  # handing off → no notify
+    ],
+)
+async def test_pressing_v_maps_the_result_to_a_notification(
+    result: ReviewResult, severity: str | None, fragment: str | None
+) -> None:
+    notes: list[tuple[str, str]] = []
+    app = Dashboard(_FakeClient([_TASK]), on_review=lambda _t: result)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.notify = lambda message, **kw: notes.append(  # type: ignore[method-assign]
+            (str(message), str(kw.get("severity", "information")))
+        )
+        await pilot.press("v")
+        await pilot.pause()
+        if fragment is None:
+            assert notes == []  # LAUNCHED is silent
+        else:
+            assert len(notes) == 1
+            assert fragment in notes[0][0] and notes[0][1] == severity
+        assert app.is_running
+
+
+async def test_pressing_v_without_a_supervisor_warns() -> None:
+    # Standalone (no `panopticon console`): there's nothing to hand off to, so warn and stay put.
+    called: list[ReviewTarget] = []
+    app = Dashboard(_FakeClient([_TASK]))  # on_review is None  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        notes: list[str] = []
+        app.notify = lambda message, **kw: notes.append(str(message))  # type: ignore[method-assign]
+        await pilot.press("v")
+        await pilot.pause()
+        assert called == []  # never invoked
+        assert notes and "panopticon console" in notes[0]
+        assert app.is_running
+
+
 async def test_pressing_n_creates_a_task_via_repo_workflow_then_memo() -> None:
     fake = _FakeClient(
         [],
@@ -906,6 +1013,41 @@ async def test_pressing_shift_y_copies_the_id(monkeypatch: Any) -> None:
         await pilot.press("Y")
         await pilot.pause()
         assert copied == ["task-abcdef0123"]
+
+
+async def test_pressing_shift_p_profiles_and_shows_the_summary(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # `P` shells out to docker (via task_session_paths) on demand — never automatically, since
+    # that'd be too slow to redo on every highlight. Fake it out here; the real read + gap-analysis
+    # are covered in test_transcripts.py / test_parse.py.
+    transcript = tmp_path / "s1.jsonl"
+    transcript.write_text(
+        '{"type": "user", "timestamp": "2026-01-01T00:00:00.000Z", '
+        '"message": {"role": "user", "content": "hi"}}\n'
+    )
+    monkeypatch.setattr(dashboard, "task_session_paths", lambda task_id: [transcript])
+    app = Dashboard(_FakeClient([_TASK]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        detail = app.query_one("#detail", Static)
+        assert detail.styles.display == "none"  # hidden by default
+        await pilot.press("P")
+        await pilot.pause()
+        assert detail.styles.display == "block"  # `P` reveals it so the summary is visible
+        assert "agent " in str(detail.render())
+        assert "waited on user" in str(detail.render())
+
+
+async def test_pressing_shift_p_with_no_transcripts_warns(monkeypatch: Any) -> None:
+    monkeypatch.setattr(dashboard, "task_session_paths", lambda task_id: [])
+    app = Dashboard(_FakeClient([_TASK]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("P")
+        await pilot.pause()
+        assert app.is_running  # warns, doesn't crash
+        assert app.query_one("#detail", Static).styles.display == "none"  # never revealed
 
 
 def test_render_detail_shows_the_claim() -> None:
@@ -2170,7 +2312,7 @@ def test_footer_shows_only_the_essential_keys() -> None:
     shown = {b.key for b in Dashboard.BINDINGS if b.show}
     hidden = {b.key for b in Dashboard.BINDINGS if not b.show}
     assert shown == {"t", "n", "x", "/", "d", "question_mark", "q"}
-    assert hidden == {"o", "r", "R", "p", "g", "a", "s", "u", "y", "Y", "escape"}
+    assert hidden == {"o", "r", "R", "p", "v", "g", "a", "s", "u", "y", "Y", "P", "escape"}
 
 
 def test_bindings_and_help_derive_from_the_single_hotkey_table() -> None:

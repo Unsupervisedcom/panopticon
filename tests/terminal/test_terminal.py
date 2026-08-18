@@ -4,6 +4,7 @@ test_client.py; the dashboard in test_dashboard.py. Quickstart helpers are in te
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -22,17 +23,36 @@ def test_cli_tasks_lists(capsys: pytest.CaptureFixture[str]) -> None:
     assert "t1" in out and "ITERATING" in out and "agent" in out
 
 
+def test_cli_profile_dispatches_task_and_all_tasks_flag() -> None:
+    # `main` only wires argparse -> run_profile_command; the command's own logic (task/slug
+    # resolution, formatting) is covered directly in test_task_profile.py.
+    with patch("panopticon.terminal.task_profile.run_profile_command", return_value=0) as mock_run:
+        assert cli.main(["profile", "my-task"], client=_FakeClient()) == 0  # type: ignore[arg-type]
+    _client, kwargs = mock_run.call_args.args[0], mock_run.call_args.kwargs
+    assert kwargs["task_ref"] == "my-task"
+    assert kwargs["all_tasks"] is False
+
+    with patch("panopticon.terminal.task_profile.run_profile_command", return_value=0) as mock_run:
+        assert cli.main(["profile", "--all-tasks"], client=_FakeClient()) == 0  # type: ignore[arg-type]
+    kwargs = mock_run.call_args.kwargs
+    assert kwargs["task_ref"] is None
+    assert kwargs["all_tasks"] is True
+
+
 def test_dashboard_under_supervisor_wires_the_switch_hooks(monkeypatch: pytest.MonkeyPatch) -> None:
     # With --switch-file (set by the supervisor, ADR 0009 §6) the dashboard is wired with the
-    # `t` (on_switch), `s` (on_service), and `u` (on_runner) hooks; the dashboard stays running.
+    # `t` (on_switch), `s` (on_service), `u` (on_runner), and `v` (on_review) hooks; the dashboard
+    # stays running.
     from panopticon.terminal import dashboard
 
     seen: dict[str, Any] = {}
     monkeypatch.setattr(
         dashboard,
         "run",
-        lambda _c, *, on_switch=None, on_service=None, on_runner=None, artifacts_root=None: (
-            seen.update(on_switch=on_switch, on_service=on_service, on_runner=on_runner)
+        lambda _c, *, on_switch=None, on_service=None, on_runner=None, on_review=None, artifacts_root=None: (
+            seen.update(
+                on_switch=on_switch, on_service=on_service, on_runner=on_runner, on_review=on_review
+            )
         ),
     )
     cli.main(["dashboard", "--switch-file", "/tmp/x"], client=_FakeClient())  # type: ignore[arg-type]
@@ -40,6 +60,7 @@ def test_dashboard_under_supervisor_wires_the_switch_hooks(monkeypatch: pytest.M
         seen["on_switch"] is not None
         and seen["on_service"] is not None
         and seen["on_runner"] is not None
+        and seen["on_review"] is not None
     )
 
 
@@ -50,12 +71,19 @@ def test_standalone_dashboard_has_no_switch_hooks(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(
         dashboard,
         "run",
-        lambda _c, *, on_switch=None, on_service=None, on_runner=None, artifacts_root=None: (
-            seen.update(on_switch=on_switch, on_service=on_service, on_runner=on_runner)
+        lambda _c, *, on_switch=None, on_service=None, on_runner=None, on_review=None, artifacts_root=None: (
+            seen.update(
+                on_switch=on_switch, on_service=on_service, on_runner=on_runner, on_review=on_review
+            )
         ),
     )
     cli.main(["dashboard"], client=_FakeClient())  # type: ignore[arg-type]
-    assert seen["on_switch"] is None and seen["on_service"] is None and seen["on_runner"] is None
+    assert (
+        seen["on_switch"] is None
+        and seen["on_service"] is None
+        and seen["on_runner"] is None
+        and seen["on_review"] is None
+    )
 
 
 def test_quickstart_invokes_all_steps(monkeypatch: pytest.MonkeyPatch) -> None:

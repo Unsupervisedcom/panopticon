@@ -89,6 +89,15 @@ def main(
     # the operator picked with `t` by writing it here instead of returning it in-process.
     dash.add_argument("--switch-file", help=argparse.SUPPRESS)
     sub.add_parser("tasks", help="list tasks as plain text")
+    prof = sub.add_parser(
+        "profile", help="time-profile a task's session transcripts (llm/tool/operator-wait split)"
+    )
+    prof.add_argument("task", nargs="?", help="task id or slug to profile")
+    prof.add_argument(
+        "--all-tasks",
+        action="store_true",
+        help="aggregate every task's profile per-repo (totals + medians) instead of one task",
+    )
     mig = sub.add_parser("migrate", help="apply DB migrations to head (or pass alembic args)")
     mig.add_argument("alembic_args", nargs="*", default=["upgrade", "head"])
     sub.add_parser("build", help="build the base task-container image (panopticon-base)")
@@ -181,22 +190,33 @@ def main(
     if args.command == "tasks":
         for t in client.list_tasks():
             print(f"{t['id']}  {t['state']:<10}  {t['turn']:<5}  {t['slug'] or '-'}")
+    elif args.command == "profile":
+        from panopticon.terminal.task_profile import run_profile_command
+
+        return run_profile_command(client, task_ref=args.task, all_tasks=args.all_tasks)
     elif args.command == "dashboard":
-        from panopticon.terminal.console import make_runner_switch, make_service_switch, switch_to
+        from panopticon.terminal.console import (
+            make_review_switch,
+            make_runner_switch,
+            make_service_switch,
+            switch_to,
+        )
         from panopticon.terminal.dashboard import run
 
         on_switch = None
         on_service = None
         on_runner = None
+        on_review = None
         if (
             args.switch_file
-        ):  # run under the supervisor: report `t`/`s`/`u` picks via the switch-file
+        ):  # run under the supervisor: report `t`/`s`/`u`/`v` picks via the switch-file
             switch_file = Path(args.switch_file)
             on_switch = lambda session, host=None: switch_to(  # noqa: E731
                 session, host=host, switch_file=switch_file
             )
             on_service = make_service_switch(switch_file)
             on_runner = make_runner_switch(switch_file)
+            on_review = make_review_switch(switch_file, service_url=args.service_url)
         # Same default as the task service (shared ARTIFACTS_DIR): when the dashboard shares
         # the store's filesystem, `a`'s `e` opens the on-disk artifact in place.
         from panopticon.core.dirs import ARTIFACTS_DIR
@@ -207,6 +227,7 @@ def main(
             on_switch=on_switch,
             on_service=on_service,
             on_runner=on_runner,
+            on_review=on_review,
             artifacts_root=artifacts_root,
         )
     else:  # "start", "console", or no subcommand (no subcommand → alias for "start")

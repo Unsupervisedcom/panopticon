@@ -17,15 +17,23 @@ The dashboard reports a pick by writing it to a **switch-file** and then detachi
 returning lands on the same dashboard. Switching is always detach→attach, never `switch-client`,
 so a remote task is reached by the same loop at M5 — only the attach gains an ``ssh -t <host>``
 prefix. LLM-free.
+
+The same detach→attach mechanism also backs `v` (:func:`make_review_switch`), which opens **tarot**
+on a task's work: it creates an on-demand ``panopticon-review-<id>`` session running tarot on the
+task's local clone, records it, and detaches — so quitting tarot returns to the same dashboard,
+exactly like detaching from a task session.
 """
 
 from __future__ import annotations
 
+import enum
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
@@ -40,6 +48,16 @@ DASHBOARD_SESSION = "dashboard"
 SERVICE_SESSION = "service"
 #: tmux session name the session-service runner runs in under `make start`.
 RUNNER_SESSION = "runner"
+#: prefix for the on-demand tarot **review** session a task opens with `v`. Kept distinct from the
+#: task's own container session (`session_name` = ``panopticon-<id>``) so opening/killing a review
+#: never touches the task's container.
+REVIEW_SESSION_PREFIX = "panopticon-review-"
+
+
+def review_session_name(task_id: str) -> str:
+    """The tmux session name for a task's tarot **review** session (``v``), on the panopticon
+    socket beside the task sessions. Distinct namespace from :func:`session_name`."""
+    return f"{REVIEW_SESSION_PREFIX}{task_id}"
 
 
 def switch_file_path(socket: str) -> Path:
@@ -157,6 +175,117 @@ def make_runner_switch(
     return make_session_switch(
         RUNNER_SESSION, switch_file, socket=socket, exists=exists, detach=detach
     )
+
+
+@dataclass(frozen=True)
+class ReviewTarget:
+    """What the dashboard hands the `v` hook to open tarot on a task's work: the task id (for the
+    session name + the ``TAROT_PANOPTICON_TASK`` hint), its per-task ``clone`` on this host and the
+    repo ``default_base`` (the local-clone review), its ``url`` (the fallback), and ``runner_host``
+    (set → the clone lives on another host, so local-clone review is skipped)."""
+
+    task_id: str
+    clone: str | None
+    url: str | None
+    runner_host: str | None
+    default_base: str
+
+
+class ReviewResult(enum.Enum):
+    """Outcome of a `v` press, mapped to a dashboard notify (or a silent hand-off)."""
+
+    LAUNCHED = "launched"  # a fresh review session was created + attached (terminal handing off)
+    REATTACHED = "reattached"  # a review session already existed — re-attached, no double-launch
+    NO_TAROT = "no_tarot"  # tarot isn't installed on this host — nothing spawned
+    NOTHING_TO_REVIEW = "nothing_to_review"  # no local clone and no url — nothing to open
+
+
+def _git_configured_base(clone: str) -> str | None:
+    """The clone's ``tarot.base`` git config, if the operator set one (else ``None``). When set we
+    let tarot read its own config rather than forcing ``--base origin/<default_base>``."""
+    result = subprocess.run(
+        ["git", "-C", clone, "config", "--get", "tarot.base"],
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip() or None
+
+
+def _review_tmux_command(
+    session: str,
+    *,
+    socket: str,
+    cwd: str | None,
+    env: dict[str, str],
+    tarot_args: list[str],
+) -> list[str]:
+    """The argv that creates the detached tarot review session on the panopticon socket: a
+    ``new-session`` started in ``cwd`` (the clone, when reviewing it in place) with ``env`` exported
+    (``PANOPTICON_SERVICE_URL`` + the ``TAROT_PANOPTICON_TASK`` ask-the-author hint) running
+    ``tarot`` with ``tarot_args``. The single place the review command is spelled — the unit tests
+    pin it."""
+    command = ["tmux", "-L", socket, "new-session", "-d", "-s", session]
+    if cwd is not None:
+        command += ["-c", cwd]
+    for key, value in env.items():
+        command += ["-e", f"{key}={value}"]
+    command += ["tarot", *tarot_args]
+    return command
+
+
+def make_review_switch(
+    switch_file: Path,
+    *,
+    service_url: str,
+    socket: str = TMUX_SOCKET,
+    exists: Callable[[str], bool] | None = None,
+    tarot_installed: Callable[[], bool] | None = None,
+    configured_base: Callable[[str], str | None] = _git_configured_base,
+    clone_present: Callable[[str], bool] | None = None,
+    run: Callable[[list[str]], object] | None = None,
+    detach: Callable[[], None] = _tmux_detach,
+) -> Callable[[ReviewTarget], ReviewResult]:
+    """Build the dashboard's `v` hook: open tarot on a task's work, reusing the `t` switch-file
+    detach/attach (:func:`switch_to`) so quitting tarot returns to the same dashboard.
+
+    Read-only wrt the task — it never calls the task service; it only reads git config, creates a
+    tmux session, and writes the switch-file. The fallback ladder: a **local** clone (present on
+    this host, no ``runner_host``) is reviewed in place with ``--base origin/<default_base>``
+    (unless the clone sets ``tarot.base``); else the task's ``url`` (a PR) is opened; else there's
+    nothing to review. A review session that already exists is re-attached, never double-launched;
+    with tarot not installed nothing is spawned. Every host interaction is injected for tests."""
+    session_running = exists or (lambda s: session_exists(s, socket=socket))
+    installed = tarot_installed or (lambda: shutil.which("tarot") is not None)
+    present = clone_present or (lambda path: Path(path).is_dir())
+    launch = run or (lambda argv: subprocess.run(argv, check=False))
+
+    def review(target: ReviewTarget) -> ReviewResult:
+        if not installed():
+            return ReviewResult.NO_TAROT
+        session = review_session_name(target.task_id)
+        if session_running(session):  # second press → re-attach, don't double-launch
+            switch_to(session, switch_file=switch_file, detach=detach)
+            return ReviewResult.REATTACHED
+        env = {"PANOPTICON_SERVICE_URL": service_url, "TAROT_PANOPTICON_TASK": target.task_id}
+        # Local-clone review only when the clone is on *this* host: a remote runner's clone lives
+        # elsewhere, so fall through to the url.
+        if target.clone is not None and target.runner_host is None and present(target.clone):
+            base = configured_base(target.clone)
+            tarot_args = [] if base else ["--base", f"origin/{target.default_base}"]
+            command = _review_tmux_command(
+                session, socket=socket, cwd=target.clone, env=env, tarot_args=tarot_args
+            )
+        elif target.url:
+            command = _review_tmux_command(
+                session, socket=socket, cwd=None, env=env, tarot_args=[target.url]
+            )
+        else:
+            return ReviewResult.NOTHING_TO_REVIEW
+        launch(command)
+        switch_to(session, switch_file=switch_file, detach=detach)
+        return ReviewResult.LAUNCHED
+
+    return review
 
 
 def _service_ready(service_url: str) -> bool:
