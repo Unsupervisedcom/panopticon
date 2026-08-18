@@ -159,3 +159,52 @@ def test_end_to_end_ask_delivery_and_answer(client: TaskServiceClient) -> None:
     client.record_ask_answer(task["id"], ask_id, "to avoid recomputation")
     answered = client.get_ask(task["id"], ask_id)
     assert answered["status"] == "answered" and answered["answer"] == "to avoid recomputation"
+
+
+def test_queued_asks_deliver_strictly_serially_with_correct_attribution(
+    client: TaskServiceClient,
+) -> None:
+    # Three questions queued on one task are delivered one at a time: the worker delivers the head,
+    # then holds until that ask is answered before delivering the next, and the Stop-hook attribution
+    # (outstanding_ask) names exactly the in-flight ask at each step. This is why delivery must be
+    # serialized — a second marker injected mid-answer would truncate the first reply.
+    task_id = client.create_task("r1", "spike")["id"]
+    ids = [client.create_ask(task_id, f"q{i}?") for i in range(3)]
+    runner, spawner = _FakeRunner(volume=True, session=True), _FakeSpawner()
+    worker = _worker(client, runner, spawner)
+
+    for i, ask_id in enumerate(ids):
+        task = client.get_task(task_id)
+        assert task["pending_ask_id"] == ask_id  # only the head is deliverable
+        assert worker.deliver(task) == ask_id
+        assert len(runner.sent) == i + 1  # exactly one delivery this round
+        assert ask_marker(ask_id) in runner.sent[-1][1]  # the right question's marker
+
+        # While it's in flight, nothing else is deliverable and attribution names this ask.
+        assert client.get_task(task_id)["pending_ask_id"] is None
+        assert worker.deliver(client.get_task(task_id)) is None  # queue held
+        assert len(runner.sent) == i + 1
+        assert client.outstanding_ask(task_id) == ask_id
+
+        client.record_ask_answer(task_id, ask_id, f"answer {i}")  # the Stop hook fires
+
+    # All three answered, in order, each attributed to its own question.
+    assert [client.get_ask(task_id, a)["answer"] for a in ids] == [
+        "answer 0",
+        "answer 1",
+        "answer 2",
+    ]
+
+
+def test_gone_drains_the_whole_queue(client: TaskServiceClient) -> None:
+    # A reaped volume is unrecoverable for every queued question, not just the head — so delivering
+    # into a dead session drains the whole queue GONE at once (the review tool offers a surrogate
+    # once, not per question).
+    task_id = client.create_task("r1", "spike")["id"]
+    ids = [client.create_ask(task_id, f"q{i}?") for i in range(3)]
+    runner, spawner = _FakeRunner(volume=False), _FakeSpawner()  # volume gone
+
+    assert _worker(client, runner, spawner).deliver(client.get_task(task_id)) is None
+    assert runner.sent == [] and spawner.calls == []
+    for a in ids:  # every queued ask is gone → 410
+        assert client._http.get(f"/tasks/{task_id}/ask/{a}").status_code == 410

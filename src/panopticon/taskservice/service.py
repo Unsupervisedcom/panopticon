@@ -50,6 +50,12 @@ def _uuid_hex() -> str:
     return uuid.uuid4().hex
 
 
+#: Max unanswered asks (PENDING or DELIVERED) a task may hold at once (ask-the-author). A reviewer
+#: may queue several questions; delivery stays strictly serialized (one delivered-unanswered at a
+#: time). Only a **full** queue is rejected — a small bound so a runaway loop can't grow unboundedly.
+ASK_QUEUE_CAP = 10
+
+
 class UnknownWorkflow(Exception):
     """Raised when a task references a workflow the service hasn't loaded."""
 
@@ -63,8 +69,8 @@ class NotAuthorized(Exception):
     non-orchestration workflow trying to create other tasks)."""
 
 
-class AskInProgress(Exception):
-    """Raised when creating an ask for a task that already has an unanswered one (cap: 1 per task)."""
+class AskQueueFull(Exception):
+    """Raised when a task's ask queue is at capacity (:data:`ASK_QUEUE_CAP` unanswered asks)."""
 
 
 class AskGone(Exception):
@@ -711,11 +717,14 @@ class TaskService:
 
     # -- asks (ask-the-author: a reviewer interrogates a task's agent) ---------------------
     #
-    # Ephemeral like a registration/lifecycle: a review-time question delivered to the task's claude
-    # session and its answer, held in memory (:attr:`_asks`) — never a workflow transition, so it
-    # neither changes state nor seeds responsibilities. The **session service** does the delivery
-    # (tmux inject / ``--continue`` resume) and the container's Stop hook records the answer; the task
-    # service only tracks the record and enforces the one-unanswered-ask-per-task cap.
+    # Ephemeral like a registration/lifecycle: review-time questions delivered to the task's claude
+    # session and their answers, held in memory (:attr:`_asks`) — never a workflow transition, so an
+    # ask neither changes state nor seeds responsibilities. A reviewer may **queue** several questions
+    # per task (a bounded FIFO of PENDING asks); the **session service** delivers them **strictly one
+    # at a time** — the next only once the previous is ANSWERED or GONE — because answer extraction
+    # anchors on the transcript's turn boundaries, so a second question injected mid-answer would
+    # truncate the first reply. The task service tracks the queue and enforces its bound; the
+    # container's Stop hook records each answer.
 
     _UNANSWERED = frozenset({AskStatus.PENDING, AskStatus.DELIVERED})
 
@@ -724,6 +733,11 @@ class TaskService:
         asks = [a for a in self._asks.values() if a.task_id == task_id]
         return sorted(asks, key=lambda a: a.created_at or "")
 
+    def _ask_queue(self, task_id: str) -> list[Ask]:
+        """The task's live ask queue: unanswered asks (PENDING/DELIVERED), oldest (head) first.
+        Answered/gone asks have left the queue. This is what ``answering N of M`` counts over."""
+        return [a for a in self._task_asks(task_id) if a.status in self._UNANSWERED]
+
     def _get_ask(self, task_id: str, ask_id: str) -> Ask:
         ask = self._asks.get(ask_id)
         if ask is None or ask.task_id != task_id:
@@ -731,12 +745,18 @@ class TaskService:
         return ask
 
     async def create_ask(self, task_id: str, question: str, context: str = "") -> Ask:
-        """Create a pending ask for a task (the session service delivers it). Enforces the cap of one
-        unanswered ask per task (raises :class:`AskInProgress`). Wakes the change feed so the host
-        daemon's ask worker picks it up."""
+        """Append a question to the task's ask queue (the session service delivers it in turn).
+
+        Always accepts while the queue has room — a reviewer can stack several questions and read the
+        answers as they land. Only a **full** queue (:data:`ASK_QUEUE_CAP` unanswered asks) is
+        rejected, with :class:`AskQueueFull`. Wakes the change feed so the host daemon's ask worker
+        picks up the head of the queue.
+        """
         await self.get_task(task_id)  # ensure the task exists (raises NotFound)
-        if any(a.status in self._UNANSWERED for a in self._task_asks(task_id)):
-            raise AskInProgress(f"task {task_id!r} already has an unanswered ask")
+        if len(self._ask_queue(task_id)) >= ASK_QUEUE_CAP:
+            raise AskQueueFull(
+                f"task {task_id!r} ask queue is full ({ASK_QUEUE_CAP}); wait for answers before asking more"
+            )
         ask = Ask(
             id=self._id(),
             task_id=task_id,
@@ -746,7 +766,9 @@ class TaskService:
         )
         self._asks[ask.id] = ask
         self._notify_change()  # wake the host daemon's ask worker (it reads pending_ask_id)
-        _log.info("task %s: ask %s created", task_id, ask.id)
+        _log.info(
+            "task %s: ask %s queued (position %d)", task_id, ask.id, len(self._ask_queue(task_id))
+        )
         return ask
 
     def get_ask(self, task_id: str, ask_id: str) -> Ask:
@@ -758,20 +780,37 @@ class TaskService:
             )
         return ask
 
+    def ask_position(self, task_id: str, ask_id: str) -> tuple[int, int]:
+        """``(position, queue_length)`` for an ask: its 1-based place in the live queue (the head,
+        being delivered/answered now, is 1) and the queue's length. Position ``0`` means the ask has
+        left the queue (answered or gone). Lets the review tool show ``answering 1 of 3``."""
+        queue = self._ask_queue(task_id)
+        ids = [a.id for a in queue]
+        position = ids.index(ask_id) + 1 if ask_id in ids else 0
+        return position, len(queue)
+
     def outstanding_ask(self, task_id: str) -> Ask | None:
-        """The task's newest unanswered ask (pending or delivered), or ``None`` — what the container
-        Stop hook checks to know whether a reply it should record is being produced."""
-        unanswered = [a for a in self._task_asks(task_id) if a.status in self._UNANSWERED]
-        return unanswered[-1] if unanswered else None
+        """The task's currently **delivered** (in-flight, unanswered) ask, or ``None`` — what the
+        container Stop hook checks to attribute a reply. Delivery is serialized, so there is at most
+        one; the rest of the queue is still PENDING behind it, invisible to attribution."""
+        for ask in self._task_asks(task_id):
+            if ask.status is AskStatus.DELIVERED:
+                return ask
+        return None
 
     def pending_ask_id(self, task_id: str) -> str | None:
-        """The id of the task's oldest **undelivered** ask, or ``None`` — overlaid on the task's
-        serialized form so the host daemon's ask worker can spot deliverable asks without a per-task
-        request (it clears the moment the worker marks the ask delivered or gone)."""
-        for ask in self._task_asks(task_id):
-            if ask.status is AskStatus.PENDING:
-                return ask.id
-        return None
+        """The id of the task's next **deliverable** ask (the head of the queue), or ``None``.
+
+        Overlaid on the task's serialized form so the host daemon's ask worker spots a deliverable ask
+        without a per-task request. Enforces serialization at the source: while an ask is in flight
+        (DELIVERED, awaiting its answer) this returns ``None``, so the worker holds the rest of the
+        queue; it clears to the next PENDING head only once the in-flight one is ANSWERED or GONE.
+        """
+        queue = self._ask_queue(task_id)
+        if any(a.status is AskStatus.DELIVERED for a in queue):
+            return None  # one delivered-unanswered at a time — hold the queue until it resolves
+        head = queue[0] if queue else None
+        return head.id if head is not None and head.status is AskStatus.PENDING else None
 
     def mark_ask_delivered(self, task_id: str, ask_id: str) -> Ask:
         """Mark an ask delivered (the session service handed it to the agent); wakes the feed."""
@@ -782,15 +821,29 @@ class TaskService:
         return ask
 
     def mark_ask_gone(self, task_id: str, ask_id: str) -> Ask:
-        """Mark an ask undeliverable because the task's config volume was reaped (→ 410)."""
-        ask = self._get_ask(task_id, ask_id)
-        ask.status = AskStatus.GONE
+        """Mark ``ask_id`` — and every other unanswered ask queued behind it — GONE.
+
+        The config volume being reaped means the agent's session is unrecoverable, which is true for
+        the whole queue, not just the head: draining it lets the review tool offer a surrogate
+        **once** rather than rediscovering the dead session per question. Returns the named ask.
+        """
+        named = self._get_ask(task_id, ask_id)
+        drained = 0
+        for ask in self._ask_queue(task_id):
+            ask.status = AskStatus.GONE
+            drained += 1
         self._notify_change()
-        _log.info("task %s: ask %s gone (volume reaped)", task_id, ask_id)
-        return ask
+        _log.info(
+            "task %s: ask %s gone (volume reaped); drained %d queued ask(s)",
+            task_id,
+            ask_id,
+            drained,
+        )
+        return named
 
     def record_ask_answer(self, task_id: str, ask_id: str, answer: str) -> Ask:
-        """Record the agent's reply (the container Stop hook extracts it from the transcript)."""
+        """Record the agent's reply (the container Stop hook extracts it from the transcript). The
+        ask leaves the queue (ANSWERED), so the worker's next pass delivers the queue's new head."""
         ask = self._get_ask(task_id, ask_id)
         ask.answer = answer
         ask.status = AskStatus.ANSWERED

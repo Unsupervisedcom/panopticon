@@ -305,7 +305,8 @@ class TaskServiceClient:
         return cast(JsonObj, self._json(self._http.get(f"/tasks/{task_id}/ask/{ask_id}")))
 
     def outstanding_ask(self, task_id: str) -> str | None:
-        """The task's current unanswered ask id, or ``None`` (the container Stop hook uses this)."""
+        """The task's in-flight (delivered, unanswered) ask id, or ``None`` — the container Stop hook
+        uses this to attribute a reply. At most one at a time (delivery is serialized)."""
         body = cast(JsonObj, self._json(self._http.get(f"/tasks/{task_id}/ask")))
         return cast("str | None", body.get("ask_id"))
 

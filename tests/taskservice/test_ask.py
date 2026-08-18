@@ -1,7 +1,7 @@
 """ask-the-author over REST: the tarot review tool's contract with the task service.
 
 Covers the API the memo pins: ``GET /tasks/lookup`` (resolve a task by branch/url), ``POST
-/tasks/{id}/ask`` (post a question, capped at one unanswered per task), ``GET /tasks/{id}/ask/{id}``
+/tasks/{id}/ask`` (queue a question, bounded per task), ``GET /tasks/{id}/ask/{id}``
 (poll for the answer), the COMPLETE-without-transition guarantee, and the dead-volume → 410 fallback.
 Delivery + answer extraction happen in the session service + container; here we drive their recorded
 outcomes over the client to prove the control-plane contract. No Docker, no LLM.
@@ -65,18 +65,32 @@ def test_ask_then_retrieve_answer(client: TaskServiceClient) -> None:
     assert answered["answer"] == "because lookups are by id"
 
 
-def test_ask_is_capped_at_one_unanswered_per_task(client: TaskServiceClient) -> None:
+def test_asks_queue_rather_than_reject(client: TaskServiceClient) -> None:
+    # A second (third, …) question is queued, not rejected: create_ask always accepts while there's
+    # room. The queue exposes position/length so the review tool can show "answering 1 of 3".
     task_id = _task(client)
-    client.create_ask(task_id, "first?")
-    # A second concurrent ask is rejected while the first is unanswered (cap: 1 per task).
-    resp = client._http.post(f"/tasks/{task_id}/ask", json={"question": "second?"})
+    a1 = client.create_ask(task_id, "first?")
+    a2 = client.create_ask(task_id, "second?")
+    a3 = client.create_ask(task_id, "third?")
+    assert len({a1, a2, a3}) == 3  # all accepted, distinct
+
+    first = client.get_ask(task_id, a1)
+    assert (first["queue_position"], first["queue_length"]) == (1, 3)  # head, answered next
+    third = client.get_ask(task_id, a3)
+    assert (third["queue_position"], third["queue_length"]) == (3, 3)  # waiting at the back
+
+
+def test_ask_queue_full_is_rejected_with_a_queue_full_message(client: TaskServiceClient) -> None:
+    task_id = _task(client)
+    for i in range(10):  # ASK_QUEUE_CAP unanswered asks fill the queue
+        client.create_ask(task_id, f"q{i}?")
+    resp = client._http.post(f"/tasks/{task_id}/ask", json={"question": "one too many?"})
     assert resp.status_code == 409
-    # Once the first is answered, a new ask is allowed again.
-    first = client.outstanding_ask(task_id)
-    assert first is not None
-    client.record_ask_answer(task_id, first, "yes")
-    second = client.create_ask(task_id, "second?")
-    assert second != first
+    assert "queue is full" in resp.json()["detail"]  # not "already has an unanswered ask"
+    # Answering the head frees a slot, so a new ask is accepted again.
+    head = client.outstanding_ask(task_id) or client.get_task(task_id)["pending_ask_id"]
+    client.record_ask_answer(task_id, head, "a")
+    assert client.create_ask(task_id, "now there's room?")
 
 
 def test_ask_on_a_complete_task_answers_without_transition(client: TaskServiceClient) -> None:

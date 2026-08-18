@@ -9,7 +9,7 @@
       "node_id": "src/panopticon/taskservice/api.py:create_app.<locals>.lookup_task",
       "trail": [],
       "cursor": [
-        601,
+        608,
         4,
         false
       ],
@@ -22,12 +22,12 @@
       "node_id": "src/panopticon/taskservice/service.py:TaskService.create_ask",
       "trail": [],
       "cursor": [
-        733,
+        747,
         4,
         false
       ],
       "title": "2 \u00b7 Filing the question",
-      "note": "The reviewer's question gets saved as an 'ask' attached to the task. Only one question can be waiting per task at a time. If you try to file a second one too early you get a 'still working on the last one' error, and if the agent is long gone you get a 'nobody home' error so the review tool can offer a stand-in instead.",
+      "note": "The reviewer's question joins a queue of questions attached to the task. You can stack up several: they are answered one at a time, in the order asked, so filing another while an earlier one is still being answered simply gets in line rather than being turned away. Only a full queue is refused (with a 'queue is full' message). Delivering into a session that no longer exists marks the whole queue 'nobody home' at once, so the review tool can offer a stand-in for all of them rather than one question at a time.",
       "test_id": null,
       "invocation": null
     },
@@ -100,7 +100,7 @@
       "node_id": "src/panopticon/taskservice/service.py:TaskService.record_ask_answer",
       "trail": [],
       "cursor": [
-        792,
+        837,
         4,
         false
       ],

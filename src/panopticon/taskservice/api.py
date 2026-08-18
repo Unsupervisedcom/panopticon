@@ -25,7 +25,7 @@ from panopticon.core.workflow import IllegalTransition, InvalidWorkflow, Respons
 from panopticon.taskservice.service import (
     AlreadyClaimed,
     AskGone,
-    AskInProgress,
+    AskQueueFull,
     NotAuthorized,
     TaskService,
     UnknownWorkflow,
@@ -282,17 +282,21 @@ class AskCreatedOut(BaseModel):
 class AskOut(BaseModel):
     """An ask's public shape: ``status`` (pending/answered) and the ``answer`` once available. The
     internal ``delivered`` status maps to ``pending`` on the wire — the review tool only distinguishes
-    "still working" from "answered". ``question``/``context`` are echoed for the session service."""
+    "still working" from "answered". ``question``/``context`` are echoed for the session service.
+    ``queue_position``/``queue_length`` place this ask in the task's queue (head = 1, being answered
+    now; ``0`` once it has left the queue) so the review tool can show ``answering 1 of 3``."""
 
     ask_id: str
     status: str
     answer: str | None = None
     question: str
     context: str
+    queue_position: int = 0
+    queue_length: int = 0
 
 
 class OutstandingAskOut(BaseModel):
-    """The task's current unanswered ask (or ``ask_id=None``) — the container Stop hook reads this."""
+    """The task's in-flight (delivered, unanswered) ask (or ``ask_id=None``) — the Stop hook reads this."""
 
     ask_id: str | None = None
 
@@ -460,8 +464,10 @@ def create_app(service: TaskService) -> FastAPI:
     async def _not_authorized(_: Request, exc: NotAuthorized) -> JSONResponse:
         return JSONResponse(status_code=403, content={"detail": str(exc)})
 
-    @app.exception_handler(AskInProgress)
-    async def _ask_in_progress(_: Request, exc: AskInProgress) -> JSONResponse:
+    @app.exception_handler(AskQueueFull)
+    async def _ask_queue_full(_: Request, exc: AskQueueFull) -> JSONResponse:
+        # The task's ask queue is at capacity — 409 with a "queue full" detail (asks are otherwise
+        # queued, never rejected for one being in flight).
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     @app.exception_handler(AskGone)
@@ -739,25 +745,28 @@ def create_app(service: TaskService) -> FastAPI:
     def _ask_out(ask: Ask) -> AskOut:
         # `delivered` is an internal step; the review tool only cares pending-vs-answered.
         status = "pending" if ask.status is AskStatus.DELIVERED else ask.status.value
+        position, length = service.ask_position(ask.task_id, ask.id)
         return AskOut(
             ask_id=ask.id,
             status=status,
             answer=ask.answer,
             question=ask.question,
             context=ask.context,
+            queue_position=position,
+            queue_length=length,
         )
 
     @app.post("/tasks/{task_id}/ask", status_code=201)
     async def create_ask(task_id: str, body: AskIn) -> AskCreatedOut:
-        """Post a reviewer's question to a task's agent. 409 if an unanswered ask already exists
-        (cap: 1 per task). Returns the ``ask_id`` to poll ``GET …/ask/{ask_id}`` with."""
+        """Queue a reviewer's question for a task's agent. Accepted while the queue has room;
+        409 only when the queue is full. Returns the ``ask_id`` to poll ``GET …/ask/{ask_id}`` with."""
         ask = await service.create_ask(task_id, body.question, body.context)
         return AskCreatedOut(ask_id=ask.id)
 
     @app.get("/tasks/{task_id}/ask")
     async def outstanding_ask(task_id: str) -> OutstandingAskOut:
-        """The task's current unanswered ask id (or null) — the container Stop hook reads this to
-        know whether the reply it's about to finish should be recorded."""
+        """The task's in-flight (delivered, unanswered) ask id (or null) — the container Stop hook
+        reads this to know whether the reply it's about to finish should be recorded."""
         await service.get_task(task_id)  # 404 if the task is unknown
         ask = service.outstanding_ask(task_id)
         return OutstandingAskOut(ask_id=ask.id if ask is not None else None)
