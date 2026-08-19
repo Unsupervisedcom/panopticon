@@ -100,8 +100,13 @@ def test_iterating_responsibilities_target_the_dependabot_pr() -> None:
     assert "Dependabot" in by_key["committed-pushed"].description
 
 
-def test_merging_responsibility() -> None:
-    assert {r.key for r in WF.responsibilities("MERGING")} == {"pr-merged"}
+def test_merging_gates_approval_and_merge() -> None:
+    # MERGING carries the shared `pr-merged` plus the dependabot-specific `pr-approved` gate — the
+    # approval is an explicit, gated promise, so the agent cannot advance to COMPLETE without it.
+    by_key = {r.key: r for r in WF.responsibilities("MERGING")}
+    assert set(by_key) == {"pr-approved", "pr-merged"}
+    approval = by_key["pr-approved"].description.lower()
+    assert "approve" in approval and "branch protection" in approval
 
 
 # -- skills + forge plumbing --------------------------------------------------------
@@ -109,7 +114,12 @@ def test_merging_responsibility() -> None:
 
 def test_skills_swap_open_pr_for_checkout_dependabot_pr() -> None:
     skills = {s.name: s for s in WF.skills()}
-    assert set(skills) == {"checkout-dependabot-pr", "babysit-ci", "babysit-merge"}
+    assert set(skills) == {
+        "checkout-dependabot-pr",
+        "approve-dependabot-pr",
+        "babysit-ci",
+        "babysit-merge",
+    }
     assert "open-pr" not in skills  # nothing to open — the PR already exists
     checkout = skills["checkout-dependabot-pr"]
     assert checkout.description and checkout.instructions  # a functional spec, not a stub
@@ -119,10 +129,30 @@ def test_skills_swap_open_pr_for_checkout_dependabot_pr() -> None:
 
 
 def test_babysit_skills_are_reused_verbatim_from_the_forge_base() -> None:
+    # The merge machinery stays shared: approval is a separate `approve-dependabot-pr` skill +
+    # gated `pr-approved` responsibility, so `babysit-merge` itself is unchanged (no fork/drift).
     base = {s.name: s for s in GithubForgeWorkflow().skills()}
     ours = {s.name: s for s in WF.skills()}
     for name in ("babysit-ci", "babysit-merge"):
         assert ours[name].instructions == base[name].instructions  # not re-authored
+
+
+def test_approve_skill_approves_the_pr_and_resolves_the_gate() -> None:
+    # Approval is a dependabot-only skill that runs at the start of MERGING, before `babysit-merge`.
+    skills = {s.name: s for s in WF.skills()}
+    approve = skills["approve-dependabot-pr"]
+    assert approve.description and approve.instructions  # a functional spec, not a stub
+    assert "gh pr review" in approve.instructions and "--approve" in approve.instructions
+    assert "pr-approved" in approve.instructions  # resolves the MERGING gate
+    assert "babysit-merge" in approve.instructions  # then hands off to the merge shepherd
+
+
+def test_forge_base_does_not_approve_prs() -> None:
+    # Approval is scoped to dependabot: the shared base (and thus the self/peer-reviewed
+    # lifecycles, where the agent is effectively the PR author) must NOT approve any PR.
+    base_instructions = "\n".join(s.instructions for s in GithubForgeWorkflow().skills())
+    assert "gh pr review" not in base_instructions
+    assert "--approve" not in base_instructions
 
 
 def test_inherits_the_gh_tool_and_image_layer() -> None:
