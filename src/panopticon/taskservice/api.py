@@ -11,6 +11,12 @@ from __future__ import annotations
 
 import asyncio
 import mimetypes
+
+# Artifact content-types must not depend on the stdlib table's vintage: Python only
+# gained the .md mapping in newer 3.13s, and requires-python floors at 3.11. Register
+# what artifacts actually serve so a 3.11 venv and CI agree (test_artifact_download_
+# content_type_from_extension is the pin).
+mimetypes.add_type("text/markdown", ".md")
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from typing import Any
