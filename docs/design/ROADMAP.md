@@ -204,7 +204,32 @@ exact case tmux-outside-the-agent-container was designed for (ADR 0008). Touches
 ## Milestone 3 — other agent CLIs
 
 Add **agent-runner adapters** beyond `claude` and **base-image variants** (ADR 0005). The
-`login`/secrets model already generalizes (Slice 5).
+`login`/secrets model already generalizes (Slice 5). The seam is decided in **ADR 0014** (the
+`AgentCLI` adapter interface, an adapter registry, task→repo→default CLI selection, per-CLI base
+images) and built in slices. **Codex** is the first additional target.
+
+- **M3.1 — ADR: the agent-CLI adapter seam.** Settle the contract (ADR 0014): every
+  claude-specific decision in `container/` as one adapter seam, the registry, the selection model,
+  the per-CLI base image, and the Codex mapping table. Docs only. **Blocks the rest of M3.**
+- **M3.2 — Refactor `container/` behind the `AgentCLI` interface.** Extract the claude launcher
+  (`agent.py`, `skills.py`, `hooks.py`, `hook.py`, `config.py`, `pricing.py`) into a `ClaudeCLI`
+  adapter behind the ABC + registry; the launcher becomes CLI-agnostic and picks the adapter from
+  `PANOPTICON_AGENT_CLI` (default `claude`). No behavior change — the existing container tests pass
+  unchanged. Pure refactor.
+- **M3.3 — CLI selection seam.** Add `Repo.agent_cli` (default `claude`) + `Task.agent_cli`
+  (nullable override) with an Alembic migration; resolve task→repo→default host-side and pass the
+  resolved CLI + auth env var + base-image variant into the container at spawn.
+- **M3.4 — Codex base image.** A `panopticon-base-codex` base variant (ADR 0005 base tier) that
+  installs the `codex` CLI; `images.py` selects the base from the resolved CLI, `make build` grows
+  a per-CLI target.
+- **M3.5 — Codex adapter (config, skills, MCP, launch).** Implement `CodexCLI`: `~/.codex` config
+  dir, `~/.codex/prompts/` skills, `[mcp_servers]` in `config.toml`, `AGENTS.md` system prompt,
+  the `codex resume --last` launch/resume argv, trust/sandbox pre-accept, and `OPENAI_API_KEY`
+  auth. Resolves the ADR's flagged verifications (MCP transport, sandbox flag, `CODEX_HOME`).
+- **M3.6 — Codex turn-flip hooks + cost weights.** Wire codex's hooks to the turn-flip callback and
+  its payload parser (the `background_tasks`/transcript analogue), and add per-CLI cost weights
+  (generalizing `pricing.py` + the planning-estimate prompts). Live end-to-end proof: a Codex task
+  runs a workflow's lifecycle.
 
 ## Milestone 4 — web-hosted dashboard
 

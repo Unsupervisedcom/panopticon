@@ -282,7 +282,8 @@ on every PR (the same commands the Makefile wraps).
 - **Skill** — an agent-driven procedure exposed *in the container* (ADR 0004), on top of the core
   operations. Declared **CLI-agnostically** as a `Skill(name, description, instructions)` spec; the
   in-container harness renders it to the active CLI surface (`container/skills.py` → claude
-  `.claude/commands/<name>.md`; other CLIs in M3). Exposed over REST (`GET /tasks/{id}/skills`).
+  `.claude/commands/<name>.md`; other CLIs via the `AgentCLI` adapter seam, ADR 0014). Exposed
+  over REST (`GET /tasks/{id}/skills`).
   The agnostic **`provision`** skill (`core/provisioning.py`) is exposed on **every** task (name
   the task → set its slug → the session service branches the clone, ADR 0011); workflow-specific
   skills (e.g. github-peer-reviewed's forge skills) follow it, and a workflow may define none.
