@@ -3,6 +3,7 @@ client (no LLM, no HTTP). The HTTP hosting is mounted on the runnable server (Sl
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
 from mcp.shared.memory import create_connected_server_and_client_session as connect
@@ -60,6 +61,7 @@ async def test_tools_are_exposed_and_drive_the_task(tmp_path: Path) -> None:
             "resolve_responsibility",
             "set_turn",
             "set_blocked",
+            "set_sort_weight",
             "put_artifact",
             "list_artifacts",
         } <= names
@@ -81,6 +83,45 @@ async def test_artifacts_round_trip_via_tool_and_resource(tmp_path: Path) -> Non
         res = await s.read_resource(f"panopticon://tasks/{task.id}/artifacts/plan.md")
         assert res.contents[0].text == "# Plan"  # type: ignore[union-attr]
     assert await svc.get_artifact(task.id, "plan.md") == b"# Plan"
+
+
+async def test_binary_artifact_round_trips_via_base64_tool_and_blob_resource(
+    tmp_path: Path,
+) -> None:
+    # A screenshot's bytes aren't valid UTF-8: write via content_base64, read back as a base64 blob
+    # (JSON can't carry raw bytes, so the resource returns a BlobResourceContents, not text).
+    png = b"\x89PNG\r\n\x1a\n\x00\xff\xfe\x01binary\x00data"
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        await s.call_tool(
+            "put_artifact",
+            {
+                "task_id": task.id,
+                "name": "shot.png",
+                "content_base64": base64.b64encode(png).decode(),
+            },
+        )
+        res = await s.read_resource(f"panopticon://tasks/{task.id}/artifacts/shot.png")
+        blob = res.contents[0].blob  # type: ignore[union-attr]
+        assert base64.b64decode(blob) == png
+    assert await svc.get_artifact(task.id, "shot.png") == png
+
+
+async def test_put_artifact_requires_exactly_one_content_argument(tmp_path: Path) -> None:
+    # Exactly one of content / content_base64 — neither (nor both) is a usage error.
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        neither = await s.call_tool("put_artifact", {"task_id": task.id, "name": "x"})
+        assert neither.isError is True
+        both = await s.call_tool(
+            "put_artifact",
+            {"task_id": task.id, "name": "x", "content": "hi", "content_base64": "aGk="},
+        )
+        assert both.isError is True
 
 
 async def test_list_artifacts_returns_names_and_readable_uris(tmp_path: Path) -> None:
@@ -105,6 +146,21 @@ async def test_list_artifacts_returns_names_and_readable_uris(tmp_path: Path) ->
         # the listed URI is the real, readable resource — the path that failed before this tool.
         res = await s.read_resource(by_name["plan.md"])
         assert res.contents[0].text == "# Plan"  # type: ignore[union-attr]
+
+
+async def test_artifact_with_spaces_in_name_round_trips_over_mcp(tmp_path: Path) -> None:
+    # A name with spaces/reserved chars must list with a valid (percent-encoded) URI that reads
+    # back — the resource handler decodes the segment the MCP layer captures encoded.
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike", artifacts={"my notes.md": "hello world"})
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        result = await s.call_tool("list_artifacts", {"task_id": task.id})
+        listed = result.structuredContent["result"]  # type: ignore[index]
+        uri = {entry["name"]: entry["uri"] for entry in listed}["my notes.md"]
+        assert uri == f"panopticon://tasks/{task.id}/artifacts/my%20notes.md"
+        res = await s.read_resource(uri)
+        assert res.contents[0].text == "hello world"  # type: ignore[union-attr]
 
 
 async def test_list_artifacts_is_empty_when_none(tmp_path: Path) -> None:
@@ -183,6 +239,17 @@ async def test_set_token_estimate_via_tool(tmp_path: Path) -> None:
     ).token_estimate == 500000  # the tool actually mutated the task
 
 
+async def test_set_sort_weight_via_tool(tmp_path: Path) -> None:
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        result = await s.call_tool("set_sort_weight", {"task_id": task.id, "sort_weight": 7})
+        assert result.structuredContent is not None
+        assert result.structuredContent["sort_weight"] == 7
+    assert (await svc.get_task(task.id)).sort_weight == 7  # the tool actually mutated the task
+
+
 # -- orchestration tools (gated to workflows whose `orchestrates` is set) --------------------
 
 
@@ -227,6 +294,21 @@ async def test_create_task_as_sets_governor_task_id(tmp_path: Path) -> None:
         child_id = result.structuredContent["id"]  # type: ignore[index]
     child = await svc.get_task(child_id)
     assert child.governor_task_id == boss.id  # auto-wired to the orchestrator
+
+
+async def test_create_task_seeds_sort_weight(tmp_path: Path) -> None:
+    svc = await _service(tmp_path)
+    boss = await svc.create_task("r1", "orchestrator")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        result = await s.call_tool(
+            "create_task",
+            {"orchestrator_task_id": boss.id, "workflow": "spike", "sort_weight": 9},
+        )
+        assert result.isError is False
+        assert result.structuredContent["sort_weight"] == 9  # type: ignore[index]
+        child_id = result.structuredContent["id"]  # type: ignore[index]
+    assert (await svc.get_task(child_id)).sort_weight == 9  # persisted
 
 
 async def test_create_task_rejected_for_non_orchestrator(tmp_path: Path) -> None:

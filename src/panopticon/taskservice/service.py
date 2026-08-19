@@ -19,7 +19,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
-from panopticon.core.artifacts import ArtifactStore
+from panopticon.core.artifacts import ArtifactStore, decode_b64_artifact
 from panopticon.core.dirs import secrets_file_path
 from panopticon.core.layers import LayerStore
 from panopticon.core.models import (
@@ -334,7 +334,9 @@ class TaskService:
         governor_task_id: str | None = None,
         initial_prompt: str | None = None,
         artifacts: dict[str, str] | None = None,
+        artifacts_b64: dict[str, str] | None = None,
         depends_on_task_ids: list[str] | None = None,
+        sort_weight: int = 0,
     ) -> Task:
         repo = await self.get_repo(repo_id)  # ensure exists (raises NotFound)
         if governor_task_id is not None:
@@ -347,12 +349,15 @@ class TaskService:
             self._id(), repo_id, at=now, memo=memo, initial_prompt=initial_prompt, repo=repo
         )
         task.governor_task_id = governor_task_id
+        task.sort_weight = sort_weight
         task.created_at = now
         task.updated_at = now  # creation time = first mutation
         await self._store.create_task(task)
         _log.info("task %s: created (workflow=%s, repo=%s)", task.id, workflow_name, repo_id)
         for name, content in (artifacts or {}).items():
             await self.put_artifact(task.id, name, content.encode())
+        for name, encoded in (artifacts_b64 or {}).items():  # binary artifacts arrive base64
+            await self.put_artifact(task.id, name, decode_b64_artifact(name, encoded))
         if depends_on_task_ids:
             task = await self.set_dependencies(task.id, depends_on_task_ids)
         return task
@@ -380,7 +385,9 @@ class TaskService:
         memo: str | None = None,
         initial_prompt: str | None = None,
         artifacts: dict[str, str] | None = None,
+        artifacts_b64: dict[str, str] | None = None,
         depends_on_task_ids: list[str] | None = None,
+        sort_weight: int = 0,
     ) -> Task:
         """Create a task **on behalf of an orchestrator task** — gated to orchestration workflows.
 
@@ -398,7 +405,9 @@ class TaskService:
             governor_task_id=actor_task_id,
             initial_prompt=initial_prompt,
             artifacts=artifacts,
+            artifacts_b64=artifacts_b64,
             depends_on_task_ids=depends_on_task_ids,
+            sort_weight=sort_weight,
         )
 
     async def workflow_names_as(self, actor_task_id: str) -> list[str]:
@@ -628,6 +637,31 @@ class TaskService:
         task.blocked = blocked
         await self._save_task(task)
         _log.debug("task %s: blocked=%s", task_id, blocked)
+        return task
+
+    async def set_snooze(self, task_id: str, until: str | None) -> Task:
+        """Record or clear an operator snooze deadline without interpreting the clock.
+
+        The value is stored verbatim (any ISO-8601 string, or ``None`` to clear); whether a finite
+        deadline is active is decided by the dashboard alone. Leaves ``state``/``turn``/``blocked``
+        untouched — a plain recorded fact, like the url.
+        """
+        task = await self.get_task(task_id)
+        task.snoozed_until = until
+        await self._save_task(task)
+        _log.debug("task %s: snoozed_until → %s", task_id, until)
+        return task
+
+    async def set_sort_weight(self, task_id: str, sort_weight: int) -> Task:
+        """Set the task's dashboard sort weight (default 0; higher sorts first).
+
+        A plain recorded fact, like the url: ranks above the ``updated_at`` timestamp but below
+        state/turn in the dashboard ordering. Leaves ``state``/``turn``/``blocked`` untouched.
+        """
+        task = await self.get_task(task_id)
+        task.sort_weight = sort_weight
+        await self._save_task(task)
+        _log.debug("task %s: sort_weight → %s", task_id, sort_weight)
         return task
 
     async def set_governor(self, task_id: str, governor_task_id: str | None) -> Task:

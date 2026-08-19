@@ -68,6 +68,8 @@ def test_briefing_names_the_phase_responsibilities_and_user_advance(tmp_path: Pa
     assert "PLANNING" in text  # the agent learns which phase it's in
     assert "later phase" in text  # ... and not to do later-phase work (e.g. implementing)
     assert "plan-written" in text and "plan artifact" in text  # this phase's responsibility
+    # the agent is told to summarize the plan in chat when ending the planning turn
+    assert "summary of the plan" in text
     assert (
         "Produce a plan for the implementation." in text
     )  # PLANNING's description (what it's for)

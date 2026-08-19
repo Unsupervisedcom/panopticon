@@ -10,6 +10,7 @@ plane serves REST and MCP. ``create_app`` builds an app around an injected
 from __future__ import annotations
 
 import asyncio
+import mimetypes
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from typing import Any
@@ -80,6 +81,7 @@ class TaskSummaryOut(BaseModel):
     initial_prompt: str | None
     slug: str | None
     url: str | None
+    snoozed_until: str | None = None
     branch: str | None
     clone: str | None
     claimed_by: str | None
@@ -89,6 +91,7 @@ class TaskSummaryOut(BaseModel):
     governor_task_id: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    sort_weight: int = 0
     depends_on_task_ids: list[str] = []
     provisioned: bool
     container_status: str = "–"
@@ -116,6 +119,9 @@ class TaskOut(BaseModel):
     initial_prompt: str | None  # optional text prefilled into Claude's input box on first spawn
     slug: str | None
     url: str | None  # an optional external URL (PR, issue, …); the dashboard's `p` hotkey opens it
+    snoozed_until: str | None = (
+        None  # operator-owned attention mute deadline (ISO-8601); None = not snoozed
+    )
     branch: str | None
     clone: str | None
     claimed_by: str | None  # the runner that owns this task (the spawn gate), or None
@@ -134,6 +140,9 @@ class TaskOut(BaseModel):
     )
     updated_at: str | None = (
         None  # ISO-8601 timestamp of the last mutation, stamped by the task service
+    )
+    sort_weight: int = (
+        0  # operator sort priority: ranks above updated_at but below state/turn; higher sorts first
     )
     depends_on_task_ids: list[
         str
@@ -218,7 +227,9 @@ class CreateTaskIn(BaseModel):
     governor_task_id: str | None = None
     initial_prompt: str | None = None
     artifacts: dict[str, str] | None = None
+    artifacts_b64: dict[str, str] | None = None  # binary artifacts, name → base64
     depends_on_task_ids: list[str] = []
+    sort_weight: int = 0
 
 
 class DependenciesIn(BaseModel):
@@ -321,6 +332,14 @@ class BlockedIn(BaseModel):
     blocked: bool
 
 
+class SnoozeIn(BaseModel):
+    until: str | None
+
+
+class SortWeightIn(BaseModel):
+    sort_weight: int
+
+
 class ClaimIn(BaseModel):
     runner_id: str
 
@@ -410,7 +429,7 @@ def create_app(service: TaskService) -> FastAPI:
         async with mcp.session_manager.run():
             yield
 
-    app = FastAPI(title="panopticon task service", version="0.0.3", lifespan=lifespan)
+    app = FastAPI(title="panopticon task service", version="0.0.5", lifespan=lifespan)
 
     # The block-until-change feed: a store mutation bumps the version + wakes parked GET /tasks
     # long-polls (the seam the daemons/dashboard migrate onto, replacing their interval re-polls).
@@ -566,7 +585,9 @@ def create_app(service: TaskService) -> FastAPI:
                 governor_task_id=body.governor_task_id,
                 initial_prompt=body.initial_prompt,
                 artifacts=body.artifacts,
+                artifacts_b64=body.artifacts_b64,
                 depends_on_task_ids=body.depends_on_task_ids or None,
+                sort_weight=body.sort_weight,
             )
         )
 
@@ -701,6 +722,14 @@ def create_app(service: TaskService) -> FastAPI:
     async def set_blocked(task_id: str, body: BlockedIn) -> TaskOut:
         return _task_out(await service.set_blocked(task_id, body.blocked))
 
+    @app.put("/tasks/{task_id}/snooze")
+    async def set_snooze(task_id: str, body: SnoozeIn) -> TaskOut:
+        return _task_out(await service.set_snooze(task_id, body.until))
+
+    @app.put("/tasks/{task_id}/sort-weight")
+    async def set_sort_weight(task_id: str, body: SortWeightIn) -> TaskOut:
+        return _task_out(await service.set_sort_weight(task_id, body.sort_weight))
+
     @app.put("/tasks/{task_id}/governor")
     async def set_governor(task_id: str, body: GovernorIn) -> TaskOut:
         return _task_out(await service.set_governor(task_id, body.governor_task_id))
@@ -809,7 +838,10 @@ def create_app(service: TaskService) -> FastAPI:
         content = await service.get_artifact(task_id, name)
         if content is None:
             raise HTTPException(status_code=404, detail=f"artifact {name!r} not found")
-        return Response(content=content, media_type="application/octet-stream")
+        # Type the download from the name's extension so a screenshot serves as image/png etc.;
+        # unknown/extensionless names fall back to octet-stream.
+        media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        return Response(content=content, media_type=media_type)
 
     # -- liveness -----------------------------------------------------------------
 

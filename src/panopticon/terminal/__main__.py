@@ -39,10 +39,14 @@ def _run_migrate() -> None:
 
 
 def _start_sessions() -> None:
+    import shlex
     import subprocess
     import sys
 
-    python = sys.executable
+    # `cmd` below is a shell string (it pipes to `tee`), so quote the interpreter path: a
+    # pipx install on macOS lives under `~/Library/Application Support/...`, whose space would
+    # otherwise word-split and fail with "no such file or directory: …/Application".
+    python = shlex.quote(sys.executable)
     for name, cmd in [
         ("service", f"{python} -m panopticon.taskservice 2>&1 | tee /tmp/panopticon-service.log"),
         (

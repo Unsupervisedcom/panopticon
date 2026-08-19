@@ -163,10 +163,19 @@ class TaskServiceClient:
         memo: str | None = None,
         *,
         initial_prompt: str | None = None,
+        artifacts: dict[str, str] | None = None,
+        artifacts_b64: dict[str, str] | None = None,
+        sort_weight: int = 0,
     ) -> JsonObj:
         body: JsonObj = {"repo_id": repo_id, "workflow": workflow, "memo": memo}
         if initial_prompt is not None:
             body["initial_prompt"] = initial_prompt
+        if artifacts:
+            body["artifacts"] = artifacts
+        if artifacts_b64:
+            body["artifacts_b64"] = artifacts_b64
+        if sort_weight:
+            body["sort_weight"] = sort_weight
         return cast(JsonObj, self._json(self._http.post("/tasks", json=body)))
 
     def set_slug(self, task_id: str, slug: str) -> JsonObj:
@@ -214,6 +223,22 @@ class TaskServiceClient:
         return cast(
             JsonObj,
             self._json(self._http.put(f"/tasks/{task_id}/blocked", json={"blocked": blocked})),
+        )
+
+    def set_snooze(self, task_id: str, until: str | None) -> JsonObj:
+        """Record or clear the operator-owned dashboard snooze deadline (ISO-8601 or None)."""
+        return cast(
+            JsonObj,
+            self._json(self._http.put(f"/tasks/{task_id}/snooze", json={"until": until})),
+        )
+
+    def set_sort_weight(self, task_id: str, sort_weight: int) -> JsonObj:
+        """Set the task's dashboard sort weight (default 0; higher sorts first)."""
+        return cast(
+            JsonObj,
+            self._json(
+                self._http.put(f"/tasks/{task_id}/sort-weight", json={"sort_weight": sort_weight})
+            ),
         )
 
     def set_governor(self, task_id: str, governor_task_id: str | None) -> JsonObj:

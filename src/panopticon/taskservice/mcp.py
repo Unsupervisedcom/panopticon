@@ -16,7 +16,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from panopticon.core.artifacts import mcp_uri
+from panopticon.core.artifacts import decode_b64_artifact, decode_segment, mcp_uri
 from panopticon.core.models import Actor, Status
 from panopticon.taskservice.api import TaskOut
 from panopticon.taskservice.service import TaskService
@@ -98,6 +98,15 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
 
     @mcp.tool(
         description=(
+            "Set the task's dashboard sort weight (default 0; higher sorts first). "
+            "Ranks above the last-updated timestamp but below state/turn."
+        )
+    )
+    async def set_sort_weight(task_id: str, sort_weight: int) -> dict[str, Any]:
+        return _task(await service.set_sort_weight(task_id, sort_weight))
+
+    @mcp.tool(
+        description=(
             "Replace the task's dependency list with the given task IDs. "
             "Each ID must reference an existing task; pass an empty list to clear all dependencies. "
             "Dependencies are tracking only — the state machine does not enforce them."
@@ -124,10 +133,13 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
             "in the task's plan.md. `initial_prompt` (optional) is passed as Claude's first "
             "message on first spawn — the agent starts autonomously without waiting for user "
             'input, e.g. "review your plan". `artifacts` '
-            "(optional) is a name→content map of artifacts to write immediately (e.g. "
+            "(optional) is a name→content map of text artifacts to write immediately (e.g. "
             '{"plan.md": "..."}) — written before the call returns so the spawner always '
-            "finds them present. The new task's governor_task_id is set to orchestrator_task_id "
-            "automatically. Returns the new task."
+            "finds them present. `artifacts_b64` (optional) is the same for binary artifacts "
+            "(e.g. a screenshot), name→base64. The new task's governor_task_id is set to "
+            "orchestrator_task_id automatically. `sort_weight` (optional, default 0) is the "
+            "task's dashboard sort priority — higher sorts first, ranking above the last-updated "
+            "timestamp but below state/turn. Returns the new task."
         )
     )
     async def create_task(
@@ -136,6 +148,8 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
         memo: str | None = None,
         initial_prompt: str | None = None,
         artifacts: dict[str, str] | None = None,
+        artifacts_b64: dict[str, str] | None = None,
+        sort_weight: int = 0,
     ) -> dict[str, Any]:
         _log.debug("mcp create_task orchestrator=%s workflow=%s", orchestrator_task_id, workflow)
         return _task(
@@ -145,6 +159,8 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
                 memo=memo,
                 initial_prompt=initial_prompt,
                 artifacts=artifacts,
+                artifacts_b64=artifacts_b64,
+                sort_weight=sort_weight,
             )
         )
 
@@ -155,10 +171,24 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
         return await service.workflow_names_as(orchestrator_task_id)
 
     @mcp.tool(
-        description="Write (create or overwrite) a task artifact, e.g. the plan. Returns its URI."
+        description=(
+            "Write (create or overwrite) a task artifact, e.g. the plan. Returns its URI. "
+            "Pass text in `content`; for a binary artifact (e.g. a screenshot) pass base64 in "
+            "`content_base64` instead — supply exactly one. For a large binary the token-cheap "
+            "path is the REST endpoint (PUT /tasks/{id}/artifacts/{name} with the raw bytes), which "
+            "keeps the base64 out of your context."
+        )
     )
-    async def put_artifact(task_id: str, name: str, content: str) -> str:
-        await service.put_artifact(task_id, name, content.encode())
+    async def put_artifact(
+        task_id: str, name: str, content: str | None = None, content_base64: str | None = None
+    ) -> str:
+        if content is not None and content_base64 is None:
+            data = content.encode()
+        elif content is None and content_base64 is not None:
+            data = decode_b64_artifact(name, content_base64)
+        else:
+            raise ValueError("provide exactly one of `content` or `content_base64`")
+        await service.put_artifact(task_id, name, data)
         return mcp_uri(task_id, name)
 
     @mcp.tool(
@@ -173,10 +203,19 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
         return [{"name": name, "uri": mcp_uri(task_id, name)} for name in names]
 
     @mcp.resource(ARTIFACT_URI, description="A task's file-backed artifact (plan, notes).")
-    async def artifact(task_id: str, name: str) -> str:
+    async def artifact(task_id: str, name: str) -> str | bytes:
+        # The MCP layer captures the URI-template segments without percent-decoding them, so a name
+        # with spaces/reserved chars arrives encoded (``my%20notes.md``). Reverse mcp_uri's encoding.
+        task_id, name = decode_segment(task_id), decode_segment(name)
         data = await service.get_artifact(task_id, name)
         if data is None:
             raise FileNotFoundError(f"no artifact {name!r} for task {task_id!r}")
-        return data.decode()
+        # Text artifacts return as ``str``; binary ones (a non-UTF-8 screenshot/PDF) return as
+        # ``bytes``, which the SDK serves as a base64 BlobResourceContents. JSON can't carry raw
+        # bytes, so this is the only way a binary artifact reads back over MCP.
+        try:
+            return data.decode()
+        except UnicodeDecodeError:
+            return data
 
     return mcp
