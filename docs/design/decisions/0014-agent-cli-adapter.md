@@ -59,7 +59,7 @@ The seams, one method (or small method group) each:
 | **render turn-flip hooks + callback wiring** | `.claude/settings.json` `hooks` block | codex hooks in `config.toml` |
 | **parse hook payload** (turn flip + token/bg-task detection) | `background_tasks`, `transcript_path` JSON on stdin | codex hook payload schema (verify) |
 | **write MCP client config** | `panopticon-mcp.json` (`{"mcpServers": …}`) via `--mcp-config` | `[mcp_servers.panopticon]` in `config.toml` |
-| **render workflow-overview / system prompt** | `--append-system-prompt <overview>` | `AGENTS.md` (or codex system-prompt flag) |
+| **render workflow-overview / system prompt** | `--append-system-prompt <overview>` | `$CODEX_HOME/AGENTS.md` (our config dir) — **not** the repo's `/workspace/AGENTS.md` |
 | **build launch argv incl. resume** | `claude --dangerously-skip-permissions [--continue \| --model M PROMPT]` | `codex …` first-run vs `codex resume --last`/session-id |
 | **trust / first-run pre-accept** | `.claude.json` onboarding + trust + cost keys | codex trust / sandbox-approval seed |
 | **auth env var(s) + missing-auth check** | `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` | `OPENAI_API_KEY` / codex login token |
@@ -124,8 +124,15 @@ Codex satisfies every seam, using these current facts:
 - **Hooks:** codex has a hooks system with `SessionStart` / `UserPromptSubmit` / `Stop` /
   `PreToolUse` / `PostToolUse` events, configured in `config.toml` — the same turn-flip contract
   (Slice 4) maps across, invoking `python -m panopticon.container.hook`.
-- **System prompt:** the workflow overview goes in `AGENTS.md` (codex reads it) rather than an
-  `--append-system-prompt` flag.
+- **System prompt:** codex has no `--append-system-prompt`; it layers instructions from an
+  `AGENTS.md` **hierarchy** — a codex-home file (`$CODEX_HOME/AGENTS.md`) merged with the project's
+  root `AGENTS.md` (and nested ones). The workflow overview goes in **our** `$CODEX_HOME/AGENTS.md`,
+  which the container controls, so it composes *on top of* the repo's own `/workspace/AGENTS.md`
+  rather than clobbering it. **We never write the repo-root `AGENTS.md`** — the working tree is the
+  task's clone of the repo and must stay the repo's. (A dedicated `experimental_instructions_file`
+  in `config.toml` pointing at a file we own is an equally-additive alternative if it proves more
+  robust — see the flags below.) This keeps the additive property the claude
+  `--append-system-prompt` seam has.
 - **Resume:** `codex resume --last` (or a session id) is the `--continue` analogue; the launcher's
   first-run-vs-resume decision keeps its shape, only the argv changes.
 - **Auth:** `OPENAI_API_KEY` (or the codex login token) instead of `CLAUDE_CODE_OAUTH_TOKEN`.
@@ -138,7 +145,12 @@ spike the implementer resolves against the installed codex version):
 2. The exact codex **hooks config schema** and payload shape (for the turn-flip callback's
    background-task/token parsing — the `background_tasks` analogue).
 3. The `CODEX_HOME` config-dir override and its precedence.
-4. The unattended / **skip-approvals sandbox** flag (the `--dangerously-skip-permissions`
+4. The **instructions-merge precedence** — confirm `$CODEX_HOME/AGENTS.md` (or
+   `experimental_instructions_file`) layers *additively* on top of the repo's root `AGENTS.md`
+   rather than either one silently winning, so the workflow overview and the repo's own guidance
+   both reach the agent. Pick whichever mechanism guarantees the workflow overview is present
+   without touching the working tree.
+5. The unattended / **skip-approvals sandbox** flag (the `--dangerously-skip-permissions`
    analogue — codex runs headless in a throwaway container on a per-task clone).
 
 ### 6. The determinism invariant holds
