@@ -19,7 +19,7 @@ This workflow is **shown for every repo by default** (no opt-in needed).
 
 | State | What happens | Who advances |
 |---|---|---|
-| **ORCHESTRATING** | The agent breaks the request into child tasks and, for each, creates it, writes its `plan.md`, names it, records a token estimate, and hands its turn to you. | **You**, by marking it COMPLETE (`/advance`) once it has spawned everything. |
+| **ORCHESTRATING** | The agent breaks the request into child tasks and, for each, creates it, writes its `plan.md`, names it, and hands its turn to you. | **You**, by marking it COMPLETE (`/advance`) once it has spawned everything. |
 | **COMPLETE** | Terminal. | n/a |
 
 Each child task lands in **PLANNING** with its plan already written and the planning gate

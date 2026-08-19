@@ -1,8 +1,8 @@
 """Abstract base for workflows that produce a plan artifact.
 
 `PlannedWorkflow` carries the plan convention shared by any lifecycle that asks the agent
-to write a plan before coding: the canonical artifact name, the two shared PLANNING
-responsibilities, the plan URI resolver, and the per-turn briefing hook that surfaces the
+to write a plan before coding: the canonical artifact name, the shared PLANNING
+plan responsibility, the plan URI resolver, and the per-turn briefing hook that surfaces the
 plan's MCP URI once it exists. Concrete subclasses add a ``name`` and their states.
 
 Both :class:`~panopticon.workflows.github_forge.GithubForgeWorkflow` (GitHub-hosted code)
@@ -39,19 +39,6 @@ class PlannedWorkflow(Workflow):
             "the `put_artifact` tool — not just written to the working tree. When you end your "
             "planning turn, also post a concise summary of the plan in chat so the user can review "
             "it without opening the artifact."
-        ),
-    )
-
-    #: Shared PLANNING responsibility: record the token forecast with ``set_token_estimate``
-    #: so the task service can track cost against the estimate.
-    # TODO(non-claude-agents): the "≈0.1× / ≈5×" framing below is Anthropic-specific; see
-    # container/pricing.py _WEIGHTS for the tech-debt note.
-    TOKEN_ESTIMATED: ClassVar[Responsibility] = Responsibility(
-        key="token-estimated",
-        description=(
-            "Estimate the total **cost-weighted** tokens this task will consume — i.e., "
-            "input-equivalent tokens where cache-reads count ≈0.1× and output ≈5× — and "
-            "record it with the `set_token_estimate` tool."
         ),
     )
 

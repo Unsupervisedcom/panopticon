@@ -39,10 +39,7 @@ class LocalGitSelfReviewed(PlannedWorkflow):
     class Planning(InitialState):
         label = "PLANNING"
         description = "Collect requirements. Produce a plan for the implementation."
-        responsibilities = (
-            PlannedWorkflow.PLAN_WRITTEN,
-            PlannedWorkflow.TOKEN_ESTIMATED,
-        )
+        responsibilities = (PlannedWorkflow.PLAN_WRITTEN,)
         transitions = ("ITERATING",)  # advance; + DROPPED inherited
 
     class Iterating(State):

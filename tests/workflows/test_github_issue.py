@@ -64,18 +64,17 @@ def test_foreground_states_are_user_advanced_merging_is_agent_driven() -> None:
 
 
 def test_planning_gates_the_issue_comprehension() -> None:
-    # PLANNING carries the two shared promises (plan.md artifact + token estimate) and the
-    # issue-specific `issue-understood`. `url-recorded` is NOT here — the PR is an ITERATING
-    # output (unlike Dependabot, whose PR URL is a known input).
+    # PLANNING carries the shared plan.md promise and the issue-specific `issue-understood`.
+    # `url-recorded` is NOT here — the PR is an ITERATING output (unlike Dependabot, whose PR
+    # URL is a known input).
     by_key = {r.key: r for r in WF.responsibilities("PLANNING")}
-    assert set(by_key) == {"plan-written", "token-estimated", "issue-understood"}
+    assert set(by_key) == {"plan-written", "issue-understood"}
     assert "url-recorded" not in by_key  # the PR URL is produced in ITERATING, not PLANNING
     # shared conventions, single-sourced on the forge/planned base
     assert (
         "plan.md" in by_key["plan-written"].description
         and "markdown" in by_key["plan-written"].description
     )
-    assert "set_token_estimate" in by_key["token-estimated"].description
     # the comprehension responsibility names all five axes
     understood = by_key["issue-understood"].description.lower()
     assert "problem" in understood  # (1) the reported problem
@@ -173,7 +172,6 @@ def test_cannot_advance_with_unresolved_responsibilities() -> None:
 def test_partial_resolution_still_gates() -> None:
     task = WF.start_task("t1", "r1", at="t0")
     task.resolve_responsibility(key="plan-written", status=Status.MET)
-    task.resolve_responsibility(key="token-estimated", status=Status.MET)
     with pytest.raises(ResponsibilitiesNotMet):
         WF.apply_transition(task, "ITERATING", at="t1")  # issue-understood still PENDING
 

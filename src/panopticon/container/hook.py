@@ -15,8 +15,7 @@ distinct from the actor so the bare question hooks (`hook user` / `hook agent`) 
   and what that phase expects — so the agent knows where it is instead of charging ahead. While the
   task is still unslugged it additionally prints the provisioning nudge (ADR 0011 §3), reminding the
   agent to run the `provision` skill once it can name the task.
-- ``stop`` (Stop → ``user``): record the session's cumulative token usage from the transcript the
-  hook payload names (best-effort, silent), **and** gate the turn flip on background work. A
+- ``stop`` (Stop → ``user``): gate the turn flip on background work. A
   background task (a Bash command launched with ``run_in_background``, the ``Monitor`` tool, or a
   background **agent**) keeps running after the agent's visible turn ends; its completion re-invokes
   the agent with a synthetic message — *not* a ``UserPromptSubmit`` — so a turn flipped to ``user``
@@ -28,18 +27,15 @@ distinct from the actor so the bare question hooks (`hook user` / `hook agent`) 
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import sys
 from collections.abc import Sequence
-from pathlib import Path
 from typing import Any, TextIO
 
 import httpx
 
 from panopticon.client import TaskServiceClient
-from panopticon.container.pricing import cost_weighted_tokens
 from panopticon.core.provisioning import PROVISION_NUDGE
 
 #: A background task's ``status`` value counts as *finished* (no longer in flight) only if it's one
@@ -87,55 +83,6 @@ def _has_live_background_task(payload: dict[str, Any]) -> bool:
     return False
 
 
-def session_tokens(transcript_path: str) -> int:
-    """Total the cost-weighted tokens across a claude session transcript (JSONL).
-
-    Each assistant line carries ``message.usage`` and ``message.model``; we apply per-tier
-    cost weights (cache-reads ≈0.1×, output ≈5×) so the result is in **input-equivalent
-    tokens** — proportional to spend rather than dominated by cheap cache-reads. Pure and
-    LLM-free, so it's unit-tested with a fixture transcript. Tolerant of a missing file, blank
-    or malformed lines, and absent usage keys (each counted as 0), so a transcript hiccup yields
-    a best-effort number rather than raising."""
-    total = 0
-    try:
-        with Path(transcript_path).open() as lines:
-            for line in lines:
-                total += _line_tokens(line)
-    except OSError:  # no transcript yet / unreadable — nothing to count
-        return 0
-    return total
-
-
-def _line_tokens(line: str) -> int:
-    """The cost-weighted usage on one transcript line, or 0 if it isn't an assistant line with usage."""
-    line = line.strip()
-    if not line:
-        return 0
-    try:
-        obj = json.loads(line)
-        msg = obj.get("message") or {}
-        usage = msg.get("usage") or {}
-        model: str | None = msg.get("model")
-    except (ValueError, AttributeError):  # not JSON, or message/usage isn't a dict
-        return 0
-    if not isinstance(usage, dict):
-        return 0
-    int_usage = {k: v for k, v in usage.items() if isinstance(v, int)}
-    return cost_weighted_tokens(int_usage, model)
-
-
-def _report_tokens(client: TaskServiceClient, task_id: str, payload: dict[str, Any]) -> None:
-    """Best-effort: total the transcript the Stop payload names and record it.
-
-    Any failure — no ``transcript_path``, a REST error — is swallowed: token accounting must never
-    break the turn-flip the hook exists for."""
-    transcript = payload.get("transcript_path")
-    if not isinstance(transcript, str):
-        return
-    with contextlib.suppress(httpx.HTTPError):
-        client.set_tokens_used(task_id, session_tokens(transcript))
-
-
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -156,15 +103,14 @@ def main(
     actor, event = args[0], (args[1] if len(args) == 2 else None)
     task_id = env["PANOPTICON_TASK_ID"]
     client = client or TaskServiceClient(httpx.Client(base_url=env["PANOPTICON_SERVICE_URL"]))
-    # `stop` (Stop): the agent's turn just ended. Read the payload once — it carries the transcript
-    # path and the background_tasks list. Record cumulative token usage, then decide the turn: don't
-    # hand it back while a background task is still running, since the task's completion re-invokes
-    # the agent without a UserPromptSubmit and a flip to `user` would never flip back. Leave it on
-    # the agent; the next real stop with nothing in flight flips. (This gate is the Stop event only,
-    # not the bare AskUserQuestion `hook user` flip — there the agent is genuinely awaiting the user.)
+    # `stop` (Stop): the agent's turn just ended. Read the payload for the background_tasks list and
+    # decide the turn: don't hand it back while a background task is still running, since the task's
+    # completion re-invokes the agent without a UserPromptSubmit and a flip to `user` would never
+    # flip back. Leave it on the agent; the next real stop with nothing in flight flips. (This gate
+    # is the Stop event only, not the bare AskUserQuestion `hook user` flip — there the agent is
+    # genuinely awaiting the user.)
     if event == "stop":
         payload = _read_payload(stdin or sys.stdin)
-        _report_tokens(client, task_id, payload)
         if _has_live_background_task(payload):
             return 0
     client.set_turn(task_id, actor)
