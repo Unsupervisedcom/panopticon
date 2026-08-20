@@ -62,6 +62,13 @@ CONTAINER_USER = "panopticon"
 #: spawn, but the volume persists. Per-task (not per-repo) so concurrent tasks don't share state.
 CONFIG_MOUNT = "/home/panopticon/.claude"
 
+#: Sentinel the entrypoint writes once the uid/gid remap **and** both recursive chowns are done
+#: (docker/entrypoint.sh). The readiness probe waits on this rather than inferring completion from
+#: the config mount's ownership: `chown --recursive` sets the root before it finishes descending, so
+#: the old `stat`-only check could pass mid-chown and the pane would exec too early. Container-local
+#: (`/run`), so it can't survive into a later spawn the way a marker in the config volume would.
+ENTRYPOINT_READY_FILE = "/run/panopticon-entrypoint-ready"
+
 
 def config_volume_name(task_id: str) -> str:
     """The Docker named volume holding a task's claude session (its transcripts). Persists across
@@ -300,7 +307,8 @@ class LocalRunner(Runner):
             container,
             "sh",
             "-c",
-            f'test "$(id --user {CONTAINER_USER})" = "{puid}"'
+            f"test -f {ENTRYPOINT_READY_FILE}"
+            f' && test "$(id --user {CONTAINER_USER})" = "{puid}"'
             f' && test "$(stat --format=%u {CONFIG_MOUNT})" = "{puid}"'
             " && echo READY",
         ]

@@ -35,6 +35,18 @@ fi
 # Best-effort — it may not be a mount (a task without the config volume).
 chown --recursive "$puid:$pgid" /home/panopticon/.claude 2>/dev/null || true
 
+# Signal that the remap + both chowns are DONE, so the runner can create the agent pane without
+# racing them. The runner's readiness probe used to infer this from `stat`-ing the config mount's
+# root, but a `chown --recursive` sets the root before it finishes descending — the probe passed
+# mid-chown, the pane exec'd early, and the agent died writing its skills
+# (PermissionError on <config>/commands), taking the tmux session with it and putting the heal loop
+# into a respawn storm. A sentinel is exact where a heuristic wasn't.
+#
+# Deliberately under /run (container-local, gone on restart), NOT the per-task config volume, which
+# persists across respawns — a stale marker there would make every later spawn "ready" instantly.
+mkdir --parents /run
+: >/run/panopticon-entrypoint-ready
+
 # docker_in_docker capability (ADR-0005 repo capability): a privileged container running a nested
 # Docker daemon. dockerd needs root, so start it here — before we drop privileges — and put the
 # adopted user in the `docker` group so it can reach the socket. Requires the image to ship the
