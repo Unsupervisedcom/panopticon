@@ -15,9 +15,13 @@ from typing import Any
 import pytest
 
 from panopticon.terminal.console import (
+    REVIEW_HEAD_SHA_VAR,
     ReviewResult,
     ReviewTarget,
+    list_review_sessions,
+    make_review_sessions_probe,
     make_review_switch,
+    reap_orphan_review_sessions,
     resolve_join,
     review_session_name,
     run_console,
@@ -312,6 +316,8 @@ def _review(switch: Path, launched: list[list[str]], detached: list[bool], **ove
         "tarot_installed": lambda: True,
         "configured_base": lambda _clone: None,
         "clone_present": lambda _p: True,
+        "head_sha": lambda _clone: None,  # hermetic: no real git (staleness tests override)
+        "stored_sha": lambda _session: None,  # hermetic: no real tmux show-environment
         "run": lambda argv: launched.append(argv),
         "detach": lambda: detached.append(True),
     }
@@ -469,6 +475,177 @@ def test_review_reattaches_when_a_session_already_exists(tmp_path: Path) -> None
     assert result is ReviewResult.REATTACHED
     assert launched == []  # no new-session
     assert switch.read_text() == "panopticon-review-t1" and detached == [True]  # re-attaches
+
+
+def test_review_records_the_launch_head_sha_for_staleness(tmp_path: Path) -> None:
+    # A local-clone launch stamps the clone's HEAD into the session env, so a later `v` can tell
+    # whether the clone advanced.
+    switch = tmp_path / "switch"
+    launched: list[list[str]] = []
+    detached: list[bool] = []
+    review = _review(switch, launched, detached, head_sha=lambda _c: "sha-old")
+
+    result = review(
+        ReviewTarget(
+            task_id="t1", clone="/clones/t1", url=None, runner_host=None, default_base="main"
+        )
+    )
+
+    assert result is ReviewResult.LAUNCHED
+    assert "-e" in launched[0] and f"{REVIEW_HEAD_SHA_VAR}=sha-old" in launched[0]
+
+
+def test_reattach_is_instant_when_the_clone_has_not_advanced(tmp_path: Path) -> None:
+    # Existing session + local clone whose HEAD equals the launch sha: a pure re-attach — no
+    # set-environment, no respawn.
+    switch = tmp_path / "switch"
+    launched: list[list[str]] = []
+    detached: list[bool] = []
+    review = _review(
+        switch,
+        launched,
+        detached,
+        exists=lambda _s: True,
+        head_sha=lambda _c: "sha-same",
+        stored_sha=lambda _s: "sha-same",
+    )
+
+    result = review(
+        ReviewTarget(
+            task_id="t1", clone="/clones/t1", url=None, runner_host=None, default_base="main"
+        )
+    )
+
+    assert result is ReviewResult.REATTACHED
+    assert launched == []  # nothing respawned
+    assert switch.read_text() == "panopticon-review-t1" and detached == [True]
+
+
+def test_reattach_restarts_tarot_when_the_clone_advanced(tmp_path: Path) -> None:
+    # Existing session + local clone whose HEAD advanced past the launch sha: update the recorded
+    # sha (set-environment) and restart tarot in place (respawn-window -k), env preserved, then
+    # attach — RELOADED so the dashboard can say "PR advanced".
+    switch = tmp_path / "switch"
+    launched: list[list[str]] = []
+    detached: list[bool] = []
+    review = _review(
+        switch,
+        launched,
+        detached,
+        exists=lambda _s: True,
+        head_sha=lambda _c: "sha-new",
+        stored_sha=lambda _s: "sha-old",
+    )
+
+    result = review(
+        ReviewTarget(
+            task_id="t1", clone="/clones/t1", url=None, runner_host=None, default_base="main"
+        )
+    )
+
+    assert result is ReviewResult.RELOADED
+    assert launched == [
+        ["tmux", "-L", "panopticon", "set-environment", "-t", "panopticon-review-t1",
+         REVIEW_HEAD_SHA_VAR, "sha-new"],
+        ["tmux", "-L", "panopticon", "respawn-window", "-k", "-t", "panopticon-review-t1",
+         "-c", "/clones/t1", "tarot", "--base", "origin/main"],
+    ]  # fmt: skip
+    assert switch.read_text() == "panopticon-review-t1" and detached == [True]
+
+
+def test_reattach_to_a_url_review_never_checks_staleness(tmp_path: Path) -> None:
+    # A url/remote review has no on-disk HEAD to diff — a second press is always a pure re-attach,
+    # even though head_sha would report a change (it must not be consulted).
+    switch = tmp_path / "switch"
+    launched: list[list[str]] = []
+    detached: list[bool] = []
+    review = _review(
+        switch,
+        launched,
+        detached,
+        exists=lambda _s: True,
+        clone_present=lambda _p: False,
+        head_sha=lambda _c: "sha-new",
+        stored_sha=lambda _s: "sha-old",
+    )
+
+    result = review(
+        ReviewTarget(
+            task_id="t1",
+            clone="/clones/t1",
+            url="https://forge/pr/1",
+            runner_host=None,
+            default_base="main",
+        )
+    )
+
+    assert result is ReviewResult.REATTACHED
+    assert launched == []  # no respawn for the url case
+
+
+# -- warm-review sessions: the dashboard marker + orphan reaping ----------------------
+
+
+def _sessions_run(names: list[str]) -> Any:
+    """A fake `run` for list_review_sessions: returns an object with a `stdout` of tmux
+    `list-sessions -F '#{session_name}'` output (one name per line)."""
+
+    class _Result:
+        stdout = "\n".join(names) + ("\n" if names else "")
+
+    return lambda _argv: _Result()
+
+
+def test_list_review_sessions_extracts_task_ids() -> None:
+    # Only `panopticon-review-<id>` sessions are review sessions; the dashboard/task sessions and
+    # any other name are ignored.
+    warm = list_review_sessions(
+        run=_sessions_run(
+            ["panopticon-review-a", "panopticon-b", "dashboard", "panopticon-review-c"]
+        )
+    )
+    assert warm == {"a", "c"}
+
+
+def test_list_review_sessions_is_empty_on_tmux_error() -> None:
+    # No server / a raising tmux → empty set (a refresh must never crash on this).
+    def _boom(_argv: list[str]) -> Any:
+        raise OSError("no server running")
+
+    assert list_review_sessions(run=_boom) == set()
+
+
+def test_reap_orphan_review_sessions_kills_only_gone_tasks() -> None:
+    # A review session whose task is absent from the live set is killed; a still-listed task's
+    # session is kept (even terminal ones stay reviewable).
+    killed: list[list[str]] = []
+    reaped = reap_orphan_review_sessions(
+        {"present"},
+        sessions={"present", "gone"},
+        run=lambda argv: killed.append(argv),
+    )
+    assert reaped == ["gone"]
+    assert killed == [["tmux", "-L", "panopticon", "kill-session", "-t", "panopticon-review-gone"]]
+
+
+def test_review_sessions_probe_marks_survivors_and_reaps_orphans(monkeypatch: Any) -> None:
+    # The dashboard's per-tick probe: list once, reap sessions of gone tasks, return the warm set
+    # intersected with the live ids (what the row marker uses).
+    killed: list[list[str]] = []
+    monkeypatch.setattr(
+        "panopticon.terminal.console.list_review_sessions",
+        lambda **_kw: {"live1", "gone"},
+    )
+    monkeypatch.setattr(
+        "panopticon.terminal.console.subprocess.run",
+        lambda argv, **_kw: killed.append(argv),
+    )
+    probe = make_review_sessions_probe()
+
+    warm = probe({"live1", "live2"})
+
+    assert warm == {"live1"}  # gone reaped out; live2 has no session so isn't marked
+    assert killed == [["tmux", "-L", "panopticon", "kill-session", "-t", "panopticon-review-gone"]]
 
 
 # -- integration: a real tarot review session on real tmux ---------------------------

@@ -49,9 +49,13 @@ def test_dashboard_under_supervisor_wires_the_switch_hooks(monkeypatch: pytest.M
     monkeypatch.setattr(
         dashboard,
         "run",
-        lambda _c, *, on_switch=None, on_service=None, on_runner=None, on_review=None, artifacts_root=None: (
+        lambda _c, *, on_switch=None, on_service=None, on_runner=None, on_review=None, on_review_sessions=None, artifacts_root=None: (
             seen.update(
-                on_switch=on_switch, on_service=on_service, on_runner=on_runner, on_review=on_review
+                on_switch=on_switch,
+                on_service=on_service,
+                on_runner=on_runner,
+                on_review=on_review,
+                on_review_sessions=on_review_sessions,
             )
         ),
     )
@@ -61,6 +65,7 @@ def test_dashboard_under_supervisor_wires_the_switch_hooks(monkeypatch: pytest.M
         and seen["on_service"] is not None
         and seen["on_runner"] is not None
         and seen["on_review"] is not None
+        and seen["on_review_sessions"] is not None  # `v` warm-marker probe wired under supervisor
     )
 
 
@@ -71,9 +76,13 @@ def test_standalone_dashboard_has_no_switch_hooks(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(
         dashboard,
         "run",
-        lambda _c, *, on_switch=None, on_service=None, on_runner=None, on_review=None, artifacts_root=None: (
+        lambda _c, *, on_switch=None, on_service=None, on_runner=None, on_review=None, on_review_sessions=None, artifacts_root=None: (
             seen.update(
-                on_switch=on_switch, on_service=on_service, on_runner=on_runner, on_review=on_review
+                on_switch=on_switch,
+                on_service=on_service,
+                on_runner=on_runner,
+                on_review=on_review,
+                on_review_sessions=on_review_sessions,
             )
         ),
     )
@@ -83,6 +92,7 @@ def test_standalone_dashboard_has_no_switch_hooks(monkeypatch: pytest.MonkeyPatc
         and seen["on_service"] is None
         and seen["on_runner"] is None
         and seen["on_review"] is None
+        and seen["on_review_sessions"] is None
     )
 
 

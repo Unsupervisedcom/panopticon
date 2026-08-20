@@ -35,6 +35,7 @@ from panopticon.terminal.dashboard import (
     _short_tokens,
     _slug_cell,
     _snooze_label,
+    _state_cell,
     _status_cell,
     _turn_cell,
     render_detail,
@@ -878,6 +879,7 @@ async def test_pressing_v_defaults_base_to_main_when_the_repo_lookup_fails() -> 
         (ReviewResult.NO_TAROT, "warning", "tarot isn't installed"),
         (ReviewResult.NOTHING_TO_REVIEW, "warning", "No local clone and no URL"),
         (ReviewResult.REATTACHED, "information", "Re-attaching"),
+        (ReviewResult.RELOADED, "information", "PR advanced — review reloaded"),
         (ReviewResult.LAUNCHED, None, None),  # handing off → no notify
     ],
 )
@@ -1423,6 +1425,39 @@ def test_status_cell_displays_the_composed_status_color_coded() -> None:
     assert _status_cell({"container_status": "disconnected"}).style == "red"
     assert _status_cell({"container_status": "–"}).plain == "–"  # terminal task
     assert _status_cell({}).plain == "–"  # missing → em-dash, no crash
+
+
+def test_state_cell_marks_a_warm_review_session() -> None:
+    # Cold: a plain state string (unchanged). Warm: the state label prefixed with the review glyph
+    # so the operator can predict `v` re-attaches instantly instead of cold-starting tarot.
+    from rich.text import Text
+
+    assert _state_cell({"state": "WORKING"}, warm=False) == "WORKING"
+    warm = _state_cell({"state": "WORKING"}, warm=True)
+    assert isinstance(warm, Text)
+    assert warm.plain == "◉ WORKING"
+
+
+async def test_warm_review_marker_appears_for_probed_sessions() -> None:
+    # The per-tick probe reports which tasks have a warm review session; those rows render the
+    # marker on their state cell, others don't. The probe is handed the full live id set.
+    from rich.text import Text
+
+    seen_ids: list[set[str]] = []
+
+    def probe(live_ids: set[str]) -> set[str]:
+        seen_ids.append(live_ids)
+        return {"task-abcdef0123"}  # only _TASK is warm
+
+    app = Dashboard(_FakeClient([_TASK]), on_review_sessions=probe)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app._warm_reviews == {"task-abcdef0123"}
+        assert seen_ids and "task-abcdef0123" in seen_ids[0]
+        table = app.query_one("#tasks", DataTable)
+        row = table.get_row("task-abcdef0123")
+        state_plain = row[0].plain if isinstance(row[0], Text) else str(row[0])
+        assert state_plain.startswith("◉")  # the warm marker
 
 
 async def test_task_counter_shows_agent_versus_active_counts() -> None:
@@ -2759,7 +2794,23 @@ def test_footer_shows_only_the_essential_keys() -> None:
     shown = {b.key for b in Dashboard.BINDINGS if b.show}
     hidden = {b.key for b in Dashboard.BINDINGS if not b.show}
     assert shown == {"t", "n", "x", "/", "d", "question_mark", "q"}
-    assert hidden == {"o", "r", "R", "p", "v", "e", "E", "g", "a", "s", "u", "y", "Y", "P", "escape"}
+    assert hidden == {
+        "o",
+        "r",
+        "R",
+        "p",
+        "v",
+        "e",
+        "E",
+        "g",
+        "a",
+        "s",
+        "u",
+        "y",
+        "Y",
+        "P",
+        "escape",
+    }
 
 
 def test_bindings_and_help_derive_from_the_single_hotkey_table() -> None:

@@ -11,12 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import mimetypes
-
-# Artifact content-types must not depend on the stdlib table's vintage: Python only
-# gained the .md mapping in newer 3.13s, and requires-python floors at 3.11. Register
-# what artifacts actually serve so a 3.11 venv and CI agree (test_artifact_download_
-# content_type_from_extension is the pin).
-mimetypes.add_type("text/markdown", ".md")
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from typing import Any
@@ -37,6 +31,12 @@ from panopticon.taskservice.service import (
     TaskService,
     UnknownWorkflow,
 )
+
+# Artifact content-types must not depend on the stdlib table's vintage: Python only
+# gained the .md mapping in newer 3.13s, and requires-python floors at 3.11. Register
+# what artifacts actually serve so a 3.11 venv and CI agree (test_artifact_download_
+# content_type_from_extension is the pin). Runs at import, before any request serves an artifact.
+mimetypes.add_type("text/markdown", ".md")
 
 #: How often the held ``/live`` stream emits a keepalive byte. This does **not** govern how fast
 #: death is noticed — disconnect is event-driven (Starlette cancels the stream the instant the

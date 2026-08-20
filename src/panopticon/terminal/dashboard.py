@@ -442,6 +442,24 @@ def _status_cell(task: JsonObj) -> Text:
     return Text(status, style=_STATUS_COLORS.get(status, "dim"))
 
 
+#: Row marker for a task with a **warm** ``panopticon-review-<id>`` session — a `v` re-attaches to
+#: the waiting tarot instantly instead of cold-starting one. A small dot prefixed to the state cell
+#: (near the state label) so the operator can predict attach-vs-spinup at a glance.
+REVIEW_WARM_GLYPH = "◉"
+
+
+def _state_cell(task: JsonObj, *, warm: bool) -> Text | str:
+    """The state column, prefixed with :data:`REVIEW_WARM_GLYPH` when the task has a warm review
+    session. Plain ``str`` when cold (unchanged), so only warm rows pay for a ``Text``."""
+    state = str(task["state"])
+    if not warm:
+        return state
+    cell = Text()
+    cell.append(f"{REVIEW_WARM_GLYPH} ", style="magenta")
+    cell.append(state)
+    return cell
+
+
 def _repo_cell(task: JsonObj, repo_names: dict[str, str]) -> str:
     """The repo column: the repo's human-readable name, looked up from the id→name cache."""
     repo_id = str(task.get("repo_id") or "")
@@ -1831,7 +1849,9 @@ class TaskDetailScreen(ModalScreen[None]):
     def __init__(self, task: JsonObj | None, *, time_summary: str | None = None) -> None:
         super().__init__()
         self._detail_task = task  # NB: not `_task` — that collides with MessagePump's asyncio task
-        self._time_summary = time_summary  # task time-profile line(s), ported from the side-pane detail
+        self._time_summary = (
+            time_summary  # task time-profile line(s), ported from the side-pane detail
+        )
 
     def compose(self) -> ComposeResult:
         task = self._detail_task
@@ -1881,6 +1901,7 @@ class Dashboard(App[None]):
         on_service: Callable[[], bool] | None = None,
         on_runner: Callable[[], bool] | None = None,
         on_review: Callable[[ReviewTarget], ReviewResult] | None = None,
+        on_review_sessions: Callable[[set[str]], set[str]] | None = None,
         artifacts_root: str | Path = ARTIFACTS_DIR,
         refresh_interval: float | None = REFRESH_INTERVAL,
         now: Callable[[], datetime] | None = None,
@@ -1895,6 +1916,10 @@ class Dashboard(App[None]):
         self._on_service = on_service  # `s` hook: switch to the service session; True if one exists
         self._on_runner = on_runner  # `u` hook: switch to the runner session; True if one exists
         self._on_review = on_review  # `v` hook: open tarot on the task's work (None standalone)
+        # per-tick probe: list warm `panopticon-review-<id>` sessions + reap orphans → the warm
+        # task-id set for the row marker (None standalone → no marker, no reaping).
+        self._on_review_sessions = on_review_sessions
+        self._warm_reviews: set[str] = set()  # task ids with a warm review session (this tick)
         self._artifacts_root = artifacts_root  # for `a`'s `e` local-open (co-located store)
         self._refresh_interval = (
             refresh_interval  # change-feed long-poll wait (0/None → manual only)
@@ -2025,6 +2050,14 @@ class Dashboard(App[None]):
         # Inject repo_name so _matches can search on it without a separate lookup per task.
         for task in ordered:
             task["repo_name"] = self._repo_names.get(str(task.get("repo_id") or ""), "")
+        # Warm review sessions: one `tmux list-sessions` per tick (via the injected probe, which
+        # also reaps sessions of gone tasks), keyed to the full snapshot's ids so a search never
+        # reaps. The resulting set drives the per-row warm marker (`_add_row`). Best-effort — a
+        # standalone dashboard (no probe) shows no marker; the probe itself swallows tmux errors.
+        if self._on_review_sessions is not None:
+            live_ids = {str(t["id"]) for t in ordered}
+            with contextlib.suppress(Exception):
+                self._warm_reviews = self._on_review_sessions(live_ids)
         # Governor IDs: the set of task IDs that have at least one governed child in the full
         # snapshot. Computed from ``ordered`` (pre-collapse, pre-filter) so collapsing a governor
         # doesn't remove it from the set and prevent a second Enter from re-expanding it.
@@ -2083,7 +2116,9 @@ class Dashboard(App[None]):
                     key=f"{_ENSEMBLE_KEY_PREFIX}{gov_id}",
                 )
             else:
-                state_cell: Text | str = task["state"]
+                state_cell: Text | str = _state_cell(
+                    task, warm=str(task["id"]) in self._warm_reviews
+                )
                 turn_cell = _turn_cell(task, display_now)
                 status_cell = _status_cell(task)
                 runner_cell: Text | None = (
@@ -2383,6 +2418,8 @@ class Dashboard(App[None]):
             self.notify("No local clone and no URL to review yet.", severity="warning")
         elif result is ReviewResult.REATTACHED:
             self.notify("Re-attaching to the open review session.")
+        elif result is ReviewResult.RELOADED:
+            self.notify("PR advanced — review reloaded.")
         # LAUNCHED → the terminal is handing off to tarot; no notify.
 
     def _copy_to_clipboard(self, text: str) -> None:
@@ -2612,17 +2649,20 @@ def run(
     on_service: Callable[[], bool] | None = None,
     on_runner: Callable[[], bool] | None = None,
     on_review: Callable[[ReviewTarget], ReviewResult] | None = None,
+    on_review_sessions: Callable[[set[str]], set[str]] | None = None,
     artifacts_root: str | Path = ARTIFACTS_DIR,
 ) -> None:
     """Run the dashboard. ``on_switch``/``on_service``/``on_runner``/``on_review`` are the
-    supervisor's `t`/`s`/`u`/`v` hooks (ADR 0009); all ``None`` standalone. ``artifacts_root`` is
-    the local artifact-store root `a`'s `e` opens files from when the dashboard shares the task
-    service's filesystem."""
+    supervisor's `t`/`s`/`u`/`v` hooks (ADR 0009); all ``None`` standalone. ``on_review_sessions``
+    is the per-tick warm-review probe (lists + reaps review sessions → the warm-marker set).
+    ``artifacts_root`` is the local artifact-store root `a`'s `e` opens files from when the dashboard
+    shares the task service's filesystem."""
     Dashboard(
         client,
         on_switch=on_switch,
         on_service=on_service,
         on_runner=on_runner,
         on_review=on_review,
+        on_review_sessions=on_review_sessions,
         artifacts_root=artifacts_root,
     ).run()
