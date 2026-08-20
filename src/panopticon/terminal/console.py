@@ -196,8 +196,45 @@ class ReviewResult(enum.Enum):
 
     LAUNCHED = "launched"  # a fresh review session was created + attached (terminal handing off)
     REATTACHED = "reattached"  # a review session already existed — re-attached, no double-launch
+    RELOADED = (
+        "reloaded"  # existing session, but the clone advanced — tarot restarted, then attached
+    )
     NO_TAROT = "no_tarot"  # tarot isn't installed on this host — nothing spawned
     NOTHING_TO_REVIEW = "nothing_to_review"  # no local clone and no url — nothing to open
+
+
+#: The tmux **session** environment variable a review session records the clone HEAD it was launched
+#: at, so a later `v` can tell whether the clone advanced (the agent committed) since. Set at
+#: launch (`new-session -e`), updated on a reload (`set-environment`), read back on re-attach.
+REVIEW_HEAD_SHA_VAR = "REVIEW_HEAD_SHA"
+
+
+def _git_head_sha(clone: str) -> str | None:
+    """The clone's current checked-out commit (``git rev-parse HEAD``), or ``None`` on any error.
+    The clone is the agent's live ``/workspace``, so this advances as the agent commits — comparing
+    it to the sha a review session launched at is the staleness signal."""
+    result = subprocess.run(
+        ["git", "-C", clone, "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    return (result.stdout.strip() or None) if result.returncode == 0 else None
+
+
+def _tmux_show_env(session: str, key: str, *, socket: str) -> str | None:
+    """Read a session environment variable via ``tmux show-environment`` (``None`` when unset or the
+    session is gone). Output is ``KEY=value`` when set, ``-KEY`` when explicitly unset."""
+    result = subprocess.run(
+        ["tmux", "-L", socket, "show-environment", "-t", session, key],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    line = result.stdout.strip()
+    if not line or line.startswith("-") or "=" not in line:
+        return None
+    return line.split("=", 1)[1] or None
 
 
 def _git_configured_base(clone: str) -> str | None:
@@ -233,6 +270,59 @@ def _review_tmux_command(
     return command
 
 
+def _set_session_env_command(session: str, *, socket: str, key: str, value: str) -> list[str]:
+    """The argv that updates a review session's environment (``tmux set-environment``) — used to
+    record the fresh clone HEAD on a reload so the *next* re-attach compares against it."""
+    return ["tmux", "-L", socket, "set-environment", "-t", session, key, value]
+
+
+def _respawn_review_command(
+    session: str, *, socket: str, cwd: str, tarot_args: list[str]
+) -> list[str]:
+    """The argv that restarts tarot **in place** in an existing review session
+    (``tmux respawn-window -k``) after the clone advanced. The respawned process inherits the
+    session environment (the launch ``-e`` vars: ``PANOPTICON_SERVICE_URL``, ``TAROT_PANOPTICON_TASK``,
+    the updated ``REVIEW_HEAD_SHA``) and the tmux **server** globals (``TAROT_ASK_CMD``), so the
+    reload keeps them — the single place the reload command is spelled, pinned by the unit tests."""
+    return [
+        "tmux",
+        "-L",
+        socket,
+        "respawn-window",
+        "-k",
+        "-t",
+        session,
+        "-c",
+        cwd,
+        "tarot",
+        *tarot_args,
+    ]
+
+
+def _resolve_review(
+    target: ReviewTarget,
+    *,
+    configured_base: Callable[[str], str | None],
+    present: Callable[[str], bool],
+) -> tuple[str | None, list[str], bool] | None:
+    """Resolve a review target to ``(cwd, tarot_args, local)`` — the fallback ladder shared by the
+    launch and the staleness re-attach so both spell the same tarot invocation. ``local`` is True
+    for a **local-clone** review (present on this host, no ``runner_host``): only that case is
+    staleness-checkable (it has an on-disk HEAD). Returns ``None`` when there's nothing to review.
+
+    - local clone → ``(clone, ["--base", "origin/<default_base>"] | [], True)`` (``[]`` when the
+      clone sets its own ``tarot.base``);
+    - else a task ``url`` → ``(None, [url], False)``;
+    - else ``None``."""
+    if target.clone is not None and target.runner_host is None and present(target.clone):
+        base = configured_base(target.clone)
+        tarot_args = [] if base else ["--base", f"origin/{target.default_base}"]
+        return target.clone, tarot_args, True
+    if target.url:
+        return None, [target.url], False
+    return None
+
+
 def make_review_switch(
     switch_file: Path,
     *,
@@ -242,50 +332,134 @@ def make_review_switch(
     tarot_installed: Callable[[], bool] | None = None,
     configured_base: Callable[[str], str | None] = _git_configured_base,
     clone_present: Callable[[str], bool] | None = None,
+    head_sha: Callable[[str], str | None] = _git_head_sha,
+    stored_sha: Callable[[str], str | None] | None = None,
     run: Callable[[list[str]], object] | None = None,
     detach: Callable[[], None] = _tmux_detach,
 ) -> Callable[[ReviewTarget], ReviewResult]:
     """Build the dashboard's `v` hook: open tarot on a task's work, reusing the `t` switch-file
     detach/attach (:func:`switch_to`) so quitting tarot returns to the same dashboard.
 
-    Read-only wrt the task — it never calls the task service; it only reads git config, creates a
-    tmux session, and writes the switch-file. The fallback ladder: a **local** clone (present on
-    this host, no ``runner_host``) is reviewed in place with ``--base origin/<default_base>``
-    (unless the clone sets ``tarot.base``); else the task's ``url`` (a PR) is opened; else there's
-    nothing to review. A review session that already exists is re-attached, never double-launched;
-    with tarot not installed nothing is spawned. Every host interaction is injected for tests."""
+    Read-only wrt the task — it never calls the task service; it only reads git state, creates or
+    restarts a tmux session, and writes the switch-file. The fallback ladder
+    (:func:`_resolve_review`): a **local** clone (present on this host, no ``runner_host``) is
+    reviewed in place with ``--base origin/<default_base>`` (unless the clone sets ``tarot.base``);
+    else the task's ``url`` (a PR) is opened; else there's nothing to review. With tarot not
+    installed nothing is spawned.
+
+    **Staleness-checked re-attach.** A review session is a *waiting* tarot showing the clone as of
+    the sha it launched at (recorded in the session env, :data:`REVIEW_HEAD_SHA_VAR`). A second `v`:
+    for a local-clone review, if the clone's current HEAD still equals the launch sha → a pure
+    re-attach (instant, ``REATTACHED``); if it advanced (the agent committed) → the clone is already
+    fresh on disk, so tarot is **restarted in place** (``respawn-window -k``, env preserved) and the
+    session env updated, then attached (``RELOADED``). The url/remote case has no on-disk HEAD to
+    diff, so it stays a pure re-attach. Every host interaction is injected for tests."""
     session_running = exists or (lambda s: session_exists(s, socket=socket))
     installed = tarot_installed or (lambda: shutil.which("tarot") is not None)
     present = clone_present or (lambda path: Path(path).is_dir())
+    read_stored = stored_sha or (lambda s: _tmux_show_env(s, REVIEW_HEAD_SHA_VAR, socket=socket))
     launch = run or (lambda argv: subprocess.run(argv, check=False))
 
     def review(target: ReviewTarget) -> ReviewResult:
         if not installed():
             return ReviewResult.NO_TAROT
         session = review_session_name(target.task_id)
-        if session_running(session):  # second press → re-attach, don't double-launch
+        resolved = _resolve_review(target, configured_base=configured_base, present=present)
+        if session_running(session):  # a waiting tarot exists → re-attach (staleness-checked)
+            result = ReviewResult.REATTACHED
+            if resolved is not None and resolved[2]:  # local clone: diff launch sha vs HEAD now
+                cwd, tarot_args, _ = resolved
+                assert cwd is not None  # a local-clone review always carries its clone as cwd
+                current = head_sha(cwd)
+                launched_at = read_stored(session)
+                if current and launched_at and current != launched_at:
+                    # The clone advanced under the waiting tarot — restart it (env-preserving) so it
+                    # re-reads the fresh HEAD, and record the new sha for the next re-attach.
+                    launch(
+                        _set_session_env_command(
+                            session, socket=socket, key=REVIEW_HEAD_SHA_VAR, value=current
+                        )
+                    )
+                    launch(
+                        _respawn_review_command(
+                            session, socket=socket, cwd=cwd, tarot_args=tarot_args
+                        )
+                    )
+                    result = ReviewResult.RELOADED
             switch_to(session, switch_file=switch_file, detach=detach)
-            return ReviewResult.REATTACHED
-        env = {"PANOPTICON_SERVICE_URL": service_url, "TAROT_PANOPTICON_TASK": target.task_id}
-        # Local-clone review only when the clone is on *this* host: a remote runner's clone lives
-        # elsewhere, so fall through to the url.
-        if target.clone is not None and target.runner_host is None and present(target.clone):
-            base = configured_base(target.clone)
-            tarot_args = [] if base else ["--base", f"origin/{target.default_base}"]
-            command = _review_tmux_command(
-                session, socket=socket, cwd=target.clone, env=env, tarot_args=tarot_args
-            )
-        elif target.url:
-            command = _review_tmux_command(
-                session, socket=socket, cwd=None, env=env, tarot_args=[target.url]
-            )
-        else:
+            return result
+        if resolved is None:
             return ReviewResult.NOTHING_TO_REVIEW
+        cwd, tarot_args, local = resolved
+        env = {"PANOPTICON_SERVICE_URL": service_url, "TAROT_PANOPTICON_TASK": target.task_id}
+        if local:  # record the sha tarot is loading, so a later `v` can detect the clone advancing
+            assert cwd is not None
+            sha = head_sha(cwd)
+            if sha:
+                env[REVIEW_HEAD_SHA_VAR] = sha
+        command = _review_tmux_command(
+            session, socket=socket, cwd=cwd, env=env, tarot_args=tarot_args
+        )
         launch(command)
         switch_to(session, switch_file=switch_file, detach=detach)
         return ReviewResult.LAUNCHED
 
     return review
+
+
+def list_review_sessions(
+    *, socket: str = TMUX_SOCKET, run: Callable[[list[str]], object] | None = None
+) -> set[str]:
+    """The task ids that currently have a **warm** ``panopticon-review-<id>`` session on the
+    panopticon socket — one ``tmux list-sessions`` call, so the dashboard can list once per refresh
+    tick (not per row). Best-effort: no server / any tmux error → empty set (never crash a refresh)."""
+    lister = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    try:
+        result = lister(["tmux", "-L", socket, "list-sessions", "-F", "#{session_name}"])
+    except Exception:
+        return set()
+    output = getattr(result, "stdout", "") or ""
+    return {
+        line[len(REVIEW_SESSION_PREFIX) :]
+        for raw in output.splitlines()
+        if (line := raw.strip()).startswith(REVIEW_SESSION_PREFIX)
+    }
+
+
+def reap_orphan_review_sessions(
+    live_task_ids: set[str],
+    *,
+    socket: str = TMUX_SOCKET,
+    sessions: set[str] | None = None,
+    run: Callable[[list[str]], object] | None = None,
+) -> list[str]:
+    """Kill each warm ``panopticon-review-<id>`` session whose task is **gone** (its id not in
+    ``live_task_ids`` — a deleted/reaped task): the review-session mirror of the spawner's
+    terminal-container reaper, run on the console host where these sessions live. A still-listed
+    task (even DROPPED/COMPLETE) keeps its review so it can still be inspected. Returns the ids
+    reaped. Pass ``sessions`` (the already-listed warm set) to avoid a second ``list-sessions``."""
+    warm = sessions if sessions is not None else list_review_sessions(socket=socket, run=run)
+    killer = run or (lambda argv: subprocess.run(argv, check=False))
+    reaped: list[str] = []
+    for task_id in warm:
+        if task_id not in live_task_ids:
+            killer(["tmux", "-L", socket, "kill-session", "-t", review_session_name(task_id)])
+            reaped.append(task_id)
+    return reaped
+
+
+def make_review_sessions_probe(*, socket: str = TMUX_SOCKET) -> Callable[[set[str]], set[str]]:
+    """Build the dashboard's per-tick review-session probe: list the warm review sessions, reap any
+    whose task is gone (:func:`reap_orphan_review_sessions`), and return the surviving warm task-id
+    set (∩ the live ids) for the row **warm marker**. One ``tmux list-sessions`` per tick, shared by
+    the marker and the reaper. Injected into the dashboard so it stays tmux-free and testable."""
+
+    def probe(live_task_ids: set[str]) -> set[str]:
+        warm = list_review_sessions(socket=socket)
+        reap_orphan_review_sessions(live_task_ids, sessions=warm, socket=socket)
+        return warm & live_task_ids
+
+    return probe
 
 
 def _service_ready(service_url: str) -> bool:
