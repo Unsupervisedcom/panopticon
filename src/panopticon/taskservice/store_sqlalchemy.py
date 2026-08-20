@@ -133,8 +133,6 @@ class _TaskRow(_Base):
     branch: Mapped[str | None] = mapped_column(default=None)
     clone: Mapped[str | None] = mapped_column(default=None)
     claimed_by: Mapped[str | None] = mapped_column(default=None)
-    tokens_used: Mapped[int | None] = mapped_column(default=None)
-    token_estimate: Mapped[int | None] = mapped_column(default=None)
     starting_model: Mapped[str | None] = mapped_column(default=None)
     governor_task_id: Mapped[str | None] = mapped_column(ForeignKey("task.id"), default=None)
     created_at: Mapped[str | None] = mapped_column(default=None)
@@ -164,8 +162,6 @@ class _TaskRow(_Base):
             branch=self.branch,
             clone=self.clone,
             claimed_by=self.claimed_by,
-            tokens_used=self.tokens_used,
-            token_estimate=self.token_estimate,
             starting_model=self.starting_model,
             governor_task_id=self.governor_task_id,
             created_at=self.created_at,
@@ -192,8 +188,6 @@ class _TaskRow(_Base):
             branch=task.branch,
             clone=task.clone,
             claimed_by=task.claimed_by,
-            tokens_used=task.tokens_used,
-            token_estimate=task.token_estimate,
             starting_model=task.starting_model,
             governor_task_id=task.governor_task_id,
             created_at=task.created_at,
@@ -403,8 +397,6 @@ class SqlAlchemyStore(Store):
             row.branch = task.branch
             row.clone = task.clone
             row.claimed_by = task.claimed_by
-            row.tokens_used = task.tokens_used
-            row.token_estimate = task.token_estimate
             row.governor_task_id = task.governor_task_id
             row.updated_at = task.updated_at
             row.sort_weight = task.sort_weight

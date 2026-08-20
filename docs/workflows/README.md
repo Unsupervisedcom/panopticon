@@ -33,7 +33,6 @@ the agent can leave that state it must:
 
 - **Write a plan** as the task's `plan.md` artifact. This is your chance to redirect
   before any code is written.
-- **Record a token estimate** so the task's projected cost is tracked.
 
 The plan is a task **artifact**, which you read from the dashboard: highlight the task and
 press `a` to open its `plan.md`. (Artifacts are the task's own documents, kept with the

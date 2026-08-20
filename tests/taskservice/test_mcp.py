@@ -213,32 +213,6 @@ async def test_set_url_via_tool(tmp_path: Path) -> None:
     assert (await svc.get_task(task.id)).url == url  # the tool actually mutated the task
 
 
-async def test_set_tokens_used_via_tool(tmp_path: Path) -> None:
-    svc = await _service(tmp_path)
-    task = await svc.create_task("r1", "spike")
-    async with connect(build_mcp_server(svc)) as s:
-        await s.initialize()
-        result = await s.call_tool("set_tokens_used", {"task_id": task.id, "tokens_used": 5000})
-        assert result.structuredContent is not None
-        assert result.structuredContent["tokens_used"] == 5000
-    assert (await svc.get_task(task.id)).tokens_used == 5000  # the tool actually mutated the task
-
-
-async def test_set_token_estimate_via_tool(tmp_path: Path) -> None:
-    svc = await _service(tmp_path)
-    task = await svc.create_task("r1", "spike")
-    async with connect(build_mcp_server(svc)) as s:
-        await s.initialize()
-        result = await s.call_tool(
-            "set_token_estimate", {"task_id": task.id, "token_estimate": 500000}
-        )
-        assert result.structuredContent is not None
-        assert result.structuredContent["token_estimate"] == 500000
-    assert (
-        await svc.get_task(task.id)
-    ).token_estimate == 500000  # the tool actually mutated the task
-
-
 async def test_set_sort_weight_via_tool(tmp_path: Path) -> None:
     svc = await _service(tmp_path)
     task = await svc.create_task("r1", "spike")
@@ -352,8 +326,7 @@ async def test_create_task_with_initial_prompt_and_artifacts(tmp_path: Path) -> 
 
 async def test_orchestrator_seeds_a_child_ready_to_approve(tmp_path: Path) -> None:
     """The motivating end-to-end: create a github-self-reviewed task with the plan inline —
-    plan.md written, a token estimate recorded, `plan-written`/`token-estimated` met, turn handed
-    to the user."""
+    plan.md written, `plan-written` met, turn handed to the user."""
     svc = await _service(tmp_path)
     boss = await svc.create_task("r1", "orchestrator")
     async with connect(build_mcp_server(svc)) as s:
@@ -370,14 +343,9 @@ async def test_orchestrator_seeds_a_child_ready_to_approve(tmp_path: Path) -> No
         )
         child_id = created.structuredContent["id"]  # type: ignore[index]
         await s.call_tool("set_slug", {"task_id": child_id, "slug": "add-healthz"})
-        await s.call_tool("set_token_estimate", {"task_id": child_id, "token_estimate": 500000})
         await s.call_tool(
             "resolve_responsibility",
             {"task_id": child_id, "key": "plan-written", "status": "met"},
-        )
-        await s.call_tool(
-            "resolve_responsibility",
-            {"task_id": child_id, "key": "token-estimated", "status": "met"},
         )
         await s.call_tool("set_turn", {"task_id": child_id, "turn": "user"})
 
@@ -385,6 +353,5 @@ async def test_orchestrator_seeds_a_child_ready_to_approve(tmp_path: Path) -> No
     assert child.state == "PLANNING"  # still in planning, awaiting the user's approval
     assert child.slug == "add-healthz"
     assert child.turn is Actor.USER  # handed to the user to review/advance
-    assert child.token_estimate == 500000  # the orchestrator recorded its forecast
     assert child.outstanding_responsibilities == []  # the gate is clear — the user can advance
     assert await svc.get_artifact(child_id, "plan.md") == b"# Plan\n..."

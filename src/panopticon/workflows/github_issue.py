@@ -34,7 +34,7 @@ from panopticon.workflows.github_forge import GithubForgeWorkflow
 
 #: PLANNING responsibility specific to fixing an issue: the `plan.md` must actually engage with
 #: the linked issue, on all five axes. On top of the shared PLAN_WRITTEN (plan is a markdown
-#: artifact) and TOKEN_ESTIMATED, so "understand the issue" is a gated checkbox — not merely
+#: artifact), so "understand the issue" is a gated checkbox — not merely
 #: implied by a plan existing. Defined at module scope so the nested `Planning` state body can
 #: reference it (a nested class body can't see the enclosing class's namespace); re-exported as
 #: ``GithubIssue.ISSUE_UNDERSTOOD``.
@@ -82,9 +82,8 @@ class GithubIssue(GithubForgeWorkflow):
             "tests that prove it. The issue URL is an input; the PR you open in ITERATING is the "
             "recorded task URL."
         )
-        responsibilities = (  # shared plan/token promises + the issue-specific comprehension
+        responsibilities = (  # shared plan promise + the issue-specific comprehension
             GithubForgeWorkflow.PLAN_WRITTEN,
-            GithubForgeWorkflow.TOKEN_ESTIMATED,
             ISSUE_UNDERSTOOD,
         )
         transitions = ("ITERATING",)  # advance; + DROPPED inherited

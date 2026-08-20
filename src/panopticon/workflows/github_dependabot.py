@@ -37,8 +37,8 @@ from panopticon.core.state import Complete, InitialState, State
 from panopticon.workflows.github_forge import GithubForgeWorkflow
 
 #: PLANNING responsibility specific to the dependency-bump evaluation: the `plan.md` must cover
-#: all five axes. On top of the shared PLAN_WRITTEN (plan is a markdown artifact) and
-#: TOKEN_ESTIMATED, so the evaluation is a gated checkbox — not merely implied by a plan existing.
+#: all five axes. On top of the shared PLAN_WRITTEN (plan is a markdown artifact),
+#: so the evaluation is a gated checkbox — not merely implied by a plan existing.
 #: Defined at module scope so the nested `Planning` state body can reference it (a nested class
 #: body can't see the enclosing class's namespace); re-exported as ``GithubDependabot.UPGRADE_EVALUATED``.
 UPGRADE_EVALUATED = Responsibility(
@@ -102,9 +102,8 @@ class GithubDependabot(GithubForgeWorkflow):
             "risk signal), whether it addresses a security advisory / CVE and how urgent it is, "
             "and any recommended supporting changes (concluding that none are needed is acceptable)."
         )
-        responsibilities = (  # shared plan/token promises + the dependabot-specific evaluation +
+        responsibilities = (  # shared plan promise + the dependabot-specific evaluation +
             GithubForgeWorkflow.PLAN_WRITTEN,  # the PR URL, a known input (the memo), recorded here
-            GithubForgeWorkflow.TOKEN_ESTIMATED,
             UPGRADE_EVALUATED,
             GithubForgeWorkflow.URL_RECORDED,
         )

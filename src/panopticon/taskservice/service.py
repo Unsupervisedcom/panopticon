@@ -577,22 +577,6 @@ class TaskService:
         _log.debug("task %s: url → %s", task_id, url)
         return task
 
-    async def set_tokens_used(self, task_id: str, tokens_used: int) -> Task:
-        """Record the cumulative tokens the container's claude has used (its Stop hook reports the
-        recomputed session total). A plain recorded fact, like the slug — no transition, no git."""
-        task = await self.get_task(task_id)
-        task.tokens_used = tokens_used
-        await self._save_task(task)
-        return task
-
-    async def set_token_estimate(self, task_id: str, token_estimate: int) -> Task:
-        """Record the agent's forecast of the total tokens this task will consume (set once during
-        planning). A plain recorded fact, like the slug — no transition, no git."""
-        task = await self.get_task(task_id)
-        task.token_estimate = token_estimate
-        await self._save_task(task)
-        return task
-
     async def set_turn(self, task_id: str, turn: Actor) -> Task:
         """Flip who holds the turn within a state (the in-container hooks' callback).
 

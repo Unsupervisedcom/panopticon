@@ -209,24 +209,6 @@ async def test_url_round_trips(store: Store) -> None:
     assert (await store.get_task("t1")).url == "https://github.com/acme/widgets/pull/7"  # type: ignore[union-attr]
 
 
-async def test_tokens_used_round_trips(store: Store) -> None:
-    await _seed_repo(store)
-    task = await _new_task(store)
-    assert (await store.get_task("t1")).tokens_used is None  # type: ignore[union-attr]
-    task.tokens_used = 12750
-    await store.save_task(task)
-    assert (await store.get_task("t1")).tokens_used == 12750  # type: ignore[union-attr]
-
-
-async def test_token_estimate_round_trips(store: Store) -> None:
-    await _seed_repo(store)
-    task = await _new_task(store)
-    assert (await store.get_task("t1")).token_estimate is None  # type: ignore[union-attr]
-    task.token_estimate = 500_000
-    await store.save_task(task)
-    assert (await store.get_task("t1")).token_estimate == 500_000  # type: ignore[union-attr]
-
-
 async def test_snoozed_until_round_trips(store: Store) -> None:
     await _seed_repo(store)
     task = await _new_task(store)
@@ -512,8 +494,6 @@ def _fully_populated_task() -> Task:
         branch="panopticon/fix-the-widget",
         clone="/clones/t-full",
         claimed_by="local",
-        tokens_used=87500,
-        token_estimate=500_000,
         starting_model="opus",
         governor_task_id="t-governor",
         created_at="t1",
