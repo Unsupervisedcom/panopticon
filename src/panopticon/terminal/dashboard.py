@@ -25,7 +25,9 @@ artifacts — Enter opens the selected
 one with the host's default handler (`xdg-open`/`open`) by fetching it over REST to a temp file, `e`
 opens the on-disk file in place when the dashboard shares the artifact store, `y` **copies the
 task's slug** and `Y` its **id** to the clipboard (OSC 52 + the host's `pbcopy`/`xclip`/`wl-copy`,
-so it works on Linux and macOS), and `P` **time-profiles** the highlighted task (reads its session
+so it works on Linux and macOS), `*` **cycles the task's stars** 0→1→2→3→0 (the operator priority
+gesture: stars are `sort_weight` 10/20/30, which lifts the task within its group — a snooze still
+sinks it), and `P` **time-profiles** the highlighted task (reads its session
 transcripts via docker, `panopticon.sessionservice.transcripts`) and shows a one-line llm/tool/wait
 summary in the detail pane — on demand only (never automatic — see `action_profile`), since it
 shells out to docker per task. Drop is the only state
@@ -135,7 +137,9 @@ def _make_sort_key(
        for terminal tasks the agent's turn comes first (task just finished).
     3. sort_weight: an operator-set priority (default 0) descending — a higher weight rises first.
        Ranks below state/turn but above the timestamp, so it reorders within a section+turn group
-       without pulling a task out of it. Ties fall back to the timestamp.
+       without pulling a task out of it. Ties fall back to the timestamp. This is what the `*`
+       star gesture drives (:func:`_next_star_weight`): stars lift a task within its group, which
+       is why a starred *snoozed* task still sits in the snoozed section.
     4. timestamp:
        - Active, ``by_updated=False`` (default): ``created_at`` descending — newest first
          (stable: ``created_at`` never changes, so rows don't reorder when a task updates).
@@ -171,7 +175,7 @@ def _make_sort_key(
         return (
             section,  # 0 active, 1 snoozed-active root, 2 terminal
             turn_after_priority,  # priority turn sorts first within each section
-            -int(task.get("sort_weight") or 0),  # higher weight sorts first (below turn, above ts)
+            -_task_weight(task),  # higher weight sorts first (below turn, above ts); `*` sets it
             ts,
             task["id"],  # stable tiebreaker
         )
@@ -206,11 +210,50 @@ def _dim(cell: Text | str) -> Text:
     return t
 
 
+# Operator star tiers (`*`). A star *is* ``Task.sort_weight`` — the field ranks tasks in
+# ``_make_sort_key`` below section/turn and above the timestamp, which is exactly "pin it to the
+# top within the other sorting rules". One star per tier, tiers spaced ten apart so an API/MCP
+# caller can still slot arbitrary ints *between* them (the REST surface takes any int; the
+# dashboard displays whatever it finds rather than refusing to).
+_STAR_TIER = 10
+_MAX_STARS = 3
+_STAR_GLYPH = "★"
+
+
+def _star_count(weight: int) -> int:
+    """Stars shown for a ``sort_weight``: none at zero-or-negative, else one per tier, capped.
+
+    Off-tier weights (an API caller's 5, or a 100) still display sensibly — ``ceil`` rounds up to
+    the tier they've reached and :data:`_MAX_STARS` caps the top. A **negative** weight is an
+    operator-sunk task, not a starred one, so it shows nothing."""
+    return 0 if weight <= 0 else min(_MAX_STARS, ceil(weight / _STAR_TIER))
+
+
+def _next_star_weight(weight: int) -> int:
+    """The weight one press further round the cycle: 0 → 10 → 20 → 30 → 0.
+
+    Keyed off the *displayed* star count, not the raw weight, so an off-tier weight snaps to the
+    tier above what the operator can see (5 shows one star → 20) and anything already showing the
+    full three unstars to 0. A negative weight shows no stars, so it cycles to the first tier
+    exactly like zero — one press to star, wherever it started."""
+    stars = _star_count(weight)
+    return 0 if stars >= _MAX_STARS else (stars + 1) * _STAR_TIER
+
+
+def _task_weight(task: JsonObj) -> int:
+    """A task's ``sort_weight`` as an int (absent/None/empty → 0), the one place we coerce it."""
+    return int(task.get("sort_weight") or 0)
+
+
 def _slug_cell(task: JsonObj, prefix: str = "") -> Text:
     """The ``slug[memo]`` column: the slug followed by the task's memo in brackets.
 
     Bare slug when there's no memo; bare ``[memo]`` (no leading dash) when there's a
     memo but no slug; ``-`` only when neither is set.
+
+    A starred task (positive ``sort_weight``) shows its stars between the tree connector and the
+    slug (``├─ ★★ my-task``) — after the connector so ensemble alignment is preserved. They're
+    dim, like the connector, so they mark the row without competing with the task name.
 
     ``prefix`` is a tree-connector string (e.g. ``"├─ "``, ``"│  └─ "``) prepended
     for governed tasks to show their relationship to the governor visually.  It is
@@ -224,6 +267,8 @@ def _slug_cell(task: JsonObj, prefix: str = "") -> Text:
     text = Text()
     if prefix:
         text.append(prefix, style="dim")
+    if stars := _star_count(_task_weight(task)):
+        text.append(f"{_STAR_GLYPH * stars} ", style="dim")
     if memo:
         first_line = memo.splitlines()[0] if memo else memo
         text.append(f"{slug}[{first_line}]")
@@ -494,6 +539,11 @@ def render_detail(task: JsonObj, *, time_summary: str | None = None) -> str:
         lines += ["", task["memo"]]
     if task.get("url"):
         lines += ["", f"url: {task['url']}"]
+    if weight := _task_weight(task):
+        # The number, not just the stars: `*` sets tiers, but the API takes any int, and an
+        # off-tier or negative weight is only legible as a number.
+        stars = _star_count(weight)
+        lines += ["", f"sort weight: {weight}" + (f" {_STAR_GLYPH * stars}" if stars else "")]
     if task.get("tokens_used") or task.get("token_estimate"):
         used = _short_tokens(task.get("tokens_used"))
         est = _short_tokens(task.get("token_estimate"))
@@ -1738,6 +1788,14 @@ HOTKEYS: tuple[Hotkey, ...] = (
     Hotkey("R", "respawn", "Respawn", "Respawn a down task (release its claim)", show=False),
     Hotkey("p", "open_url", "Open URL", "Open the task's URL in the browser", show=False),
     Hotkey("v", "review", "Review", "Open tarot to review this task's work", show=False),
+    Hotkey(
+        "asterisk",
+        "star",
+        "Star",
+        "Cycle 0-3 stars (priority) on the highlighted task — a snooze still sinks it",
+        show=False,
+        display="*",
+    ),
     Hotkey("e", "snooze", "Snooze", "Snooze the highlighted task for 12 hours", show=False),
     Hotkey(
         "E",
@@ -2274,6 +2332,31 @@ class Dashboard(App[None]):
             detail = exc.response.json().get("detail", str(exc))
             self.notify(f"Can't drop: {detail}", severity="error")
             return
+        self.action_refresh()
+
+    def action_star(self) -> None:
+        """`*`: cycle the highlighted task's stars 0 → 1 → 2 → 3 → 0 (``sort_weight`` 0/10/20/30).
+
+        A star raises the task within its group — ``sort_weight`` ranks below section/turn and
+        above the timestamp — so a starred task rises to the top of the tasks that are equally
+        demanding, not above a snoozed/terminal section boundary. Cycling is keyed off the
+        *displayed* star count (:func:`_next_star_weight`), so an API-set off-tier weight snaps to
+        the tier above what's on screen rather than to some invisible next value."""
+        task_id = self._current
+        if task_id is None:
+            return
+        task = self._tasks.get(task_id)
+        if task is None:
+            return
+        weight = _next_star_weight(_task_weight(task))
+        try:
+            updated = self._client.set_sort_weight(task_id, weight)
+        except httpx.HTTPStatusError as exc:
+            self.notify(f"Can't star: {_detail(exc)}", severity="error")
+            return
+        # Optimistic: the row (and a second press) reflects the new weight even if the refresh
+        # below races the change feed.
+        task["sort_weight"] = updated.get("sort_weight", weight)
         self.action_refresh()
 
     def action_snooze(self) -> None:

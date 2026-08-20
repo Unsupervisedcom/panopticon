@@ -31,10 +31,12 @@ from panopticon.terminal.dashboard import (
     _group_section,
     _make_sort_key,
     _matches,
+    _next_star_weight,
     _repo_cell,
     _short_tokens,
     _slug_cell,
     _snooze_label,
+    _star_count,
     _state_cell,
     _status_cell,
     _turn_cell,
@@ -121,6 +123,9 @@ class _FakeClient:
         self.applied: list[tuple[str, str]] = []
         self.released: list[str] = []
         self.snoozed: list[tuple[str, str | None]] = []
+        self.sort_weights: list[tuple[str, int]] = []  # (task_id, weight) writes from `*`
+        # When set, set_sort_weight raises a 400 carrying this detail (the star error path).
+        self.sort_weight_error: str | None = None
         self.created_repos: list[dict[str, Any]] = []
         self.updated_repos: list[tuple[str, dict[str, Any]]] = []
         # When set, create_repo/update_repo raise a 400 carrying this detail (mimics the task
@@ -257,6 +262,15 @@ class _FakeClient:
             if t["id"] == task_id:
                 t["snoozed_until"] = until
         return {"id": task_id, "snoozed_until": until}
+
+    def set_sort_weight(self, task_id: str, sort_weight: int) -> dict[str, Any]:
+        if self.sort_weight_error is not None:
+            raise _http_400(self.sort_weight_error)
+        self.sort_weights.append((task_id, sort_weight))
+        for t in self._tasks:  # reflect the write in list_tasks (as the real service does)
+            if t["id"] == task_id:
+                t["sort_weight"] = sort_weight
+        return {"id": task_id, "sort_weight": sort_weight}
 
     def get_task(self, task_id: str) -> dict[str, Any]:
         for t in self._tasks:
@@ -656,6 +670,129 @@ async def test_expired_snooze_resumes_normal_presentation_without_mutating() -> 
     # Expiry is display-only: the dashboard never wrote the stored fact.
     assert client.snoozed == []
     assert task["snoozed_until"] == _at(-1)
+
+
+# --- stars: `*` cycles sort_weight 0 → 10 → 20 → 30 → 0 ------------------------------------------
+# A star *is* the task's sort_weight, which `_make_sort_key` ranks below section/turn and above the
+# timestamp — so stars lift a task within its group, and the snooze demotion above still wins.
+
+
+def test_star_key_is_bound_exactly_once() -> None:
+    keys = [hk.key for hk in dashboard.HOTKEYS]
+    assert keys.count("asterisk") == 1
+
+
+def test_star_count_maps_weight_to_stars() -> None:
+    # One star per tier of ten, rounded up so an API-set off-tier weight still displays sensibly,
+    # capped at three. Zero and negatives (an operator-sunk task) show nothing at all.
+    assert [_star_count(w) for w in (-30, -3, 0)] == [0, 0, 0]
+    assert [_star_count(w) for w in (1, 5, 10)] == [1, 1, 1]
+    assert [_star_count(w) for w in (11, 15, 20)] == [2, 2, 2]
+    assert [_star_count(w) for w in (21, 30, 31, 100)] == [3, 3, 3, 3]  # the cap holds
+
+
+def test_next_star_weight_cycles_through_the_tiers() -> None:
+    assert _next_star_weight(0) == 10  # 0 → 1 star
+    assert _next_star_weight(10) == 20  # 1 → 2 stars
+    assert _next_star_weight(20) == 30  # 2 → 3 stars
+    assert _next_star_weight(30) == 0  # 3 stars → unstarred, closing the cycle
+    # Off-tier weights snap to the tier above the count the operator can *see*: 5 shows one star,
+    # so the next press is two stars' worth.
+    assert _next_star_weight(5) == 20
+    assert _next_star_weight(15) == 30
+    assert _next_star_weight(25) == 0  # already displays the three-star cap → unstars
+    assert _next_star_weight(100) == 0
+    # A negative weight shows no stars, so one press stars it — same as from zero.
+    assert _next_star_weight(-3) == 10
+
+
+async def test_pressing_star_cycles_the_task_through_all_four_steps() -> None:
+    client = _FakeClient([dict(_TASK)])  # copy: set_sort_weight mutates the task dict in place
+    app = Dashboard(client)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        for _ in range(4):
+            await pilot.press("*")
+            await pilot.pause()
+    task_id = _TASK["id"]
+    assert client.sort_weights == [(task_id, 10), (task_id, 20), (task_id, 30), (task_id, 0)]
+
+
+async def test_pressing_star_on_an_api_set_off_tier_weight_snaps_to_the_next_tier() -> None:
+    # The REST/MCP surface takes any int; the dashboard shows 5 as one star, so `*` moves to two.
+    client = _FakeClient([{**_TASK, "sort_weight": 5}])
+    app = Dashboard(client)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("*")
+        await pilot.pause()
+    assert client.sort_weights == [(_TASK["id"], 20)]
+
+
+async def test_pressing_star_on_a_negative_weight_stars_it() -> None:
+    # An operator-sunk task displays no stars, so one press stars it rather than sinking it further.
+    client = _FakeClient([{**_TASK, "sort_weight": -3}])
+    app = Dashboard(client)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("*")
+        await pilot.pause()
+    assert client.sort_weights == [(_TASK["id"], 10)]
+
+
+def test_star_glyph_renders_the_count_in_the_slug_cell() -> None:
+    assert _slug_cell({**_TASK, "sort_weight": 0}).plain == "fix-widget"
+    assert _slug_cell({**_TASK, "sort_weight": 10}).plain == "★ fix-widget"
+    assert _slug_cell({**_TASK, "sort_weight": 20}).plain == "★★ fix-widget"
+    assert _slug_cell({**_TASK, "sort_weight": 30}).plain == "★★★ fix-widget"
+    assert _slug_cell({**_TASK, "sort_weight": 5}).plain == "★ fix-widget"  # off-tier, still shown
+    assert _slug_cell({**_TASK, "sort_weight": -3}).plain == "fix-widget"  # sunk: no stars
+    assert _slug_cell(_TASK).plain == "fix-widget"  # field absent entirely → weight 0
+    # The stars sit *after* the tree connector, so ensemble alignment is preserved.
+    assert _slug_cell({**_TASK, "sort_weight": 20}, "├─ ").plain == "├─ ★★ fix-widget"
+
+
+def test_star_glyph_is_dim_so_it_marks_the_row_without_competing() -> None:
+    cell = _slug_cell({**_TASK, "sort_weight": 30})
+    star_spans = [s for s in cell._spans if cell.plain[s.start : s.end].strip() == "★★★"]
+    assert star_spans and all(s.style == "dim" for s in star_spans)
+
+
+async def test_star_glyph_survives_the_dim_of_a_snoozed_row() -> None:
+    # Snooze and stars are orthogonal: the snooze mutes the row and keeps it in the snoozed
+    # section (stars only reorder *within* a section), but the stars stay visible.
+    task = {**_TASK, "sort_weight": 20, "snoozed_until": _at(4)}
+    app = Dashboard(_FakeClient([task]), now=lambda: _NOW)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        row = table.get_row(_TASK["id"])
+        assert row[4].plain == "★★ fix-widget"  # stars survive the muting
+        for cell in row:  # and the row is still fully muted
+            assert cell._spans and all(s.style == "dim" for s in cell._spans)
+
+
+def test_detail_shows_the_numeric_sort_weight() -> None:
+    # The number, not just the stars — an off-tier or negative weight is only legible as a number.
+    assert "sort weight: 20 ★★" in render_detail({**_TASK, "sort_weight": 20})
+    assert "sort weight: 5 ★" in render_detail({**_TASK, "sort_weight": 5})
+    assert "sort weight: -3" in render_detail({**_TASK, "sort_weight": -3})
+    assert "★" not in render_detail({**_TASK, "sort_weight": -3})  # sunk, not starred
+    assert "sort weight" not in render_detail({**_TASK, "sort_weight": 0})  # quiet at rest
+    assert "sort weight" not in render_detail(_TASK)
+
+
+async def test_star_failure_notifies_instead_of_crashing() -> None:
+    client = _FakeClient([dict(_TASK)])
+    client.sort_weight_error = "sort_weight must be an integer"
+    app = Dashboard(client)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("*")
+        await pilot.pause()
+        assert app.is_running  # the TUI survived the rejected write
+    assert client.sort_weights == []  # nothing recorded
+    assert client._tasks[0].get("sort_weight") in (None, 0)  # and the weight is unchanged
 
 
 async def _settle(pilot: Any, predicate: Any, *, tries: int = 100, step: float = 0.02) -> None:
@@ -2800,6 +2937,7 @@ def test_footer_shows_only_the_essential_keys() -> None:
         "R",
         "p",
         "v",
+        "asterisk",
         "e",
         "E",
         "g",
