@@ -218,7 +218,10 @@ images) and built in slices. **Codex** is the first additional target.
   unchanged. Pure refactor.
 - **M3.3 — CLI selection seam.** Add `Repo.agent_cli` (default `claude`) + `Task.agent_cli`
   (nullable override) with an Alembic migration; resolve task→repo→default host-side and pass the
-  resolved CLI + auth env var + base-image variant into the container at spawn.
+  resolved CLI + base-image variant into the container at spawn. Derive the runner's **config-volume
+  mount path** and its first-spawn probe from the CLI (not the hard-coded `.claude`), or resume
+  breaks. Make `starting_model` an abstract **tier** the adapter maps to a concrete model. (Auth is
+  unchanged — the whole `env_file` is injected wholesale; no per-var picking.)
 - **M3.4 — Codex base image.** A `panopticon-base-codex` base variant (ADR 0005 base tier) that
   installs the `codex` CLI; `images.py` selects the base from the resolved CLI, `make build` grows
   a per-CLI target.
@@ -227,9 +230,11 @@ images) and built in slices. **Codex** is the first additional target.
   the `codex resume --last` launch/resume argv, trust/sandbox pre-accept, and `OPENAI_API_KEY`
   auth. Resolves the ADR's flagged verifications (MCP transport, sandbox flag, `CODEX_HOME`).
 - **M3.6 — Codex turn-flip hooks + cost weights.** Wire codex's hooks to the turn-flip callback and
-  its payload parser (the `background_tasks`/transcript analogue), and add per-CLI cost weights
-  (generalizing `pricing.py` + the planning-estimate prompts). Live end-to-end proof: a Codex task
-  runs a workflow's lifecycle.
+  its payload parser (the `background_tasks`/transcript analogue), and resolve the briefing/nudge
+  delivery + `AskUserQuestion` turn-state on codex (ADR flags 6–7). Move the per-tier cost-weight
+  **values into `core`** (pure data keyed by CLI; `container/pricing.py` becomes a consumer), and
+  rewrite the planning-estimate prompts **CLI-agnostically** (no baked Anthropic ratios) — `workflows/`
+  can't import `container/`. Live end-to-end proof: a Codex task runs a workflow's lifecycle.
 
 ## Milestone 4 — web-hosted dashboard
 

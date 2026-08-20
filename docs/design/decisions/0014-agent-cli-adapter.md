@@ -11,7 +11,7 @@ Claude … [it] must accommodate other agent CLIs (see Milestone 3)", and the RO
 is "agent-runner adapters beyond `claude` + base-image variants (ADR 0005)". Codex is the first
 additional target.
 
-The `claude` dependency is concentrated in the **container layer** — the only LLM-bearing package
+Most of the `claude` dependency sits in the **container layer** — the only LLM-bearing package
 (the determinism invariant, AGENTS.md). Six modules bake in claude-specific decisions:
 
 - `container/agent.py` — the launcher. Hard-codes the `.claude` config dir, `.claude.json` trust
@@ -32,7 +32,19 @@ The `claude` dependency is concentrated in the **container layer** — the only 
 - `container/pricing.py` — Anthropic-specific cost weights (per-tier ratios) for the token report
   and the planning estimate.
 
-Milestone 3 needs a second CLI to drop in **without touching the control plane** and without a
+Two claude-specific facts also **leak into the control plane** today, and the ADR must name a seam
+for each rather than pretend the dependency is container-only:
+
+- **Model naming.** `Workflow.default_model = "opus"` (`core/workflow.py:106`) seeds
+  `Task.starting_model`, which the spawner injects as `PANOPTICON_STARTING_MODEL` and the launcher
+  passes to `claude --model`. A model name is provider vocabulary living in `core` + every workflow
+  — a codex task would be handed `--model opus` (§3a).
+- **Cost-weight ratios in prompt text.** `PlannedWorkflow.TOKEN_ESTIMATED` and the orchestrator's
+  spawn instructions (in `workflows/`) hard-code the Anthropic "≈0.1× / ≈5×" ratios in
+  agent-facing prose (resolved in Consequences — values move to `core`, prose goes CLI-agnostic).
+
+Milestone 3 needs a second CLI to drop in with **the control plane behaving identically per CLI**
+(it stores a CLI name and renders CLI-agnostic text, but runs no CLI-specific logic) and without a
 second copy of the launcher's control flow. This ADR settles the seam. It is **design only** — no
 code lands here; it is the contract the M3 implementation slices build against.
 
@@ -63,6 +75,7 @@ The seams, one method (or small method group) each:
 | **build launch argv incl. resume** | `claude --dangerously-skip-permissions [--continue \| --model M PROMPT]` | `codex …` first-run vs `codex resume --last`/session-id |
 | **trust / first-run pre-accept** | `.claude.json` onboarding + trust + cost keys | codex trust / sandbox-approval seed |
 | **auth env var(s) + missing-auth check** | `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` | `OPENAI_API_KEY` / codex login token |
+| **resolve tier → concrete model** | tier `"opus"` → `claude --model opus` | tier → a codex model id |
 | **cost weights** | Anthropic per-tier ratios (`pricing.py`) | OpenAI/codex per-tier weights |
 
 The bootstrap/launch split (AGENTS.md "No LLMs in tests") is preserved: the adapter's rendering
@@ -90,12 +103,35 @@ CLI choice is a first-class, recorded fact, resolved like secrets and image laye
   by the session service (where the container is spawned), like every other spawn input, and passed
   into the container as `PANOPTICON_AGENT_CLI`.
 
-The resolved CLI drives three host-side choices at spawn: the **base-image variant** (§4), the
-**auth env var** the runner injects from the repo's `env_file` (the env-file already carries
-whatever the CLI needs — `CLAUDE_CODE_OAUTH_TOKEN` or `OPENAI_API_KEY`; the ADR 0007 secret model
-already generalizes, so no new mechanism), and the `PANOPTICON_AGENT_CLI` env var the launcher
-reads. This is a schema change (`Repo`/`Task` rows + an Alembic migration) owned by the
-**selection-seam slice**, not this ADR.
+The resolved CLI drives three host-side choices at spawn:
+
+1. the **base-image variant** (§4);
+2. the **config-dir mount path** — the runner mounts a per-task volume at `CONFIG_MOUNT`
+   (`local_runner.py:59`, today hard-coded `"/home/panopticon/.claude"`) that persists session
+   history across respawn; that path (and the **first-spawn probe** of it, `test_local_runner.py`)
+   must derive from the resolved CLI (`$CODEX_HOME` for codex), or **resume silently breaks** —
+   `--continue` / `codex resume --last` has nothing to resume from (§4a);
+3. the `PANOPTICON_AGENT_CLI` env var the launcher reads.
+
+**Auth is *not* a per-CLI host-side pick.** The runner injects the repo's **entire** `env_file`
+wholesale (`--env-file`, `local_runner.py:214`) — it never selects individual variables. The
+env-file already carries whatever the CLI needs (`CLAUDE_CODE_OAUTH_TOKEN` or `OPENAI_API_KEY`; the
+ADR 0007 secret model generalizes, no new mechanism). The CLI drives at most a spawn-time
+*presence* check; the actual **missing-auth check is the in-container adapter seam** (the table
+row), which knows which var its CLI requires.
+
+This is a schema change (`Repo`/`Task` rows + an Alembic migration) owned by the **selection-seam
+slice**, not this ADR.
+
+#### 3a. Model naming is a tier, resolved per CLI
+
+`Workflow.default_model` / `Task.starting_model` become an **abstract tier** the control plane
+stores and passes through opaquely (it already flows as an opaque `PANOPTICON_STARTING_MODEL`
+string — no core logic inspects it). The **adapter** maps the tier to its CLI's concrete model on
+the launch argv (`"opus"` → `claude --model opus`; a codex tier → a codex model id). Workflows keep
+declaring a tier; no workflow or `core` code names a provider's model on the wire. This resolves
+the model-naming leak the Context calls out without adding CLI-specific behavior to the control
+plane — the tier vocabulary is CLI-agnostic, the concrete mapping lives in `container/`.
 
 ### 4. Base-image variants (ADR 0005 base tier)
 
@@ -112,6 +148,17 @@ Today there is one base image, `panopticon-base` (`DEFAULT_IMAGE`), on which `im
 The workflow and repo layers are CLI-agnostic and unchanged. `DEFAULT_IMAGE` becomes
 `panopticon-base-claude` (preserving today's behavior when nothing selects a CLI).
 
+#### 4a. The per-task config-volume mount path is per-CLI
+
+Called out in §3 but worth stating as its own deliverable, since it's the non-obvious host-side
+change that breaks resume if missed: the runner mounts a **per-task config volume** at
+`CONFIG_MOUNT` (`local_runner.py:59`). This volume is what makes resume work at all — session
+history persists in it across respawn/recreate, and the launcher's first-run-vs-resume probe reads
+it. Today it is hard-coded to claude's `/home/panopticon/.claude`. The mount path — and the
+**first-spawn gate** that probes the volume (`test_local_runner.py`) — must be derived from the
+resolved CLI's config dir (`$CODEX_HOME` for codex). Owned by the selection-seam / codex-adapter
+slices; the ADR names it so it isn't discovered late.
+
 ### 5. The Codex mapping — concrete, with flags to verify
 
 Codex satisfies every seam, using these current facts:
@@ -123,7 +170,13 @@ Codex satisfies every seam, using these current facts:
   entry pointed at `<service_url>/mcp`.
 - **Hooks:** codex has a hooks system with `SessionStart` / `UserPromptSubmit` / `Stop` /
   `PreToolUse` / `PostToolUse` events, configured in `config.toml` — the same turn-flip contract
-  (Slice 4) maps across, invoking `python -m panopticon.container.hook`.
+  (Slice 4) maps across, invoking `python -m panopticon.container.hook`. Two claude specifics ride
+  on these hooks and need a per-CLI answer, not just a schema translation: (a) the per-turn
+  **briefing and provisioning-nudge** are delivered by claude injecting a `UserPromptSubmit` hook's
+  **stdout into the agent's context** (`hook.py:172`) — codex may not feed hook output back into
+  context (flag 6); (b) the `PreToolUse`/`PostToolUse` flip is matched to **`AskUserQuestion`**, a
+  claude-specific tool with no codex analogue — the "agent is asking the user" turn state needs its
+  own codex trigger or a documented no-op (flag 7).
 - **System prompt:** codex has no `--append-system-prompt`; it layers instructions from an
   `AGENTS.md` **hierarchy** — a codex-home file (`$CODEX_HOME/AGENTS.md`) merged with the project's
   root `AGENTS.md` (and nested ones). The workflow overview goes in **our** `$CODEX_HOME/AGENTS.md`,
@@ -152,26 +205,52 @@ spike the implementer resolves against the installed codex version):
    without touching the working tree.
 5. The unattended / **skip-approvals sandbox** flag (the `--dangerously-skip-permissions`
    analogue — codex runs headless in a throwaway container on a per-task clone).
+6. Whether codex **feeds hook stdout into the agent's context** (as claude does for
+   `UserPromptSubmit`). If not, the per-turn briefing + provisioning nudge need a different channel
+   (e.g. writing them into `$CODEX_HOME/AGENTS.md`, or a session-start injection).
+7. The codex trigger for the **"agent is asking the user" turn state** — the `AskUserQuestion`
+   PreToolUse/PostToolUse flip has no direct codex analogue; find the equivalent (or accept that
+   the turn simply stays on the agent until the next `Stop`, a documented degradation).
 
 ### 6. The determinism invariant holds
 
 Adapters live **only** in `container/`, the sole LLM-bearing package. The seam adds **no** LLM
 calls to the control plane, and the deterministic turn mechanism (the task service's `set_turn` /
 responsibilities / state machine) is unchanged — only the CLI-specific **hook wiring and payload
-parsing** are per-adapter. The task service never learns which CLI a container runs; it sees the
-same REST/MCP surface regardless.
+parsing** are per-adapter.
+
+The precise invariant is: **the control plane runs no CLI-specific logic.** It is not that it
+"never learns which CLI a container runs" — it plainly does (§3 adds `Repo.agent_cli` /
+`Task.agent_cli` columns it stores and serves, and it passes an abstract model **tier** through).
+But those are opaque data: the task service stores a CLI name and a tier string, renders
+CLI-agnostic text, and branches on neither. No control-plane code path forks on the CLI; the CLI
+name only selects an adapter, host-side, at spawn. That is what keeps the determinism invariant
+intact while the system genuinely supports more than one CLI.
 
 ## Consequences
 
 - **Enables M3.** A reviewer can implement the refactor and the Codex adapter from this ADR without
   further design decisions. The seam is the stable contract every later M3 slice builds against.
-- **Small blast radius.** Only `container/` and the host-side spawn/image selection change; `core`,
-  `taskservice`, `workflows`, and the dashboard are untouched (bar the `Repo`/`Task.agent_cli`
-  columns, an additive migration).
-- **The planning-token prompts generalize.** `pricing.py`'s weights becoming per-CLI resolves the
-  standing `TODO(non-claude-agents)`; the planning prompts that cite Anthropic ratios
-  (`PlannedWorkflow.TOKEN_ESTIMATED`, `orchestrator._SPAWN_TASK_INSTRUCTIONS`) become
-  backend-aware in the same slice.
+- **Contained blast radius — but not container-only.** The bulk is `container/` (the adapters).
+  Host-side, the runner's **image selection *and* config-volume mount path** (§4a) become
+  CLI-derived. `core` gains the `Repo`/`Task.agent_cli` columns (additive migration), the abstract
+  model **tier** pass-through (§3a), and the pure per-CLI **weight table** (above); `workflows/`
+  loses its baked-in ratios. `taskservice` and the dashboard are untouched. No control-plane code
+  path forks on the CLI (§6).
+- **The planning-token prompts generalize — and the ADR decides where the weights live, since
+  `workflows/` cannot import `container/`.** Two things are conflated in the `TODO(non-claude-agents)`
+  today and must be split:
+  - **The weight *values*** (the per-tier ratios) become **pure data in `core`**, keyed by CLI name
+    — a small table the runtime reads. `container/pricing.py` becomes a thin **consumer** of that
+    core table (computing the recorded `tokens_used`); it stops *owning* the numbers. This keeps
+    the only-LLM-bearing package (`container/`) from being a dependency of anyone — nothing imports
+    it — while a per-CLI weight table still exists.
+  - **The prompt *prose*** (`PlannedWorkflow.TOKEN_ESTIMATED`, `orchestrator._SPAWN_TASK_INSTRUCTIONS`)
+    is rewritten **CLI-agnostically**: it describes the estimate qualitatively (input-equivalent
+    tokens — cache-reads count for far less than uncached input, output for several times more)
+    **without baking any provider's ratios into control-plane text**, honoring the §6 invariant.
+    Exact numbers, if ever needed at estimate time, come from the `core` table, not string
+    literals. This resolves the standing `TODO(non-claude-agents)` without a layering violation.
 - **Cost:** one base image per CLI to build and keep current (the `Makefile`/`make build` grows a
   per-CLI target), and a second CLI's quirks (auth, sandbox, resume semantics) to track.
 
