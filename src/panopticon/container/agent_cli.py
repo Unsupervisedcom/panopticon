@@ -1,0 +1,339 @@
+"""The **agent-CLI adapter seam** (ADR 0014): every claude-specific decision, one method each.
+
+Panopticon drives one agent CLI today (`claude`); Milestone 3 adds others (Codex first). The
+launcher (:mod:`panopticon.container.agent`) is CLI-agnostic — it orchestrates a deterministic
+*bootstrap* (render skills + turn-flip hooks, wire MCP, seed trust) then a *launch* (exec the real
+CLI) against an :class:`AgentCLI` adapter, holding no ``claude`` literal. :class:`ClaudeAgentCLI` is
+the sole adapter for now; a second CLI drops in by implementing the ABC and registering under its
+name (the same shape as workflow discovery, ADR 0004).
+
+The bootstrap/launch split (AGENTS.md "No LLMs in tests") is preserved here: every rendering method
+is deterministic and unit-tested with fakes; only :meth:`AgentCLI.launch` execs the real CLI and is
+injected in tests. Adapters live **only** in ``container/`` — the sole LLM-bearing package — so the
+determinism invariant holds (ADR 0014 §6): the control plane runs no CLI-specific logic.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+from abc import ABC, abstractmethod
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any, ClassVar, Protocol, TextIO
+
+from panopticon.container.config import update_json_config
+from panopticon.container.hooks import write_settings
+from panopticon.container.skills import write_commands, write_operation_commands
+from panopticon.core.models import Skill
+
+
+class _Client(Protocol):
+    """The slice of the task-service client the bootstrap needs (kept structural so tests fake it)."""
+
+    def list_skills(self, task_id: str) -> list[dict[str, str]]: ...
+    def list_operations(self, task_id: str) -> dict[str, str]: ...
+
+
+class AgentCLI(ABC):
+    """One adapter per agent CLI: the seam that captures its every CLI-specific decision (ADR 0014).
+
+    Subclasses set :attr:`name` (the registry key) and :attr:`config_dirname` (the config dir under
+    the container home, e.g. ``.claude``) and implement each seam. The launcher resolves an adapter
+    by name and calls: the ``render_*``/``write_*``/``trust_workspace`` bootstrap methods, then
+    :meth:`launch`.
+    """
+
+    #: Registry key — the CLI name the runner passes in (``PANOPTICON_AGENT_CLI``).
+    name: ClassVar[str]
+    #: The CLI's config dir, relative to the container home (the launcher mounts it per-task).
+    config_dirname: ClassVar[str]
+
+    @abstractmethod
+    def render_skills(self, client: _Client, task_id: str, home: Path) -> list[Path]:
+        """Render the active workflow's skills to the CLI's command surface. Returns the paths."""
+
+    @abstractmethod
+    def render_operations(self, client: _Client, task_id: str, home: Path) -> list[Path]:
+        """Render the workflow's core operations (advance/drop/…) as CLI commands. Returns paths."""
+
+    @abstractmethod
+    def write_settings(self, home: Path) -> Path:
+        """Wire the turn-flip hooks (Stop/UserPromptSubmit/…) into the CLI's settings. Returns path."""
+
+    @abstractmethod
+    def write_mcp_config(self, config_dir: Path, service_url: str) -> Path:
+        """Point the CLI at the task service's MCP server (``<service_url>/mcp``). Returns the path."""
+
+    @abstractmethod
+    def write_workflow_overview(self, config_dir: Path, overview: str) -> Path | None:
+        """Deliver the whole-workflow map into the agent's context (system prompt). ``None`` if empty."""
+
+    @abstractmethod
+    def trust_workspace(self, config_dir: Path, cwd: Path) -> Path:
+        """Pre-accept the CLI's first-run/trust dialogs for ``cwd`` (no operator in the container)."""
+
+    @abstractmethod
+    def auth_missing_detail(self, env: Mapping[str, str]) -> str | None:
+        """The failure detail if the CLI's auth env var is absent, else ``None`` (auth is present)."""
+
+    @abstractmethod
+    def resolve_model(self, tier: str) -> str:
+        """Map the control plane's abstract model **tier** to this CLI's concrete model id (§3a)."""
+
+    @abstractmethod
+    def read_hook_payload(self, stdin: TextIO) -> dict[str, Any]:
+        """Tolerantly parse the turn-flip hook's stdin payload (empty/invalid → ``{}``)."""
+
+    @abstractmethod
+    def has_live_background_task(self, payload: dict[str, Any]) -> bool:
+        """Whether the Stop payload reports still-running background work (gates the turn flip)."""
+
+    @abstractmethod
+    def launch(self, config_dir: Path) -> None:
+        """Exec the real CLI in the foreground (resuming if a session exists); return when it exits."""
+
+
+#: A background task's ``status`` counts as *finished* only if it's one of these; anything else —
+#: including a missing/unknown status — is treated as live, so we err toward keeping the turn on the
+#: agent rather than handing it back prematurely.
+_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "canceled", "error"})
+
+#: Sent to claude as the first message when a container restarts mid-task on the agent's turn.
+INTERRUPT_PROMPT = "You were interrupted. Continue."
+
+
+class ClaudeAgentCLI(AgentCLI):
+    """The `claude` adapter — every ``container/`` seam claude satisfies today, unchanged in effect.
+
+    The rendered artifacts (``.claude/commands/*``, ``.claude/settings.json``, the MCP config, the
+    launch argv) are **byte-for-byte** what the launcher produced before the seam existed; this
+    adapter only selects claude's renderers and paths.
+    """
+
+    name = "claude"
+    config_dirname = ".claude"
+
+    #: claude's main config file. Holds (besides per-container state) per-project trust acceptance.
+    CONFIG_FILE: ClassVar[str] = ".claude.json"
+    #: The rendered MCP client config; claude is pointed at it via ``--mcp-config``.
+    MCP_CONFIG_FILE: ClassVar[str] = "panopticon-mcp.json"
+    #: The rendered workflow overview; its contents go to claude via ``--append-system-prompt``.
+    WORKFLOW_OVERVIEW_FILE: ClassVar[str] = "workflow-overview.md"
+
+    def render_skills(self, client: _Client, task_id: str, home: Path) -> list[Path]:
+        """Render the workflow's skills to `.claude/commands/` (the claude slash-command surface)."""
+        skills = [Skill(**s) for s in client.list_skills(task_id)]
+        return write_commands(skills, home, task_id)
+
+    def render_operations(self, client: _Client, task_id: str, home: Path) -> list[Path]:
+        """Render the workflow's declared core operations (advance/drop/…) as slash-commands.
+
+        Reflects the *active workflow's* declared moves (ADR 0004), so different workflows expose
+        different operation commands — not a fixed global menu.
+        """
+        return write_operation_commands(client.list_operations(task_id), home, task_id)
+
+    def write_settings(self, home: Path) -> Path:
+        """Merge the turn-flip hooks into ``<home>/.claude/settings.json``; return the path."""
+        return write_settings(home)
+
+    def write_mcp_config(self, config_dir: Path, service_url: str) -> Path:
+        """Write claude's MCP client config so it connects to the task service's MCP server.
+
+        A single ``panopticon`` HTTP server at ``<service_url>/mcp`` — the same control plane the
+        container already polls. Returns the path, which :meth:`launch` passes to ``--mcp-config``.
+        """
+        config_dir.mkdir(parents=True, exist_ok=True)
+        path = config_dir / self.MCP_CONFIG_FILE
+        server = {"type": "http", "url": f"{service_url.rstrip('/')}/mcp"}
+        path.write_text(json.dumps({"mcpServers": {"panopticon": server}}, indent=2))
+        return path
+
+    def write_workflow_overview(self, config_dir: Path, overview: str) -> Path | None:
+        """Write the whole-workflow map so :meth:`launch` can put it in claude's system prompt.
+        Returns the path, or ``None`` when there's no overview (the agent just gets the briefing)."""
+        if not overview.strip():
+            return None
+        config_dir.mkdir(parents=True, exist_ok=True)
+        path = config_dir / self.WORKFLOW_OVERVIEW_FILE
+        path.write_text(overview)
+        return path
+
+    def trust_workspace(self, config_dir: Path, cwd: Path) -> Path:
+        """Pre-accept claude's first-run dialogs for ``cwd``.
+
+        Three blockers fire on a fresh container and must be pre-seeded — there is no operator in the
+        container to dismiss them interactively:
+
+        - ``hasCompletedOnboarding`` — the general onboarding screen.
+        - ``projects[<cwd>].hasTrustDialogAccepted`` — "Do you trust the files in this folder?"
+          (cf. claude issue #45298; separate from ``--dangerously-skip-permissions``).
+        - ``hasAcknowledgedCostThreshold`` — cost-acknowledgment dialog shown when authenticating
+          via ``ANTHROPIC_API_KEY`` (not shown for OAuth tokens).
+
+        Merge-in-place so we don't clobber config claude writes itself, and idempotent. The path
+        encoding is undocumented internals — a safe degradation if it ever drifts is that the dialog
+        reappears, which only matters in an (already attended) interactive re-attach.
+        """
+        config = config_dir / self.CONFIG_FILE
+        with update_json_config(config) as data:
+            data["hasCompletedOnboarding"] = True
+            data["hasAcknowledgedCostThreshold"] = True
+            projects = data.setdefault("projects", {})
+            projects.setdefault(str(cwd), {})["hasTrustDialogAccepted"] = True
+        return config
+
+    def auth_missing_detail(self, env: Mapping[str, str]) -> str | None:
+        """The failure detail when neither claude auth env var is set, else ``None``.
+
+        Auth is the ``CLAUDE_CODE_OAUTH_TOKEN`` env var the runner injects from the repo's
+        ``env_file`` (an ``ANTHROPIC_API_KEY`` is also sufficient); the launcher wires no credentials.
+        """
+        if env.get("CLAUDE_CODE_OAUTH_TOKEN") or env.get("ANTHROPIC_API_KEY"):
+            return None
+        return (
+            "No auth token — set CLAUDE_CODE_OAUTH_TOKEN in the repo's env_file (see docs/auth.md)"
+        )
+
+    def resolve_model(self, tier: str) -> str:
+        """Map the abstract model tier to claude's concrete model id.
+
+        claude's ``--model`` already takes the tier vocabulary directly (``"opus"`` → ``opus``), so
+        this is the identity today; the seam is what lets another CLI map the same tier to its own
+        model id without the control plane naming a provider's model (ADR 0014 §3a).
+        """
+        return tier
+
+    def read_hook_payload(self, stdin: TextIO) -> dict[str, Any]:
+        """Tolerantly parse the hook's stdin JSON; empty/invalid input yields an empty payload."""
+        try:
+            raw = stdin.read()
+        except (OSError, ValueError):
+            return {}
+        if not raw or not raw.strip():
+            return {}
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def has_live_background_task(self, payload: dict[str, Any]) -> bool:
+        """Whether the Stop payload reports a still-running background task.
+
+        Reads claude's ``background_tasks`` array (claude ≥ v2.1.145; absent on older builds, where
+        this is simply ``False`` and the turn flips as before). An entry is live unless its
+        ``status`` is a known terminal one (see :data:`_TERMINAL_STATUSES`).
+
+        Deliberately **type-agnostic**: it ignores each entry's ``type`` so it covers every kind of
+        background work that re-wakes the agent — ``shell`` (Bash ``run_in_background``), ``monitor``,
+        and background **agents** (``subagent``/``workflow``/``teammate``/``cloud_session``/
+        ``mcp_task``) alike. They all re-invoke the agent on completion without a UserPromptSubmit,
+        so the turn must stay on the agent for all of them.
+        """
+        tasks = payload.get("background_tasks")
+        if not isinstance(tasks, list):
+            return False
+        for task in tasks:
+            if not isinstance(task, dict):
+                return True  # unrecognised shape → assume live (don't hand the turn back early)
+            status = task.get("status")
+            if not isinstance(status, str) or status.strip().lower() not in _TERMINAL_STATUSES:
+                return True
+        return False
+
+    def launch_argv(
+        self,
+        config_dir: Path,
+        cwd: Path,
+        *,
+        initial_prompt: str | None = None,
+        turn: str | None = None,
+        starting_model: str | None = None,
+    ) -> list[str]:
+        """`claude` argv, resuming the project's most recent conversation if one exists.
+
+        The agent runs unattended in a throwaway container on a per-task clone, so it launches with
+        ``--dangerously-skip-permissions`` — there's no operator to answer prompts, and the blast
+        radius is the task's own checkout. claude keeps per-project transcripts under
+        ``<config>/projects/<cwd with '/' → '-'>``; when one is there we ``--continue`` it instead of
+        starting fresh. The config dir is a **per-task volume**, so this resumes both within a
+        container's life and **across respawn/recreate**. If our path encoding ever misses claude's,
+        we simply start fresh — a safe degradation.
+
+        On a **first run** (no prior session) with an ``initial_prompt``, the prompt is appended as a
+        positional argument so claude processes it immediately. On a **resumed session**
+        (``--continue``) the ``initial_prompt`` is omitted — the agent is already mid-task. When the
+        resumed session is the agent's turn (``turn == "agent"``), :data:`INTERRUPT_PROMPT` is
+        appended so the agent picks up where it left off rather than waiting for user input.
+
+        ``starting_model`` (a tier, e.g. ``"opus"``) is resolved via :meth:`resolve_model` and passed
+        as ``--model`` on the **first run only** — on resume claude uses the conversation's model.
+        """
+        argv = ["claude", "--dangerously-skip-permissions"]
+        overview = config_dir / self.WORKFLOW_OVERVIEW_FILE
+        if (
+            overview.exists()
+        ):  # the whole-workflow map → claude's system prompt (it knows the shape)
+            argv += ["--append-system-prompt", overview.read_text()]
+        mcp_config = config_dir / self.MCP_CONFIG_FILE
+        if mcp_config.exists():  # connect to the task service's MCP server, and *only* it
+            argv += ["--mcp-config", str(mcp_config), "--strict-mcp-config"]
+        project = config_dir / "projects" / str(cwd).replace("/", "-")
+        if any(project.glob("*.jsonl")):
+            argv.append("--continue")
+            if turn == "agent":
+                argv.append(INTERRUPT_PROMPT)  # positional: auto-resume after container restart
+        else:
+            if starting_model:  # first run only — on resume claude uses the conversation's model
+                argv += ["--model", self.resolve_model(starting_model)]
+            if initial_prompt:
+                argv.append(initial_prompt)  # positional: claude's first message
+        return argv
+
+    def launch(self, config_dir: Path) -> None:  # pragma: no cover - real LLM; skipif-gated / live
+        """Run `claude` (resuming the session if any) in the foreground; return when it exits.
+
+        Unlike an ``exec``, this returns control to the launcher when claude exits, so it can stop
+        the container (the task → down → respawn). claude inherits this pane's TTY (the interactive
+        surface ``tmux attach`` reaches).
+        """
+        initial_prompt = os.environ.get("PANOPTICON_INITIAL_PROMPT") or None
+        turn = os.environ.get("PANOPTICON_TASK_TURN") or None
+        starting_model = os.environ.get("PANOPTICON_STARTING_MODEL") or None
+        argv = self.launch_argv(
+            config_dir,
+            Path.cwd(),
+            initial_prompt=initial_prompt,
+            turn=turn,
+            starting_model=starting_model,
+        )
+        subprocess.run(argv, env={**os.environ, "CLAUDE_CONFIG_DIR": str(config_dir)})
+
+
+#: The adapter registry, keyed by CLI name. Adding a CLI is: implement :class:`AgentCLI`, register
+#: it here — no launcher or control-plane edit (ADR 0014 §2).
+_REGISTRY: dict[str, type[AgentCLI]] = {}
+
+#: The CLI the launcher assumes when the runner passes none, so existing containers are unchanged.
+DEFAULT_AGENT_CLI = "claude"
+
+
+def register_agent_cli(cls: type[AgentCLI]) -> type[AgentCLI]:
+    """Register an :class:`AgentCLI` subclass under its :attr:`~AgentCLI.name` (decorator)."""
+    _REGISTRY[cls.name] = cls
+    return cls
+
+
+def get_agent_cli(name: str | None = None) -> AgentCLI:
+    """Resolve the adapter for ``name`` (defaulting to :data:`DEFAULT_AGENT_CLI` when unset)."""
+    key = name or DEFAULT_AGENT_CLI
+    try:
+        return _REGISTRY[key]()
+    except KeyError:
+        raise KeyError(f"unknown agent CLI {key!r}; registered: {sorted(_REGISTRY)}") from None
+
+
+register_agent_cli(ClaudeAgentCLI)
