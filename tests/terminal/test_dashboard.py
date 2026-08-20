@@ -31,7 +31,6 @@ from panopticon.terminal.dashboard import (
     _make_sort_key,
     _matches,
     _repo_cell,
-    _short_tokens,
     _slug_cell,
     _snooze_label,
     _status_cell,
@@ -321,25 +320,9 @@ async def test_dashboard_detail_survives_a_bracketed_lifecycle_detail() -> None:
         assert "--add-host" in str(app.screen.query_one(Static).render())  # rendered, didn't crash
 
 
-def test_render_detail_shows_the_tokens_used() -> None:
-    assert "tokens (wt):" not in render_detail(_TASK)  # both absent → no line
-    assert "tokens (wt): 1.2K used / - est" in render_detail({**_TASK, "tokens_used": 1234})
-    # the estimate alone (no usage yet) still renders the line
-    assert "tokens (wt): - used / 500.0K est" in render_detail({**_TASK, "token_estimate": 500000})
-
-
 def test_render_detail_marks_blocked() -> None:
     assert "(blocked)" not in render_detail(_TASK)
     assert "turn: agent (blocked)" in render_detail({**_TASK, "blocked": True})
-
-
-def test_short_tokens_formats_human_short() -> None:
-    assert _short_tokens(None) == "-"  # not yet reported
-    assert _short_tokens(0) == "-"
-    assert _short_tokens(300) == "300"  # under 1000 verbatim
-    assert _short_tokens(1234) == "1.2K"
-    assert _short_tokens(1_100_000) == "1.1M"
-    assert _short_tokens(2_500_000_000) == "2.5B"
 
 
 def test_turn_cell_color_codes_like_cloude_cade() -> None:

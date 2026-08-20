@@ -62,17 +62,16 @@ def test_foreground_states_are_user_advanced_merging_is_agent_driven() -> None:
 
 
 def test_planning_gates_the_dependabot_evaluation() -> None:
-    # PLANNING carries the two shared promises (plan.md artifact + token estimate), the
-    # dependabot-specific `upgrade-evaluated`, and `url-recorded` — the PR URL is a known input
-    # (the task memo), so it is recorded and gated here, not in ITERATING.
+    # PLANNING carries the shared plan.md promise, the dependabot-specific `upgrade-evaluated`,
+    # and `url-recorded` — the PR URL is a known input (the task memo), so it is recorded and
+    # gated here, not in ITERATING.
     by_key = {r.key: r for r in WF.responsibilities("PLANNING")}
-    assert set(by_key) == {"plan-written", "token-estimated", "upgrade-evaluated", "url-recorded"}
+    assert set(by_key) == {"plan-written", "upgrade-evaluated", "url-recorded"}
     # shared conventions, single-sourced on the forge/planned base
     assert (
         "plan.md" in by_key["plan-written"].description
         and "markdown" in by_key["plan-written"].description
     )
-    assert "set_token_estimate" in by_key["token-estimated"].description
     # the URL responsibility is the shared forge one, now gated in PLANNING
     assert by_key["url-recorded"].description == GithubForgeWorkflow.URL_RECORDED.description
     # the evaluation responsibility names all five axes
@@ -191,7 +190,6 @@ def test_cannot_advance_with_unresolved_responsibilities() -> None:
 def test_partial_resolution_still_gates() -> None:
     task = WF.start_task("t1", "r1", at="t0")
     task.resolve_responsibility(key="plan-written", status=Status.MET)
-    task.resolve_responsibility(key="token-estimated", status=Status.MET)
     task.resolve_responsibility(key="upgrade-evaluated", status=Status.MET)
     with pytest.raises(ResponsibilitiesNotMet):
         WF.apply_transition(task, "ITERATING", at="t1")  # url-recorded (the PR input) still PENDING

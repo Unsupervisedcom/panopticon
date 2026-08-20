@@ -3,8 +3,8 @@
 A single agent-driven state (`ORCHESTRATING → {COMPLETE, DROPPED}`, like :class:`~panopticon.
 workflows.spike.Spike`) whose agent decomposes a high-level request into a batch of child
 tasks and **seeds each one ready for the user to approve**: it creates the task, writes its
-`plan.md` artifact, sets its slug, records a token estimate, marks the child's `plan-written`
-and `token-estimated` responsibilities met, and hands the child's turn to the user. The user
+`plan.md` artifact, sets its slug, marks the child's `plan-written` responsibility met, and
+hands the child's turn to the user. The user
 then only has to review the plan and advance
 (`PLANNING → ITERATING`). The motivating use is fanning out `github-self-reviewed` /
 `github-peer-reviewed` tasks that arrive pre-planned.
@@ -28,8 +28,6 @@ from panopticon.core.workflow import Workflow
 #: The per-child recipe the orchestrator's agent follows. Spelled out because it spans several
 #: tools across *another* task's id, and the order matters (the gate clears only once the plan
 #: artifact exists and its responsibility is met).
-# TODO(non-claude-agents): step 4 references Anthropic-specific cache ratios; see
-# container/pricing.py _WEIGHTS for the tech-debt note.
 _SPAWN_TASK_INSTRUCTIONS = """\
 Create one new task and leave it **pre-planned, ready for the user to approve**. Repeat per task
 you want to spawn. Throughout, your *own* task id is shown below; the new task has its *own* id.
@@ -47,11 +45,9 @@ you want to spawn. Throughout, your *own* task id is shown below; the new task h
      it exists before the spawner can ever pick up the task; the spawner finds it present
    Record the **new task's id** from the result.
 3. **Name it.** `set_slug` on the new id with a short kebab-case slug.
-4. **Estimate its cost.** `set_token_estimate` on the new id with your forecast of the total
-   **cost-weighted** tokens *that* task will consume (cache-reads ≈0.1×, output ≈5× vs. input).
-5. **Clear the planning gates.** `resolve_responsibility` on the new id with `key="plan-written"`,
-   `status="met"`, then again with `key="token-estimated"`, `status="met"`.
-6. **Hand it to the user.** `set_turn` on the new id with `turn="user"`.
+4. **Clear the planning gate.** `resolve_responsibility` on the new id with `key="plan-written"`,
+   `status="met"`.
+5. **Hand it to the user.** `set_turn` on the new id with `turn="user"`.
 
 The new task now sits in **PLANNING** with its plan written and the gate cleared — the user
 approves it by advancing it to ITERATING. When its container starts, the agent sees

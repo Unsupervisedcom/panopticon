@@ -172,19 +172,6 @@ def _make_sort_key(
     return key
 
 
-def _short_tokens(n: int | None) -> str:
-    """A token count in short human form for the table: ``None``/0 (not yet reported) → ``-``,
-    under 1000 shown as-is (``300``), otherwise scaled to ``K``/``M``/``B`` to one decimal
-    (``1.2K``, ``1.1M``). Plain ``str`` — the output has no markup-special chars (unlike the
-    slug cell), so Textual renders it verbatim."""
-    if not n:
-        return "-"
-    for limit, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")):
-        if n >= limit:
-            return f"{n / limit:.1f}{suffix}"
-    return str(n)
-
-
 # Row-key prefix for ensemble placeholder rows. When the operator collapses a governing task
 # (Enter on a governor), its governed children are replaced by one dim placeholder row (its slug
 # cell renders ``...``) whose key is ``f"{_ENSEMBLE_KEY_PREFIX}{governor_id}"``. Keyboard navigation skips these rows
@@ -464,10 +451,6 @@ def render_detail(task: JsonObj) -> str:
         lines += ["", task["memo"]]
     if task.get("url"):
         lines += ["", f"url: {task['url']}"]
-    if task.get("tokens_used") or task.get("token_estimate"):
-        used = _short_tokens(task.get("tokens_used"))
-        est = _short_tokens(task.get("token_estimate"))
-        lines += ["", f"tokens (wt): {used} used / {est} est"]
     lines += ["", "history:"]
     for entry in task.get("history") or []:
         line = f"  {entry['from_state'] or '∅'} → {entry['to_state']}"
@@ -1788,7 +1771,7 @@ class HelpScreen(ModalScreen[None]):
 
 
 class TaskDetailScreen(ModalScreen[None]):
-    """A modal showing one task's full detail (identity, state/turn, container, memo, url, tokens,
+    """A modal showing one task's full detail (identity, state/turn, container, memo, url,
     history). Escape / `d` / `q` close it.
 
     The body is wrapped in a Rich ``Text`` and rendered **literally** — never console markup: a

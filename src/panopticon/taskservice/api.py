@@ -83,8 +83,6 @@ class TaskSummaryOut(BaseModel):
     branch: str | None
     clone: str | None
     claimed_by: str | None
-    tokens_used: int | None
-    token_estimate: int | None
     starting_model: str | None = None
     governor_task_id: str | None = None
     created_at: str | None = None
@@ -120,10 +118,6 @@ class TaskOut(BaseModel):
     branch: str | None
     clone: str | None
     claimed_by: str | None  # the runner that owns this task (the spawn gate), or None
-    tokens_used: int | None  # cost-weighted input-equivalent tokens used (None until reported)
-    token_estimate: (
-        int | None
-    )  # the agent's forecast of total tokens (set in planning; None until then)
     starting_model: str | None = (
         None  # the model seeded at creation from the workflow's default_model
     )
@@ -250,14 +244,6 @@ class SlugIn(BaseModel):
 
 class UrlIn(BaseModel):
     url: str
-
-
-class TokensUsedIn(BaseModel):
-    tokens_used: int
-
-
-class TokenEstimateIn(BaseModel):
-    token_estimate: int
 
 
 class StateIn(BaseModel):
@@ -627,16 +613,6 @@ def create_app(service: TaskService) -> FastAPI:
     @app.put("/tasks/{task_id}/url")
     async def set_url(task_id: str, body: UrlIn) -> TaskOut:
         return _task_out(await service.set_url(task_id, body.url))
-
-    @app.put("/tasks/{task_id}/tokens-used")
-    async def set_tokens_used(task_id: str, body: TokensUsedIn) -> TaskOut:
-        return _task_out(await service.set_tokens_used(task_id, body.tokens_used))
-
-    @app.put("/tasks/{task_id}/token-estimate")
-    async def set_token_estimate(task_id: str, body: TokenEstimateIn) -> TaskOut:
-        return TaskOut.model_validate(
-            await service.set_token_estimate(task_id, body.token_estimate)
-        )
 
     @app.put("/tasks/{task_id}/turn")
     async def set_turn(task_id: str, body: TurnIn) -> TaskOut:
