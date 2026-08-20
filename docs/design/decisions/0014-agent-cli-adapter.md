@@ -181,6 +181,17 @@ Codex satisfies every seam, using these current facts:
   in `config.toml` pointing at a file we own is an equally-additive alternative if it proves more
   robust — see the flags below.) This keeps the additive property the claude
   `--append-system-prompt` seam has.
+
+  Note the seam could be **unified** on a global-instructions-file mechanism for *both* CLIs:
+  claude has the same shape of global memory file — `~/.claude/CLAUDE.md` (and it reads `AGENTS.md`
+  through a `CLAUDE.md` import, exactly as this repo's `CLAUDE.md` = `@AGENTS.md`), which composes
+  on top of the repo's own `CLAUDE.md`/`AGENTS.md` the same way codex's home file does. The ADR
+  keeps `--append-system-prompt` for claude anyway, because it is a **strictly stronger guarantee**:
+  the overview lands in the actual system prompt every launch, ephemerally, with no on-disk file
+  that could collide with the repo's memory — whereas codex has no such flag, so the file is its
+  *only* option. Both are the same adapter method ("deliver the overview into the agent's context"),
+  so which mechanism each CLI uses is an implementation choice inside its adapter, not a change to
+  the seam's contract.
 - **Resume:** `codex resume --last` (or a session id) is the `--continue` analogue; the launcher's
   first-run-vs-resume decision keeps its shape, only the argv changes.
 - **Auth:** `OPENAI_API_KEY` (or the codex login token) instead of `CLAUDE_CODE_OAUTH_TOKEN`.
