@@ -54,8 +54,8 @@ src/panopticon/
                    # pane's CLI-agnostic launcher: resolve the AgentCLI adapter from PANOPTICON_AGENT_CLI
                    # → render skills + operations, point it at the /mcp server, deliver the workflow
                    # overview to the agent's context → launch the CLI); agent_cli.py = the AgentCLI
-                   # adapter seam + registry (ADR 0014; ClaudeAgentCLI the sole adapter, Codex next) —
-                   # the ONLY LLM pkg
+                   # adapter seam (ABC) + registry (ADR 0014); claude.py = ClaudeAgentCLI, the sole
+                   # adapter (Codex next, a sibling module) — the ONLY LLM pkg
 docker/Dockerfile  # base task-container image (ADR 0005 base layer): python + git + bash +
                    # the panopticon package + the `claude` CLI the agent execs; runs as the
                    # unprivileged `panopticon` user. docker/entrypoint.sh = remap that user to the
