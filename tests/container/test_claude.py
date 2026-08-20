@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from panopticon.container.claude import INTERRUPT_PROMPT, ClaudeAgentCLI
+from panopticon.container.cli.claude import INTERRUPT_PROMPT, ClaudeAgentCLI
 
 
 class _FakeClient:

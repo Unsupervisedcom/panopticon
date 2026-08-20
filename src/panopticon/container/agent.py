@@ -3,10 +3,10 @@
 It prepares the agent CLI's surface from the active workflow (skills + turn-flip hooks), then
 launches the CLI. This is the only LLM-bearing path (the determinism invariant): the **bootstrap**
 is deterministic and unit-tested with fakes; the **launch** (the real CLI) is the adapter's
-:meth:`~panopticon.container.agent_cli.AgentCLI.launch`, injectable and only run for real in a
+:meth:`~panopticon.container.cli.AgentCLI.launch`, injectable and only run for real in a
 `skipif`-gated integration / a live container — never in CI.
 
-The launcher is **CLI-agnostic** (ADR 0014): it resolves an :class:`~panopticon.container.agent_cli.AgentCLI`
+The launcher is **CLI-agnostic** (ADR 0014): it resolves an :class:`~panopticon.container.cli.AgentCLI`
 adapter from the CLI name the runner passes (``PANOPTICON_AGENT_CLI``, defaulting to ``claude``) and
 drives the bootstrap-then-launch sequence against it, holding no ``claude`` literal. Auth is the
 adapter's env-var check; the launcher wires no credentials of its own.
@@ -25,7 +25,7 @@ from pathlib import Path
 import httpx
 
 from panopticon.client import TaskServiceClient
-from panopticon.container.agent_cli import AgentCLI, get_agent_cli
+from panopticon.container.cli import AgentCLI, get_agent_cli
 
 
 def _stop_container() -> None:  # pragma: no cover - signals the real container's PID 1

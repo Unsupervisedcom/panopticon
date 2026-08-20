@@ -1,4 +1,4 @@
-"""The `claude` :class:`~panopticon.container.agent_cli.AgentCLI` adapter (ADR 0014).
+"""The `claude` :class:`~panopticon.container.cli.agent_cli.AgentCLI` adapter (ADR 0014).
 
 Every ``container/`` seam claude satisfies today, unchanged in effect: the rendered artifacts
 (``.claude/commands/*``, ``.claude/settings.json``, the MCP config, the launch argv, the trust
@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, ClassVar, TextIO
 
-from panopticon.container.agent_cli import AgentCLI, _Client
+from panopticon.container.cli.agent_cli import AgentCLI, _Client
 from panopticon.container.config import update_json_config
 from panopticon.container.hooks import write_settings
 from panopticon.container.skills import write_commands, write_operation_commands

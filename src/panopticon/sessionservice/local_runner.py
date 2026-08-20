@@ -160,7 +160,7 @@ class LocalRunner(Runner):
         ``PANOPTICON_INITIAL_PROMPT`` env var; the agent starts autonomously without waiting for
         user input. ``turn`` is the
         task's current turn (``"agent"`` or ``"user"``); passed as ``PANOPTICON_TASK_TURN`` so the
-        agent launcher can send :data:`~panopticon.container.claude.INTERRUPT_PROMPT` on respawn when
+        agent launcher can send :data:`~panopticon.container.cli.claude.INTERRUPT_PROMPT` on respawn when
         the agent holds the turn. ``starting_model`` is the model the agent should start with
         (e.g. ``"opus"``); passed as ``PANOPTICON_STARTING_MODEL`` so the agent launcher can pass
         ``--model`` to ``claude`` on first launch. ``progress`` (optional) is called with each spawn

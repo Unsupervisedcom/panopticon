@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from panopticon.container import agent
-from panopticon.container.claude import ClaudeAgentCLI
+from panopticon.container.cli.claude import ClaudeAgentCLI
 
 
 class _FakeClient:

@@ -5,7 +5,7 @@ contract); so do the PreToolUse / PostToolUse hooks matched to ``AskUserQuestion
 reads *user* while the agent is asking the user something and *agent* once it's answered. It reads
 the task from the container's env and POSTs `set_turn`. The deterministic turn mechanism it calls
 lives in the task service; the **CLI-specific payload parsing** (the background-task shape) is the
-adapter's seam (:class:`~panopticon.container.agent_cli.AgentCLI`, ADR 0014). It sets only the turn,
+adapter's seam (:class:`~panopticon.container.cli.AgentCLI`, ADR 0014). It sets only the turn,
 so a deliberate `blocked` marker survives.
 
 The first argument is the turn to set; the optional second selects an **event side-effect** — kept
@@ -36,7 +36,7 @@ from typing import TextIO
 import httpx
 
 from panopticon.client import TaskServiceClient
-from panopticon.container.agent_cli import AgentCLI, get_agent_cli
+from panopticon.container.cli import AgentCLI, get_agent_cli
 from panopticon.core.provisioning import PROVISION_NUDGE
 
 

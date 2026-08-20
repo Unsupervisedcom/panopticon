@@ -53,9 +53,10 @@ src/panopticon/
                    # heartbeat liveness) + agent.py (`-m panopticon.container.agent` = the tmux
                    # pane's CLI-agnostic launcher: resolve the AgentCLI adapter from PANOPTICON_AGENT_CLI
                    # → render skills + operations, point it at the /mcp server, deliver the workflow
-                   # overview to the agent's context → launch the CLI); agent_cli.py = the AgentCLI
-                   # adapter seam (ABC) + registry (ADR 0014); claude.py = ClaudeAgentCLI, the sole
-                   # adapter (Codex next, a sibling module) — the ONLY LLM pkg
+                   # overview to the agent's context → launch the CLI); cli/ = the agent-CLI adapter
+                   # package (ADR 0014): cli/agent_cli.py = the AgentCLI seam (ABC) + registry,
+                   # cli/claude.py = ClaudeAgentCLI, the sole adapter (Codex next, a sibling module)
+                   # — the ONLY LLM pkg
 docker/Dockerfile  # base task-container image (ADR 0005 base layer): python + git + bash +
                    # the panopticon package + the `claude` CLI the agent execs; runs as the
                    # unprivileged `panopticon` user. docker/entrypoint.sh = remap that user to the

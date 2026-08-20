@@ -1,17 +1,16 @@
 """The **agent-CLI adapter seam** (ADR 0014): the contract, one method per claude-specific decision.
 
-Panopticon drives one agent CLI today (`claude`); Milestone 3 adds others (Codex first). The
-launcher (:mod:`panopticon.container.agent`) is CLI-agnostic — it orchestrates a deterministic
+This module holds only the :class:`AgentCLI` ABC + the registry that maps a CLI name to its adapter;
+each concrete adapter is a sibling module (:mod:`panopticon.container.cli.claude` today, a codex one
+next). The launcher (:mod:`panopticon.container.agent`) is CLI-agnostic — it drives a deterministic
 *bootstrap* (render skills + turn-flip hooks, wire MCP, seed trust) then a *launch* (exec the real
-CLI) against an :class:`AgentCLI` adapter, holding no ``claude`` literal. Each concrete adapter is
-its own module (:mod:`panopticon.container.claude` today; a codex sibling next); this module holds
-only the ABC + the registry that maps a CLI name to its adapter. A second CLI drops in by
-implementing the ABC and registering under its name (the same shape as workflow discovery, ADR 0004).
+CLI) against an adapter, holding no ``claude`` literal. A second CLI drops in by implementing the ABC
+and registering under its name (the same shape as workflow discovery, ADR 0004).
 
 The bootstrap/launch split (AGENTS.md "No LLMs in tests") is preserved: every rendering method is
 deterministic and unit-tested with fakes; only :meth:`AgentCLI.launch` execs the real CLI and is
-injected in tests. Adapters live **only** in ``container/`` — the sole LLM-bearing package — so the
-determinism invariant holds (ADR 0014 §6): the control plane runs no CLI-specific logic.
+injected in tests. The package lives **only** inside ``container/`` — the sole LLM-bearing package —
+so the determinism invariant holds (ADR 0014 §6): the control plane runs no CLI-specific logic.
 """
 
 from __future__ import annotations
@@ -114,6 +113,6 @@ def get_agent_cli(name: str | None = None) -> AgentCLI:
 
 def _load_builtin_adapters() -> None:
     """Register the built-in adapters (imported lazily so this module holds only the contract)."""
-    from panopticon.container.claude import ClaudeAgentCLI
+    from panopticon.container.cli.claude import ClaudeAgentCLI
 
     register_agent_cli(ClaudeAgentCLI)

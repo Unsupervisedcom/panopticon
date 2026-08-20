@@ -8,13 +8,13 @@ from pathlib import Path
 
 import pytest
 
-from panopticon.container.agent_cli import (
+from panopticon.container.cli import (
     DEFAULT_AGENT_CLI,
     AgentCLI,
     get_agent_cli,
     register_agent_cli,
 )
-from panopticon.container.claude import ClaudeAgentCLI
+from panopticon.container.cli.claude import ClaudeAgentCLI
 
 
 def test_default_resolves_to_claude() -> None:
