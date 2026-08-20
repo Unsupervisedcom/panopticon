@@ -23,8 +23,15 @@ ENV PATH=/home/panopticon/.local/bin:$PATH
 # Claude Code CLI (the agent runtime). Installed AS `panopticon` so it lands under its home
 # (~/.local) — readable/executable by the unprivileged user and self-manageable (`claude /doctor`
 # and updates expect it at $HOME/.local/bin). On PATH via the ENV above.
+#
+# PINNED. install.sh takes `[stable|latest|VERSION]`; unpinned it installs whatever is newest at
+# build time, so a rebuild can silently change the agent runtime under a fleet of live tasks.
+# 2.1.236 broke session resume fleet-wide: every `--continue` died with "No deferred tool marker
+# found in the resumed session", the pane exited, and the heal loop respawned forever (the 60s
+# survivor window keeps resetting the crash-loop budget, so it never gives up). Bump deliberately.
+ARG CLAUDE_VERSION=2.1.235
 USER panopticon
-RUN curl --fail --silent --show-error --location https://claude.ai/install.sh | bash
+RUN curl --fail --silent --show-error --location https://claude.ai/install.sh | bash -s "$CLAUDE_VERSION"
 USER root
 
 ARG PANOPTICON_VERSION=""
