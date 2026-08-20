@@ -212,8 +212,8 @@ images) and built in slices. **Codex** is the first additional target.
   claude-specific decision in `container/` as one adapter seam, the registry, the selection model,
   the per-CLI base image, and the Codex mapping table. Docs only. **Blocks the rest of M3.**
 - **M3.2 — Refactor `container/` behind the `AgentCLI` interface.** Extract the claude launcher
-  (`agent.py`, `skills.py`, `hooks.py`, `hook.py`, `config.py`, `pricing.py`) into a `ClaudeCLI`
-  adapter behind the ABC + registry; the launcher becomes CLI-agnostic and picks the adapter from
+  (`agent.py`, `skills.py`, `hooks.py`, `hook.py`, `config.py`) into a `ClaudeCLI` adapter behind
+  the ABC + registry; the launcher becomes CLI-agnostic and picks the adapter from
   `PANOPTICON_AGENT_CLI` (default `claude`). No behavior change — the existing container tests pass
   unchanged. Pure refactor.
 - **M3.3 — CLI selection seam.** Add `Repo.agent_cli` (default `claude`) + `Task.agent_cli`
@@ -229,12 +229,10 @@ images) and built in slices. **Codex** is the first additional target.
   dir, `~/.codex/prompts/` skills, `[mcp_servers]` in `config.toml`, `AGENTS.md` system prompt,
   the `codex resume --last` launch/resume argv, trust/sandbox pre-accept, and `OPENAI_API_KEY`
   auth. Resolves the ADR's flagged verifications (MCP transport, sandbox flag, `CODEX_HOME`).
-- **M3.6 — Codex turn-flip hooks + cost weights.** Wire codex's hooks to the turn-flip callback and
-  its payload parser (the `background_tasks`/transcript analogue), and resolve the briefing/nudge
-  delivery + `AskUserQuestion` turn-state on codex (ADR flags 6–7). Move the per-tier cost-weight
-  **values into `core`** (pure data keyed by CLI; `container/pricing.py` becomes a consumer), and
-  rewrite the planning-estimate prompts **CLI-agnostically** (no baked Anthropic ratios) — `workflows/`
-  can't import `container/`. Live end-to-end proof: a Codex task runs a workflow's lifecycle.
+- **M3.6 — Codex turn-flip hooks.** Wire codex's hooks to the turn-flip callback and its payload
+  parser (the `background_tasks` analogue for the background-task gating), and resolve the
+  briefing/nudge delivery + `AskUserQuestion` turn-state on codex (ADR flags 6–7). Live end-to-end
+  proof: a Codex task runs a workflow's lifecycle.
 
 ## Milestone 4 — web-hosted dashboard
 

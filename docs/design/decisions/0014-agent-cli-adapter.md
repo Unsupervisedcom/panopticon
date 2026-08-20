@@ -12,7 +12,7 @@ is "agent-runner adapters beyond `claude` + base-image variants (ADR 0005)". Cod
 additional target.
 
 Most of the `claude` dependency sits in the **container layer** — the only LLM-bearing package
-(the determinism invariant, AGENTS.md). Six modules bake in claude-specific decisions:
+(the determinism invariant, AGENTS.md). Five modules bake in claude-specific decisions:
 
 - `container/agent.py` — the launcher. Hard-codes the `.claude` config dir, `.claude.json` trust
   file, the MCP-config JSON shape (`{"mcpServers": …}` pointed at via `--mcp-config
@@ -26,22 +26,18 @@ Most of the `claude` dependency sits in the **container layer** — the only LLM
 - `container/hooks.py` — renders `.claude/settings.json` turn-flip hooks (`Stop`,
   `UserPromptSubmit`, `PreToolUse`/`PostToolUse` on `AskUserQuestion`) plus
   `skipDangerousModePermissionPrompt`.
-- `container/hook.py` — the hook **callback**; parses claude's payload (`transcript_path`,
-  `background_tasks` array ≥ v2.1.145) to decide the turn flip and record tokens.
+- `container/hook.py` — the hook **callback**; parses claude's payload (`background_tasks` array
+  ≥ v2.1.145) to gate the turn flip, and delivers the phase briefing + provisioning nudge via the
+  hook's stdout.
 - `container/config.py` — the read-merge-write for claude's JSON config files.
-- `container/pricing.py` — Anthropic-specific cost weights (per-tier ratios) for the token report
-  and the planning estimate.
 
-Two claude-specific facts also **leak into the control plane** today, and the ADR must name a seam
-for each rather than pretend the dependency is container-only:
+One claude-specific fact also **leaks into the control plane** today, and the ADR must name a seam
+for it rather than pretend the dependency is container-only:
 
 - **Model naming.** `Workflow.default_model = "opus"` (`core/workflow.py:106`) seeds
   `Task.starting_model`, which the spawner injects as `PANOPTICON_STARTING_MODEL` and the launcher
   passes to `claude --model`. A model name is provider vocabulary living in `core` + every workflow
   — a codex task would be handed `--model opus` (§3a).
-- **Cost-weight ratios in prompt text.** `PlannedWorkflow.TOKEN_ESTIMATED` and the orchestrator's
-  spawn instructions (in `workflows/`) hard-code the Anthropic "≈0.1× / ≈5×" ratios in
-  agent-facing prose (resolved in Consequences — values move to `core`, prose goes CLI-agnostic).
 
 Milestone 3 needs a second CLI to drop in with **the control plane behaving identically per CLI**
 (it stores a CLI name and renders CLI-agnostic text, but runs no CLI-specific logic) and without a
@@ -49,8 +45,8 @@ second copy of the launcher's control flow. This ADR settles the seam. It is **d
 code lands here; it is the contract the M3 implementation slices build against.
 
 The comments already scattered through those modules ("M3 revisits for other CLIs",
-"claude-specific renderer", the `TODO(non-claude-agents)` in `pricing.py`) are the informal
-version of this decision; this ADR makes it the plan of record.
+"claude-specific renderer", "claude-specific wiring") are the informal version of this decision;
+this ADR makes it the plan of record.
 
 ## Decision
 
@@ -69,14 +65,13 @@ The seams, one method (or small method group) each:
 | **render skills** | `.claude/commands/<name>.md` + frontmatter | `~/.codex/prompts/<name>.md` |
 | **render core-operation commands** (advance/drop/…) | same `.claude/commands/` renderer | same prompts dir |
 | **render turn-flip hooks + callback wiring** | `.claude/settings.json` `hooks` block | codex hooks in `config.toml` |
-| **parse hook payload** (turn flip + token/bg-task detection) | `background_tasks`, `transcript_path` JSON on stdin | codex hook payload schema (verify) |
+| **parse hook payload** (turn-flip background-task gating) | `background_tasks` JSON on stdin | codex hook payload schema (verify) |
 | **write MCP client config** | `panopticon-mcp.json` (`{"mcpServers": …}`) via `--mcp-config` | `[mcp_servers.panopticon]` in `config.toml` |
 | **render workflow-overview / system prompt** | `--append-system-prompt <overview>` | `$CODEX_HOME/AGENTS.md` (our config dir) — **not** the repo's `/workspace/AGENTS.md` |
 | **build launch argv incl. resume** | `claude --dangerously-skip-permissions [--continue \| --model M PROMPT]` | `codex …` first-run vs `codex resume --last`/session-id |
 | **trust / first-run pre-accept** | `.claude.json` onboarding + trust + cost keys | codex trust / sandbox-approval seed |
 | **auth env var(s) + missing-auth check** | `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` | `OPENAI_API_KEY` / codex login token |
 | **resolve tier → concrete model** | tier `"opus"` → `claude --model opus` | tier → a codex model id |
-| **cost weights** | Anthropic per-tier ratios (`pricing.py`) | OpenAI/codex per-tier weights |
 
 The bootstrap/launch split (AGENTS.md "No LLMs in tests") is preserved: the adapter's rendering
 methods are **deterministic and unit-tested with fakes**; only the final `launch(config_dir)`
@@ -196,7 +191,7 @@ spike the implementer resolves against the installed codex version):
 1. MCP transport — HTTP vs stdio support (we serve HTTP today; if codex is stdio-only we front it
    with a local proxy or add an stdio MCP entrypoint).
 2. The exact codex **hooks config schema** and payload shape (for the turn-flip callback's
-   background-task/token parsing — the `background_tasks` analogue).
+   background-task gating — the `background_tasks` analogue).
 3. The `CODEX_HOME` config-dir override and its precedence.
 4. The **instructions-merge precedence** — confirm `$CODEX_HOME/AGENTS.md` (or
    `experimental_instructions_file`) layers *additively* on top of the repo's root `AGENTS.md`
@@ -233,24 +228,9 @@ intact while the system genuinely supports more than one CLI.
   further design decisions. The seam is the stable contract every later M3 slice builds against.
 - **Contained blast radius — but not container-only.** The bulk is `container/` (the adapters).
   Host-side, the runner's **image selection *and* config-volume mount path** (§4a) become
-  CLI-derived. `core` gains the `Repo`/`Task.agent_cli` columns (additive migration), the abstract
-  model **tier** pass-through (§3a), and the pure per-CLI **weight table** (above); `workflows/`
-  loses its baked-in ratios. `taskservice` and the dashboard are untouched. No control-plane code
-  path forks on the CLI (§6).
-- **The planning-token prompts generalize — and the ADR decides where the weights live, since
-  `workflows/` cannot import `container/`.** Two things are conflated in the `TODO(non-claude-agents)`
-  today and must be split:
-  - **The weight *values*** (the per-tier ratios) become **pure data in `core`**, keyed by CLI name
-    — a small table the runtime reads. `container/pricing.py` becomes a thin **consumer** of that
-    core table (computing the recorded `tokens_used`); it stops *owning* the numbers. This keeps
-    the only-LLM-bearing package (`container/`) from being a dependency of anyone — nothing imports
-    it — while a per-CLI weight table still exists.
-  - **The prompt *prose*** (`PlannedWorkflow.TOKEN_ESTIMATED`, `orchestrator._SPAWN_TASK_INSTRUCTIONS`)
-    is rewritten **CLI-agnostically**: it describes the estimate qualitatively (input-equivalent
-    tokens — cache-reads count for far less than uncached input, output for several times more)
-    **without baking any provider's ratios into control-plane text**, honoring the §6 invariant.
-    Exact numbers, if ever needed at estimate time, come from the `core` table, not string
-    literals. This resolves the standing `TODO(non-claude-agents)` without a layering violation.
+  CLI-derived. `core` gains the `Repo`/`Task.agent_cli` columns (additive migration) and the
+  abstract model **tier** pass-through (§3a). `taskservice` and the dashboard are untouched. No
+  control-plane code path forks on the CLI (§6).
 - **Cost:** one base image per CLI to build and keep current (the `Makefile`/`make build` grows a
   per-CLI target), and a second CLI's quirks (auth, sandbox, resume semantics) to track.
 
