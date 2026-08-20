@@ -1,6 +1,6 @@
 """The CLI-agnostic agent launcher: the deterministic bootstrap (resolve the adapter, render the
 workflow's skills + turn-flip hooks, wire MCP + trust) then launch. No LLM — the real CLI exec is a
-fake here. The claude-specific seams live in :mod:`tests.container.test_agent_cli`."""
+fake here. The claude-specific seams live in :mod:`tests.container.test_claude`."""
 
 from __future__ import annotations
 
