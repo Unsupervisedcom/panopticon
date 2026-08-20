@@ -108,6 +108,15 @@ def trust_workspace(config_dir: Path, cwd: Path) -> Path:
 #: Sent to claude as the first message when a container restarts mid-task on the agent's turn.
 INTERRUPT_PROMPT = "You were interrupted. Continue."
 
+#: Resume prompt for a task whose turn is the **user's**. `--continue` rejects a bare invocation
+#: ("No deferred tool marker found in the resumed session … Provide a prompt to continue the
+#: conversation"), so a positional is mandatory — but the agent must not pick the work back up when
+#: the ball is the user's. Acknowledge and stop: the Stop hook then re-sets `turn=user`, unchanged.
+RESUME_WAIT_PROMPT = (
+    "Your container restarted. It is the user's turn, so do not resume work and do not use tools — "
+    "reply with a one-line summary of where the task stands, then stop."
+)
+
 
 def _claude_argv(
     config_dir: Path,
@@ -151,10 +160,14 @@ def _claude_argv(
     if mcp_config.exists():  # connect to the task service's MCP server, and *only* it
         argv += ["--mcp-config", str(mcp_config), "--strict-mcp-config"]
     project = config_dir / "projects" / str(cwd).replace("/", "-")
+    positional: str | None
     if any(project.glob("*.jsonl")):
         argv.append("--continue")
-        # An ask (delivered as the resume prompt) wins over the generic INTERRUPT_PROMPT.
-        positional = ask_prompt or (INTERRUPT_PROMPT if turn == "agent" else None)
+        # An ask (delivered as the resume prompt) wins over the generic resume prompts.
+        # ALWAYS supply a positional: a bare `--continue` is rejected by claude, the pane exits, and
+        # the heal loop respawns forever (the survivor window keeps resetting the crash-loop budget,
+        # so it never gives up). See RESUME_WAIT_PROMPT.
+        positional = ask_prompt or (INTERRUPT_PROMPT if turn == "agent" else RESUME_WAIT_PROMPT)
     else:
         if (
             starting_model
