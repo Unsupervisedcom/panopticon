@@ -15,6 +15,7 @@ from panopticon.container.cli import (
     register_agent_cli,
 )
 from panopticon.container.cli.claude import ClaudeAgentCLI
+from panopticon.container.cli.codex import CodexAgentCLI
 
 
 def test_default_resolves_to_claude() -> None:
@@ -23,9 +24,14 @@ def test_default_resolves_to_claude() -> None:
     assert isinstance(get_agent_cli("claude"), ClaudeAgentCLI)
 
 
+def test_codex_is_a_registered_built_in_adapter() -> None:
+    # The second built-in CLI: registering it makes it resolvable with no launcher edit (ADR 0014 §2).
+    assert isinstance(get_agent_cli("codex"), CodexAgentCLI)
+
+
 def test_unknown_cli_name_is_a_clear_error() -> None:
-    with pytest.raises(KeyError, match="unknown agent CLI 'codex'"):
-        get_agent_cli("codex")
+    with pytest.raises(KeyError, match="unknown agent CLI 'nope'"):
+        get_agent_cli("nope")
 
 
 def test_registering_an_adapter_makes_it_resolvable_without_a_launcher_edit() -> None:
