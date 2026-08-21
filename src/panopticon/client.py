@@ -134,6 +134,7 @@ class TaskServiceClient:
         capabilities: dict[str, Any] | None = None,
         enabled_workflows: list[str] | None = None,
         disabled_workflows: list[str] | None = None,
+        agent_cli: str = "claude",
     ) -> JsonObj:
         body: dict[str, Any] = {
             "id": repo_id,
@@ -145,6 +146,7 @@ class TaskServiceClient:
             "hook_file": hook_file,
             "enabled_workflows": enabled_workflows or [],
             "disabled_workflows": disabled_workflows or [],
+            "agent_cli": agent_cli,
         }
         if capabilities is not None:
             body["capabilities"] = capabilities
@@ -166,6 +168,7 @@ class TaskServiceClient:
         artifacts: dict[str, str] | None = None,
         artifacts_b64: dict[str, str] | None = None,
         sort_weight: int = 0,
+        agent_cli: str | None = None,
     ) -> JsonObj:
         body: JsonObj = {"repo_id": repo_id, "workflow": workflow, "memo": memo}
         if initial_prompt is not None:
@@ -176,6 +179,8 @@ class TaskServiceClient:
             body["artifacts_b64"] = artifacts_b64
         if sort_weight:
             body["sort_weight"] = sort_weight
+        if agent_cli is not None:
+            body["agent_cli"] = agent_cli
         return cast(JsonObj, self._json(self._http.post("/tasks", json=body)))
 
     def set_slug(self, task_id: str, slug: str) -> JsonObj:

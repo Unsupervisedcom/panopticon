@@ -185,6 +185,7 @@ class _FakeClient:
         capabilities: dict[str, Any] | None = None,
         enabled_workflows: list[str] | None = None,
         disabled_workflows: list[str] | None = None,
+        agent_cli: str = "claude",
     ) -> dict[str, Any]:
         if self.repo_error is not None:
             raise _http_400(self.repo_error)
@@ -198,6 +199,7 @@ class _FakeClient:
             "hook_file": hook_file,
             "enabled_workflows": enabled_workflows or [],
             "disabled_workflows": disabled_workflows or [],
+            "agent_cli": agent_cli,
         }
         if capabilities is not None:
             repo["capabilities"] = capabilities
@@ -1638,6 +1640,7 @@ async def test_repos_screen_creates_a_repo_autofilling_from_the_git_url() -> Non
                 "hook_file": None,
                 "enabled_workflows": [],
                 "disabled_workflows": [],
+                "agent_cli": "claude",
                 "capabilities": {"docker_in_docker": False},
             }
         ]
@@ -1669,6 +1672,7 @@ async def test_repo_form_autofill_only_fills_blank_fields() -> None:
                 "hook_file": None,
                 "enabled_workflows": [],
                 "disabled_workflows": [],
+                "agent_cli": "claude",
                 "capabilities": {"docker_in_docker": False},
             }
         ]
@@ -1824,6 +1828,7 @@ async def test_repos_screen_edits_a_repo_via_patch() -> None:
                     "capabilities": {"docker_in_docker": False},
                     "enabled_workflows": [],
                     "disabled_workflows": [],
+                    "agent_cli": "claude",
                 },
             )
         ]
@@ -2135,7 +2140,9 @@ async def test_env_file_field_custom_input_draws_a_bottom_border(
         [], repos=[{"id": "r1", "name": "x", "git_url": "https://x/r.git", "default_base": "main"}]
     )
     app = Dashboard(fake)  # type: ignore[arg-type]
-    async with app.run_test(size=(90, 40)) as pilot:
+    # Tall enough that the whole repo form (incl. the agent_cli field) fits, so the env-file custom
+    # input's bottom-border row is on-screen for the border-glyph assertion below.
+    async with app.run_test(size=(90, 44)) as pilot:
         await pilot.pause()
         await pilot.press("g")
         await pilot.pause()

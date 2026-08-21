@@ -13,7 +13,12 @@ from pathlib import Path
 import pytest
 
 from panopticon.core.models import LifecyclePhase
-from panopticon.sessionservice.local_runner import LocalRunner
+from panopticon.sessionservice.local_runner import (
+    CLI_CONFIG_DIRNAME,
+    LocalRunner,
+    base_image,
+    config_mount,
+)
 from panopticon.sessionservice.runner import Runner
 
 
@@ -221,6 +226,48 @@ def test_spawn_mounts_a_per_task_config_volume_for_claude_history() -> None:
     docker_run = rec.calls[2][0]
     # a task-scoped named volume at the config dir → claude's transcripts survive respawn/recreate
     assert "panopticon-config-t1:/home/panopticon/.claude" in docker_run
+
+
+def test_spawn_passes_the_agent_cli_as_env_var_defaulting_to_claude() -> None:
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).spawn("t1")
+    docker_run = rec.calls[2][0]
+    assert "PANOPTICON_AGENT_CLI=claude" in docker_run  # launcher resolves its adapter from this
+
+
+def test_spawn_derives_the_config_mount_and_env_var_from_the_resolved_cli() -> None:
+    # A non-default CLI must mount its own config dir (ADR 0014 §4a) or resume silently breaks, and
+    # the launcher must be told which adapter to use.
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).spawn("t1", agent_cli="codex")
+    docker_run = rec.calls[2][0]
+    assert "panopticon-config-t1:/home/panopticon/.codex" in docker_run
+    assert "PANOPTICON_AGENT_CLI=codex" in docker_run
+
+
+def test_base_image_and_config_mount_name_by_cli() -> None:
+    assert base_image("claude") == "panopticon-base-claude"
+    assert base_image("codex") == "panopticon-base-codex"
+    assert config_mount("claude") == "/home/panopticon/.claude"
+    assert config_mount("codex") == "/home/panopticon/.codex"
+
+
+def test_host_config_dir_map_matches_the_in_container_adapters() -> None:
+    # The host mounts the config volume at CLI_CONFIG_DIRNAME[cli]; the in-container adapter reads it
+    # from its own config_dirname. If the two drift, resume silently breaks (ADR 0014 §4a) — so pin
+    # them equal for every *registered* adapter (codex's map entry is forward-looking; its adapter
+    # lands in a later slice, so skip CLIs with no adapter yet).
+    from panopticon.container.cli import get_agent_cli
+
+    checked = 0
+    for cli, dirname in CLI_CONFIG_DIRNAME.items():
+        try:
+            adapter = get_agent_cli(cli)
+        except KeyError:
+            continue  # adapter not registered yet (e.g. codex) — nothing to cross-check
+        assert adapter.config_dirname == dirname, cli
+        checked += 1
+    assert checked >= 1  # claude at least is registered and cross-checked
 
 
 def test_spawn_passes_initial_prompt_as_env_var() -> None:

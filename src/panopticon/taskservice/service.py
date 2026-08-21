@@ -317,6 +317,7 @@ class TaskService:
         artifacts_b64: dict[str, str] | None = None,
         depends_on_task_ids: list[str] | None = None,
         sort_weight: int = 0,
+        agent_cli: str | None = None,
     ) -> Task:
         repo = await self.get_repo(repo_id)  # ensure exists (raises NotFound)
         if governor_task_id is not None:
@@ -328,6 +329,7 @@ class TaskService:
         task = wf.start_task(self._id(), repo_id, at=now, memo=memo, initial_prompt=initial_prompt)
         task.governor_task_id = governor_task_id
         task.sort_weight = sort_weight
+        task.agent_cli = agent_cli  # a per-task CLI override; None = the repo default (ADR 0014 §3)
         task.created_at = now
         task.updated_at = now  # creation time = first mutation
         await self._store.create_task(task)
@@ -366,6 +368,7 @@ class TaskService:
         artifacts_b64: dict[str, str] | None = None,
         depends_on_task_ids: list[str] | None = None,
         sort_weight: int = 0,
+        agent_cli: str | None = None,
     ) -> Task:
         """Create a task **on behalf of an orchestrator task** — gated to orchestration workflows.
 
@@ -386,6 +389,7 @@ class TaskService:
             artifacts_b64=artifacts_b64,
             depends_on_task_ids=depends_on_task_ids,
             sort_weight=sort_weight,
+            agent_cli=agent_cli,
         )
 
     async def workflow_names_as(self, actor_task_id: str) -> list[str]:

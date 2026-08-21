@@ -18,11 +18,36 @@ from pathlib import Path
 from typing import Protocol
 
 from panopticon.core.dirs import secrets_file_path
-from panopticon.core.models import LifecyclePhase
+from panopticon.core.models import DEFAULT_AGENT_CLI, LifecyclePhase
 from panopticon.sessionservice.runner import Runner
 
-#: Default composed image (base layer, ADR 0005); built in a later PR of this slice.
-DEFAULT_IMAGE = "panopticon-base"
+#: The container home the per-CLI config dir lives under (the base image's ``panopticon`` user).
+CONTAINER_HOME = "/home/panopticon"
+
+#: Each agent CLI's config dir name under :data:`CONTAINER_HOME` (ADR 0014 §4a). It **must** match
+#: that CLI's ``AgentCLI.config_dirname`` in the container, or resume breaks — the per-task config
+#: volume is mounted here and the launcher probes it for a resumable session
+#: (``tests/sessionservice/test_local_runner.py`` cross-checks this against the adapters). Host-side
+#: and LLM-free (the runner never imports the container package — the env var is the only seam).
+CLI_CONFIG_DIRNAME: dict[str, str] = {"claude": ".claude", "codex": ".codex"}
+
+
+def base_image(agent_cli: str = DEFAULT_AGENT_CLI) -> str:
+    """The base-image variant for ``agent_cli`` (ADR 0014 §4): ``panopticon-base-<cli>``.
+
+    Each CLI needs its own runtime installed, so the base tier is per-CLI; the workflow + repo
+    layers compose onto it unchanged (see :mod:`panopticon.sessionservice.images`)."""
+    return f"panopticon-base-{agent_cli}"
+
+
+def config_mount(agent_cli: str = DEFAULT_AGENT_CLI) -> str:
+    """The per-task config-volume mount path for ``agent_cli`` (ADR 0014 §4a): the CLI's config dir
+    under the container home, where the resumable session history persists across respawn."""
+    return f"{CONTAINER_HOME}/{CLI_CONFIG_DIRNAME[agent_cli]}"
+
+
+#: Default base image — the claude variant, so nothing changes when no CLI is selected (ADR 0014 §4).
+DEFAULT_IMAGE = base_image(DEFAULT_AGENT_CLI)
 
 #: Lets the container reach the host task service (container→host addressing, ADR 0008).
 #: ``host-gateway`` maps to the host's gateway IP; the service binds 0.0.0.0.
@@ -52,11 +77,11 @@ WORKSPACE_MOUNT = "/workspace"
 #: names it so the pane runs as that same user (ADR 0008 / the unprivileged-user work).
 CONTAINER_USER = "panopticon"
 
-#: The agent CLI's config dir inside the container (matches the image's HOME + `agent.py`'s
-#: ``Path.home()/.claude``). A **per-task** named volume is mounted here so claude's history
-#: (its session transcripts) survives respawn/recreate — the container layer is thrown away each
-#: spawn, but the volume persists. Per-task (not per-repo) so concurrent tasks don't share state.
-CONFIG_MOUNT = "/home/panopticon/.claude"
+#: The claude config-volume mount path — kept as a module constant for callers/tests that assume
+#: the default CLI; the spawn path derives the mount per-CLI via :func:`config_mount`. A **per-task**
+#: named volume is mounted here so the CLI's session history survives respawn/recreate (the container
+#: layer is thrown away each spawn, but the volume persists); per-task so concurrent tasks don't share.
+CONFIG_MOUNT = config_mount(DEFAULT_AGENT_CLI)
 
 
 class CommandRunner(Protocol):
@@ -145,6 +170,7 @@ class LocalRunner(Runner):
         initial_prompt: str | None = None,
         turn: str | None = None,
         starting_model: str | None = None,
+        agent_cli: str = DEFAULT_AGENT_CLI,
         progress: Callable[[LifecyclePhase], None] | None = None,
     ) -> str:
         """Spawn the task container. ``env_file`` is the task's repo's secret reference (ADR
@@ -163,7 +189,12 @@ class LocalRunner(Runner):
         agent launcher can send :data:`~panopticon.container.cli.claude.INTERRUPT_PROMPT` on respawn when
         the agent holds the turn. ``starting_model`` is the abstract model **tier** the agent should
         start with (e.g. ``"primary"``); passed as ``PANOPTICON_STARTING_MODEL`` so the agent launcher
-        resolves it to a concrete ``--model`` for ``claude`` on first launch. ``progress`` (optional) is called with each spawn
+        resolves it to a concrete ``--model`` for ``claude`` on first launch. ``agent_cli`` is the
+        resolved CLI name (ADR 0014 §3, ``task → repo → "claude"``): it's passed as
+        ``PANOPTICON_AGENT_CLI`` so the launcher picks its adapter, and it selects the per-task
+        config-volume mount path (:func:`config_mount`) so the CLI's session history resumes across
+        respawn. (The base-image variant it also drives is chosen by the spawner, which passes the
+        composed ``image``.) ``progress`` (optional) is called with each spawn
         phase the runner passes through (``STARTING`` before ``docker run``, ``AWAITING`` once the
         tmux session is up) so the caller can surface it — see
         :class:`~panopticon.core.models.LifecyclePhase`."""
@@ -184,6 +215,9 @@ class LocalRunner(Runner):
             # and drops to it (so the task runs unprivileged, owning what it writes to /workspace).
             "PANOPTICON_PUID": puid,
             "PANOPTICON_PGID": pgid,
+            # The launcher resolves its AgentCLI adapter from this (ADR 0014 §2/§3); defaulted so
+            # older containers with no value fall back to claude.
+            "PANOPTICON_AGENT_CLI": agent_cli,
             **self._extra_env,
         }
         if initial_prompt:
@@ -220,9 +254,10 @@ class LocalRunner(Runner):
                 "--workdir",
                 WORKSPACE_MOUNT,
             ]
-        # Per-task config volume: persists claude's session history across respawn/recreate (the
-        # transcripts live in the config dir, which is otherwise thrown away with the container).
-        docker_run += ["--volume", f"panopticon-config-{task_id}:{CONFIG_MOUNT}"]
+        # Per-task config volume: persists the CLI's session history across respawn/recreate (the
+        # transcripts live in the config dir, which is otherwise thrown away with the container). The
+        # mount path is the resolved CLI's config dir, or resume silently breaks (ADR 0014 §4a).
+        docker_run += ["--volume", f"panopticon-config-{task_id}:{config_mount(agent_cli)}"]
         for key, value in env.items():
             docker_run += ["--env", f"{key}={value}"]
         docker_run.append(

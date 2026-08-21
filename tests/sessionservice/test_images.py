@@ -9,8 +9,14 @@ from pathlib import Path
 from panopticon.sessionservice.images import ImageBuilder, compose_dockerfile, image_tag
 
 
-def test_image_tag_names_by_workflow_and_repo() -> None:
-    assert image_tag("github-peer-reviewed", "r1") == "panopticon-github-peer-reviewed-r1"
+def test_image_tag_names_by_cli_workflow_and_repo() -> None:
+    # Default CLI (claude) and an explicit non-default one — the CLI dimension keeps a repo built
+    # for two CLIs from colliding (ADR 0014 §4).
+    assert image_tag("github-peer-reviewed", "r1") == "panopticon-claude-github-peer-reviewed-r1"
+    assert (
+        image_tag("github-peer-reviewed", "r1", "codex")
+        == "panopticon-codex-github-peer-reviewed-r1"
+    )
 
 
 def test_compose_dockerfile_chains_base_then_layers() -> None:
@@ -36,12 +42,18 @@ class _BuildRecorder:
 
 def test_build_composes_and_runs_docker_build() -> None:
     rec = _BuildRecorder()
-    tag = ImageBuilder(base="panopticon-base", run=rec).build(
-        "github-peer-reviewed", "r1", ["RUN x"]
-    )
-    assert tag == "panopticon-github-peer-reviewed-r1"
-    assert rec.cmd[:4] == ["docker", "build", "--tag", "panopticon-github-peer-reviewed-r1"]
-    assert rec.dockerfile.startswith("FROM panopticon-base") and "RUN x" in rec.dockerfile
+    tag = ImageBuilder(run=rec).build("github-peer-reviewed", "r1", ["RUN x"])
+    assert tag == "panopticon-claude-github-peer-reviewed-r1"
+    assert rec.cmd[:4] == ["docker", "build", "--tag", "panopticon-claude-github-peer-reviewed-r1"]
+    # The composed image FROMs the resolved CLI's base variant (ADR 0014 §4), not a bare base.
+    assert rec.dockerfile.startswith("FROM panopticon-base-claude") and "RUN x" in rec.dockerfile
+
+
+def test_build_composes_onto_the_selected_cli_base_variant() -> None:
+    rec = _BuildRecorder()
+    tag = ImageBuilder(run=rec).build("wf", "r1", ["RUN x"], agent_cli="codex")
+    assert tag == "panopticon-codex-wf-r1"
+    assert rec.dockerfile.startswith("FROM panopticon-base-codex")
 
 
 class _MultiRecorder:

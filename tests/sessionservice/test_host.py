@@ -49,6 +49,7 @@ class _FakeRunner:
         initial_prompt: str | None = None,
         turn: str | None = None,
         starting_model: str | None = None,
+        agent_cli: str = "claude",
         progress: object = None,
     ) -> str:
         self.spawned.append(task_id)
@@ -71,11 +72,17 @@ class _FakeImageBuilder:
     """Stands in for ImageBuilder (no docker); always reports the base image as present."""
 
     def build(
-        self, workflow: str, repo_id: str, layers: list[str], *, verbose: bool = False
+        self,
+        workflow: str,
+        repo_id: str,
+        layers: list[str],
+        *,
+        agent_cli: str = "claude",
+        verbose: bool = False,
     ) -> str:
-        return f"panopticon-{workflow}-{repo_id}"
+        return f"panopticon-{agent_cli}-{workflow}-{repo_id}"
 
-    def build_base_if_missing(self, *, verbose: bool = False) -> bool:
+    def build_base_if_missing(self, *, agent_cli: str | None = None, verbose: bool = False) -> bool:
         return False
 
 

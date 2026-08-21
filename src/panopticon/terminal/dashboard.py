@@ -105,6 +105,7 @@ from textual.worker import get_current_worker
 from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.artifacts import InvalidArtifactName, validate_segment
 from panopticon.core.dirs import ARTIFACTS_DIR
+from panopticon.core.models import resolve_agent_cli
 from panopticon.core.state import TERMINAL_LABELS
 from panopticon.sessionservice.local_runner import session_name
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
@@ -443,6 +444,8 @@ def render_detail(task: JsonObj) -> str:
         f"id: {task['id']}",
         f"state: {task['state']}    turn: {turn}    workflow: {task['workflow']}{claim}",
     ]
+    if cli := task.get("agent_cli_resolved"):
+        lines.append(f"cli: {cli}")
     status = task.get("container_status")
     if status:
         detail = task.get("lifecycle_detail")
@@ -1287,7 +1290,7 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
     # git_url leads (the auto-fill source); the rest follow. ``id`` is rendered between git_url
     # and these, separately, since it's editable only in create mode. ``env_file`` is rendered
     # as an EnvFileField (dropdown + custom-path input) rather than a plain Input.
-    FIELDS = ("git_url", "name", "default_base")
+    FIELDS = ("git_url", "name", "default_base", "agent_cli")
     # Fields auto-derived from git_url → how to derive each (create mode only; see
     # _autofill_from_git_url). id and name are the bare repo name.
     _DERIVED: dict[str, Callable[[str], str]] = {
@@ -1316,11 +1319,13 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
 
     def _initial(self, name: str) -> str:
         """A field's pre-populated value: the repo's stored value, else (create mode only)
-        ``main`` for ``default_base``, else blank."""
+        ``main`` for ``default_base`` / ``claude`` for ``agent_cli``, else blank."""
         stored = self._repo.get(name)
         if stored:
             return str(stored)
-        return "main" if name == "default_base" and not self._editing else ""
+        if self._editing:
+            return ""
+        return {"default_base": "main", "agent_cli": "claude"}.get(name, "")
 
     def _wf_checked(self, wf: dict[str, Any]) -> bool:
         name = wf["name"]
@@ -1517,6 +1522,7 @@ class ReposScreen(ModalScreen[None]):
                     capabilities={"docker_in_docker": values["docker_in_docker"]},
                     enabled_workflows=values["enabled_workflows"],
                     disabled_workflows=values["disabled_workflows"],
+                    agent_cli=values["agent_cli"] or "claude",
                 )
             except httpx.HTTPStatusError as exc:
                 return f"Can't create: {_detail(exc)}"
@@ -1551,6 +1557,7 @@ class ReposScreen(ModalScreen[None]):
                     capabilities=capabilities,
                     enabled_workflows=values["enabled_workflows"],
                     disabled_workflows=values["disabled_workflows"],
+                    agent_cli=values["agent_cli"] or "claude",
                 )
             except httpx.HTTPStatusError as exc:
                 return f"Can't update: {_detail(exc)}"
@@ -1855,6 +1862,9 @@ class Dashboard(App[None]):
         self._version = 0  # the change-feed cursor (X-Tasks-Version) the worker long-polls against
         self._tasks: dict[str, JsonObj] = {}
         self._repo_names: dict[str, str] = {}  # repo id → name; populated by _load_repo_names
+        self._repo_clis: dict[
+            str, str
+        ] = {}  # repo id → default agent CLI; for the resolved-CLI display
         self._current: str | None = None  # highlighted task id; `d` opens its detail modal
         self._query: str = ""  # active search filter ("" → no filter); see action_search
         self._collapsed: set[str] = set()  # governor IDs whose ensembles are currently collapsed
@@ -1879,6 +1889,7 @@ class Dashboard(App[None]):
         try:
             repos = self._client.list_repos()
             self._repo_names = {str(r["id"]): str(r["name"]) for r in repos}
+            self._repo_clis = {str(r["id"]): str(r.get("agent_cli") or "claude") for r in repos}
         except Exception:
             pass
 
@@ -1972,8 +1983,13 @@ class Dashboard(App[None]):
             f"active agents {agent_on}/{len(active)}  ·  {sort_label}"
         )
         # Inject repo_name so _matches can search on it without a separate lookup per task.
+        # Also resolve the task's effective agent CLI (task override → repo default) for the detail view.
         for task in ordered:
-            task["repo_name"] = self._repo_names.get(str(task.get("repo_id") or ""), "")
+            repo_id = str(task.get("repo_id") or "")
+            task["repo_name"] = self._repo_names.get(repo_id, "")
+            task["agent_cli_resolved"] = resolve_agent_cli(
+                task.get("agent_cli"), self._repo_clis.get(repo_id)
+            )
         # Governor IDs: the set of task IDs that have at least one governed child in the full
         # snapshot. Computed from ``ordered`` (pre-collapse, pre-filter) so collapsing a governor
         # doesn't remove it from the set and prevent a second Enter from re-expanding it.

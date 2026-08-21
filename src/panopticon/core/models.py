@@ -198,6 +198,24 @@ class Repo:
     hook_file: str | None = None
     enabled_workflows: list[str] = field(default_factory=list)
     disabled_workflows: list[str] = field(default_factory=list)
+    #: The repo's default agent CLI — the one a task uses unless it overrides it (ADR 0014 §3).
+    #: Resolved host-side at spawn (see :func:`resolve_agent_cli`) and passed into the container as
+    #: ``PANOPTICON_AGENT_CLI``; it also drives the base-image variant + config-dir mount. Defaults
+    #: to ``"claude"`` so existing repos are unchanged.
+    agent_cli: str = "claude"
+
+
+#: The CLI a task falls back to when neither the task nor its repo names one (ADR 0014 §2/§3).
+DEFAULT_AGENT_CLI = "claude"
+
+
+def resolve_agent_cli(task_agent_cli: str | None, repo_agent_cli: str | None) -> str:
+    """Resolve a task's effective agent CLI: its own override → the repo default → ``"claude"``.
+
+    The CLI-selection resolution order of ADR 0014 §3, as a pure host-side helper (the session
+    service resolves it from the task + repo records at spawn; the control plane runs no CLI logic).
+    """
+    return task_agent_cli or repo_agent_cli or DEFAULT_AGENT_CLI
 
 
 @dataclass(frozen=True)
@@ -275,6 +293,11 @@ class Task:
     #: adapter resolves the tier to that CLI's concrete ``--model`` on first launch. The control
     #: plane never interprets it. ``None`` means no tier preference (the CLI picks its default).
     starting_model: str | None = None
+    #: A per-task **override** of the repo's default agent CLI (ADR 0014 §3); ``None`` means "use
+    #: the repo default". Resolved host-side at spawn via :func:`resolve_agent_cli`, then passed into
+    #: the container as ``PANOPTICON_AGENT_CLI`` (which also picks the base-image variant + config
+    #: mount). The control plane only records it — it runs no CLI-specific logic.
+    agent_cli: str | None = None
     #: The task that *governs* (oversees) this one — its ``id``. Set by the orchestrator on the
     #: tasks it creates so the relationship is recorded; also settable manually via
     #: :meth:`TaskService.set_governor`. ``None`` for ungoverned tasks.

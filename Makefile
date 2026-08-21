@@ -2,8 +2,9 @@
 .DEFAULT_GOAL := help
 .PHONY: help sync test typecheck lint format lint-check check serve dashboard host start stop build clean migrate migrate-revision
 
-#: The base task-container image (ADR 0005 base layer); must match DEFAULT_IMAGE.
-IMAGE ?= panopticon-base
+#: The base task-container image (ADR 0005 base layer, ADR 0014 §4 per-CLI variant); must match
+#: DEFAULT_IMAGE (the claude base).
+IMAGE ?= panopticon-base-claude
 
 help:  ## List available targets
 	@grep -h -E '^[a-z][a-z-]*:.*## ' $(MAKEFILE_LIST) | sort | awk -F':.*## ' '{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'

@@ -84,6 +84,7 @@ class TaskSummaryOut(BaseModel):
     clone: str | None
     claimed_by: str | None
     starting_model: str | None = None
+    agent_cli: str | None = None  # per-task CLI override; None = use the repo default (ADR 0014 §3)
     governor_task_id: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -120,6 +121,9 @@ class TaskOut(BaseModel):
     claimed_by: str | None  # the runner that owns this task (the spawn gate), or None
     starting_model: str | None = (
         None  # the model seeded at creation from the workflow's default_model
+    )
+    agent_cli: str | None = (
+        None  # per-task CLI override; None = resolve to the repo default (ADR 0014 §3)
     )
     governor_task_id: str | None = (
         None  # the task that oversees this one, or None for ungoverned tasks
@@ -166,6 +170,7 @@ class RepoIn(BaseModel):
     hook_file: str | None = None
     enabled_workflows: list[str] = Field(default_factory=list)
     disabled_workflows: list[str] = Field(default_factory=list)
+    agent_cli: str = "claude"  # the repo's default agent CLI (ADR 0014 §3)
 
 
 class RepoOut(BaseModel):
@@ -181,6 +186,7 @@ class RepoOut(BaseModel):
     hook_file: str | None = None
     enabled_workflows: list[str] = Field(default_factory=list)
     disabled_workflows: list[str] = Field(default_factory=list)
+    agent_cli: str = "claude"  # the repo's default agent CLI (ADR 0014 §3)
 
 
 class RepoPatchIn(BaseModel):
@@ -198,6 +204,7 @@ class RepoPatchIn(BaseModel):
     hook_file: str | None = None
     enabled_workflows: list[str] | None = None
     disabled_workflows: list[str] | None = None
+    agent_cli: str | None = None
 
 
 class WorkflowInfo(BaseModel):
@@ -216,6 +223,7 @@ class CreateTaskIn(BaseModel):
     artifacts_b64: dict[str, str] | None = None  # binary artifacts, name → base64
     depends_on_task_ids: list[str] = []
     sort_weight: int = 0
+    agent_cli: str | None = None  # per-task CLI override; None = the repo default (ADR 0014 §3)
 
 
 class DependenciesIn(BaseModel):
@@ -513,6 +521,7 @@ def create_app(service: TaskService) -> FastAPI:
                 artifacts_b64=body.artifacts_b64,
                 depends_on_task_ids=body.depends_on_task_ids or None,
                 sort_weight=body.sort_weight,
+                agent_cli=body.agent_cli,
             )
         )
 

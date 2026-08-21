@@ -95,7 +95,7 @@ def main(
     sub.add_parser("tasks", help="list tasks as plain text")
     mig = sub.add_parser("migrate", help="apply DB migrations to head (or pass alembic args)")
     mig.add_argument("alembic_args", nargs="*", default=["upgrade", "head"])
-    sub.add_parser("build", help="build the base task-container image (panopticon-base)")
+    sub.add_parser("build", help="build the base task-container image (panopticon-base-claude)")
     sub.add_parser(
         "doctor", help="check host prerequisites for quickstart/start/setup-repo, then exit"
     )
