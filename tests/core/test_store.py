@@ -494,7 +494,7 @@ def _fully_populated_task() -> Task:
         branch="panopticon/fix-the-widget",
         clone="/clones/t-full",
         claimed_by="local",
-        starting_model="opus",
+        starting_model="primary",
         governor_task_id="t-governor",
         created_at="t1",
         updated_at="t2",

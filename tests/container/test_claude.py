@@ -135,14 +135,28 @@ def test_launch_argv_appends_the_workflow_overview_to_the_system_prompt(tmp_path
 # -- model tier (ADR 0014 §3a) ------------------------------------------------------------------
 
 
-def test_resolve_model_is_identity_for_claude() -> None:
-    # claude's --model takes the tier vocabulary directly, so the mapping is the identity today; the
-    # seam is what lets another CLI map the same tier to its own model id.
+def test_resolve_model_maps_the_primary_tier_to_opus() -> None:
+    # The control plane stores an abstract tier; the claude adapter is the only place it becomes a
+    # provider model name (ADR 0014 §3a).
+    assert ClaudeAgentCLI().resolve_model("primary") == "opus"
+
+
+def test_resolve_model_passes_unknown_values_through() -> None:
+    # A raw model id set directly (or a tier already persisted as its resolved name) reaches
+    # --model verbatim — so back-compat with a stored "opus" holds.
     assert ClaudeAgentCLI().resolve_model("opus") == "opus"
 
 
+def test_built_in_workflow_tier_resolves_to_a_concrete_claude_model() -> None:
+    # End to end across the two halves: the tier the control plane declares (never a model name)
+    # resolves through the claude adapter to today's concrete model.
+    from panopticon.workflows.github_self_reviewed import GithubSelfReviewed
+
+    assert ClaudeAgentCLI().resolve_model(GithubSelfReviewed.default_model) == "opus"
+
+
 def test_launch_argv_passes_the_resolved_model_on_first_run(tmp_path: Path) -> None:
-    argv = ClaudeAgentCLI().launch_argv(tmp_path, Path("/work/repo"), starting_model="opus")
+    argv = ClaudeAgentCLI().launch_argv(tmp_path, Path("/work/repo"), starting_model="primary")
     assert argv == ["claude", "--dangerously-skip-permissions", "--model", "opus"]
 
 
@@ -150,14 +164,14 @@ def test_launch_argv_omits_model_on_resume(tmp_path: Path) -> None:
     project = tmp_path / "projects" / "-work-repo"
     project.mkdir(parents=True)
     (project / "session.jsonl").write_text("{}")
-    argv = ClaudeAgentCLI().launch_argv(tmp_path, Path("/work/repo"), starting_model="opus")
+    argv = ClaudeAgentCLI().launch_argv(tmp_path, Path("/work/repo"), starting_model="primary")
     assert "--model" not in argv
     assert "--continue" in argv
 
 
 def test_launch_argv_passes_model_before_initial_prompt_on_first_run(tmp_path: Path) -> None:
     argv = ClaudeAgentCLI().launch_argv(
-        tmp_path, Path("/work/repo"), initial_prompt="start now", starting_model="opus"
+        tmp_path, Path("/work/repo"), initial_prompt="start now", starting_model="primary"
     )
     assert argv == ["claude", "--dangerously-skip-permissions", "--model", "opus", "start now"]
 

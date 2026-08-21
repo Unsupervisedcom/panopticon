@@ -268,10 +268,12 @@ class Task:
     #: or have it respawned. Distinct from liveness — a claimed task whose container died is
     #: "claimed but down".
     claimed_by: str | None = None
-    #: The model the agent should start with — e.g. ``"opus"``. Seeded from
+    #: The abstract model **tier** the agent should start with — a CLI-agnostic label like
+    #: ``"primary"``, not a provider's concrete model name (ADR 0014 §3a). Seeded from
     #: :attr:`~panopticon.core.workflow.Workflow.default_model` when the task is created;
-    #: injected as ``PANOPTICON_STARTING_MODEL`` at spawn so the agent can pass ``--model``
-    #: to ``claude`` on first launch. ``None`` means no model preference (claude picks its default).
+    #: injected as ``PANOPTICON_STARTING_MODEL`` at spawn, where the in-container ``AgentCLI``
+    #: adapter resolves the tier to that CLI's concrete ``--model`` on first launch. The control
+    #: plane never interprets it. ``None`` means no tier preference (the CLI picks its default).
     starting_model: str | None = None
     #: The task that *governs* (oversees) this one — its ``id``. Set by the orchestrator on the
     #: tasks it creates so the relationship is recorded; also settable manually via

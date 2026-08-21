@@ -222,10 +222,10 @@ def test_spawn_one_passes_starting_model_to_runner() -> None:
             "workflow": "spike",
             "state": "ITERATING",
             "claimed_by": None,
-            "starting_model": "opus",
+            "starting_model": "primary",
         }
     )
-    assert runner.spawned[0]["starting_model"] == "opus"
+    assert runner.spawned[0]["starting_model"] == "primary"
 
 
 def test_spawn_one_passes_the_docker_in_docker_capability() -> None:
