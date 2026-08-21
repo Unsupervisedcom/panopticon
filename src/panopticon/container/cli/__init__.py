@@ -6,7 +6,7 @@ launcher (:mod:`panopticon.container.agent`) is CLI-agnostic — it drives a det
 (render skills + turn-flip hooks, wire MCP, seed trust) then a *launch* (exec the real CLI) against
 an :class:`AgentCLI` adapter, holding no ``claude`` literal. :mod:`~panopticon.container.cli.base`
 holds the ABC + the name-keyed registry; each concrete adapter is its own module
-(:mod:`~panopticon.container.cli.claude` today, a codex sibling next). A second CLI drops in by
+(:mod:`~panopticon.container.cli.claude` and :mod:`~panopticon.container.cli.codex`). A second CLI drops in by
 implementing the ABC and registering under its name (the drop-in shape of workflow discovery, ADR 0004).
 
 The package lives **inside** ``container/`` — the sole LLM-bearing package — so the determinism
