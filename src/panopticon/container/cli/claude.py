@@ -31,6 +31,11 @@ _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "canceled", 
 #: Sent to claude as the first message when a container restarts mid-task on the agent's turn.
 INTERRUPT_PROMPT = "You were interrupted. Continue."
 
+#: The control plane's abstract model **tiers** mapped to claude's concrete ``--model`` ids (ADR
+#: 0014 §3a). This is the only place a provider model name appears; ``core``/``workflows`` name only
+#: the tier. Unknown values pass through unchanged (see ``resolve_model``).
+_MODEL_TIERS = {"primary": "opus"}
+
 
 class ClaudeAgentCLI(AgentCLI):
     """The `claude` adapter — every ``container/`` seam claude satisfies today, unchanged in effect."""
@@ -121,13 +126,15 @@ class ClaudeAgentCLI(AgentCLI):
         )
 
     def resolve_model(self, tier: str) -> str:
-        """Map the abstract model tier to claude's concrete model id.
+        """Map the control plane's abstract model tier to claude's concrete model id (ADR 0014 §3a).
 
-        claude's ``--model`` already takes the tier vocabulary directly (``"opus"`` → ``opus``), so
-        this is the identity today; the seam is what lets another CLI map the same tier to its own
-        model id without the control plane naming a provider's model (ADR 0014 §3a).
+        The control plane stores a CLI-agnostic tier (e.g. ``"primary"``); this is the only place
+        that tier becomes a provider's model name (``"primary"`` → ``"opus"``), keeping model
+        vocabulary out of ``core``/``workflows``. Unknown values pass through unchanged so a raw
+        model id set directly (or a tier already persisted as its resolved name) still reaches
+        ``--model`` verbatim.
         """
-        return tier
+        return _MODEL_TIERS.get(tier, tier)
 
     def read_hook_payload(self, stdin: TextIO) -> dict[str, Any]:
         """Tolerantly parse the hook's stdin JSON; empty/invalid input yields an empty payload."""
@@ -192,7 +199,7 @@ class ClaudeAgentCLI(AgentCLI):
         resumed session is the agent's turn (``turn == "agent"``), :data:`INTERRUPT_PROMPT` is
         appended so the agent picks up where it left off rather than waiting for user input.
 
-        ``starting_model`` (a tier, e.g. ``"opus"``) is resolved via :meth:`resolve_model` and passed
+        ``starting_model`` (a tier, e.g. ``"primary"``) is resolved via :meth:`resolve_model` and passed
         as ``--model`` on the **first run only** — on resume claude uses the conversation's model.
         """
         argv = ["claude", "--dangerously-skip-permissions"]
