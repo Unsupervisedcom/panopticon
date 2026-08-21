@@ -23,12 +23,12 @@ import httpx
 
 from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.dirs import hook_file_path
-from panopticon.core.models import ContainerStatus, LifecyclePhase
+from panopticon.core.models import ContainerStatus, LifecyclePhase, resolve_agent_cli
 from panopticon.core.state import TERMINAL_LABELS
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.executions import WorkflowExecutions
 from panopticon.sessionservice.images import ImageBuilder
-from panopticon.sessionservice.local_runner import LocalRunner
+from panopticon.sessionservice.local_runner import LocalRunner, base_image
 from panopticon.sessionservice.shell_runner import ShellRunner
 from panopticon.sessionservice.spawn import cleanup_workspace, prepare_workspace
 
@@ -209,20 +209,24 @@ class Spawner:
         """The Docker path: clone the per-task workspace, compose base → workflow → repo, and spawn
         the container (reports ``PREPARING`` → ``BUILDING`` → ``STARTING`` → ``AWAITING``)."""
         task_id = task["id"]
+        # Resolve the task's CLI host-side (ADR 0014 §3, task → repo → "claude"): it drives the
+        # base-image variant, the env var the launcher reads, and the config-volume mount path.
+        agent_cli = resolve_agent_cli(task.get("agent_cli"), repo.get("agent_cli"))
         workspace = self._prepare_task_dir(
             task, repo, clone=True
         )  # a container always mounts a checkout
         if hook_path := hook_file_path(repo.get("hook_file"), hooks_dir=self._hooks_dir):
             self._run_hook(hook_path, task_id, repo["name"], workspace)
         _log.info(
-            "task %s: building image (workflow=%s, repo=%s)",
+            "task %s: building image (workflow=%s, repo=%s, cli=%s)",
             task_id,
             task["workflow"],
             repo.get("name", repo["id"]),
+            agent_cli,
         )
         self._report(task_id, LifecyclePhase.BUILDING)
-        self._images.build_base_if_missing(verbose=True)
-        image = self._compose_image(task["workflow"], repo)
+        self._images.build_base_if_missing(agent_cli=agent_cli, verbose=True)
+        image = self._compose_image(task["workflow"], repo, agent_cli)
         return self._runner.spawn(
             task_id,
             env_file=repo.get("env_file"),
@@ -236,6 +240,7 @@ class Spawner:
             starting_model=task.get(
                 "starting_model"
             ),  # model selection passed to claude --model on first launch
+            agent_cli=agent_cli,  # picks the launcher's adapter + the config-mount path
             progress=lambda phase: self._report(task_id, phase),  # STARTING then AWAITING
         )
 
@@ -457,19 +462,19 @@ class Spawner:
             docker_cleanup=self._docker_cleanup,
         )
 
-    def _compose_image(self, workflow: str, repo: JsonObj) -> str | None:
-        """Compose the task's image (base → workflow → repo layers, ADR 0005) and return its tag;
-        ``None`` when neither tier contributes a layer (the runner falls back to the base image).
-        E.g. github-peer-reviewed layers `gh` for its forge skills, then the repo layers its toolchain (`uv`,
-        `make`). Docker layer-caches, so this is a no-op once built."""
+    def _compose_image(self, workflow: str, repo: JsonObj, agent_cli: str) -> str:
+        """Compose the task's image (the CLI's base → workflow → repo layers, ADR 0005 + ADR 0014 §4)
+        and return its tag; when neither tier contributes a layer, the per-CLI base image itself
+        (nothing to compose). E.g. github-peer-reviewed layers `gh` for its forge skills, then the
+        repo layers its toolchain (`uv`, `make`). Docker layer-caches, so this is a no-op once built."""
         layers = [
             self._client.workflow_image_layer(workflow),
             self._client.repo_image_layer(repo["id"]),
         ]
         layers = [layer for layer in layers if layer.strip()]
         if not layers:
-            return None
-        return self._images.build(workflow, repo["id"], layers, verbose=True)
+            return base_image(agent_cli)
+        return self._images.build(workflow, repo["id"], layers, agent_cli=agent_cli, verbose=True)
 
 
 def spawnable_tasks(client: TaskServiceClient) -> Callable[[], list[JsonObj]]:

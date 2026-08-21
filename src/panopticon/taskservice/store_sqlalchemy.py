@@ -85,6 +85,7 @@ class _RepoRow(_Base):
     hook_file: Mapped[str | None] = mapped_column(default=None)
     enabled_workflows: Mapped[list[str]] = mapped_column(JSON, default=list)
     disabled_workflows: Mapped[list[str]] = mapped_column(JSON, default=list)
+    agent_cli: Mapped[str] = mapped_column(default="claude", server_default="claude")
 
     def to_domain(self) -> Repo:
         return Repo(
@@ -96,6 +97,7 @@ class _RepoRow(_Base):
             image_layer_file=self.image_layer_file,
             capabilities=dict(self.capabilities or {}),
             hook_file=self.hook_file,
+            agent_cli=self.agent_cli,
             enabled_workflows=list(self.enabled_workflows or []),
             disabled_workflows=list(self.disabled_workflows or []),
         )
@@ -111,6 +113,7 @@ class _RepoRow(_Base):
             image_layer_file=repo.image_layer_file,
             capabilities=dict(repo.capabilities),
             hook_file=repo.hook_file,
+            agent_cli=repo.agent_cli,
             enabled_workflows=list(repo.enabled_workflows),
             disabled_workflows=list(repo.disabled_workflows),
         )
@@ -134,6 +137,7 @@ class _TaskRow(_Base):
     clone: Mapped[str | None] = mapped_column(default=None)
     claimed_by: Mapped[str | None] = mapped_column(default=None)
     starting_model: Mapped[str | None] = mapped_column(default=None)
+    agent_cli: Mapped[str | None] = mapped_column(default=None)
     governor_task_id: Mapped[str | None] = mapped_column(ForeignKey("task.id"), default=None)
     created_at: Mapped[str | None] = mapped_column(default=None)
     updated_at: Mapped[str | None] = mapped_column(default=None)
@@ -163,6 +167,7 @@ class _TaskRow(_Base):
             clone=self.clone,
             claimed_by=self.claimed_by,
             starting_model=self.starting_model,
+            agent_cli=self.agent_cli,
             governor_task_id=self.governor_task_id,
             created_at=self.created_at,
             updated_at=self.updated_at,
@@ -189,6 +194,7 @@ class _TaskRow(_Base):
             clone=task.clone,
             claimed_by=task.claimed_by,
             starting_model=task.starting_model,
+            agent_cli=task.agent_cli,
             governor_task_id=task.governor_task_id,
             created_at=task.created_at,
             updated_at=task.updated_at,

@@ -495,6 +495,7 @@ def _fully_populated_task() -> Task:
         clone="/clones/t-full",
         claimed_by="local",
         starting_model="primary",
+        agent_cli="codex",
         governor_task_id="t-governor",
         created_at="t1",
         updated_at="t2",

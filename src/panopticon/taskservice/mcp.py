@@ -129,7 +129,8 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
             "(e.g. a screenshot), name→base64. The new task's governor_task_id is set to "
             "orchestrator_task_id automatically. `sort_weight` (optional, default 0) is the "
             "task's dashboard sort priority — higher sorts first, ranking above the last-updated "
-            "timestamp but below state/turn. Returns the new task."
+            "timestamp but below state/turn. `agent_cli` (optional) overrides which agent CLI the "
+            "task runs; omit to use the repo's default. Returns the new task."
         )
     )
     async def create_task(
@@ -140,6 +141,7 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
         artifacts: dict[str, str] | None = None,
         artifacts_b64: dict[str, str] | None = None,
         sort_weight: int = 0,
+        agent_cli: str | None = None,
     ) -> dict[str, Any]:
         _log.debug("mcp create_task orchestrator=%s workflow=%s", orchestrator_task_id, workflow)
         return _task(
@@ -151,6 +153,7 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
                 artifacts=artifacts,
                 artifacts_b64=artifacts_b64,
                 sort_weight=sort_weight,
+                agent_cli=agent_cli,
             )
         )
 
