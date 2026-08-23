@@ -20,9 +20,9 @@ codex's ``[hooks]`` ``Stop`` / ``UserPromptSubmit`` block to the shared callback
 seam (:meth:`~CodexAgentCLI.read_hook_payload` / :meth:`~CodexAgentCLI.has_live_background_task`)
 parses codex's Stop payload. Codex feeds a ``UserPromptSubmit`` hook's stdout back as developer
 context (ADR 0014 flag 6), so the briefing + provisioning nudge ride the same channel as claude; its
-Stop payload has no background-task array (flag 2) and it has no ``AskUserQuestion`` analogue (flag
-7), both handled as documented. The determinism invariant holds: this lives in ``container/`` and
-only :meth:`launch` execs the real CLI (injected in tests).
+Stop payload has no background-task array so the flip always hands the turn back (flag 2), and it has
+no ``AskUserQuestion`` analogue (flag 7) — both handled as documented. The determinism invariant
+holds: this lives in ``container/`` and only :meth:`launch` execs the real CLI (injected in tests).
 """
 
 from __future__ import annotations
@@ -45,12 +45,6 @@ from panopticon.core.models import Skill
 #: codex model slug is a verify-against-the-pinned-codex item (ROADMAP M3.4 base image); unknown
 #: values pass through unchanged (see :meth:`CodexAgentCLI.resolve_model`).
 _MODEL_TIERS = {"primary": "gpt-5.6-codex"}
-
-#: A background task's ``status`` counts as *finished* only if it's one of these; anything else —
-#: including a missing/unknown status — is treated as live, so we err toward keeping the turn on the
-#: agent. Mirrors the claude adapter (codex sends no such field today; see
-#: :meth:`CodexAgentCLI.has_live_background_task`).
-_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "canceled", "error"})
 
 
 def _command_hook(actor: str, event: str) -> dict[str, Any]:
@@ -209,26 +203,13 @@ class CodexAgentCLI(AgentCLI):
     def has_live_background_task(self, payload: dict[str, Any]) -> bool:
         """Whether the Stop payload reports still-running background work (gates the turn flip).
 
-        Codex's documented ``Stop`` payload (ADR 0014 flag 2, verified against the hooks schema) is
-        ``session_id`` / ``transcript_path`` / ``cwd`` / ``hook_event_name`` / ``model`` /
-        ``permission_mode`` / ``turn_id`` / ``stop_hook_active`` / ``last_assistant_message`` — it
-        carries **no** background-task array (unlike claude's ``background_tasks``). Codex's ``Stop``
-        fires only when the turn has genuinely ended, so there's nothing in flight to strand: the turn
-        flips to the user, matching claude's exact degradation when the field is absent (an older CLI).
-
-        We still parse a ``background_tasks`` array the same way claude does — err toward *live* for
-        any non-terminal/unrecognised entry — so that if a future codex build adds one, the gate
-        lights up with no code change. Today no such field is sent, so this returns ``False``.
+        Always ``False`` for codex: its documented ``Stop`` payload (ADR 0014 flag 2, verified against
+        the hooks schema) is ``session_id`` / ``transcript_path`` / ``cwd`` / ``hook_event_name`` /
+        ``model`` / ``permission_mode`` / ``turn_id`` / ``stop_hook_active`` / ``last_assistant_message``
+        — it carries **no** background-task array (unlike claude's ``background_tasks``), and codex's
+        ``Stop`` fires only when the turn has genuinely ended, so there's nothing in flight to strand.
+        The turn flips to the user, matching claude's exact behaviour when the field is absent.
         """
-        tasks = payload.get("background_tasks")
-        if not isinstance(tasks, list):
-            return False
-        for task in tasks:
-            if not isinstance(task, dict):
-                return True  # unrecognised shape → assume live (don't hand the turn back early)
-            status = task.get("status")
-            if not isinstance(status, str) or status.strip().lower() not in _TERMINAL_STATUSES:
-                return True
         return False
 
     def launch_argv(

@@ -208,9 +208,8 @@ spike the implementer resolves against the installed codex version):
    `UserPromptSubmit` take no `matcher`. The `Stop` stdin payload is `session_id` /
    `transcript_path` / `cwd` / `hook_event_name` / `model` / `permission_mode` / `turn_id` /
    `stop_hook_active` / `last_assistant_message` — **no `background_tasks` analogue**, so the flip
-   degrades to the plain turn hand-back (claude's exact behaviour when the field is absent). The
-   adapter still parses a `background_tasks` array the same way, so a future codex build that adds
-   one lights up the gate with no code change.
+   degrades to the plain turn hand-back (claude's exact behaviour when the field is absent) and
+   `has_live_background_task` is always `False` for codex.
 3. The `CODEX_HOME` config-dir override and its precedence.
 4. The **instructions-merge precedence** — confirm `$CODEX_HOME/AGENTS.md` (or
    `experimental_instructions_file`) layers *additively* on top of the repo's root `AGENTS.md`

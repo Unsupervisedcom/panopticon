@@ -220,22 +220,12 @@ def test_read_hook_payload_tolerates_empty_and_invalid() -> None:
     assert cli.read_hook_payload(io.StringIO('{"a": 1}')) == {"a": 1}
 
 
-def test_has_live_background_task_flips_on_codexs_real_stop_payload() -> None:
+def test_has_live_background_task_always_false_for_codexs_stop_payload() -> None:
     # Codex's documented Stop payload carries no background-task array, so a real Stop flips the turn.
     cli = CodexAgentCLI()
     real_stop = {"hook_event_name": "Stop", "turn_id": "t", "stop_hook_active": False}
     assert cli.has_live_background_task(real_stop) is False
     assert cli.has_live_background_task({}) is False
-
-
-def test_has_live_background_task_lights_up_if_codex_ever_adds_the_field() -> None:
-    # Structured like claude's so a future codex background_tasks array gates the flip with no change.
-    cli = CodexAgentCLI()
-    assert cli.has_live_background_task({"background_tasks": [{"status": "running"}]}) is True
-    assert cli.has_live_background_task({"background_tasks": [{"status": "completed"}]}) is False
-    assert (
-        cli.has_live_background_task({"background_tasks": ["oops"]}) is True
-    )  # unknown shape → live
 
 
 # -- settings / hooks (M3.6) --------------------------------------------------------------------
