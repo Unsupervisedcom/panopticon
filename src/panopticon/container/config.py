@@ -12,10 +12,13 @@ posture all land in the same ``config.toml``).
 from __future__ import annotations
 
 import json
+import tomllib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+
+import tomli_w
 
 
 @contextmanager
@@ -42,10 +45,6 @@ def update_toml_config(path: Path) -> Iterator[dict[str, Any]]:
     the parent directory on demand and, like the JSON helper, leaves the file untouched if the
     ``with`` block raises.
     """
-    import tomllib
-
-    import tomli_w
-
     data: dict[str, Any] = tomllib.loads(path.read_text()) if path.exists() else {}
     yield data
     path.parent.mkdir(parents=True, exist_ok=True)
