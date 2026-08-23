@@ -209,7 +209,7 @@ def test_launch_argv_passes_model_before_initial_prompt_on_first_run(tmp_path: P
     ]
 
 
-# -- hook seam (M3.6 stubs; concrete + safe here) -----------------------------------------------
+# -- hook seam (M3.6) ---------------------------------------------------------------------------
 
 
 def test_read_hook_payload_tolerates_empty_and_invalid() -> None:
@@ -220,20 +220,59 @@ def test_read_hook_payload_tolerates_empty_and_invalid() -> None:
     assert cli.read_hook_payload(io.StringIO('{"a": 1}')) == {"a": 1}
 
 
-def test_has_live_background_task_degrades_to_false_until_m36() -> None:
-    # Codex's background-task payload shape (ADR flag 2) is wired in M3.6; until then the turn flips
-    # on Stop (the same degradation claude uses when the field is absent).
+def test_has_live_background_task_flips_on_codexs_real_stop_payload() -> None:
+    # Codex's documented Stop payload carries no background-task array, so a real Stop flips the turn.
     cli = CodexAgentCLI()
+    real_stop = {"hook_event_name": "Stop", "turn_id": "t", "stop_hook_active": False}
+    assert cli.has_live_background_task(real_stop) is False
     assert cli.has_live_background_task({}) is False
-    assert cli.has_live_background_task({"background_tasks": [{"status": "running"}]}) is False
+
+
+def test_has_live_background_task_lights_up_if_codex_ever_adds_the_field() -> None:
+    # Structured like claude's so a future codex background_tasks array gates the flip with no change.
+    cli = CodexAgentCLI()
+    assert cli.has_live_background_task({"background_tasks": [{"status": "running"}]}) is True
+    assert cli.has_live_background_task({"background_tasks": [{"status": "completed"}]}) is False
+    assert (
+        cli.has_live_background_task({"background_tasks": ["oops"]}) is True
+    )  # unknown shape → live
 
 
 # -- settings / hooks (M3.6) --------------------------------------------------------------------
 
 
-def test_write_settings_returns_the_config_path_without_wiring_hooks_yet(tmp_path: Path) -> None:
-    # M3.5 keeps the class concrete; the actual turn-flip hook block is M3.6.
+def _hook_command(entry: object) -> str:
+    # Unwrap codex's [[hooks.<Event>]] → [[hooks.<Event>.hooks]] → {type, command} nesting.
+    assert isinstance(entry, list) and len(entry) == 1
+    inner = entry[0]["hooks"]
+    assert isinstance(inner, list) and len(inner) == 1 and inner[0]["type"] == "command"
+    return str(inner[0]["command"])
+
+
+def test_write_settings_wires_the_turn_flip_hooks(tmp_path: Path) -> None:
     cli = CodexAgentCLI()
     path = cli.write_settings(tmp_path)
     assert path == tmp_path / cli.config_dirname / cli.CONFIG_FILE
-    assert path.parent.is_dir()  # config dir ensured for the other writers
+    data = tomllib.loads(path.read_text())
+    hooks = data["hooks"]
+    # Stop hands the ball to the user; UserPromptSubmit takes it back + prints briefing/nudge.
+    assert _hook_command(hooks["Stop"]) == "python -m panopticon.container.hook user stop"
+    assert (
+        _hook_command(hooks["UserPromptSubmit"])
+        == "python -m panopticon.container.hook agent prompt"
+    )
+    # No AskUserQuestion analogue in codex → no PreToolUse/PostToolUse pair (ADR 0014 flag 7).
+    assert "PreToolUse" not in hooks and "PostToolUse" not in hooks
+
+
+def test_hooks_coexist_with_mcp_and_trust_in_one_config_toml(tmp_path: Path) -> None:
+    # The launcher calls all three against the same config.toml; none may clobber another's keys.
+    cli = CodexAgentCLI()
+    config_dir = tmp_path / cli.config_dirname
+    cli.write_settings(tmp_path)  # takes home; the others take the config dir
+    cli.write_mcp_config(config_dir, "http://svc:8000")
+    cli.trust_workspace(config_dir, Path("/workspace"))
+    data = tomllib.loads((config_dir / cli.CONFIG_FILE).read_text())
+    assert _hook_command(data["hooks"]["Stop"]).endswith("user stop")  # preserved
+    assert data["mcp_servers"]["panopticon"]["url"] == "http://svc:8000/mcp"
+    assert data["projects"]["/workspace"]["trust_level"] == "trusted"

@@ -15,11 +15,14 @@ Codex satisfies the same seams as claude against its own surface (ADR 0014 §5 m
 - **launch / resume** → ``codex`` first-run vs ``codex resume --last`` (the ``claude --continue``
   analogue), probing ``$CODEX_HOME/sessions`` for a prior transcript.
 
-Scope is **M3.5**: everything needed to boot codex, reach the MCP server, see its skills + overview,
-and resume. The **turn-flip hooks** (``write_settings`` wiring, the background-task gating payload)
-are **M3.6** — the three hook seam methods are implemented here only enough to keep this class
-concrete and degrade safely (see each method's docstring). The determinism invariant holds: this
-lives in ``container/`` and only :meth:`launch` execs the real CLI (injected in tests).
+Scope now includes the **turn-flip hooks** (M3.6): :meth:`~CodexAgentCLI.write_settings` wires
+codex's ``[hooks]`` ``Stop`` / ``UserPromptSubmit`` block to the shared callback, and the hook-payload
+seam (:meth:`~CodexAgentCLI.read_hook_payload` / :meth:`~CodexAgentCLI.has_live_background_task`)
+parses codex's Stop payload. Codex feeds a ``UserPromptSubmit`` hook's stdout back as developer
+context (ADR 0014 flag 6), so the briefing + provisioning nudge ride the same channel as claude; its
+Stop payload has no background-task array (flag 2) and it has no ``AskUserQuestion`` analogue (flag
+7), both handled as documented. The determinism invariant holds: this lives in ``container/`` and
+only :meth:`launch` execs the real CLI (injected in tests).
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ from typing import Any, ClassVar, TextIO
 
 from panopticon.container.cli.base import AgentCLI, _Client
 from panopticon.container.config import update_toml_config
+from panopticon.container.hooks import HOOK_COMMAND
 from panopticon.container.skills import write_commands, write_operation_commands
 from panopticon.core.models import Skill
 
@@ -41,6 +45,22 @@ from panopticon.core.models import Skill
 #: codex model slug is a verify-against-the-pinned-codex item (ROADMAP M3.4 base image); unknown
 #: values pass through unchanged (see :meth:`CodexAgentCLI.resolve_model`).
 _MODEL_TIERS = {"primary": "gpt-5.6-codex"}
+
+#: A background task's ``status`` counts as *finished* only if it's one of these; anything else —
+#: including a missing/unknown status — is treated as live, so we err toward keeping the turn on the
+#: agent. Mirrors the claude adapter (codex sends no such field today; see
+#: :meth:`CodexAgentCLI.has_live_background_task`).
+_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "canceled", "error"})
+
+
+def _command_hook(actor: str, event: str) -> dict[str, Any]:
+    """One codex hook group: run the shared turn-flip callback with ``<actor> <event>``.
+
+    Codex nests a command under an event as ``{"hooks": [{"type": "command", "command": …}]}`` — the
+    ``[[hooks.<Event>]]`` → ``[[hooks.<Event>.hooks]]`` TOML shape. The command is the CLI-agnostic
+    callback (:data:`~panopticon.container.hooks.HOOK_COMMAND`) claude invokes too.
+    """
+    return {"hooks": [{"type": "command", "command": f"{HOOK_COMMAND} {actor} {event}"}]}
 
 
 class CodexAgentCLI(AgentCLI):
@@ -71,17 +91,31 @@ class CodexAgentCLI(AgentCLI):
         )
 
     def write_settings(self, home: Path) -> Path:
-        """Return codex's ``config.toml`` path; the turn-flip **hooks are M3.6**, not wired here.
+        """Wire codex's turn-flip hooks into ``config.toml``; return the path (ADR 0014 §5, M3.6).
 
-        The launcher calls this to wire the Stop/UserPromptSubmit turn-flip hooks. Codex's hooks
-        config schema (and its background-task payload shape) is ADR 0014 flag 2, owned by the
-        **Codex turn-flip hooks** slice (M3.6) — until it lands a codex task's turn doesn't auto-flip
-        (a documented interim, ADR §5). So this only ensures the config dir exists and returns the
-        path other methods merge into; it writes no hook entries. When M3.6 lands, it merges codex's
-        ``[hooks]`` block invoking ``python -m panopticon.container.hook`` here.
+        Codex's hooks live under a ``[hooks]`` table keyed by event, each event an array of groups
+        whose ``hooks`` array holds ``{type = "command", command = …}`` entries (the same shape
+        claude uses, just TOML). We wire the two turn-flip events the same callback
+        (:mod:`panopticon.container.hook`) serves for claude:
+
+        - **Stop** → ``hook user stop`` (flip the ball to the user; the callback applies the
+          background-task guard). The callback prints nothing on the stop path, satisfying codex's
+          rule that plain-text stdout is invalid for ``Stop`` (JSON-only).
+        - **UserPromptSubmit** → ``hook agent prompt`` (flip to the agent, then print the phase
+          briefing + provisioning nudge — codex feeds a ``UserPromptSubmit`` hook's stdout back as
+          developer context, so the same channel claude relies on works here; ADR 0014 flag 6).
+
+        Codex's ``Stop``/``UserPromptSubmit`` don't support a ``matcher``, and codex has no
+        ``AskUserQuestion`` tool, so — unlike claude — we wire *no* ``PreToolUse``/``PostToolUse``
+        pair; the "agent is asking the user" turn state simply stays on the agent until the next Stop
+        (the documented degradation, ADR 0014 flag 7). Merged read-modify-write so it coexists with
+        the MCP / trust / overview keys already in ``config.toml``.
         """
         config = home / self.config_dirname / self.CONFIG_FILE
-        config.parent.mkdir(parents=True, exist_ok=True)
+        with update_toml_config(config) as data:
+            hooks = data.setdefault("hooks", {})
+            hooks["Stop"] = [_command_hook("user", "stop")]
+            hooks["UserPromptSubmit"] = [_command_hook("agent", "prompt")]
         return config
 
     def write_mcp_config(self, config_dir: Path, service_url: str) -> Path:
@@ -173,15 +207,28 @@ class CodexAgentCLI(AgentCLI):
         return data if isinstance(data, dict) else {}
 
     def has_live_background_task(self, payload: dict[str, Any]) -> bool:
-        """Whether the Stop payload reports still-running background work — **M3.6**, ``False`` for now.
+        """Whether the Stop payload reports still-running background work (gates the turn flip).
 
-        The turn-flip background-task gating needs codex's background-task payload shape (the
-        ``background_tasks`` analogue), which is ADR 0014 flag 2, owned by the Codex turn-flip hooks
-        slice (M3.6). Until then this degrades to the plain turn flip — exactly the safe degradation
-        claude already uses when the field is absent (an older CLI): the turn flips to the user on
-        Stop. Codex's hooks aren't wired yet either (see :meth:`write_settings`), so this isn't
-        reached in practice; it's implemented conservatively so it's correct the moment M3.6 wires it.
+        Codex's documented ``Stop`` payload (ADR 0014 flag 2, verified against the hooks schema) is
+        ``session_id`` / ``transcript_path`` / ``cwd`` / ``hook_event_name`` / ``model`` /
+        ``permission_mode`` / ``turn_id`` / ``stop_hook_active`` / ``last_assistant_message`` — it
+        carries **no** background-task array (unlike claude's ``background_tasks``). Codex's ``Stop``
+        fires only when the turn has genuinely ended, so there's nothing in flight to strand: the turn
+        flips to the user, matching claude's exact degradation when the field is absent (an older CLI).
+
+        We still parse a ``background_tasks`` array the same way claude does — err toward *live* for
+        any non-terminal/unrecognised entry — so that if a future codex build adds one, the gate
+        lights up with no code change. Today no such field is sent, so this returns ``False``.
         """
+        tasks = payload.get("background_tasks")
+        if not isinstance(tasks, list):
+            return False
+        for task in tasks:
+            if not isinstance(task, dict):
+                return True  # unrecognised shape → assume live (don't hand the turn back early)
+            status = task.get("status")
+            if not isinstance(status, str) or status.strip().lower() not in _TERMINAL_STATUSES:
+                return True
         return False
 
     def launch_argv(
