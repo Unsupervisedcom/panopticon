@@ -1,8 +1,8 @@
 """The **agent-CLI adapter seam** (ADR 0014): the contract, one method per claude-specific decision.
 
 This module holds only the :class:`AgentCLI` ABC + the registry that maps a CLI name to its adapter;
-each concrete adapter is a sibling module (:mod:`panopticon.container.cli.claude` today, a codex one
-next). The launcher (:mod:`panopticon.container.agent`) is CLI-agnostic — it drives a deterministic
+each concrete adapter is a sibling module (:mod:`panopticon.container.cli.claude` and
+:mod:`panopticon.container.cli.codex`). The launcher (:mod:`panopticon.container.agent`) is CLI-agnostic — it drives a deterministic
 *bootstrap* (render skills + turn-flip hooks, wire MCP, seed trust) then a *launch* (exec the real
 CLI) against an adapter, holding no ``claude`` literal. A second CLI drops in by implementing the ABC
 and registering under its name (the same shape as workflow discovery, ADR 0004).
@@ -114,5 +114,7 @@ def get_agent_cli(name: str | None = None) -> AgentCLI:
 def _load_builtin_adapters() -> None:
     """Register the built-in adapters (imported lazily so this module holds only the contract)."""
     from panopticon.container.cli.claude import ClaudeAgentCLI
+    from panopticon.container.cli.codex import CodexAgentCLI
 
     register_agent_cli(ClaudeAgentCLI)
+    register_agent_cli(CodexAgentCLI)

@@ -55,7 +55,8 @@ src/panopticon/
                    # → render skills + operations, point it at the /mcp server, deliver the workflow
                    # overview to the agent's context → launch the CLI); cli/ = the agent-CLI adapter
                    # package (ADR 0014): cli/base.py = the AgentCLI seam (ABC) + registry,
-                   # cli/claude.py = ClaudeAgentCLI, the sole adapter (Codex next, a sibling module)
+                   # cli/claude.py = ClaudeAgentCLI + cli/codex.py = CodexAgentCLI (M3.5: config,
+                   # skills, MCP, AGENTS.md overview, launch/resume, auth; turn-flip hooks = M3.6)
                    # — the ONLY LLM pkg
 docker/Dockerfile  # base task-container image (ADR 0005 base layer): python + git + bash +
                    # the panopticon package + the `claude` CLI the agent execs; runs as the
