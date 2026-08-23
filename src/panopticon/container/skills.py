@@ -32,13 +32,17 @@ def _task_id_note(task_id: str) -> str:
 
 
 def render_command(skill: Skill, task_id: str) -> str:
-    """The `.claude/commands/<name>.md` body for a skill: frontmatter + the agent procedure."""
+    """The rendered ``<name>.md`` body for a skill: frontmatter + the agent procedure.
+
+    CLI-agnostic — both adapters write this same text; only the destination dir differs.
+    """
     return f"---\ndescription: {skill.description}\n---\n{skill.instructions}\n{_task_id_note(task_id)}"
 
 
 def render_operation(name: str, target_state: str, task_id: str) -> str:
-    """The `.claude/commands/<name>.md` body for a core operation (advance/drop/…).
+    """The rendered ``<name>.md`` body for a core operation (advance/drop/…).
 
+    CLI-agnostic — both adapters write this same text; only the destination dir differs.
     Operations are the workflow's **declared, gated** moves; the agent applies one by name via the
     `apply_operation` tool (not by editing state directly), which starts a new agentic turn.
     """
