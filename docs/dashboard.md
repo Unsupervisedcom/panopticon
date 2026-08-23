@@ -12,11 +12,13 @@ kept in sync with the `HOTKEYS` keymap and the modal `BINDINGS` in
 | `t` | Attach to the task's container tmux session |
 | `n` | New task (pick repo, then workflow, then describe the work) |
 | `x` | Drop the highlighted task |
-| `d` | Show/hide the detail pane |
+| `d` | Show the task's detail in a modal |
 | `o` | Toggle sort order: created ↔ updated |
 | `r` | Refresh from the task service now |
 | `R` | Respawn a down task (releases its claim so the runner re-spawns it) |
 | `p` | Open the task's URL in the browser |
+| `e` | Snooze the highlighted task for 12 hours |
+| `E` | Snooze the highlighted task indefinitely |
 | `a` | List the task's artifacts |
 | `g` | Open the repo config screen |
 | `s` | Switch to the task-service session |
@@ -56,12 +58,19 @@ choice, the `a` artifact list).
 `Enter` on a governing task (one with governed children) toggles its sub-tasks between a single dim
 placeholder row and the full list. This is display-only — it does not touch the task service.
 
+## Task detail modal (`d`)
+
+| Key | Action |
+| --- | --- |
+| `Esc` / `d` / `q` | Close |
+
 ## Artifacts modal (`a`)
 
 | Key | Action |
 | --- | --- |
 | `Enter` | Open the selected artifact with the host's default handler |
 | `e` | Open the on-disk file in place (when the dashboard shares the artifact store) |
+| `Ctrl-a` | Attach new local files to the task |
 | `Esc` | Cancel |
 
 ## New-task memo (`n`)
@@ -71,7 +80,18 @@ placeholder row and the full list. This is display-only — it does not touch th
 | `Enter` | Submit the memo as the agent's initial prompt |
 | `Ctrl-s` | Set the memo without submitting it (an unsent paste) |
 | `Ctrl-g` | Edit the memo in `$EDITOR` |
+| `Ctrl-a` | Attach local files as the new task's artifacts |
 | `Esc` | Cancel |
+
+## Attach-files modal (`Ctrl-a`)
+
+Reached from the new-task memo or the artifacts modal.
+
+| Key | Action |
+| --- | --- |
+| `Enter` (path field) | Add the typed file to the queue |
+| `Enter` (on a queued file) | Remove it from the queue |
+| `Esc` | Done — return with the queued files |
 
 ## Repos modal (`g`)
 
