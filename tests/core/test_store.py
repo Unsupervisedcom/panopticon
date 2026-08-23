@@ -209,22 +209,30 @@ async def test_url_round_trips(store: Store) -> None:
     assert (await store.get_task("t1")).url == "https://github.com/acme/widgets/pull/7"  # type: ignore[union-attr]
 
 
-async def test_tokens_used_round_trips(store: Store) -> None:
+async def test_snoozed_until_round_trips(store: Store) -> None:
     await _seed_repo(store)
     task = await _new_task(store)
-    assert (await store.get_task("t1")).tokens_used is None  # type: ignore[union-attr]
-    task.tokens_used = 12750
+    assert (await store.get_task("t1")).snoozed_until is None  # type: ignore[union-attr]
+    task.snoozed_until = "2026-08-06T03:00:00+00:00"
     await store.save_task(task)
-    assert (await store.get_task("t1")).tokens_used == 12750  # type: ignore[union-attr]
+    assert (
+        await store.get_task("t1")  # type: ignore[union-attr]
+    ).snoozed_until == "2026-08-06T03:00:00+00:00"
+    task.snoozed_until = None
+    await store.save_task(task)
+    assert (await store.get_task("t1")).snoozed_until is None  # type: ignore[union-attr]
 
 
-async def test_token_estimate_round_trips(store: Store) -> None:
+async def test_sort_weight_defaults_to_zero_and_round_trips(store: Store) -> None:
     await _seed_repo(store)
     task = await _new_task(store)
-    assert (await store.get_task("t1")).token_estimate is None  # type: ignore[union-attr]
-    task.token_estimate = 500_000
+    assert (await store.get_task("t1")).sort_weight == 0  # type: ignore[union-attr]  # default
+    task.sort_weight = 10
     await store.save_task(task)
-    assert (await store.get_task("t1")).token_estimate == 500_000  # type: ignore[union-attr]
+    assert (await store.get_task("t1")).sort_weight == 10  # type: ignore[union-attr]
+    task.sort_weight = -3
+    await store.save_task(task)
+    assert (await store.get_task("t1")).sort_weight == -3  # type: ignore[union-attr]
 
 
 async def test_blocked_marker_round_trips(store: Store) -> None:
@@ -482,15 +490,16 @@ def _fully_populated_task() -> Task:
         initial_prompt="review your plan",
         slug="fix-the-widget",
         url="https://github.com/acme/widgets/pull/7",
+        snoozed_until="2026-08-06T03:00:00+00:00",
         branch="panopticon/fix-the-widget",
         clone="/clones/t-full",
         claimed_by="local",
-        tokens_used=87500,
-        token_estimate=500_000,
-        starting_model="opus",
+        starting_model="primary",
+        agent_cli="codex",
         governor_task_id="t-governor",
         created_at="t1",
         updated_at="t2",
+        sort_weight=5,
         depends_on_task_ids=["t-dep"],
         history=[
             HistoryEntry(

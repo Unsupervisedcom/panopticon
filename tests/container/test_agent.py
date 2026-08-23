@@ -1,13 +1,16 @@
-"""The in-container agent launcher: the deterministic bootstrap (render the workflow's skills +
-turn-flip hooks, link credentials) then launch. No LLM — the real `claude` exec is a fake here."""
+"""The CLI-agnostic agent launcher: the deterministic bootstrap (resolve the adapter, render the
+workflow's skills + turn-flip hooks, wire MCP + trust) then launch. No LLM — the real CLI exec is a
+fake here. The claude-specific seams live in :mod:`tests.container.test_claude`."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from panopticon.container import agent
+from panopticon.container.cli.claude import ClaudeAgentCLI
 
 
 class _FakeClient:
@@ -40,171 +43,6 @@ class _FakeClient:
         return {}
 
 
-def test_render_skills_writes_command_files(tmp_path: Path) -> None:
-    client = _FakeClient(
-        [{"name": "babysit-ci", "description": "Watch CI.", "instructions": "loop"}]
-    )
-    agent.render_skills(client, "t1", tmp_path)  # type: ignore[arg-type]
-    assert (
-        (tmp_path / ".claude" / "commands" / "babysit-ci.md")
-        .read_text()
-        .startswith("---\ndescription: Watch CI.")
-    )
-
-
-def test_render_operations_writes_a_command_per_operation(tmp_path: Path) -> None:
-    client = _FakeClient([], {"advance": "COMPLETE", "drop": "DROPPED"})
-    agent.render_operations(client, "t1", tmp_path)  # type: ignore[arg-type]
-    commands = tmp_path / ".claude" / "commands"
-    assert {p.name for p in commands.glob("*.md")} == {"advance.md", "drop.md"}
-    body = (commands / "advance.md").read_text()
-    assert "apply_operation" in body and "COMPLETE" in body  # tells the agent how + the target
-    assert 'task_id="t1"' in body  # the container's task id, injected for the MCP tool call
-
-
-def test_claude_argv_starts_fresh_without_a_session(tmp_path: Path) -> None:
-    # Unattended container, per-task clone → skip permission prompts (no operator to answer them).
-    assert agent._claude_argv(tmp_path, Path("/work/repo")) == [
-        "claude",
-        "--dangerously-skip-permissions",
-    ]
-
-
-def test_claude_argv_continues_an_existing_session(tmp_path: Path) -> None:
-    project = tmp_path / "projects" / "-work-repo"  # claude's <config>/projects/<cwd, / → ->
-    project.mkdir(parents=True)
-    (project / "session.jsonl").write_text("{}")
-    assert agent._claude_argv(tmp_path, Path("/work/repo")) == [
-        "claude",
-        "--dangerously-skip-permissions",
-        "--continue",
-    ]
-
-
-def test_claude_argv_appends_initial_prompt_on_first_session(tmp_path: Path) -> None:
-    argv = agent._claude_argv(tmp_path, Path("/work/repo"), initial_prompt="review your plan")
-    assert argv == ["claude", "--dangerously-skip-permissions", "review your plan"]
-
-
-def test_claude_argv_omits_initial_prompt_when_continuing_a_session(tmp_path: Path) -> None:
-    project = tmp_path / "projects" / "-work-repo"
-    project.mkdir(parents=True)
-    (project / "session.jsonl").write_text("{}")
-    argv = agent._claude_argv(tmp_path, Path("/work/repo"), initial_prompt="review your plan")
-    assert "--continue" in argv
-    assert "review your plan" not in argv
-
-
-def test_claude_argv_appends_interrupt_prompt_on_respawn_for_agent_turn(tmp_path: Path) -> None:
-    project = tmp_path / "projects" / "-work-repo"
-    project.mkdir(parents=True)
-    (project / "session.jsonl").write_text("{}")
-    argv = agent._claude_argv(tmp_path, Path("/work/repo"), turn="agent")
-    assert argv == [
-        "claude",
-        "--dangerously-skip-permissions",
-        "--continue",
-        agent.INTERRUPT_PROMPT,
-    ]
-
-
-def test_claude_argv_omits_interrupt_prompt_on_respawn_for_user_turn(tmp_path: Path) -> None:
-    project = tmp_path / "projects" / "-work-repo"
-    project.mkdir(parents=True)
-    (project / "session.jsonl").write_text("{}")
-    argv = agent._claude_argv(tmp_path, Path("/work/repo"), turn="user")
-    assert argv == ["claude", "--dangerously-skip-permissions", "--continue"]
-
-
-def test_write_mcp_config_points_claude_at_the_task_service_mcp(tmp_path: Path) -> None:
-    import json
-
-    path = agent.write_mcp_config(tmp_path, "http://host.docker.internal:8000")
-    assert path == tmp_path / agent.MCP_CONFIG_FILE
-    cfg = json.loads(path.read_text())
-    server = cfg["mcpServers"]["panopticon"]
-    assert server == {"type": "http", "url": "http://host.docker.internal:8000/mcp"}
-
-
-def test_claude_argv_adds_strict_mcp_config_when_present(tmp_path: Path) -> None:
-    agent.write_mcp_config(tmp_path, "http://svc:8000")
-    argv = agent._claude_argv(tmp_path, Path("/work/repo"))
-    assert argv == [
-        "claude",
-        "--dangerously-skip-permissions",
-        "--mcp-config",
-        str(tmp_path / agent.MCP_CONFIG_FILE),
-        "--strict-mcp-config",
-    ]
-
-
-def test_write_workflow_overview_writes_the_map_else_skips(tmp_path: Path) -> None:
-    path = agent.write_workflow_overview(tmp_path, "# github-peer-reviewed\nphases…")
-    assert (
-        path == tmp_path / agent.WORKFLOW_OVERVIEW_FILE
-        and path.read_text() == "# github-peer-reviewed\nphases…"
-    )
-    assert agent.write_workflow_overview(tmp_path / "empty", "  ") is None  # no overview → skipped
-
-
-def test_claude_argv_appends_the_workflow_overview_to_the_system_prompt(tmp_path: Path) -> None:
-    agent.write_workflow_overview(tmp_path, "# the workflow map")
-    argv = agent._claude_argv(tmp_path, Path("/work/repo"))
-    i = argv.index("--append-system-prompt")
-    assert (
-        argv[i + 1] == "# the workflow map"
-    )  # the map's contents go inline into the system prompt
-
-
-def test_claude_argv_passes_model_on_first_run(tmp_path: Path) -> None:
-    argv = agent._claude_argv(tmp_path, Path("/work/repo"), starting_model="opus")
-    assert argv == ["claude", "--dangerously-skip-permissions", "--model", "opus"]
-
-
-def test_claude_argv_omits_model_on_resume(tmp_path: Path) -> None:
-    project = tmp_path / "projects" / "-work-repo"
-    project.mkdir(parents=True)
-    (project / "session.jsonl").write_text("{}")
-    argv = agent._claude_argv(tmp_path, Path("/work/repo"), starting_model="opus")
-    assert "--model" not in argv
-    assert "--continue" in argv
-
-
-def test_claude_argv_passes_model_before_initial_prompt_on_first_run(tmp_path: Path) -> None:
-    argv = agent._claude_argv(
-        tmp_path, Path("/work/repo"), initial_prompt="start now", starting_model="opus"
-    )
-    assert argv == ["claude", "--dangerously-skip-permissions", "--model", "opus", "start now"]
-
-
-def test_trust_workspace_seeds_acceptance_for_a_fresh_config(tmp_path: Path) -> None:
-    import json
-
-    config_dir = tmp_path / ".claude"
-    agent.trust_workspace(config_dir, Path("/workspace"))
-    data = json.loads((config_dir / ".claude.json").read_text())
-    assert data["projects"]["/workspace"]["hasTrustDialogAccepted"] is True
-    assert data["hasCompletedOnboarding"] is True
-    assert data["hasAcknowledgedCostThreshold"] is True  # suppresses the API-key cost dialog
-
-
-def test_trust_workspace_merges_and_is_idempotent(tmp_path: Path) -> None:
-    import json
-
-    config_dir = tmp_path / ".claude"
-    config_dir.mkdir()
-    # claude already wrote config (incl. an existing project) — we must not clobber it.
-    (config_dir / ".claude.json").write_text(
-        json.dumps({"userID": "u", "projects": {"/other": {"history": []}}})
-    )
-    agent.trust_workspace(config_dir, Path("/workspace"))
-    agent.trust_workspace(config_dir, Path("/workspace"))  # idempotent
-    data = json.loads((config_dir / ".claude.json").read_text())
-    assert data["userID"] == "u"  # preserved
-    assert data["projects"]["/other"] == {"history": []}  # preserved
-    assert data["projects"]["/workspace"]["hasTrustDialogAccepted"] is True
-
-
 def test_main_bootstraps_into_a_container_local_config_dir_then_launches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -224,18 +62,83 @@ def test_main_bootstraps_into_a_container_local_config_dir_then_launches(
     assert (commands / "s.md").exists()  # skills rendered...
     assert (commands / "advance.md").exists()  # ...operations rendered...
     assert (tmp_path / ".claude" / "settings.json").exists()  # ...turn-flip hooks written...
-    assert (tmp_path / ".claude" / agent.MCP_CONFIG_FILE).exists()  # ...MCP server wired...
     assert (
-        tmp_path / ".claude" / agent.WORKFLOW_OVERVIEW_FILE
+        tmp_path / ".claude" / ClaudeAgentCLI.MCP_CONFIG_FILE
+    ).exists()  # ...MCP server wired...
+    assert (
+        tmp_path / ".claude" / ClaudeAgentCLI.WORKFLOW_OVERVIEW_FILE
     ).exists()  # ...workflow map written...
-    import json
-
-    trust = json.loads((tmp_path / ".claude" / ".claude.json").read_text())
+    trust = json.loads((tmp_path / ".claude" / ClaudeAgentCLI.CONFIG_FILE).read_text())
     assert (
         trust["projects"][str(Path.cwd())]["hasTrustDialogAccepted"] is True
     )  # ...trust seeded...
     # ...launched with the container-local config dir, then the container is stopped on agent exit
     assert events == [f"launch:{tmp_path / '.claude'}", "on_exit"]
+
+
+def test_main_resolves_the_adapter_from_the_agent_cli_env_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The launcher holds no `claude` literal: it resolves the adapter by name and drives it. A fake
+    # adapter proves the bootstrap-then-launch sequence runs against whatever `PANOPTICON_AGENT_CLI`
+    # selects (default `claude`), and that the config dir derives from the adapter's config_dirname.
+    monkeypatch.setenv("PANOPTICON_SERVICE_URL", "http://svc")
+    monkeypatch.setenv("PANOPTICON_TASK_ID", "t1")
+    calls: list[str] = []
+
+    class _FakeCLI(ClaudeAgentCLI):
+        name = "fake"
+        config_dirname = ".fake"
+
+        def auth_missing_detail(self, env: object) -> str | None:
+            calls.append("auth")
+            return None
+
+        def render_skills(self, client: object, task_id: str, home: Path) -> list[Path]:
+            calls.append(f"skills:{home}")
+            return []
+
+        def render_operations(self, client: object, task_id: str, home: Path) -> list[Path]:
+            calls.append("operations")
+            return []
+
+        def write_settings(self, home: Path) -> Path:
+            calls.append("settings")
+            return home
+
+        def write_mcp_config(self, config_dir: Path, service_url: str) -> Path:
+            calls.append(f"mcp:{config_dir}")
+            return config_dir
+
+        def write_workflow_overview(self, config_dir: Path, overview: str) -> Path | None:
+            calls.append("overview")
+            return None
+
+        def trust_workspace(self, config_dir: Path, cwd: Path) -> Path:
+            calls.append("trust")
+            return config_dir
+
+        def launch(self, config_dir: Path) -> None:
+            calls.append(f"launch:{config_dir}")
+
+    agent.main(
+        client_factory=lambda url: _FakeClient([]),  # type: ignore[arg-type,return-value]
+        home=tmp_path,
+        agent_cli=_FakeCLI(),
+        on_exit=lambda: calls.append("on_exit"),
+    )
+    # auth first, then the full bootstrap into <home>/.fake, then the adapter's own launch, then stop
+    assert calls == [
+        "auth",
+        f"skills:{tmp_path}",
+        "operations",
+        "settings",
+        f"mcp:{tmp_path / '.fake'}",
+        "overview",
+        "trust",
+        f"launch:{tmp_path / '.fake'}",
+        "on_exit",
+    ]
 
 
 def test_main_fails_fast_when_no_auth_token_is_set(

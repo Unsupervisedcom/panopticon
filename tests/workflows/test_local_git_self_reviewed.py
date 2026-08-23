@@ -62,13 +62,12 @@ def test_foreground_states_are_user_advanced_merging_is_agent_driven() -> None:
 
 def test_responsibilities_are_local_git_specific() -> None:
     # PLANNING: same plan convention as the forge flows.
-    assert {r.key for r in WF.responsibilities("PLANNING")} == {"plan-written", "token-estimated"}
+    assert {r.key for r in WF.responsibilities("PLANNING")} == {"plan-written"}
     by_key = {r.key: r for r in WF.responsibilities("PLANNING")}
     assert (
         "plan.md" in by_key["plan-written"].description
         and "markdown" in by_key["plan-written"].description
     )
-    assert "set_token_estimate" in by_key["token-estimated"].description
 
     # ITERATING: no forge obligations (no committed-pushed, no ci-passing, no pr-updated).
     assert {r.key for r in WF.responsibilities("ITERATING")} == {
@@ -152,7 +151,7 @@ def test_full_lifecycle_planning_to_complete() -> None:
 def test_cannot_advance_from_planning_with_unresolved_responsibilities() -> None:
     task = WF.start_task("t1", "r1", at="t0")
     with pytest.raises(ResponsibilitiesNotMet):
-        WF.apply_transition(task, "ITERATING", at="t1")  # plan-written/token-estimated PENDING
+        WF.apply_transition(task, "ITERATING", at="t1")  # plan-written PENDING
 
 
 def test_cannot_advance_from_iterating_with_unresolved_responsibilities() -> None:

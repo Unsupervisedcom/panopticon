@@ -128,22 +128,6 @@ def test_set_url_over_rest(client: TaskServiceClient) -> None:
     assert client.get_task(task_id)["url"] == "https://github.com/acme/widgets/pull/7"  # persisted
 
 
-def test_set_tokens_used_over_rest(client: TaskServiceClient) -> None:
-    task_id = client.create_task("r1", "spike")["id"]
-    assert client.get_task(task_id)["tokens_used"] is None  # unset on create
-    out = client.set_tokens_used(task_id, 12750)
-    assert out["tokens_used"] == 12750
-    assert client.get_task(task_id)["tokens_used"] == 12750  # persisted
-
-
-def test_set_token_estimate_over_rest(client: TaskServiceClient) -> None:
-    task_id = client.create_task("r1", "spike")["id"]
-    assert client.get_task(task_id)["token_estimate"] is None  # unset on create
-    out = client.set_token_estimate(task_id, 500000)
-    assert out["token_estimate"] == 500000
-    assert client.get_task(task_id)["token_estimate"] == 500000  # persisted
-
-
 def test_set_dependencies_over_rest(client: TaskServiceClient) -> None:
     task_a = client.create_task("r1", "spike")["id"]
     task_b = client.create_task("r1", "spike")["id"]

@@ -51,8 +51,13 @@ src/panopticon/
                    # spawns one task
   container/       # entrypoint (`python -m panopticon.container` = connect/register/slug/
                    # heartbeat liveness) + agent.py (`-m panopticon.container.agent` = the tmux
-                   # pane's launcher: render skills + operations, point claude at the /mcp server,
-                   # put the workflow overview in its system prompt → exec `claude`) — the ONLY LLM pkg
+                   # pane's CLI-agnostic launcher: resolve the AgentCLI adapter from PANOPTICON_AGENT_CLI
+                   # → render skills + operations, point it at the /mcp server, deliver the workflow
+                   # overview to the agent's context → launch the CLI); cli/ = the agent-CLI adapter
+                   # package (ADR 0014): cli/base.py = the AgentCLI seam (ABC) + registry,
+                   # cli/claude.py = ClaudeAgentCLI + cli/codex.py = CodexAgentCLI (M3.5: config,
+                   # skills, MCP, AGENTS.md overview, launch/resume, auth; turn-flip hooks = M3.6)
+                   # — the ONLY LLM pkg
 docker/Dockerfile  # base task-container image (ADR 0005 base layer): python + git + bash +
                    # the panopticon package + the `claude` CLI the agent execs; runs as the
                    # unprivileged `panopticon` user. docker/entrypoint.sh = remap that user to the
@@ -282,7 +287,8 @@ on every PR (the same commands the Makefile wraps).
 - **Skill** — an agent-driven procedure exposed *in the container* (ADR 0004), on top of the core
   operations. Declared **CLI-agnostically** as a `Skill(name, description, instructions)` spec; the
   in-container harness renders it to the active CLI surface (`container/skills.py` → claude
-  `.claude/commands/<name>.md`; other CLIs in M3). Exposed over REST (`GET /tasks/{id}/skills`).
+  `.claude/commands/<name>.md`; other CLIs via the `AgentCLI` adapter seam, ADR 0014). Exposed
+  over REST (`GET /tasks/{id}/skills`).
   The agnostic **`provision`** skill (`core/provisioning.py`) is exposed on **every** task (name
   the task → set its slug → the session service branches the clone, ADR 0011); workflow-specific
   skills (e.g. github-peer-reviewed's forge skills) follow it, and a workflow may define none.

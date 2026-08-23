@@ -198,6 +198,24 @@ class Repo:
     hook_file: str | None = None
     enabled_workflows: list[str] = field(default_factory=list)
     disabled_workflows: list[str] = field(default_factory=list)
+    #: The repo's default agent CLI — the one a task uses unless it overrides it (ADR 0014 §3).
+    #: Resolved host-side at spawn (see :func:`resolve_agent_cli`) and passed into the container as
+    #: ``PANOPTICON_AGENT_CLI``; it also drives the base-image variant + config-dir mount. Defaults
+    #: to ``"claude"`` so existing repos are unchanged.
+    agent_cli: str = "claude"
+
+
+#: The CLI a task falls back to when neither the task nor its repo names one (ADR 0014 §2/§3).
+DEFAULT_AGENT_CLI = "claude"
+
+
+def resolve_agent_cli(task_agent_cli: str | None, repo_agent_cli: str | None) -> str:
+    """Resolve a task's effective agent CLI: its own override → the repo default → ``"claude"``.
+
+    The CLI-selection resolution order of ADR 0014 §3, as a pure host-side helper (the session
+    service resolves it from the task + repo records at spawn; the control plane runs no CLI logic).
+    """
+    return task_agent_cli or repo_agent_cli or DEFAULT_AGENT_CLI
 
 
 @dataclass(frozen=True)
@@ -252,6 +270,10 @@ class Task:
     #: (cloude-cade's ``pr_url``). Set via :meth:`TaskService.set_url`; the dashboard's ``p``
     #: hotkey opens it. ``None`` until something records one (e.g. the ``open-pr`` skill).
     url: str | None = None
+    #: An operator-owned attention mute deadline, recorded exactly as an ISO-8601 timestamp.
+    #: ``None`` means not snoozed; display code alone decides whether a finite deadline is active
+    #: (the control plane never compares it to a clock). Set via :meth:`TaskService.set_snooze`.
+    snoozed_until: str | None = None
     #: The git refs the session service provisions for this task once the slug is set (ADR
     #: 0010/0011): the slug-named branch and the path of the per-task ``clone`` it works in **on
     #: the host where the container runs**. The task service only records these — it does no git
@@ -264,22 +286,18 @@ class Task:
     #: or have it respawned. Distinct from liveness — a claimed task whose container died is
     #: "claimed but down".
     claimed_by: str | None = None
-    #: Cumulative **cost-weighted** tokens the ``claude`` agent in this task's container has used,
-    #: expressed in input-equivalent units (cache-reads ≈0.1×, output ≈5×). The container's Stop
-    #: hook reports it via :meth:`TaskService.set_tokens_used`, recomputing the session total each
-    #: turn; the dashboard shows it in short human form. ``None`` until the first report. Values
-    #: recorded before cost-weighting was introduced are raw four-tier sums and are not comparable.
-    tokens_used: int | None = None
-    #: The agent's *forecast* of the total tokens this task will consume, set once during planning
-    #: via :meth:`TaskService.set_token_estimate` (distinct from ``tokens_used``, the running
-    #: actual). The GithubForge workflows and the orchestrator record it when producing the plan.
-    #: ``None`` until estimated.
-    token_estimate: int | None = None
-    #: The model the agent should start with — e.g. ``"opus"``. Seeded from
+    #: The abstract model **tier** the agent should start with — a CLI-agnostic label like
+    #: ``"primary"``, not a provider's concrete model name (ADR 0014 §3a). Seeded from
     #: :attr:`~panopticon.core.workflow.Workflow.default_model` when the task is created;
-    #: injected as ``PANOPTICON_STARTING_MODEL`` at spawn so the agent can pass ``--model``
-    #: to ``claude`` on first launch. ``None`` means no model preference (claude picks its default).
+    #: injected as ``PANOPTICON_STARTING_MODEL`` at spawn, where the in-container ``AgentCLI``
+    #: adapter resolves the tier to that CLI's concrete ``--model`` on first launch. The control
+    #: plane never interprets it. ``None`` means no tier preference (the CLI picks its default).
     starting_model: str | None = None
+    #: A per-task **override** of the repo's default agent CLI (ADR 0014 §3); ``None`` means "use
+    #: the repo default". Resolved host-side at spawn via :func:`resolve_agent_cli`, then passed into
+    #: the container as ``PANOPTICON_AGENT_CLI`` (which also picks the base-image variant + config
+    #: mount). The control plane only records it — it runs no CLI-specific logic.
+    agent_cli: str | None = None
     #: The task that *governs* (oversees) this one — its ``id``. Set by the orchestrator on the
     #: tasks it creates so the relationship is recorded; also settable manually via
     #: :meth:`TaskService.set_governor`. ``None`` for ungoverned tasks.
@@ -290,6 +308,11 @@ class Task:
     #: ISO-8601 timestamp of the last mutation (any field change or history update), stamped by
     #: the task service. ``None`` only for tasks created before this field was introduced.
     updated_at: str | None = None
+    #: An operator-owned sort priority for the dashboard. Ranks **above** the ``updated_at``
+    #: timestamp but **below** state/turn: within a section and turn, a higher weight sorts first,
+    #: ties falling back to the timestamp. Default ``0`` leaves ordering unchanged. Set via
+    #: :meth:`TaskService.set_sort_weight`.
+    sort_weight: int = 0
     #: Task IDs that must reach a terminal state before work on this task should begin.
     #: Tracking only — the state machine does not enforce this constraint.
     depends_on_task_ids: list[str] = field(default_factory=list)

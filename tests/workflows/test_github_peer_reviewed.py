@@ -58,15 +58,13 @@ def test_foreground_states_are_user_advanced_merging_is_agent_driven() -> None:
 def test_responsibilities_mirror_cloude_cade_dod() -> None:
     # cloude-cade's per-stage dod_bullets (bin/cloude_stages.py), agent-only (no user-approval),
     # DB state replacing the terminal org bullets, and draft-PR creation moved to provisioning.
-    assert {r.key for r in WF.responsibilities("PLANNING")} == {"plan-written", "token-estimated"}
+    assert {r.key for r in WF.responsibilities("PLANNING")} == {"plan-written"}
     # the plan is a markdown artifact (`plan.md`), so the dashboard opens it with the right handler
     by_key = {r.key: r for r in WF.responsibilities("PLANNING")}
     assert (
         "plan.md" in by_key["plan-written"].description
         and "markdown" in by_key["plan-written"].description
     )
-    # planning also forecasts the task's cost via the set_token_estimate tool
-    assert "set_token_estimate" in by_key["token-estimated"].description
     assert {r.key for r in WF.responsibilities("ITERATING")} == {
         "plan-implemented",
         "requests-implemented",
@@ -176,9 +174,7 @@ def test_turn_flips_to_user_on_entering_a_foreground_state() -> None:
 def test_cannot_advance_with_unresolved_responsibilities() -> None:
     task = WF.start_task("t1", "r1", at="t0")
     with pytest.raises(ResponsibilitiesNotMet):
-        WF.apply_transition(
-            task, "ITERATING", at="t1"
-        )  # plan-written/token-estimated still PENDING
+        WF.apply_transition(task, "ITERATING", at="t1")  # plan-written still PENDING
 
 
 def test_partial_resolution_still_gates() -> None:

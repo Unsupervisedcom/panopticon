@@ -1,6 +1,6 @@
 [project]
 name = "panopticon-app"
-version = "0.0.3"
+version = "0.0.5"
 description = "Self-hosted control plane for running a fleet of coding agents in isolated containers, governed by configurable workflows."
 requires-python = ">=3.11"
 license = "MIT"
@@ -12,8 +12,9 @@ dependencies = [
     "uvicorn>=0.29",
     "httpx>=0.27",
     "textual>=8.2.7",
-    "mcp>=1.27.2",
+    "mcp>=1.27.2,<2",
     "aiosqlite>=0.20",
+    "tomli-w>=1.0",
 ]
 
 [project.scripts]

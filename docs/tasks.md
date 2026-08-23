@@ -73,8 +73,6 @@ See [Provisioning](#provisioning) below.
 | Property | Meaning |
 |---|---|
 | `url` | An external URL for the task — usually its pull request. Set via the `set_url` tool; the dashboard's `p` hotkey opens it. |
-| `token_estimate` | The agent's forecast of total cost-weighted tokens, set once during planning. |
-| `tokens_used` | Cumulative cost-weighted tokens actually consumed (input-equivalent units: cache-reads ≈0.1×, output ≈5×), reported each turn. |
 | `depends_on_task_ids` | Tasks that should reach a terminal state before this one begins. **Tracking only** — the state machine does not enforce it. |
 | `governor_task_id` | The task that *governs* (oversees) this one, set by an orchestrator on the tasks it creates. `None` for ungoverned tasks. |
 | `created_at` / `updated_at` | ISO-8601 timestamps: `created_at` stamped once, `updated_at` on every mutation. The state machine itself is clock-free — the task service passes timestamps in. |
@@ -134,8 +132,8 @@ PLANNING → ITERATING → MERGING → COMPLETE
 (plus `DROPPED`, reachable from any state.)
 
 - **PLANNING** (starts on you, you advance) — the agent collects requirements and writes a
-  `plan.md` artifact plus a token estimate; those are its responsibilities. You review the
-  plan and advance when satisfied.
+  `plan.md` artifact; that is its responsibility. You review the plan and advance when
+  satisfied.
 - **ITERATING** (agent acts, you advance) — the agent implements, tests, commits and pushes,
   opens the PR and records its URL. You self-review the change; telling the agent to proceed
   to merging *is* your approval.
@@ -179,7 +177,7 @@ surface the task service exposes over MCP (and REST):
 - **Skills** — agent-driven procedures exposed in the container. Every task has the
   universal **`provision`** skill; a workflow adds its own (the GitHub workflows add
   `open-pr`, `babysit-ci`, `babysit-merge`).
-- **Tools** — MCP tools like `set_slug`, `set_url`, `set_token_estimate`,
+- **Tools** — MCP tools like `set_slug`, `set_url`,
   `set_blocked`, and `resolve_responsibility` that record specific facts on the task.
 
 Because all of this is mediated by the control plane, a task's record is always a

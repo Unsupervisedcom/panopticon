@@ -1,17 +1,24 @@
-"""Render a workflow's :class:`~panopticon.core.models.Skill` specs to the claude CLI surface.
+"""Render a workflow's :class:`~panopticon.core.models.Skill` specs to an agent CLI's command surface.
 
-The Skill spec is agent-CLI-agnostic (core, ADR 0004); this is the **claude-specific renderer**
-(M3 adds others): a skill becomes a `.claude/commands/<name>.md` slash-command the agent's CLI
-picks up. Pure — no LLM; it just writes files. The in-container harness fetches the active
-workflow's skills (over REST) and renders them before launching the agent (Slice 6c).
+The Skill spec is agent-CLI-agnostic (core, ADR 0004); the rendered **body** (frontmatter + the
+agent procedure) is CLI-agnostic too — claude and codex both read a ``---\\ndescription: …\\n---``
+markdown file. Only the destination dir differs: claude's ``.claude/commands/<name>.md`` slash-command
+vs codex's ``.codex/prompts/<name>.md`` custom prompt. So the writers take the ``subdir`` under the
+config home (defaulting to claude's), letting both adapters share the text. Pure — no LLM; it just
+writes files. The in-container harness fetches the active workflow's skills (over REST) and renders
+them before launching the agent (Slice 6c).
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 
 from panopticon.core.models import Skill
+
+#: The default destination (relative to the config home) — claude's slash-command dir. Codex passes
+#: its own (``(".codex", "prompts")``).
+CLAUDE_COMMANDS_SUBDIR: tuple[str, ...] = (".claude", "commands")
 
 
 # The panopticon MCP tools all take a ``task_id`` (the server is shared across tasks). The agent
@@ -25,13 +32,17 @@ def _task_id_note(task_id: str) -> str:
 
 
 def render_command(skill: Skill, task_id: str) -> str:
-    """The `.claude/commands/<name>.md` body for a skill: frontmatter + the agent procedure."""
+    """The rendered ``<name>.md`` body for a skill: frontmatter + the agent procedure.
+
+    CLI-agnostic — both adapters write this same text; only the destination dir differs.
+    """
     return f"---\ndescription: {skill.description}\n---\n{skill.instructions}\n{_task_id_note(task_id)}"
 
 
 def render_operation(name: str, target_state: str, task_id: str) -> str:
-    """The `.claude/commands/<name>.md` body for a core operation (advance/drop/…).
+    """The rendered ``<name>.md`` body for a core operation (advance/drop/…).
 
+    CLI-agnostic — both adapters write this same text; only the destination dir differs.
     Operations are the workflow's **declared, gated** moves; the agent applies one by name via the
     `apply_operation` tool (not by editing state directly), which starts a new agentic turn.
     """
@@ -44,9 +55,17 @@ def render_operation(name: str, target_state: str, task_id: str) -> str:
     )
 
 
-def write_commands(skills: Iterable[Skill], root: Path, task_id: str) -> list[Path]:
-    """Write each skill to ``<root>/.claude/commands/<name>.md``; return the paths written."""
-    commands_dir = root / ".claude" / "commands"
+def write_commands(
+    skills: Iterable[Skill],
+    root: Path,
+    task_id: str,
+    subdir: Sequence[str] = CLAUDE_COMMANDS_SUBDIR,
+) -> list[Path]:
+    """Write each skill to ``<root>/<subdir>/<name>.md``; return the paths written.
+
+    ``subdir`` defaults to claude's ``.claude/commands`` (byte-for-byte as before); codex passes
+    ``(".codex", "prompts")``."""
+    commands_dir = root.joinpath(*subdir)
     commands_dir.mkdir(parents=True, exist_ok=True)
     written = []
     for skill in skills:
@@ -56,9 +75,16 @@ def write_commands(skills: Iterable[Skill], root: Path, task_id: str) -> list[Pa
     return written
 
 
-def write_operation_commands(operations: Mapping[str, str], root: Path, task_id: str) -> list[Path]:
-    """Write each core operation (verb → target state) to ``<root>/.claude/commands/<verb>.md``."""
-    commands_dir = root / ".claude" / "commands"
+def write_operation_commands(
+    operations: Mapping[str, str],
+    root: Path,
+    task_id: str,
+    subdir: Sequence[str] = CLAUDE_COMMANDS_SUBDIR,
+) -> list[Path]:
+    """Write each core operation (verb → target state) to ``<root>/<subdir>/<verb>.md``.
+
+    ``subdir`` defaults to claude's ``.claude/commands``; codex passes ``(".codex", "prompts")``."""
+    commands_dir = root.joinpath(*subdir)
     commands_dir.mkdir(parents=True, exist_ok=True)
     written = []
     for name, target_state in operations.items():

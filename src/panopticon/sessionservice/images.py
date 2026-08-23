@@ -15,14 +15,22 @@ import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
-from panopticon.sessionservice.local_runner import DEFAULT_IMAGE, CommandRunner, _subprocess_run
+from panopticon.core.models import DEFAULT_AGENT_CLI
+from panopticon.sessionservice.local_runner import (
+    DEFAULT_IMAGE,
+    CommandRunner,
+    _subprocess_run,
+    base_image,
+)
 
 _log = logging.getLogger(__name__)
 
 
-def image_tag(workflow: str, repo_id: str) -> str:
-    """The composed image's tag for a (workflow, repo) pair (ADR 0005 naming)."""
-    return f"panopticon-{workflow}-{repo_id}"
+def image_tag(workflow: str, repo_id: str, agent_cli: str = DEFAULT_AGENT_CLI) -> str:
+    """The composed image's tag for a (workflow, repo, CLI) triple (ADR 0005 naming + ADR 0014 §4).
+
+    The CLI dimension keeps a repo built for two CLIs from colliding on one tag."""
+    return f"panopticon-{agent_cli}-{workflow}-{repo_id}"
 
 
 def compose_dockerfile(base: str, layers: Sequence[str]) -> str:
@@ -39,21 +47,33 @@ class ImageBuilder:
         self._run = run
 
     def build(
-        self, workflow: str, repo_id: str, layers: Sequence[str], *, verbose: bool = False
+        self,
+        workflow: str,
+        repo_id: str,
+        layers: Sequence[str],
+        *,
+        agent_cli: str = DEFAULT_AGENT_CLI,
+        verbose: bool = False,
     ) -> str:
-        """Compose base → ``layers`` and `docker build` it; return the image tag.
+        """Compose the CLI's base → ``layers`` and `docker build` it; return the image tag.
 
+        ``agent_cli`` selects the per-CLI base variant (:func:`base_image`, ADR 0014 §4) the layers
+        compose onto, and is part of the tag so the same repo built for two CLIs doesn't collide.
         ``verbose`` streams docker build output to the caller's stdout/stderr (visible in the
         runner's tmux session) instead of capturing it."""
-        tag = image_tag(workflow, repo_id)
-        dockerfile = compose_dockerfile(self._base, layers)
+        tag = image_tag(workflow, repo_id, agent_cli)
+        dockerfile = compose_dockerfile(base_image(agent_cli), layers)
         with tempfile.TemporaryDirectory() as context:
             (Path(context) / "Dockerfile").write_text(dockerfile)
             self._run(["docker", "build", "--tag", tag, context], verbose=verbose)
         return tag
 
-    def build_base(self, *, verbose: bool = False) -> None:
-        """Build the base image unconditionally from the bundled Dockerfile."""
+    def build_base(self, *, agent_cli: str | None = None, verbose: bool = False) -> None:
+        """Build the base image unconditionally from the bundled Dockerfile.
+
+        ``agent_cli`` selects the per-CLI base variant to tag (:func:`base_image`, ADR 0014 §4);
+        ``None`` builds this builder's configured base (the claude default)."""
+        base = base_image(agent_cli) if agent_cli else self._base
         import panopticon
         import panopticon.docker as _docker_pkg
 
@@ -64,7 +84,7 @@ class ImageBuilder:
                     "docker",
                     "build",
                     "--tag",
-                    self._base,
+                    base,
                     "--build-arg",
                     f"PANOPTICON_VERSION={panopticon.__version__}",
                     "--file",
@@ -74,16 +94,18 @@ class ImageBuilder:
                 verbose=verbose,
             )
 
-    def build_base_if_missing(self, *, verbose: bool = False) -> bool:
+    def build_base_if_missing(self, *, agent_cli: str | None = None, verbose: bool = False) -> bool:
         """Probe for the base image; build it from the bundled Dockerfile if absent.
 
-        Uses ``docker image inspect`` (fast, ~100 ms) to check presence. If the image is missing
-        builds it using the Dockerfile bundled with the installed package
-        (``panopticon.docker``). Returns ``True`` if a build was triggered, ``False`` if
-        the image was already present."""
-        result = self._run(["docker", "image", "inspect", self._base], check=False)
+        ``agent_cli`` selects the per-CLI base variant to probe + build (:func:`base_image`, ADR
+        0014 §4); ``None`` uses this builder's configured base (the claude default). Uses
+        ``docker image inspect`` (fast, ~100 ms) to check presence. If the image is missing builds
+        it using the Dockerfile bundled with the installed package (``panopticon.docker``). Returns
+        ``True`` if a build was triggered, ``False`` if the image was already present."""
+        base = base_image(agent_cli) if agent_cli else self._base
+        result = self._run(["docker", "image", "inspect", base], check=False)
         if result.strip() in ("", "[]"):
-            _log.warning("base image %r not found — building automatically", self._base)
+            _log.warning("base image %r not found — building automatically", base)
             import panopticon
             import panopticon.docker as _docker_pkg
 
@@ -94,7 +116,7 @@ class ImageBuilder:
                         "docker",
                         "build",
                         "--tag",
-                        self._base,
+                        base,
                         "--build-arg",
                         f"PANOPTICON_VERSION={panopticon.__version__}",
                         "--file",

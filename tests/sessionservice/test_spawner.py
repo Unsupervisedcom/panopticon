@@ -49,6 +49,7 @@ class _FakeRunner:
         initial_prompt: str | None = None,
         turn: str | None = None,
         starting_model: str | None = None,
+        agent_cli: str = "claude",
         progress: Callable[[LifecyclePhase], None] | None = None,
     ) -> str:
         self.spawned.append(
@@ -61,6 +62,7 @@ class _FakeRunner:
                 "initial_prompt": initial_prompt,
                 "turn": turn,
                 "starting_model": starting_model,
+                "agent_cli": agent_cli,
             }
         )
         if progress is not None:  # the real runner reports these two sub-steps
@@ -178,7 +180,9 @@ def test_spawn_one_claims_then_spawns_a_fresh_task() -> None:
     assert client.claims == [("t1", "host-1")]  # claimed for this host first
     assert runner.spawned[0]["workspace"] == "/tasks/t1"  # per-task clone mounted
     assert runner.spawned[0]["env_file"] == "r1.env"
-    assert runner.spawned[0]["image"] is None  # spike has no image layer → runner uses the base
+    # spike has no image layer → the per-CLI base variant itself (ADR 0014 §4), nothing to compose
+    assert runner.spawned[0]["image"] == "panopticon-base-claude"
+    assert runner.spawned[0]["agent_cli"] == "claude"  # resolved task → repo → default
     assert runner.spawned[0]["docker_in_docker"] is False  # no capability → unprivileged
 
 
@@ -222,10 +226,41 @@ def test_spawn_one_passes_starting_model_to_runner() -> None:
             "workflow": "spike",
             "state": "ITERATING",
             "claimed_by": None,
-            "starting_model": "opus",
+            "starting_model": "primary",
         }
     )
-    assert runner.spawned[0]["starting_model"] == "opus"
+    assert runner.spawned[0]["starting_model"] == "primary"
+
+
+def test_spawn_one_resolves_the_repo_default_cli_and_drives_the_image_variant() -> None:
+    # No task override → the repo's default CLI is resolved host-side (ADR 0014 §3) and drives the
+    # base-image variant (§4), the base probe, and the env var the launcher reads.
+    client, runner, images = (
+        _FakeClient(repo={**_REPO, "agent_cli": "codex"}),
+        _FakeRunner(),
+        _FakeImageBuilder(),
+    )
+    _spawner(client, runner, images=images).spawn_one(
+        {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "ITERATING", "claimed_by": None}
+    )
+    assert runner.spawned[0]["agent_cli"] == "codex"
+    assert runner.spawned[0]["image"] == "panopticon-base-codex"  # spike has no layers → the base
+    assert images.base_checks == ["codex"]
+
+
+def test_spawn_one_task_agent_cli_overrides_the_repo_default() -> None:
+    client, runner = _FakeClient(repo={**_REPO, "agent_cli": "codex"}), _FakeRunner()
+    _spawner(client, runner).spawn_one(
+        {
+            "id": "t1",
+            "repo_id": "r1",
+            "workflow": "spike",
+            "state": "ITERATING",
+            "claimed_by": None,
+            "agent_cli": "claude",  # the task override wins over the repo default
+        }
+    )
+    assert runner.spawned[0]["agent_cli"] == "claude"
 
 
 def test_spawn_one_passes_the_docker_in_docker_capability() -> None:
@@ -424,16 +459,22 @@ class _FakeImageBuilder:
 
     def __init__(self) -> None:
         self.built: list[tuple[str, str, list[str]]] = []
-        self.base_checks: int = 0
+        self.base_checks: list[str | None] = []  # the agent_cli each base probe was asked for
 
     def build(
-        self, workflow: str, repo_id: str, layers: list[str], *, verbose: bool = False
+        self,
+        workflow: str,
+        repo_id: str,
+        layers: list[str],
+        *,
+        agent_cli: str = "claude",
+        verbose: bool = False,
     ) -> str:
         self.built.append((workflow, repo_id, layers))
-        return f"panopticon-{workflow}-{repo_id}"
+        return f"panopticon-{agent_cli}-{workflow}-{repo_id}"
 
-    def build_base_if_missing(self, *, verbose: bool = False) -> bool:
-        self.base_checks += 1
+    def build_base_if_missing(self, *, agent_cli: str | None = None, verbose: bool = False) -> bool:
+        self.base_checks.append(agent_cli)
         return False  # image is always "present" in tests — no build triggered
 
 
@@ -467,8 +508,8 @@ def test_spawn_one_composes_the_workflow_image_when_it_has_a_layer() -> None:
         ("github-peer-reviewed", "r1", ["RUN apt-get install --yes gh"])
     ]  # composed base → layer
     assert (
-        runner.spawned[0]["image"] == "panopticon-github-peer-reviewed-r1"
-    )  # spawned on the composed image
+        runner.spawned[0]["image"] == "panopticon-claude-github-peer-reviewed-r1"
+    )  # spawned on the composed image (CLI-dimensioned tag, ADR 0014 §4)
 
 
 def test_spawn_one_composes_workflow_then_repo_layers() -> None:
@@ -502,7 +543,7 @@ def test_spawn_one_composes_workflow_then_repo_layers() -> None:
     assert images.built == [
         ("github-peer-reviewed", "r1", ["RUN apt-get install --yes gh", "RUN pip install uv"])
     ]
-    assert runner.spawned[0]["image"] == "panopticon-github-peer-reviewed-r1"
+    assert runner.spawned[0]["image"] == "panopticon-claude-github-peer-reviewed-r1"
 
 
 def test_spawn_one_probes_base_image_during_building_phase() -> None:
@@ -511,7 +552,7 @@ def test_spawn_one_probes_base_image_during_building_phase() -> None:
     _spawner(client, runner, images=images).spawn_one(
         {"id": "t1", "repo_id": "r1", "workflow": "spike", "state": "PLANNING", "claimed_by": None}
     )
-    assert images.base_checks == 1  # probed exactly once per spawn
+    assert images.base_checks == ["claude"]  # probed exactly once per spawn, for the resolved CLI
 
 
 def test_spawn_one_reports_the_phase_sequence() -> None:
