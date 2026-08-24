@@ -9,6 +9,8 @@ import json
 import tomllib
 from pathlib import Path
 
+import pytest
+
 from panopticon.container.cli.codex import CodexAgentCLI
 
 
@@ -213,6 +215,14 @@ def test_resolve_model_maps_the_primary_tier_to_a_codex_model() -> None:
 
 def test_resolve_model_passes_unknown_values_through() -> None:
     assert CodexAgentCLI().resolve_model("gpt-5.6") == "gpt-5.6"
+
+
+def test_resolve_model_rejects_an_unmapped_reserved_tier(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A reserved tier the adapter doesn't map fails loud rather than leaking to --model (the
+    # stale-image backstop). Simulated by stripping the tier map.
+    monkeypatch.setattr("panopticon.container.cli.codex._MODEL_TIERS", {})
+    with pytest.raises(ValueError, match="primary"):
+        CodexAgentCLI().resolve_model("primary")
 
 
 def test_built_in_workflow_tier_resolves_to_a_concrete_codex_model() -> None:
