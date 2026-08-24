@@ -68,12 +68,11 @@ class ImageBuilder:
             self._run(["docker", "build", "--tag", tag, context], verbose=verbose)
         return tag
 
-    def build_base(self, *, agent_cli: str | None = None, verbose: bool = False) -> None:
-        """Build the base image unconditionally from the bundled Dockerfile.
+    def _build_base(self, base: str, cli: str, *, verbose: bool) -> None:
+        """`docker build` the bundled base Dockerfile as ``base`` for ``cli`` (ADR 0014 §4).
 
-        ``agent_cli`` selects the per-CLI base variant to tag (:func:`base_image`, ADR 0014 §4);
-        ``None`` builds this builder's configured base (the claude default)."""
-        base = base_image(agent_cli) if agent_cli else self._base
+        The ``AGENT_CLI`` build arg selects which agent CLI the bundled Dockerfile installs, so the
+        same file yields a genuinely different image per CLI (``panopticon-base-<cli>``)."""
         import panopticon
         import panopticon.docker as _docker_pkg
 
@@ -87,12 +86,22 @@ class ImageBuilder:
                     base,
                     "--build-arg",
                     f"PANOPTICON_VERSION={panopticon.__version__}",
+                    "--build-arg",
+                    f"AGENT_CLI={cli}",
                     "--file",
                     str(dockerfile_path),
                     str(dockerfile_path.parent),
                 ],
                 verbose=verbose,
             )
+
+    def build_base(self, *, agent_cli: str | None = None, verbose: bool = False) -> None:
+        """Build the base image unconditionally from the bundled Dockerfile.
+
+        ``agent_cli`` selects the per-CLI base variant to tag + install (:func:`base_image`, ADR
+        0014 §4); ``None`` builds this builder's configured base (the claude default)."""
+        base = base_image(agent_cli) if agent_cli else self._base
+        self._build_base(base, agent_cli or DEFAULT_AGENT_CLI, verbose=verbose)
 
     def build_base_if_missing(self, *, agent_cli: str | None = None, verbose: bool = False) -> bool:
         """Probe for the base image; build it from the bundled Dockerfile if absent.
@@ -106,24 +115,6 @@ class ImageBuilder:
         result = self._run(["docker", "image", "inspect", base], check=False)
         if result.strip() in ("", "[]"):
             _log.warning("base image %r not found — building automatically", base)
-            import panopticon
-            import panopticon.docker as _docker_pkg
-
-            dockerfile_ref = importlib.resources.files(_docker_pkg) / "Dockerfile"
-            with importlib.resources.as_file(dockerfile_ref) as dockerfile_path:
-                self._run(
-                    [
-                        "docker",
-                        "build",
-                        "--tag",
-                        base,
-                        "--build-arg",
-                        f"PANOPTICON_VERSION={panopticon.__version__}",
-                        "--file",
-                        str(dockerfile_path),
-                        str(dockerfile_path.parent),
-                    ],
-                    verbose=verbose,
-                )
+            self._build_base(base, agent_cli or DEFAULT_AGENT_CLI, verbose=verbose)
             return True
         return False
