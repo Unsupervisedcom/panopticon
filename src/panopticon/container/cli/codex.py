@@ -36,9 +36,9 @@ import os
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, ClassVar, TextIO
+from typing import Any, ClassVar
 
-from panopticon.container.cli.base import AgentCLI, _Client, resolve_tier
+from panopticon.container.cli.base import AgentCLI, _Client
 from panopticon.container.config import update_toml_config
 from panopticon.container.hooks import HOOK_COMMAND
 from panopticon.container.skills import write_agent_operation_skills, write_agent_skills
@@ -93,14 +93,6 @@ def _find_resume_target(sessions_dir: Path) -> str | None:
     return best_id
 
 
-#: The control plane's abstract model **tiers** mapped to codex's concrete model ids (ADR 0014 §3a).
-#: The only place a provider model name appears; ``core``/``workflows`` name only the tier. ``primary``
-#: maps to codex's flagship (``gpt-5.6-sol``), verified against the pinned codex release (the
-#: ``CODEX_VERSION`` build arg in ``docker/Dockerfile``); unknown values pass through unchanged (see
-#: :meth:`CodexAgentCLI.resolve_model`).
-_MODEL_TIERS = {"primary": "gpt-5.6-sol"}
-
-
 def _command_hook(actor: str, event: str) -> dict[str, Any]:
     """One codex hook group: run the shared turn-flip callback with ``<actor> <event>``.
 
@@ -116,6 +108,7 @@ class CodexAgentCLI(AgentCLI):
 
     name = "codex"
     config_dirname = ".codex"
+    MODEL_TIERS: ClassVar[Mapping[str, str]] = {"primary": "gpt-5.6-sol"}
 
     #: codex's single config file, under the config dir. MCP, trust, and the unattended posture all
     #: merge into it (each adapter method touches only its own keys, via :func:`update_toml_config`).
@@ -282,31 +275,6 @@ class CodexAgentCLI(AgentCLI):
         auth.write_text(json.dumps({"auth_mode": "apikey", "OPENAI_API_KEY": key}))
         auth.chmod(0o600)
         return auth
-
-    def resolve_model(self, tier: str) -> str:
-        """Map the control plane's abstract model tier to codex's concrete model id (ADR 0014 §3a).
-
-        The only place the tier (e.g. ``"primary"``) becomes a provider model name, keeping model
-        vocabulary out of ``core``/``workflows``. Unknown values pass through unchanged so a raw model
-        id set directly still reaches ``--model`` verbatim, while an unmapped **reserved** tier fails
-        loud instead of leaking through unresolved (see
-        :func:`~panopticon.container.cli.base.resolve_tier`).
-        """
-        return resolve_tier(tier, _MODEL_TIERS)
-
-    def read_hook_payload(self, stdin: TextIO) -> dict[str, Any]:
-        """Tolerantly parse the hook's stdin JSON; empty/invalid input yields an empty payload."""
-        try:
-            raw = stdin.read()
-        except (OSError, ValueError):
-            return {}
-        if not raw or not raw.strip():
-            return {}
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            return {}
-        return data if isinstance(data, dict) else {}
 
     def has_live_background_task(self, payload: dict[str, Any]) -> bool:
         """Whether the Stop payload reports still-running background work (gates the turn flip).

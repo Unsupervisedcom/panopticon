@@ -4,7 +4,6 @@ config, workflow overview, trust, model tier, and hook-payload parsing. No LLM �
 
 from __future__ import annotations
 
-import io
 import json
 from pathlib import Path
 
@@ -141,21 +140,6 @@ def test_resolve_model_maps_the_primary_tier_to_opus() -> None:
     assert ClaudeAgentCLI().resolve_model("primary") == "opus"
 
 
-def test_resolve_model_passes_unknown_values_through() -> None:
-    # A raw model id set directly (or a tier already persisted as its resolved name) reaches
-    # --model verbatim — so back-compat with a stored "opus" holds.
-    assert ClaudeAgentCLI().resolve_model("opus") == "opus"
-
-
-def test_resolve_model_rejects_an_unmapped_reserved_tier(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A reserved tier the adapter doesn't map must fail loud, not leak through to --model — the
-    # backstop for the stale-image bug (a container running pre-resolution code forwarded the raw
-    # tier). We simulate it by stripping the tier map.
-    monkeypatch.setattr("panopticon.container.cli.claude._MODEL_TIERS", {})
-    with pytest.raises(ValueError, match="primary"):
-        ClaudeAgentCLI().resolve_model("primary")
-
-
 def test_built_in_workflow_tier_resolves_to_a_concrete_claude_model() -> None:
     # End to end across the two halves: the tier the control plane declares (never a model name)
     # resolves through the claude adapter to today's concrete model.
@@ -250,14 +234,6 @@ def test_write_credentials_is_a_no_op_for_claude(tmp_path: Path) -> None:
 
 
 # -- hook payload seam (background-task gating) --------------------------------------------------
-
-
-def test_read_hook_payload_tolerates_empty_and_invalid() -> None:
-    cli = ClaudeAgentCLI()
-    assert cli.read_hook_payload(io.StringIO("")) == {}
-    assert cli.read_hook_payload(io.StringIO("not json")) == {}
-    assert cli.read_hook_payload(io.StringIO("[]")) == {}  # JSON, but not an object
-    assert cli.read_hook_payload(io.StringIO('{"a": 1}')) == {"a": 1}
 
 
 @pytest.mark.parametrize(

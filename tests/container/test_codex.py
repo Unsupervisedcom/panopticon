@@ -4,13 +4,10 @@ blocks, the AGENTS.md overview, launch/resume argv, model tier, auth. No LLM —
 
 from __future__ import annotations
 
-import io
 import json
 import time
 import tomllib
 from pathlib import Path
-
-import pytest
 
 from panopticon.container.cli.codex import CodexAgentCLI, _find_resume_target
 
@@ -232,18 +229,6 @@ def test_write_credentials_coexists_with_mcp_and_trust_in_one_config_toml(tmp_pa
 
 def test_resolve_model_maps_the_primary_tier_to_a_codex_model() -> None:
     assert CodexAgentCLI().resolve_model("primary") == "gpt-5.6-sol"
-
-
-def test_resolve_model_passes_unknown_values_through() -> None:
-    assert CodexAgentCLI().resolve_model("gpt-5.6") == "gpt-5.6"
-
-
-def test_resolve_model_rejects_an_unmapped_reserved_tier(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A reserved tier the adapter doesn't map fails loud rather than leaking to --model (the
-    # stale-image backstop). Simulated by stripping the tier map.
-    monkeypatch.setattr("panopticon.container.cli.codex._MODEL_TIERS", {})
-    with pytest.raises(ValueError, match="primary"):
-        CodexAgentCLI().resolve_model("primary")
 
 
 def test_built_in_workflow_tier_resolves_to_a_concrete_codex_model() -> None:
@@ -525,14 +510,6 @@ def test_launch_argv_omits_effort_config_on_resume(tmp_path: Path) -> None:
 
 
 # -- hook seam (M3.6) ---------------------------------------------------------------------------
-
-
-def test_read_hook_payload_tolerates_empty_and_invalid() -> None:
-    cli = CodexAgentCLI()
-    assert cli.read_hook_payload(io.StringIO("")) == {}
-    assert cli.read_hook_payload(io.StringIO("not json")) == {}
-    assert cli.read_hook_payload(io.StringIO("[]")) == {}  # JSON, but not an object
-    assert cli.read_hook_payload(io.StringIO('{"a": 1}')) == {"a": 1}
 
 
 def test_has_live_background_task_always_false_for_codexs_stop_payload() -> None:
