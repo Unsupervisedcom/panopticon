@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from panopticon.core.artifacts import ArtifactStore, decode_b64_artifact
-from panopticon.core.dirs import secrets_file_path
+from panopticon.core.dirs import credential_dir_path, secrets_file_path
 from panopticon.core.layers import LayerStore
 from panopticon.core.models import (
     Actor,
@@ -147,6 +147,7 @@ class TaskService:
 
     async def create_repo(self, repo: Repo) -> Repo:
         await self._validate_env_file(repo.env_file)
+        await self._validate_credential_dir(repo.credential_dir)
         await self._store.create_repo(repo)
         return repo
 
@@ -172,6 +173,27 @@ class TaskService:
         if not await asyncio.to_thread(os.path.isfile, path):
             raise ValueError(f"env_file {env_file!r} does not exist under the secrets dir")
 
+    async def _validate_credential_dir(self, credential_dir: str | None) -> None:
+        """Reject a repo whose credential-dir reference points at a missing directory.
+
+        ``credential_dir`` is a *name* relative to the secrets dir — the same root as
+        ``env_file`` (ADR 0007). Validated on create/update so a bad reference surfaces at
+        registration rather than as an obscure ``--volume`` failure at spawn. ``None`` (no
+        credential dir) is valid. Raises :class:`ValueError` for a name that escapes the secrets
+        dir or one that resolves to a missing or non-directory path.
+
+        NOTE(M5): resolved against *this host's* secrets dir (same caveat as
+        :meth:`_validate_env_file`).
+        """
+        path = credential_dir_path(credential_dir)  # None for no reference; raises on escape
+        if path is None:
+            return
+        if not await asyncio.to_thread(os.path.isdir, path):
+            raise ValueError(
+                f"credential_dir {credential_dir!r} does not exist or is not a directory"
+                " under the secrets dir"
+            )
+
     async def get_repo(self, repo_id: str) -> Repo:
         repo = await self._store.get_repo(repo_id)
         if repo is None:
@@ -196,6 +218,8 @@ class TaskService:
             await self._validate_env_file(
                 updated.env_file
             )  # so an unrelated patch never fails on it
+        if "credential_dir" in changes:
+            await self._validate_credential_dir(updated.credential_dir)
         await self._store.update_repo(updated)
         return updated
 

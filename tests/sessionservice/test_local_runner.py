@@ -212,6 +212,26 @@ def test_spawn_omits_secret_flags_when_repo_has_none() -> None:
     # (the per-task config volume is always mounted — that's not a per-repo secret)
 
 
+def test_spawn_mounts_credential_dir_and_sets_env_var(tmp_path: Path) -> None:
+    cred_dir = tmp_path / "openai.d"
+    cred_dir.mkdir()
+    rec = _Recorder()
+    LocalRunner("http://svc", secrets_dir=str(tmp_path), run=rec).spawn(
+        "t1", credential_dir="openai.d"
+    )
+    docker_run = rec.calls[2][0]
+    assert f"{cred_dir}:/panopticon/credentials:rw" in docker_run
+    assert "PANOPTICON_CREDENTIALS=/panopticon/credentials" in docker_run
+
+
+def test_spawn_omits_credential_dir_flags_when_not_set() -> None:
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).spawn("t1")
+    docker_run = rec.calls[2][0]
+    assert "/panopticon/credentials" not in docker_run
+    assert "PANOPTICON_CREDENTIALS" not in docker_run
+
+
 def test_spawn_mounts_the_per_task_clone_as_the_workspace() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", run=rec).spawn("t1", workspace="/tasks/t1")

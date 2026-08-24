@@ -230,17 +230,22 @@ class CodexAgentCLI(AgentCLI):
         which :meth:`write_credentials` materializes into ``auth.json``) or a ChatGPT workspace access
         token (``CODEX_ACCESS_TOKEN``, read straight from the env) — **or** a pre-existing
         ``auth.json`` on the per-task config volume (a container already logged in, e.g. carried
-        across respawn — which a bare env check would wrongly fail). Presence checks only: we don't
-        validate the key shape (OpenAI's format isn't ours to pin); an invalid credential surfaces at
-        codex's first call.
+        across respawn) — **or** a ``PANOPTICON_CREDENTIALS`` mount holding ``auth.json`` (ChatGPT
+        Plus/Pro subscription; :meth:`write_credentials` symlinks it into the config dir). Presence
+        checks only: we don't validate the key shape; an invalid credential surfaces at codex's first
+        call.
         """
         if any(env.get(var) for var in (*self.API_KEY_VARS, self.ACCESS_TOKEN_VAR)):
             return None
         if (config_dir / self.AUTH_FILE).exists():
             return None
+        creds = env.get("PANOPTICON_CREDENTIALS")
+        if creds and (Path(creds) / self.AUTH_FILE).exists():
+            return None
         return (
             "No codex auth — set OPENAI_API_KEY (or CODEX_API_KEY / CODEX_ACCESS_TOKEN) in the "
-            "repo's env_file (see docs/auth.md)"
+            "repo's env_file, or give the repo a credential_dir holding a ChatGPT auth.json "
+            "(see docs/auth.md)"
         )
 
     def write_credentials(self, config_dir: Path, env: Mapping[str, str]) -> Path | None:
@@ -253,21 +258,31 @@ class CodexAgentCLI(AgentCLI):
         - set ``cli_auth_credentials_store = "file"`` (top-level ``config.toml``) so codex reads
           credentials from the file, never a keyring — done unconditionally, so it also governs a
           pre-existing ``auth.json`` carried across respawn;
-        - when ``auth.json`` is absent, render it from ``CODEX_API_KEY`` or ``OPENAI_API_KEY`` in the
+        - when ``auth.json`` is absent, try the credential-dir mount first: if
+          ``PANOPTICON_CREDENTIALS`` points at a directory containing ``auth.json``, create a
+          **symlink** from the config dir into that shared host path. Codex opens ``auth.json``
+          in-place with truncate-and-write (``FileAuthStorage::save`` in the open-source
+          ``codex-rs/login/src/auth/storage.rs``), following the symlink to the shared file, so
+          refreshed tokens propagate back and all concurrent containers on the host stay consistent.
+        - otherwise, render ``auth.json`` from ``CODEX_API_KEY`` or ``OPENAI_API_KEY`` in the
           exact shape ``codex login --with-api-key`` writes — ``{"auth_mode": "apikey",
           "OPENAI_API_KEY": <key>}`` — at mode ``0600``.
 
-        **Idempotent: an existing ``auth.json`` is never clobbered**, so a container already logged in
-        keeps its credentials. Returns the ``auth.json`` path when written, else ``None`` (no API key,
-        or one already present). A workspace access token (``CODEX_ACCESS_TOKEN``) needs no file —
-        codex reads it from the env — so it doesn't trigger a write here (the auth gate accepts it).
+        **Idempotent: an existing ``auth.json`` (or symlink, even dangling) is never clobbered**,
+        so a container already logged in keeps its credentials. Returns the ``auth.json`` path when
+        written or symlinked, else ``None``. A workspace access token (``CODEX_ACCESS_TOKEN``) needs
+        no file — codex reads it from the env — so it doesn't trigger a write here.
         """
         config = config_dir / self.CONFIG_FILE
         with update_toml_config(config) as data:
             data["cli_auth_credentials_store"] = "file"
         auth = config_dir / self.AUTH_FILE
-        if auth.exists():
+        if auth.exists() or auth.is_symlink():  # is_symlink catches a dangling symlink
             return None
+        creds = env.get("PANOPTICON_CREDENTIALS")
+        if creds and (Path(creds) / self.AUTH_FILE).exists():
+            auth.symlink_to(Path(creds) / self.AUTH_FILE)
+            return auth
         key = next((env[var] for var in self.API_KEY_VARS if env.get(var)), None)
         if not key:
             return None

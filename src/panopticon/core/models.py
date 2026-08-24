@@ -170,12 +170,20 @@ class Tool:
 class Repo:
     """A repository tasks operate on.
 
-    Holds a *reference* to its per-repo secrets (ADR 0007), never the values: ``env_file`` is a
+    Holds *references* to its per-repo secrets (ADR 0007), never the values: ``env_file`` is a
     **name relative to the secrets dir** (``$PANOPTICON_CONFIG/secrets``) naming an env-file of
     API-key-style secrets, injected into the task container at launch (``--env-file``), so secrets
     stay out of the DB, artifacts, and image layers. The runner resolves it against its **own**
     host's secrets dir, so a remote runner uses its own secrets and the value stays host-agnostic;
     the file's content never crosses the wire.
+
+    ``credential_dir`` is also a **name relative to the secrets dir**, but naming a *directory*
+    that holds rotating credential files (e.g. ``openai.d/`` containing ``auth.json`` for a Codex
+    ChatGPT-subscription login). The runner mounts it **read-write** at ``/panopticon/credentials``
+    and exports ``PANOPTICON_CREDENTIALS`` so the in-container adapter can find it. The mount is
+    shared across all containers for the same repo on the same host, letting codex write refreshed
+    tokens back through a symlink (see ``docs/auth.md`` and ADR 0012 for why symlinks work for
+    codex but not Claude).
 
     ``image_layer_file`` *references* the repo's Dockerfile fragment (ADR 0005's repo tier): a file
     name resolved relative to the task service's layers directory, not inline content. The task
@@ -202,6 +210,7 @@ class Repo:
     git_url: str
     default_base: str = "main"
     env_file: str | None = None
+    credential_dir: str | None = None
     image_layer_file: str | None = None
     capabilities: dict[str, Any] = field(default_factory=dict)
     hook_file: str | None = None

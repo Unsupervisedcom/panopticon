@@ -17,7 +17,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
 
-from panopticon.core.dirs import secrets_file_path
+from panopticon.core.dirs import credential_dir_path, secrets_file_path
 from panopticon.core.models import DEFAULT_AGENT_CLI, LifecyclePhase
 from panopticon.sessionservice.runner import Runner
 
@@ -158,6 +158,7 @@ class LocalRunner(Runner):
         task_id: str,
         *,
         env_file: str | None = None,
+        credential_dir: str | None = None,
         workspace: str | None = None,
         image: str | None = None,
         docker_in_docker: bool = False,
@@ -241,6 +242,11 @@ class LocalRunner(Runner):
             env["PANOPTICON_DOCKER_IN_DOCKER"] = "1"
         if env_path := secrets_file_path(env_file, secrets_dir=self._secrets_dir):
             docker_run += ["--env-file", env_path]  # per-repo secrets, resolved host-locally
+        if cred_path := credential_dir_path(credential_dir, secrets_dir=self._secrets_dir):
+            # Shared read-write mount: rotating tokens (e.g. codex auth.json) write back through
+            # the in-container symlink to this host directory, keeping concurrent tasks in sync.
+            docker_run += ["--volume", f"{cred_path}:/panopticon/credentials:rw"]
+            env["PANOPTICON_CREDENTIALS"] = "/panopticon/credentials"
         if workspace:  # the per-task clone — the agent's writable working dir (ADR 0011)
             docker_run += [
                 "--volume",
