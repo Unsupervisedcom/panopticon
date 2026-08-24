@@ -41,10 +41,11 @@ from panopticon.container.skills import write_commands, write_operation_commands
 from panopticon.core.models import Skill
 
 #: The control plane's abstract model **tiers** mapped to codex's concrete model ids (ADR 0014 §3a).
-#: The only place a provider model name appears; ``core``/``workflows`` name only the tier. The exact
-#: codex model slug is a verify-against-the-pinned-codex item (ROADMAP M3.4 base image); unknown
-#: values pass through unchanged (see :meth:`CodexAgentCLI.resolve_model`).
-_MODEL_TIERS = {"primary": "gpt-5.6-codex"}
+#: The only place a provider model name appears; ``core``/``workflows`` name only the tier. ``primary``
+#: maps to codex's flagship (``gpt-5.6-sol``), verified against the pinned codex release (the
+#: ``CODEX_VERSION`` build arg in ``docker/Dockerfile``); unknown values pass through unchanged (see
+#: :meth:`CodexAgentCLI.resolve_model`).
+_MODEL_TIERS = {"primary": "gpt-5.6-sol"}
 
 
 def _command_hook(actor: str, event: str) -> dict[str, Any]:

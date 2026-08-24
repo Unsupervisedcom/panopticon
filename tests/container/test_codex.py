@@ -132,7 +132,7 @@ def test_auth_missing_detail_flags_the_absent_openai_key() -> None:
 
 
 def test_resolve_model_maps_the_primary_tier_to_a_codex_model() -> None:
-    assert CodexAgentCLI().resolve_model("primary") == "gpt-5.6-codex"
+    assert CodexAgentCLI().resolve_model("primary") == "gpt-5.6-sol"
 
 
 def test_resolve_model_passes_unknown_values_through() -> None:
@@ -142,7 +142,7 @@ def test_resolve_model_passes_unknown_values_through() -> None:
 def test_built_in_workflow_tier_resolves_to_a_concrete_codex_model() -> None:
     from panopticon.workflows.github_self_reviewed import GithubSelfReviewed
 
-    assert CodexAgentCLI().resolve_model(GithubSelfReviewed.default_model) == "gpt-5.6-codex"
+    assert CodexAgentCLI().resolve_model(GithubSelfReviewed.default_model) == "gpt-5.6-sol"
 
 
 # -- launch / resume argv -----------------------------------------------------------------------
@@ -185,7 +185,7 @@ def test_launch_argv_passes_the_resolved_model_on_first_run(tmp_path: Path) -> N
         "codex",
         "--dangerously-bypass-approvals-and-sandbox",
         "--model",
-        "gpt-5.6-codex",
+        "gpt-5.6-sol",
     ]
 
 
@@ -204,7 +204,7 @@ def test_launch_argv_passes_model_before_initial_prompt_on_first_run(tmp_path: P
         "codex",
         "--dangerously-bypass-approvals-and-sandbox",
         "--model",
-        "gpt-5.6-codex",
+        "gpt-5.6-sol",
         "start now",
     ]
 
