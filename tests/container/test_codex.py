@@ -96,14 +96,32 @@ def test_mcp_and_trust_coexist_in_one_config_toml(tmp_path: Path) -> None:
     assert data["approval_policy"] == "never"
 
 
+def test_overview_coexists_with_mcp_and_trust_in_one_config_toml(tmp_path: Path) -> None:
+    cli = CodexAgentCLI()
+    cli.write_workflow_overview(tmp_path, "# overview")
+    cli.write_mcp_config(tmp_path, "http://svc:8000")
+    cli.trust_workspace(tmp_path, Path("/workspace"))
+    data = _load_config(cli, tmp_path)
+    assert data["developer_instructions"] == "# overview"
+    assert data["mcp_servers"]["panopticon"]["url"] == "http://svc:8000/mcp"
+    assert data["projects"]["/workspace"]["trust_level"] == "trusted"
+
+
 # -- workflow overview → $CODEX_HOME/AGENTS.md --------------------------------------------------
 
 
-def test_write_workflow_overview_writes_agents_md_else_skips(tmp_path: Path) -> None:
+def test_write_workflow_overview_injects_developer_instructions(tmp_path: Path) -> None:
     cli = CodexAgentCLI()
     path = cli.write_workflow_overview(tmp_path, "# github-self-reviewed\nphases…")
-    assert path == tmp_path / "AGENTS.md" and path.read_text() == "# github-self-reviewed\nphases…"
-    assert cli.write_workflow_overview(tmp_path / "empty", "  ") is None  # no overview → skipped
+    assert path == tmp_path / cli.CONFIG_FILE
+    assert (
+        _load_config(cli, tmp_path)["developer_instructions"] == "# github-self-reviewed\nphases…"
+    )
+
+
+def test_write_workflow_overview_skips_when_empty(tmp_path: Path) -> None:
+    cli = CodexAgentCLI()
+    assert cli.write_workflow_overview(tmp_path / "empty", "  ") is None
 
 
 # -- trust / unattended posture -----------------------------------------------------------------
@@ -464,6 +482,46 @@ def test_launch_argv_falls_back_to_first_run_when_only_exec_sessions(tmp_path: P
         "gpt-5.6-sol",
         "hi",
     ]
+
+
+# -- reasoning-effort suffix --------------------------------------------------------------------
+
+
+def test_launch_argv_passes_effort_config_when_starting_model_has_suffix(tmp_path: Path) -> None:
+    # "primary:high" → --model gpt-5.6-sol --config model_reasoning_effort=high
+    argv = CodexAgentCLI().launch_argv(tmp_path, Path("/workspace"), starting_model="primary:high")
+    assert argv == [
+        "codex",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--dangerously-bypass-hook-trust",
+        "--no-alt-screen",
+        "--model",
+        "gpt-5.6-sol",
+        "--config",
+        "model_reasoning_effort=high",
+    ]
+
+
+def test_launch_argv_passes_effort_config_for_raw_model_id_with_suffix(tmp_path: Path) -> None:
+    # Raw model id with effort suffix — resolve_model passes the id through unchanged.
+    argv = CodexAgentCLI().launch_argv(
+        tmp_path, Path("/workspace"), starting_model="gpt-5.6-sol:medium"
+    )
+    assert "--model" in argv and "gpt-5.6-sol" in argv
+    assert "--config" in argv and "model_reasoning_effort=medium" in argv
+
+
+def test_launch_argv_omits_effort_config_without_suffix(tmp_path: Path) -> None:
+    argv = CodexAgentCLI().launch_argv(tmp_path, Path("/workspace"), starting_model="primary")
+    assert "--config" not in argv
+
+
+def test_launch_argv_omits_effort_config_on_resume(tmp_path: Path) -> None:
+    (tmp_path / "sessions").mkdir()
+    meta = '{"payload": {"originator": "codex-tui", "thread_source": "user", "id": "s1"}}'
+    (tmp_path / "sessions" / "s.jsonl").write_text(meta)
+    argv = CodexAgentCLI().launch_argv(tmp_path, Path("/workspace"), starting_model="primary:high")
+    assert "--config" not in argv and "resume" in argv
 
 
 # -- hook seam (M3.6) ---------------------------------------------------------------------------
