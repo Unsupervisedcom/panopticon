@@ -15,7 +15,8 @@ from typing import Any
 import httpx
 import pytest
 from textual.app import App
-from textual.widgets import Checkbox, DataTable, Input, OptionList, Select, Static
+from textual.widgets import Checkbox, DataTable, Input, Select, Static
+from textual.widgets._select import InvalidSelectValueError
 
 from panopticon.core.models import KNOWN_AGENT_CLIS
 from panopticon.terminal import dashboard
@@ -23,8 +24,8 @@ from panopticon.terminal.dashboard import (
     _ENSEMBLE_KEY_PREFIX,
     _INDEFINITE_SNOOZE_UNTIL,
     _SNOOZE_DURATION,
-    ChoiceScreen,
     Dashboard,
+    MemoTextArea,
     SpaceCheckbox,
     TaskDetailScreen,
     _dim,
@@ -815,8 +816,6 @@ async def test_pressing_n_creates_a_task_via_repo_workflow_then_memo() -> None:
         await pilot.pause()
         await pilot.press("enter")  # first (only) workflow: spike
         await pilot.pause()
-        await pilot.press("enter")  # agent CLI: the repo default, pre-selected
-        await pilot.pause()
         await pilot.press("f", "i", "x")  # type a memo into the prompt
         await pilot.press("enter")  # submit
         await pilot.pause()
@@ -826,9 +825,9 @@ async def test_pressing_n_creates_a_task_via_repo_workflow_then_memo() -> None:
         assert fake.created_agent_clis == [None]
 
 
-async def test_pressing_n_taking_the_repo_default_cli_sends_no_override() -> None:
-    # A repo whose default is codex: accepting the pre-selected entry must still record *no*
-    # override, not a redundant agent_cli="codex" (resolve_agent_cli's contract — ADR 0014 §3).
+async def test_memo_cli_dropdown_defaults_to_the_repo_cli_and_sends_no_override() -> None:
+    # A repo whose default is codex: leaving the dropdown alone must record *no* override, not a
+    # redundant agent_cli="codex" (resolve_agent_cli's contract — ADR 0014 §3).
     fake = _FakeClient(
         [],
         repos=[{"id": "r1", "name": "r1", "git_url": "", "agent_cli": "codex"}],
@@ -843,17 +842,16 @@ async def test_pressing_n_taking_the_repo_default_cli_sends_no_override() -> Non
         await pilot.pause()
         await pilot.press("enter")  # workflow
         await pilot.pause()
-        await pilot.press("enter")  # agent CLI: codex is pre-selected as the repo default
-        await pilot.pause()
-        await pilot.press("f", "i", "x")
+        assert app.screen.query_one("#memo-cli-select", Select).value == "codex"
+        await pilot.press("f", "i", "x")  # straight to typing — the dropdown needs no visit
         await pilot.press("enter")
         await pilot.pause()
         assert fake.created == [("r1", "spike", "fix", "fix")]
         assert fake.created_agent_clis == [None]
 
 
-async def test_pressing_n_can_override_the_repo_default_cli() -> None:
-    # The repo defaults to claude; move off the pre-selected entry to pick codex for this one task.
+async def test_memo_cli_dropdown_can_override_the_repo_default() -> None:
+    # The repo defaults to claude; change the dropdown to codex for this one task.
     fake = _FakeClient(
         [],
         repos=[{"id": "r1", "name": "r1", "git_url": "", "agent_cli": "claude"}],
@@ -868,8 +866,7 @@ async def test_pressing_n_can_override_the_repo_default_cli() -> None:
         await pilot.pause()
         await pilot.press("enter")  # workflow
         await pilot.pause()
-        await pilot.press("j")  # off the claude default…
-        await pilot.press("enter")  # …onto codex
+        app.screen.query_one("#memo-cli-select", Select).value = "codex"
         await pilot.pause()
         await pilot.press("f", "i", "x")
         await pilot.press("enter")
@@ -878,12 +875,10 @@ async def test_pressing_n_can_override_the_repo_default_cli() -> None:
         assert fake.created_agent_clis == ["codex"]
 
 
-async def test_new_task_cli_picker_preselects_the_repo_default() -> None:
-    # The repo default starts highlighted, so Enter alone keeps it — the fast path stays fast even
-    # when the default isn't first in KNOWN_AGENT_CLIS.
+async def test_memo_cli_dropdown_offers_every_known_cli() -> None:
     fake = _FakeClient(
         [],
-        repos=[{"id": "r1", "name": "r1", "git_url": "", "agent_cli": "codex"}],
+        repos=[{"id": "r1", "name": "r1", "git_url": "", "agent_cli": "claude"}],
         workflows=[{"name": "spike", "when_to_use": ""}],
     )
     app = Dashboard(fake)  # type: ignore[arg-type]
@@ -895,10 +890,57 @@ async def test_new_task_cli_picker_preselects_the_repo_default() -> None:
         await pilot.pause()
         await pilot.press("enter")  # workflow
         await pilot.pause()
-        screen = app.screen
-        assert isinstance(screen, ChoiceScreen)
-        option_list = screen.query_one(OptionList)
-        assert option_list.highlighted == list(KNOWN_AGENT_CLIS).index("codex")
+        select = app.screen.query_one("#memo-cli-select", Select)
+        # Select validates against its own options, so assigning each name is the public way to
+        # assert every known CLI is on offer (an unknown one raises — see the test below).
+        for cli in KNOWN_AGENT_CLIS:
+            select.value = cli
+            assert select.value == cli
+
+
+async def test_memo_cli_dropdown_rejects_a_cli_it_does_not_offer() -> None:
+    fake = _FakeClient(
+        [],
+        repos=[{"id": "r1", "name": "r1", "git_url": "", "agent_cli": "claude"}],
+        workflows=[{"name": "spike", "when_to_use": ""}],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")  # repo
+        await pilot.pause()
+        await pilot.press("enter")  # workflow
+        await pilot.pause()
+        select = app.screen.query_one("#memo-cli-select", Select)
+        with pytest.raises(InvalidSelectValueError):
+            select.value = "not-a-cli"
+
+
+async def test_memo_cli_dropdown_survives_a_repo_cli_it_does_not_offer() -> None:
+    # A repo naming a CLI this dashboard build doesn't know (e.g. rolled back after an adapter was
+    # added): the dropdown must still hold a real option rather than blowing up on allow_blank=False.
+    fake = _FakeClient(
+        [],
+        repos=[{"id": "r1", "name": "r1", "git_url": "", "agent_cli": "from-the-future"}],
+        workflows=[{"name": "spike", "when_to_use": ""}],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")  # repo
+        await pilot.pause()
+        await pilot.press("enter")  # workflow
+        await pilot.pause()
+        assert app.screen.query_one("#memo-cli-select", Select).value == KNOWN_AGENT_CLIS[0]
+        await pilot.press("f", "i", "x")
+        await pilot.press("enter")
+        await pilot.pause()
+        # It differs from the repo's stated default, so it goes out as an explicit override.
+        assert fake.created_agent_clis == [KNOWN_AGENT_CLIS[0]]
 
 
 async def test_pressing_n_with_a_blank_memo_creates_with_none() -> None:
@@ -915,8 +957,6 @@ async def test_pressing_n_with_a_blank_memo_creates_with_none() -> None:
         await pilot.press("enter")  # repo
         await pilot.pause()
         await pilot.press("enter")  # workflow
-        await pilot.pause()
-        await pilot.press("enter")  # agent CLI: the repo default, pre-selected
         await pilot.pause()
         await pilot.press("enter")  # submit an empty memo
         await pilot.pause()
@@ -938,8 +978,6 @@ async def test_memo_ctrl_s_sets_the_memo_without_submitting() -> None:
         await pilot.press("enter")  # repo
         await pilot.pause()
         await pilot.press("enter")  # workflow
-        await pilot.pause()
-        await pilot.press("enter")  # agent CLI: the repo default, pre-selected
         await pilot.pause()
         await pilot.press("f", "i", "x")  # type a memo
         await pilot.press("ctrl+s")  # set without submitting
@@ -968,8 +1006,6 @@ async def test_memo_ctrl_g_opens_editor_and_updates_textarea(monkeypatch: Any) -
         await pilot.pause()
         await pilot.press("enter")  # workflow
         await pilot.pause()
-        await pilot.press("enter")  # agent CLI: the repo default, pre-selected
-        await pilot.pause()
         await pilot.press("h", "i")  # type initial text
         await pilot.press("ctrl+g")  # open editor
         await pilot.pause()
@@ -997,8 +1033,6 @@ async def test_memo_textarea_expands_for_multiline_content(monkeypatch: Any) -> 
         await pilot.pause()
         await pilot.press("enter")  # workflow
         await pilot.pause()
-        await pilot.press("enter")  # agent CLI: the repo default, pre-selected
-        await pilot.pause()
         await pilot.press("ctrl+g")
         await pilot.pause()
         await pilot.press("enter")  # submit
@@ -1023,8 +1057,6 @@ async def test_memo_ctrl_a_attaches_a_file_as_an_artifact(tmp_path: Path) -> Non
         await pilot.press("enter")  # repo
         await pilot.pause()
         await pilot.press("enter")  # workflow
-        await pilot.pause()
-        await pilot.press("enter")  # agent CLI: the repo default, pre-selected
         await pilot.pause()
         await pilot.press("f", "i", "x")  # type a memo
         await pilot.press("ctrl+a")  # open the attach-files modal
@@ -1066,8 +1098,6 @@ async def test_memo_ctrl_a_preserves_spaces_in_the_filename(tmp_path: Path) -> N
         await pilot.pause()
         await pilot.press("enter")  # workflow
         await pilot.pause()
-        await pilot.press("enter")  # agent CLI: the repo default, pre-selected
-        await pilot.pause()
         await pilot.press("ctrl+a")
         await pilot.pause()
         screen = app.screen
@@ -1103,8 +1133,6 @@ async def test_memo_ctrl_a_attaches_a_binary_file(tmp_path: Path) -> None:
         await pilot.pause()
         await pilot.press("enter")  # workflow
         await pilot.pause()
-        await pilot.press("enter")  # agent CLI: the repo default, pre-selected
-        await pilot.pause()
         await pilot.press("ctrl+a")
         await pilot.pause()
         screen = app.screen
@@ -1137,8 +1165,6 @@ async def test_memo_ctrl_a_can_remove_a_queued_file(tmp_path: Path) -> None:
         await pilot.press("enter")  # repo
         await pilot.pause()
         await pilot.press("enter")  # workflow
-        await pilot.pause()
-        await pilot.press("enter")  # agent CLI: the repo default, pre-selected
         await pilot.pause()
         await pilot.press("ctrl+a")  # open the attach-files modal
         await pilot.pause()
@@ -1177,8 +1203,6 @@ async def test_memo_ctrl_a_rejects_a_missing_path(tmp_path: Path) -> None:
         await pilot.press("enter")  # repo
         await pilot.pause()
         await pilot.press("enter")  # workflow
-        await pilot.pause()
-        await pilot.press("enter")  # agent CLI: the repo default, pre-selected
         await pilot.pause()
         await pilot.press("ctrl+a")
         await pilot.pause()
@@ -1236,8 +1260,6 @@ async def test_memo_ctrl_a_accepts_a_quoted_path(tmp_path: Path) -> None:
         await pilot.press("enter")  # repo
         await pilot.pause()
         await pilot.press("enter")  # workflow
-        await pilot.pause()
-        await pilot.press("enter")  # agent CLI: the repo default, pre-selected
         await pilot.pause()
         await pilot.press("ctrl+a")
         await pilot.pause()
@@ -3575,8 +3597,42 @@ async def test_pressing_j_then_enter_picks_the_second_option_in_a_picker() -> No
         await pilot.pause()
         await pilot.press("enter")  # workflow: spike (only one)
         await pilot.pause()
-        await pilot.press("enter")  # agent CLI: the repo default, pre-selected
-        await pilot.pause()
         await pilot.press("enter")  # submit an empty memo
         await pilot.pause()
         assert fake.created == [("r2", "spike", None, None)]
+
+
+async def test_memo_tab_reaches_the_cli_dropdown_and_picking_returns_focus() -> None:
+    # The interaction the hint promises: tab off the memo onto the dropdown, pick, and land back on
+    # the memo so Enter still submits (rather than reopening the dropdown).
+    fake = _FakeClient(
+        [],
+        repos=[{"id": "r1", "name": "r1", "git_url": "", "agent_cli": "claude"}],
+        workflows=[{"name": "spike", "when_to_use": ""}],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")  # repo
+        await pilot.pause()
+        await pilot.press("enter")  # workflow
+        await pilot.pause()
+        memo = app.screen.query_one(MemoTextArea)
+        select = app.screen.query_one("#memo-cli-select", Select)
+        assert memo.has_focus  # the memo starts focused
+        await pilot.press("tab")
+        await pilot.pause()
+        assert select.has_focus
+        await pilot.press("enter")  # opens the dropdown overlay
+        await pilot.pause()
+        await pilot.press("down", "enter")  # move off claude → codex
+        await pilot.pause()
+        assert select.value == "codex"
+        assert memo.has_focus  # focus handed back, so Enter submits next
+        await pilot.press("f", "i", "x")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert fake.created == [("r1", "spike", "fix", "fix")]
+        assert fake.created_agent_clis == ["codex"]

@@ -68,7 +68,7 @@ import sys
 import tempfile
 import time
 import webbrowser
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from math import ceil
@@ -624,13 +624,10 @@ class _OptionListModal(ModalScreen[_ResultT | None]):
     BINDINGS = [("escape", "cancel", "Cancel")]
     BOX_ID = "list-box"
 
-    def __init__(self, title: str, options: list[str], *, initial: str | None = None) -> None:
+    def __init__(self, title: str, options: list[str]) -> None:
         super().__init__()
         self._title = title
         self._options = options
-        #: Which option starts highlighted, so Enter alone picks the expected one. Ignored when it
-        #: isn't in ``options``.
-        self._initial = initial
 
     def compose(self) -> ComposeResult:
         with Vertical(id=self.BOX_ID):
@@ -642,10 +639,7 @@ class _OptionListModal(ModalScreen[_ResultT | None]):
         return ()
 
     def on_mount(self) -> None:
-        option_list = self.query_one(OptionList)
-        if self._initial is not None and self._initial in self._options:
-            option_list.highlighted = self._options.index(self._initial)
-        option_list.focus()
+        self.query_one(OptionList).focus()
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -723,15 +717,20 @@ class MemoTextArea(TextArea):
         self.styles.height = min(lines, self.MAX_LINES)
 
 
-class MemoScreen(ModalScreen["tuple[str, bool, dict[str, str]] | None"]):
+class MemoScreen(ModalScreen["tuple[str, bool, dict[str, str], str] | None"]):
     """Memo prompt for task creation.
 
-    Dismisses ``(text, submit, artifacts_b64)`` where ``submit`` says whether to deliver the memo as
-    the agent's initial prompt and ``artifacts_b64`` is a ``name → base64`` map of files attached via
-    ``ctrl+a`` (base64 so binary files like screenshots seed intact), or ``None`` on cancel
+    Dismisses ``(text, submit, artifacts_b64, agent_cli)`` where ``submit`` says whether to deliver
+    the memo as the agent's initial prompt, ``artifacts_b64`` is a ``name → base64`` map of files
+    attached via ``ctrl+a`` (base64 so binary files like screenshots seed intact), and ``agent_cli``
+    is the CLI picked from the dropdown (which starts on the repo's default) — or ``None`` on cancel
     (Escape). **Enter always submits** the memo as an initial
     prompt; **ctrl+s sets the memo without submitting** it (an unsent paste); **ctrl+a** opens the
     attach-files modal (:class:`ArtifactsScreen`).
+
+    The CLI lives here rather than in a picker modal of its own so the common path is a single
+    screen: the dropdown already shows the repo default, so an operator who doesn't care never has
+    to touch it (ADR 0014 §3).
 
     Uses :class:`MemoTextArea` so Enter submits rather than inserting a newline — same UX
     as the original single-line ``Input``, but the field can display multi-line content
@@ -741,6 +740,7 @@ class MemoScreen(ModalScreen["tuple[str, bool, dict[str, str]] | None"]):
     MemoScreen { align: center middle; }
     #memo-box { width: 64; height: auto; padding: 1 2; border: round $accent; background: $surface; }
     #memo-box MemoTextArea { height: 1; margin-bottom: 1; }
+    #memo-box #memo-cli-select { margin-bottom: 1; }
     #memo-box .memo-hint { color: $text-muted; }
     #memo-attached { color: $text-muted; }
     """
@@ -752,17 +752,30 @@ class MemoScreen(ModalScreen["tuple[str, bool, dict[str, str]] | None"]):
         ("enter", "submit", "Create"),
     ]
 
-    def __init__(self) -> None:
+    def __init__(self, *, agent_clis: Sequence[str] = (), repo_default: str = "") -> None:
         super().__init__()
         # name → (source path, raw bytes) for the files the operator attaches via ctrl+a. Keyed by
         # the artifact name (the path's basename) so a re-attach of the same name overwrites. Bytes,
         # not text, so binary files (screenshots, PDFs) attach intact.
         self._artifacts: dict[str, tuple[str, bytes]] = {}
+        # The CLIs on offer and the one the dropdown starts on (the repo's own default). Defaulting
+        # both to empty keeps the screen usable on its own — with no options there's no dropdown.
+        self._agent_clis = list(agent_clis)
+        self._repo_default = repo_default
 
     def compose(self) -> ComposeResult:
         with Vertical(id="memo-box"):
             yield MemoTextArea(compact=True)
             yield Label("", id="memo-attached")
+            if self._agent_clis:
+                # Labelled, because a bare "codex" in a box doesn't say what it selects.
+                yield Label("agent CLI (tab to change)", classes="memo-hint")
+                yield Select(
+                    [(cli, cli) for cli in self._agent_clis],
+                    value=self._selected_cli(),
+                    allow_blank=False,
+                    id="memo-cli-select",
+                )
             yield Label("enter: submit", classes="memo-hint")
             yield Label("ctrl+s: set without submitting", classes="memo-hint")
             yield Label("ctrl+g: edit in $EDITOR", classes="memo-hint")
@@ -771,6 +784,29 @@ class MemoScreen(ModalScreen["tuple[str, bool, dict[str, str]] | None"]):
     def on_mount(self) -> None:
         self.query_one(MemoTextArea).focus()
         self._refresh_attached()
+
+    def _selected_cli(self) -> str:
+        """The CLI the dropdown is on — the repo default until the operator changes it.
+
+        Falls back to the first offered CLI if the repo names one we don't offer, so the value is
+        always a real option (``Select`` with ``allow_blank=False`` requires one)."""
+        if self._repo_default in self._agent_clis:
+            return self._repo_default
+        return self._agent_clis[0] if self._agent_clis else ""
+
+    def _picked_cli(self) -> str:
+        """The dropdown's current value, or the repo default when there's no dropdown."""
+        if not self._agent_clis:
+            return self._repo_default
+        return str(self.query_one("#memo-cli-select", Select).value)
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        # Hand focus back to the memo so the next Enter submits rather than reopening the dropdown.
+        # Unconditional: while the overlay is open focus sits on *it*, not the Select, so a
+        # has_focus guard here would never fire on the path that matters. Harmless at mount time —
+        # Select posts an initial Changed, and on_mount focuses the memo anyway.
+        for memo in self.query(MemoTextArea):  # empty until composed; a no-op then
+            memo.focus()
 
     def _refresh_attached(self) -> None:
         """Update the "attached" line summarising the files the operator has queued."""
@@ -787,10 +823,12 @@ class MemoScreen(ModalScreen["tuple[str, bool, dict[str, str]] | None"]):
         }
 
     def action_submit(self) -> None:
-        self.dismiss((self.query_one(MemoTextArea).text, True, self._artifacts_b64()))
+        text = self.query_one(MemoTextArea).text
+        self.dismiss((text, True, self._artifacts_b64(), self._picked_cli()))
 
     def action_set_only(self) -> None:
-        self.dismiss((self.query_one(MemoTextArea).text, False, self._artifacts_b64()))
+        text = self.query_one(MemoTextArea).text
+        self.dismiss((text, False, self._artifacts_b64(), self._picked_cli()))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -2250,10 +2288,10 @@ class Dashboard(App[None]):
         self.action_refresh()
 
     def action_new_task(self) -> None:
-        """`n`: create a task — pick a repo, a workflow, an agent CLI, describe the work, then POST it.
+        """`n`: create a task — pick a repo, a workflow, describe the work, then POST it.
 
-        The CLI step is pre-selected to the repo's own default, so the common path stays
-        Enter/Enter/Enter-and-type; picking that default sends no override at all (ADR 0014 §3)."""
+        The agent CLI is a dropdown on the memo screen rather than a step of its own: it starts on
+        the repo's default, so leaving it alone sends no override at all (ADR 0014 §3)."""
         repo_records = self._client.list_repos()
         if not repo_records:
             self.notify("Need at least one repo to create a task.", severity="warning")
@@ -2273,57 +2311,44 @@ class Dashboard(App[None]):
                 self.notify(f"No workflows enabled for repo {repo!r}.", severity="warning")
                 return
 
-            def pick_cli(workflow: str | None) -> None:
+            def describe(workflow: str | None) -> None:
                 if workflow is None:
                     return
                 repo_default = repo_clis.get(repo, DEFAULT_AGENT_CLI)
 
-                def describe(cli: str | None) -> None:
-                    if cli is None:
+                def create(result: tuple[str, bool, dict[str, str], str] | None) -> None:
+                    if result is None:  # backed out
+                        return
+                    memo_text, submit, artifacts_b64, cli = result
+                    stripped = memo_text.strip()
+                    if _apply_memo_filter(stripped):
                         return
                     # None = "no override, use the repo default" — what `resolve_agent_cli` expects.
                     agent_cli = None if cli == repo_default else cli
+                    if submit and stripped:
+                        self._client.create_task(
+                            repo,
+                            workflow,
+                            stripped,
+                            initial_prompt=stripped,
+                            artifacts_b64=artifacts_b64,
+                            agent_cli=agent_cli,
+                        )
+                    else:
+                        self._client.create_task(
+                            repo,
+                            workflow,
+                            stripped or None,
+                            artifacts_b64=artifacts_b64,
+                            agent_cli=agent_cli,
+                        )
+                    self.action_refresh()
 
-                    def create(result: tuple[str, bool, dict[str, str]] | None) -> None:
-                        if result is None:  # backed out
-                            return
-                        memo_text, submit, artifacts_b64 = result
-                        stripped = memo_text.strip()
-                        if _apply_memo_filter(stripped):
-                            return
-                        if submit and stripped:
-                            self._client.create_task(
-                                repo,
-                                workflow,
-                                stripped,
-                                initial_prompt=stripped,
-                                artifacts_b64=artifacts_b64,
-                                agent_cli=agent_cli,
-                            )
-                        else:
-                            self._client.create_task(
-                                repo,
-                                workflow,
-                                stripped or None,
-                                artifacts_b64=artifacts_b64,
-                                agent_cli=agent_cli,
-                            )
-                        self.action_refresh()
-
-                    self.push_screen(MemoScreen(), create)
-
-                # The default is named in the title, not baked into an option label — ChoiceScreen
-                # dismisses the option's text, so a decorated label would need stripping back off.
                 self.push_screen(
-                    ChoiceScreen(
-                        f"agent CLI (repo default: {repo_default})",
-                        list(KNOWN_AGENT_CLIS),
-                        initial=repo_default,
-                    ),
-                    describe,
+                    MemoScreen(agent_clis=KNOWN_AGENT_CLIS, repo_default=repo_default), create
                 )
 
-            self.push_screen(WorkflowScreen(workflows), pick_cli)
+            self.push_screen(WorkflowScreen(workflows), describe)
 
         self.push_screen(ChoiceScreen("repo", repos), pick_workflow)
 
