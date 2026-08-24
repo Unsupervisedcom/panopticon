@@ -15,6 +15,7 @@ so the determinism invariant holds (ADR 0014 §6): the control plane runs no CLI
 
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from pathlib import Path
@@ -67,6 +68,10 @@ class AgentCLI(ABC):
     name: ClassVar[str]
     #: The CLI's config dir, relative to the container home (the launcher mounts it per-task).
     config_dirname: ClassVar[str]
+    #: The control plane's abstract model **tiers** mapped to this CLI's concrete model ids (ADR
+    #: 0014 §3a). Subclasses set the mapping; :meth:`resolve_model` reads it. Unknown tiers pass
+    #: through unchanged so a raw model id set directly still reaches ``--model`` verbatim.
+    MODEL_TIERS: ClassVar[Mapping[str, str]]
 
     @abstractmethod
     def render_skills(self, client: _Client, task_id: str, home: Path) -> list[Path]:
@@ -109,13 +114,30 @@ class AgentCLI(ABC):
         env (claude) or a credential file is already present. Never clobbers an existing one.
         """
 
-    @abstractmethod
     def resolve_model(self, tier: str) -> str:
-        """Map the control plane's abstract model **tier** to this CLI's concrete model id (§3a)."""
+        """Map the control plane's abstract model **tier** to this CLI's concrete model id (§3a).
 
-    @abstractmethod
+        The control plane stores a CLI-agnostic tier (e.g. ``"primary"``); adapters declare their
+        :attr:`MODEL_TIERS` mapping and this is the only place a tier becomes a provider model name,
+        keeping model vocabulary out of ``core``/``workflows``. Reserved tiers that are absent from
+        the mapping raise, so a stale image running pre-resolution code fails loud rather than leaking
+        the raw tier to ``--model`` (see :func:`resolve_tier`).
+        """
+        return resolve_tier(tier, self.MODEL_TIERS)
+
     def read_hook_payload(self, stdin: TextIO) -> dict[str, Any]:
-        """Tolerantly parse the turn-flip hook's stdin payload (empty/invalid → ``{}``)."""
+        """Tolerantly parse the hook's stdin JSON; empty/invalid input yields an empty payload."""
+        try:
+            raw = stdin.read()
+        except (OSError, ValueError):
+            return {}
+        if not raw or not raw.strip():
+            return {}
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return data if isinstance(data, dict) else {}
 
     @abstractmethod
     def has_live_background_task(self, payload: dict[str, Any]) -> bool:

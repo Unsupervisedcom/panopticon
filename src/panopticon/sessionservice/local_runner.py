@@ -77,12 +77,6 @@ WORKSPACE_MOUNT = "/workspace"
 #: names it so the pane runs as that same user (ADR 0008 / the unprivileged-user work).
 CONTAINER_USER = "panopticon"
 
-#: The claude config-volume mount path — kept as a module constant for callers/tests that assume
-#: the default CLI; the spawn path derives the mount per-CLI via :func:`config_mount`. A **per-task**
-#: named volume is mounted here so the CLI's session history survives respawn/recreate (the container
-#: layer is thrown away each spawn, but the volume persists); per-task so concurrent tasks don't share.
-CONFIG_MOUNT = config_mount(DEFAULT_AGENT_CLI)
-
 
 class CommandRunner(Protocol):
     """Runs an external command and returns its stdout; ``check`` raises on non-zero exit.

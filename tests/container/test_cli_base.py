@@ -1,9 +1,11 @@
 """The agent-CLI adapter seam (ADR 0014): the ABC + the name-keyed registry. A CLI drops in by
-implementing :class:`AgentCLI` and registering under its name, with no launcher edit. The claude
-adapter's own behavior lives in :mod:`tests.container.test_claude`."""
+implementing :class:`AgentCLI` and registering under its name, with no launcher edit. Shared
+base-class behavior (read_hook_payload, resolve_model passthrough) lives here; per-adapter
+MODEL_TIERS mapping assertions live in their own modules."""
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 import pytest
@@ -38,6 +40,7 @@ def test_registering_an_adapter_makes_it_resolvable_without_a_launcher_edit() ->
     class _Fake(AgentCLI):
         name = "fake-cli"
         config_dirname = ".fake"
+        MODEL_TIERS = {}
 
         def render_skills(self, client: object, task_id: str, home: Path) -> list[Path]:
             return []
@@ -63,12 +66,6 @@ def test_registering_an_adapter_makes_it_resolvable_without_a_launcher_edit() ->
         def write_credentials(self, config_dir: Path, env: object) -> Path | None:
             return None
 
-        def resolve_model(self, tier: str) -> str:
-            return tier
-
-        def read_hook_payload(self, stdin: object) -> dict[str, object]:
-            return {}
-
         def has_live_background_task(self, payload: dict[str, object]) -> bool:
             return False
 
@@ -78,3 +75,28 @@ def test_registering_an_adapter_makes_it_resolvable_without_a_launcher_edit() ->
     register_agent_cli(_Fake)
     resolved = get_agent_cli("fake-cli")
     assert isinstance(resolved, _Fake) and resolved.config_dirname == ".fake"
+
+
+# -- shared base-class behaviour ----------------------------------------------------------------
+
+
+def test_read_hook_payload_tolerates_empty_and_invalid() -> None:
+    # Shared implementation on the base — tested once; adapter tests cover only their own seams.
+    cli = ClaudeAgentCLI()
+    assert cli.read_hook_payload(io.StringIO("")) == {}
+    assert cli.read_hook_payload(io.StringIO("not json")) == {}
+    assert cli.read_hook_payload(io.StringIO("[]")) == {}  # JSON, but not an object
+    assert cli.read_hook_payload(io.StringIO('{"a": 1}')) == {"a": 1}
+
+
+def test_resolve_model_passes_unknown_tiers_through() -> None:
+    # The passthrough fallback lives on the base; adapters supply only their own mapping.
+    assert ClaudeAgentCLI().resolve_model("some-raw-model-id") == "some-raw-model-id"
+
+
+def test_resolve_model_rejects_an_unmapped_reserved_tier(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A reserved tier absent from the adapter's MODEL_TIERS must fail loud — the stale-image
+    # backstop (resolve_tier raises instead of leaking the raw tier to --model).
+    monkeypatch.setattr(ClaudeAgentCLI, "MODEL_TIERS", {})
+    with pytest.raises(ValueError, match="primary"):
+        ClaudeAgentCLI().resolve_model("primary")

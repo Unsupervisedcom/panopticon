@@ -15,9 +15,9 @@ import os
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, ClassVar, TextIO
+from typing import Any, ClassVar
 
-from panopticon.container.cli.base import AgentCLI, _Client, resolve_tier
+from panopticon.container.cli.base import AgentCLI, _Client
 from panopticon.container.config import update_json_config
 from panopticon.container.hooks import write_settings
 from panopticon.container.skills import write_commands, write_operation_commands
@@ -31,17 +31,13 @@ _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "canceled", 
 #: Sent to claude as the first message when a container restarts mid-task on the agent's turn.
 INTERRUPT_PROMPT = "You were interrupted. Continue."
 
-#: The control plane's abstract model **tiers** mapped to claude's concrete ``--model`` ids (ADR
-#: 0014 §3a). This is the only place a provider model name appears; ``core``/``workflows`` name only
-#: the tier. Unknown values pass through unchanged (see ``resolve_model``).
-_MODEL_TIERS = {"primary": "opus"}
-
 
 class ClaudeAgentCLI(AgentCLI):
     """The `claude` adapter — every ``container/`` seam claude satisfies today, unchanged in effect."""
 
     name = "claude"
     config_dirname = ".claude"
+    MODEL_TIERS: ClassVar[Mapping[str, str]] = {"primary": "opus"}
 
     #: claude's main config file. Holds (besides per-container state) per-project trust acceptance.
     CONFIG_FILE: ClassVar[str] = ".claude.json"
@@ -129,32 +125,6 @@ class ClaudeAgentCLI(AgentCLI):
     def write_credentials(self, config_dir: Path, env: Mapping[str, str]) -> Path | None:
         """No-op: claude authenticates from the env var itself, with no on-disk credential to write."""
         return None
-
-    def resolve_model(self, tier: str) -> str:
-        """Map the control plane's abstract model tier to claude's concrete model id (ADR 0014 §3a).
-
-        The control plane stores a CLI-agnostic tier (e.g. ``"primary"``); this is the only place
-        that tier becomes a provider's model name (``"primary"`` → ``"opus"``), keeping model
-        vocabulary out of ``core``/``workflows``. Unknown values pass through unchanged so a raw
-        model id set directly (or a tier already persisted as its resolved name) still reaches
-        ``--model`` verbatim, while an unmapped **reserved** tier fails loud instead of leaking
-        through unresolved (see :func:`~panopticon.container.cli.base.resolve_tier`).
-        """
-        return resolve_tier(tier, _MODEL_TIERS)
-
-    def read_hook_payload(self, stdin: TextIO) -> dict[str, Any]:
-        """Tolerantly parse the hook's stdin JSON; empty/invalid input yields an empty payload."""
-        try:
-            raw = stdin.read()
-        except (OSError, ValueError):
-            return {}
-        if not raw or not raw.strip():
-            return {}
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            return {}
-        return data if isinstance(data, dict) else {}
 
     def has_live_background_task(self, payload: dict[str, Any]) -> bool:
         """Whether the Stop payload reports a still-running background task.
