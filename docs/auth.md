@@ -59,6 +59,29 @@ the previous line is **commented out** (kept as a record, not deleted) and any p
 it can't capture the token (or the repo has no `env_file`), it falls back to printing the copy-it-in
 instructions above.
 
+## Codex / OpenAI
+
+A repo whose `agent_cli` is **codex** authenticates differently — codex reads credentials from
+`$CODEX_HOME/auth.json`, not from an env var directly, and may otherwise reach for an OS keyring the
+container doesn't have. The container adapter bridges this: it pins codex to the **file** credential
+store and materializes `auth.json` from whatever you put in the env-file. Set **one** of these lines
+in the repo's env-file (same file, same mechanism as above):
+
+- `OPENAI_API_KEY=sk-…` (or `CODEX_API_KEY=sk-…` — both spellings are accepted). The adapter writes
+  `$CODEX_HOME/auth.json` as `{"auth_mode": "apikey", "OPENAI_API_KEY": "…"}` (mode `0600`) on
+  first launch. This is the standard API-billed key from platform.openai.com.
+- `CODEX_ACCESS_TOKEN=…` — a **ChatGPT Business/Enterprise workspace access token** (minted at
+  chatgpt.com/admin → access tokens), the analog of `claude setup-token`. Codex reads it straight
+  from the env; no file is written.
+
+Notes specific to codex:
+
+- **Idempotent, never clobbered.** If `auth.json` already exists on the per-task config volume (a
+  container already logged in, e.g. carried across respawn), the adapter leaves it untouched — and a
+  container that has only a persisted `auth.json` is still considered authenticated.
+- **No validation up front.** We only check that a credential is *present*; an invalid or expired key
+  surfaces at codex's first call, not at launch.
+
 ## Notes
 
 - **The env-file lives on the host that spawns the container.** Because `env_file` is stored as a

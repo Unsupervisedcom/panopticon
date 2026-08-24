@@ -11,7 +11,9 @@ Codex satisfies the same seams as claude against its own surface (ADR 0014 §5 m
   ``/workspace/AGENTS.md``), which layers additively on top of the repo's own instructions;
 - **trust / unattended posture** → ``config.toml`` (project ``trust_level`` + ``approval_policy`` /
   ``sandbox_mode``) so a headless container isn't blocked, on first run *and* on resume;
-- **auth** → ``OPENAI_API_KEY``;
+- **auth** → an API key (``CODEX_API_KEY`` / ``OPENAI_API_KEY``) materialized into
+  ``$CODEX_HOME/auth.json`` (a bare env var does *not* log codex in), or a ChatGPT workspace
+  access token (``CODEX_ACCESS_TOKEN``) read straight from the env — see :meth:`write_credentials`;
 - **launch / resume** → ``codex`` first-run vs ``codex resume --last`` (the ``claude --continue``
   analogue), probing ``$CODEX_HOME/sessions`` for a prior transcript.
 
@@ -72,6 +74,12 @@ class CodexAgentCLI(AgentCLI):
     WORKFLOW_OVERVIEW_FILE: ClassVar[str] = "AGENTS.md"
     #: Session transcripts live here under the config dir; their presence means "resume" (§ launch).
     SESSIONS_DIRNAME: ClassVar[str] = "sessions"
+    #: codex's credentials file under the config home — what ``codex login --with-api-key`` writes.
+    AUTH_FILE: ClassVar[str] = "auth.json"
+    #: Env-var spellings carrying an OpenAI API key we materialize into :attr:`AUTH_FILE`.
+    API_KEY_VARS: ClassVar[tuple[str, ...]] = ("CODEX_API_KEY", "OPENAI_API_KEY")
+    #: The ChatGPT workspace access token (the ``claude setup-token`` analog); read from the env, no file.
+    ACCESS_TOKEN_VAR: ClassVar[str] = "CODEX_ACCESS_TOKEN"
 
     def render_skills(self, client: _Client, task_id: str, home: Path) -> list[Path]:
         """Render the workflow's skills to ``~/.codex/prompts/`` (codex's custom-prompt surface)."""
@@ -167,15 +175,59 @@ class CodexAgentCLI(AgentCLI):
             projects.setdefault(str(cwd), {})["trust_level"] = "trusted"
         return config
 
-    def auth_missing_detail(self, env: Mapping[str, str]) -> str | None:
-        """The failure detail when codex's auth env var is absent, else ``None``.
+    def auth_missing_detail(self, env: Mapping[str, str], config_dir: Path) -> str | None:
+        """The failure detail when codex has no way to authenticate, else ``None``.
 
-        Auth is ``OPENAI_API_KEY``, injected by the runner from the repo's ``env_file`` (ADR 0007 /
-        0012 generalize per CLI); the launcher wires no credentials.
+        Codex is satisfied by any of the auth vars the runner injects from the repo's ``env_file``
+        (ADR 0007 / 0012 generalize per CLI) — an API key (``CODEX_API_KEY`` / ``OPENAI_API_KEY``,
+        which :meth:`write_credentials` materializes into ``auth.json``) or a ChatGPT workspace access
+        token (``CODEX_ACCESS_TOKEN``, read straight from the env) — **or** a pre-existing
+        ``auth.json`` on the per-task config volume (a container already logged in, e.g. carried
+        across respawn — which a bare env check would wrongly fail). Presence checks only: we don't
+        validate the key shape (OpenAI's format isn't ours to pin); an invalid credential surfaces at
+        codex's first call.
         """
-        if env.get("OPENAI_API_KEY"):
+        if any(env.get(var) for var in (*self.API_KEY_VARS, self.ACCESS_TOKEN_VAR)):
             return None
-        return "No auth token — set OPENAI_API_KEY in the repo's env_file (see docs/auth.md)"
+        if (config_dir / self.AUTH_FILE).exists():
+            return None
+        return (
+            "No codex auth — set OPENAI_API_KEY (or CODEX_API_KEY / CODEX_ACCESS_TOKEN) in the "
+            "repo's env_file (see docs/auth.md)"
+        )
+
+    def write_credentials(self, config_dir: Path, env: Mapping[str, str]) -> Path | None:
+        """Materialize codex's ``auth.json`` from an API key in the env, and pin the file cred store.
+
+        A bare ``OPENAI_API_KEY`` in the container env does **not** log codex in — codex
+        authenticates from ``$CODEX_HOME/auth.json`` and may otherwise reach for an OS keyring the
+        container lacks. So we:
+
+        - set ``cli_auth_credentials_store = "file"`` (top-level ``config.toml``) so codex reads
+          credentials from the file, never a keyring — done unconditionally, so it also governs a
+          pre-existing ``auth.json`` carried across respawn;
+        - when ``auth.json`` is absent, render it from ``CODEX_API_KEY`` or ``OPENAI_API_KEY`` in the
+          exact shape ``codex login --with-api-key`` writes — ``{"auth_mode": "apikey",
+          "OPENAI_API_KEY": <key>}`` — at mode ``0600``.
+
+        **Idempotent: an existing ``auth.json`` is never clobbered**, so a container already logged in
+        keeps its credentials. Returns the ``auth.json`` path when written, else ``None`` (no API key,
+        or one already present). A workspace access token (``CODEX_ACCESS_TOKEN``) needs no file —
+        codex reads it from the env — so it doesn't trigger a write here (the auth gate accepts it).
+        """
+        config = config_dir / self.CONFIG_FILE
+        with update_toml_config(config) as data:
+            data["cli_auth_credentials_store"] = "file"
+        auth = config_dir / self.AUTH_FILE
+        if auth.exists():
+            return None
+        key = next((env[var] for var in self.API_KEY_VARS if env.get(var)), None)
+        if not key:
+            return None
+        config_dir.mkdir(parents=True, exist_ok=True)
+        auth.write_text(json.dumps({"auth_mode": "apikey", "OPENAI_API_KEY": key}))
+        auth.chmod(0o600)
+        return auth
 
     def resolve_model(self, tier: str) -> str:
         """Map the control plane's abstract model tier to codex's concrete model id (ADR 0014 §3a).

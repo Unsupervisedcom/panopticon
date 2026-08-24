@@ -57,7 +57,10 @@ def test_registering_an_adapter_makes_it_resolvable_without_a_launcher_edit() ->
         def trust_workspace(self, config_dir: Path, cwd: Path) -> Path:
             return config_dir
 
-        def auth_missing_detail(self, env: object) -> str | None:
+        def auth_missing_detail(self, env: object, config_dir: object) -> str | None:
+            return None
+
+        def write_credentials(self, config_dir: Path, env: object) -> Path | None:
             return None
 
         def resolve_model(self, tier: str) -> str:

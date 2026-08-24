@@ -5,6 +5,7 @@ blocks, the AGENTS.md overview, launch/resume argv, model tier, auth. No LLM —
 from __future__ import annotations
 
 import io
+import json
 import tomllib
 from pathlib import Path
 
@@ -121,11 +122,79 @@ def test_trust_workspace_merges_and_is_idempotent(tmp_path: Path) -> None:
 # -- auth env check -----------------------------------------------------------------------------
 
 
-def test_auth_missing_detail_flags_the_absent_openai_key() -> None:
+def test_auth_missing_detail_flags_the_absent_openai_key(tmp_path: Path) -> None:
     cli = CodexAgentCLI()
-    assert cli.auth_missing_detail({}) is not None
-    assert "OPENAI_API_KEY" in (cli.auth_missing_detail({}) or "")
-    assert cli.auth_missing_detail({"OPENAI_API_KEY": "sk"}) is None
+    detail = cli.auth_missing_detail({}, tmp_path)
+    assert detail is not None
+    # the detail names every accepted var so the operator knows what to set
+    assert "OPENAI_API_KEY" in detail
+    assert "CODEX_API_KEY" in detail and "CODEX_ACCESS_TOKEN" in detail
+
+
+def test_auth_missing_detail_accepts_any_of_the_three_env_vars(tmp_path: Path) -> None:
+    cli = CodexAgentCLI()
+    assert cli.auth_missing_detail({"OPENAI_API_KEY": "sk"}, tmp_path) is None
+    assert cli.auth_missing_detail({"CODEX_API_KEY": "sk"}, tmp_path) is None
+    assert cli.auth_missing_detail({"CODEX_ACCESS_TOKEN": "tok"}, tmp_path) is None
+
+
+def test_auth_missing_detail_accepts_a_pre_existing_auth_json(tmp_path: Path) -> None:
+    # A container already logged in (auth.json on the per-task volume) must not be failed on a bare
+    # env check — it would wrongly kill a container carried across respawn.
+    cli = CodexAgentCLI()
+    (tmp_path / cli.AUTH_FILE).write_text('{"auth_mode": "apikey", "OPENAI_API_KEY": "sk"}')
+    assert cli.auth_missing_detail({}, tmp_path) is None
+
+
+# -- credential materialization (auth.json + file cred store) -----------------------------------
+
+
+def test_write_credentials_renders_auth_json_from_openai_api_key(tmp_path: Path) -> None:
+    cli = CodexAgentCLI()
+    path = cli.write_credentials(tmp_path, {"OPENAI_API_KEY": "sk-abc"})
+    assert path == tmp_path / cli.AUTH_FILE
+    # exact shape `codex login --with-api-key` writes
+    assert json.loads(path.read_text()) == {"auth_mode": "apikey", "OPENAI_API_KEY": "sk-abc"}
+    assert (path.stat().st_mode & 0o777) == 0o600  # secret, owner-only
+    # and the file credential store is pinned so codex never reaches for an (absent) keyring
+    assert _load_config(cli, tmp_path)["cli_auth_credentials_store"] == "file"
+
+
+def test_write_credentials_accepts_the_codex_api_key_spelling(tmp_path: Path) -> None:
+    cli = CodexAgentCLI()
+    path = cli.write_credentials(tmp_path, {"CODEX_API_KEY": "sk-xyz"})
+    assert path is not None
+    assert json.loads(path.read_text())["OPENAI_API_KEY"] == "sk-xyz"
+
+
+def test_write_credentials_never_clobbers_an_existing_auth_json(tmp_path: Path) -> None:
+    cli = CodexAgentCLI()
+    auth = tmp_path / cli.AUTH_FILE
+    auth.write_text('{"auth_mode": "chatgpt", "tokens": "keep-me"}')
+    assert cli.write_credentials(tmp_path, {"OPENAI_API_KEY": "sk-new"}) is None  # no write
+    assert json.loads(auth.read_text()) == {"auth_mode": "chatgpt", "tokens": "keep-me"}
+    # the cred-store pin is still applied so the existing login is read from file, not a keyring
+    assert _load_config(cli, tmp_path)["cli_auth_credentials_store"] == "file"
+
+
+def test_write_credentials_writes_no_auth_json_without_an_api_key(tmp_path: Path) -> None:
+    # A workspace access token needs no file (codex reads it from the env); still pin the cred store.
+    cli = CodexAgentCLI()
+    assert cli.write_credentials(tmp_path, {"CODEX_ACCESS_TOKEN": "tok"}) is None
+    assert not (tmp_path / cli.AUTH_FILE).exists()
+    assert _load_config(cli, tmp_path)["cli_auth_credentials_store"] == "file"
+
+
+def test_write_credentials_coexists_with_mcp_and_trust_in_one_config_toml(tmp_path: Path) -> None:
+    # The cred-store key lands in the shared config.toml alongside the MCP/trust blocks.
+    cli = CodexAgentCLI()
+    cli.write_mcp_config(tmp_path, "http://svc:8000")
+    cli.trust_workspace(tmp_path, Path("/workspace"))
+    cli.write_credentials(tmp_path, {"OPENAI_API_KEY": "sk"})
+    data = _load_config(cli, tmp_path)
+    assert data["cli_auth_credentials_store"] == "file"
+    assert data["mcp_servers"]["panopticon"]["url"] == "http://svc:8000/mcp"  # preserved
+    assert data["projects"]["/workspace"]["trust_level"] == "trusted"  # preserved
 
 
 # -- model tier (ADR 0014 §3a) ------------------------------------------------------------------
