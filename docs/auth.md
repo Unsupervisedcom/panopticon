@@ -72,20 +72,22 @@ A repo whose `agent_cli` is `codex` runs the `codex` CLI in its task containers 
 and codex authenticates differently: it reads credentials from `$CODEX_HOME/auth.json`, not from an
 env var directly, and otherwise reaches for an OS keyring the container doesn't have. The container
 adapter bridges this — it pins codex to the **file** credential store and, on the container's first
-launch, materializes `auth.json` from whatever key you put in the repo's env-file.
+launch, materializes `auth.json` from whatever credentials you configure.
 
-So setup is the same shape as claude's: **add one line to the repo's `env_file`** (see *Add it to the
-repo's env-file* above for how to create one and point the repo at it). Choose **one**:
+Choose **one** of the three tiers:
 
 - **API key** — `OPENAI_API_KEY=sk-…` (or `CODEX_API_KEY=sk-…`; both spellings are accepted). The
-  standard API-billed key from platform.openai.com. On first launch the adapter writes
-  `$CODEX_HOME/auth.json` as `{"auth_mode": "apikey", "OPENAI_API_KEY": "…"}` (mode `0600`).
+  standard API-billed key from platform.openai.com. Add it to the repo's `env_file` (see *One-time
+  setup* above for how to create one). On first launch the adapter writes `$CODEX_HOME/auth.json`
+  as `{"auth_mode": "apikey", "OPENAI_API_KEY": "…"}` (mode `0600`).
 - **ChatGPT workspace token** — `CODEX_ACCESS_TOKEN=…`, a ChatGPT Business/Enterprise workspace
   access token (minted at chatgpt.com/admin → access tokens), the analog of `claude setup-token`.
-  Codex reads it straight from the env; no file is written.
+  Add it to the repo's `env_file`. Codex reads it straight from the env; no file is written.
+- **ChatGPT Plus/Pro subscription** — rotating tokens that must be shared across containers; see
+  *Plus/Pro subscription (`credential_dir`)* below.
 
-That's it — new codex task containers for that repo now authenticate from the env-file. There is no
-`setup-repo` equivalent for codex yet, so add the line by hand.
+That's it for the first two — new codex task containers for that repo now authenticate from the
+env-file. There is no `setup-repo` equivalent for codex yet, so add the line by hand.
 
 Notes specific to codex:
 
@@ -99,6 +101,51 @@ Notes specific to codex:
   an existing task — its `auth.json` is already there. New tasks pick up the new key; to rotate a
   live one, clear its `auth.json` from the per-task volume before respawn. (`CODEX_ACCESS_TOKEN`,
   read from the env, has no such caching — respawn picks up a change.)
+
+### Plus/Pro subscription (`credential_dir`)
+
+ChatGPT Plus/Pro refresh tokens rotate with reuse detection: every task container on a host must
+share the same `auth.json` rather than each holding a stale copy. The `credential_dir` field on the
+repo points at a directory in the secrets dir that holds this shared file.
+
+**One-time setup on each host:**
+
+```sh
+codex login              # or: codex login --device-auth  (headless / no browser)
+mkdir -p ~/.config/panopticon/secrets/openai.d
+cp ~/.codex/auth.json ~/.config/panopticon/secrets/openai.d/
+chmod 0600 ~/.config/panopticon/secrets/openai.d/auth.json
+```
+
+Then set the repo's `credential_dir` to `openai.d` in the dashboard repo form, or via the API:
+
+```sh
+curl -X PATCH "$PANOPTICON_SERVICE_URL/repos/<repo-id>" \
+  -H 'content-type: application/json' \
+  -d '{"credential_dir": "openai.d"}'
+```
+
+The runner mounts the directory **read-write and shared** into every task container for that repo
+at `/panopticon/credentials`; the adapter symlinks `auth.json` from there into each task's
+`$CODEX_HOME` on start.
+
+**Why symlinks work here (but not for Claude):** codex opens `auth.json` in-place with
+truncate-and-write (`FileAuthStorage::save` in the open-source
+`codex-rs/login/src/auth/storage.rs`), following the symlink to the shared host file. The
+refreshed token therefore lands in the shared directory and all concurrent containers on the host
+stay in sync. Claude's OAuth refresh is an atomic temp-file rename that *replaces* the symlink
+with a container-local regular file.
+
+**Important constraints:**
+
+- **Do not copy the same `auth.json` to a second host.** OpenAI's reuse detection fires when
+  the same file is used from two different IPs. Log in per host (`codex login` on each), or use
+  an access token (tier 2 above) for multi-host setups.
+- **Invalidated chain** (re-login elsewhere, revocation): tasks will fail with a lifecycle detail
+  describing the fix. Re-run `codex login` on the host and copy the new `auth.json` to the
+  credential dir.
+- **Rate limits** (not auth) cap concurrent Plus/Pro Codex throughput. An API key (tier 1)
+  avoids the subscription concurrency constraints.
 
 ## Notes (both CLIs)
 

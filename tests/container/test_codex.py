@@ -173,6 +173,21 @@ def test_auth_missing_detail_accepts_a_pre_existing_auth_json(tmp_path: Path) ->
     assert cli.auth_missing_detail({}, tmp_path) is None
 
 
+def test_auth_missing_detail_accepts_credential_dir_with_auth_json(tmp_path: Path) -> None:
+    creds = tmp_path / "creds"
+    creds.mkdir()
+    (creds / "auth.json").write_text('{"auth_mode": "chatgpt"}')
+    cli = CodexAgentCLI()
+    assert cli.auth_missing_detail({"PANOPTICON_CREDENTIALS": str(creds)}, tmp_path) is None
+
+
+def test_auth_missing_detail_rejects_credential_dir_without_auth_json(tmp_path: Path) -> None:
+    creds = tmp_path / "creds"
+    creds.mkdir()
+    cli = CodexAgentCLI()
+    assert cli.auth_missing_detail({"PANOPTICON_CREDENTIALS": str(creds)}, tmp_path) is not None
+
+
 # -- credential materialization (auth.json + file cred store) -----------------------------------
 
 
@@ -194,6 +209,21 @@ def test_write_credentials_accepts_the_codex_api_key_spelling(tmp_path: Path) ->
     assert json.loads(path.read_text())["OPENAI_API_KEY"] == "sk-xyz"
 
 
+def test_write_credentials_symlinks_auth_json_from_credential_dir(tmp_path: Path) -> None:
+    creds = tmp_path / "creds"
+    creds.mkdir()
+    (creds / "auth.json").write_text('{"auth_mode": "chatgpt"}')
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    cli = CodexAgentCLI()
+    path = cli.write_credentials(config_dir, {"PANOPTICON_CREDENTIALS": str(creds)})
+    auth = config_dir / cli.AUTH_FILE
+    assert path == auth
+    assert auth.is_symlink()
+    assert auth.read_text() == '{"auth_mode": "chatgpt"}'
+    assert _load_config(cli, config_dir)["cli_auth_credentials_store"] == "file"
+
+
 def test_write_credentials_never_clobbers_an_existing_auth_json(tmp_path: Path) -> None:
     cli = CodexAgentCLI()
     auth = tmp_path / cli.AUTH_FILE
@@ -202,6 +232,17 @@ def test_write_credentials_never_clobbers_an_existing_auth_json(tmp_path: Path) 
     assert json.loads(auth.read_text()) == {"auth_mode": "chatgpt", "tokens": "keep-me"}
     # the cred-store pin is still applied so the existing login is read from file, not a keyring
     assert _load_config(cli, tmp_path)["cli_auth_credentials_store"] == "file"
+
+
+def test_write_credentials_leaves_dangling_symlink_alone(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    cli = CodexAgentCLI()
+    dangling = config_dir / cli.AUTH_FILE
+    dangling.symlink_to(tmp_path / "gone.json")  # target does not exist
+    assert cli.write_credentials(config_dir, {"OPENAI_API_KEY": "sk-new"}) is None
+    assert dangling.is_symlink()  # unchanged — dangling symlink is not replaced
+    assert not dangling.exists()  # still dangling
 
 
 def test_write_credentials_writes_no_auth_json_without_an_api_key(tmp_path: Path) -> None:

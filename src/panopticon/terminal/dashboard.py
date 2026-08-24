@@ -1080,6 +1080,94 @@ class EnvFileField(Widget):
             inp.display = False
 
 
+def _list_secrets_dirs() -> list[str]:
+    """Return the sorted **names** (relative to the secrets dir) of directories in the secrets dir.
+
+    A ``credential_dir`` is stored relative to the secrets dir so it resolves on whichever host
+    runs the task (mirrors :func:`_list_secrets_files` but filters for directories)."""
+    from panopticon.core.dirs import _secrets_dir
+
+    secrets_dir = _secrets_dir()
+    if not secrets_dir.is_dir():
+        return []
+    return sorted(p.name for p in secrets_dir.iterdir() if p.is_dir())
+
+
+class CredentialDirField(Widget):
+    """Credential-dir picker for the repo form (ChatGPT-subscription / rotating-token auth).
+
+    Mirrors :class:`EnvFileField` but lists **directory names** found in the config secrets dir
+    (``~/.config/panopticon/secrets/``). The stored value is always a **name relative to the
+    secrets dir** (so it resolves on whichever host runs the task, ADR 0007); the custom input
+    accepts an absolute or relative path and normalizes it to that relative name on read (see
+    :func:`~panopticon.core.dirs.relativize_credential_dir`).
+    """
+
+    DEFAULT_CSS = """
+    CredentialDirField { margin-bottom: 1; height: auto; }
+    CredentialDirField #credential-dir-input { margin-top: 1; }
+    """
+
+    _CUSTOM = "__custom__"
+
+    def __init__(self, initial: str = "", id: str | None = None) -> None:
+        super().__init__(id=id)
+        self._initial = initial
+        self._known = _list_secrets_dirs()
+
+    def compose(self) -> ComposeResult:
+        known_set = set(self._known)
+        options: list[tuple[str, str]] = [(p, p) for p in self._known]
+        options.append(("enter custom path…", self._CUSTOM))
+        is_custom = bool(self._initial and self._initial not in known_set)
+        yield Select(
+            options,
+            prompt="credential_dir (directory name in secrets dir or custom path)",
+            allow_blank=True,
+            value=self._initial if (self._initial and not is_custom) else Select.NULL,
+            id="credential-dir-select",
+        )
+        inp = Input(
+            value=self._initial if is_custom else "",
+            placeholder="openai.d (or a path — normalized to a secrets-dir name)",
+            id="credential-dir-input",
+        )
+        inp.display = is_custom
+        yield inp
+
+    @property
+    def credential_dir_value(self) -> str:
+        """The stored ``credential_dir`` **name** (relative to the secrets dir), or ``""`` unset.
+
+        A dropdown pick is already a bare name; a custom entry is normalized via
+        :func:`~panopticon.core.dirs.relativize_credential_dir`."""
+        from panopticon.core.dirs import relativize_credential_dir
+
+        try:
+            sel = self.query_one("#credential-dir-select", Select)
+        except NoMatches:
+            return ""
+        v = sel.value
+        if isinstance(v, _SelectNoSelection) or v == self._CUSTOM:
+            try:
+                return relativize_credential_dir(
+                    self.query_one("#credential-dir-input", Input).value
+                )
+            except NoMatches:
+                return ""
+        return str(v)
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id != "credential-dir-select":
+            return
+        inp = self.query_one("#credential-dir-input", Input)
+        if event.value == self._CUSTOM:
+            inp.display = True
+            inp.focus()
+        else:
+            inp.display = False
+
+
 def _list_layers_files() -> list[str]:
     """Return the sorted **names** (relative to the layers dir) of files in the config layers dir.
 
@@ -1348,6 +1436,9 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
                     for name in self.FIELDS[1:]:  # git_url already rendered above
                         yield Input(value=self._initial(name), placeholder=name, id=f"field-{name}")
                     yield EnvFileField(initial=self._initial("env_file"), id="field-env_file")
+                    yield CredentialDirField(
+                        initial=self._initial("credential_dir"), id="field-credential_dir"
+                    )
                     yield ImageLayerField(
                         initial=self._initial("image_layer_file"), id="field-image_layer_file"
                     )
@@ -1411,6 +1502,9 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
         for name in self.FIELDS:
             values[name] = self.query_one(f"#field-{name}", Input).value.strip()
         values["env_file"] = self.query_one("#field-env_file", EnvFileField).env_file_value or None
+        values["credential_dir"] = (
+            self.query_one("#field-credential_dir", CredentialDirField).credential_dir_value or None
+        )
         values["image_layer_file"] = (
             self.query_one("#field-image_layer_file", ImageLayerField).image_layer_value or None
         )
@@ -1517,6 +1611,7 @@ class ReposScreen(ModalScreen[None]):
                     values["git_url"],
                     values["default_base"] or "main",
                     env_file=values["env_file"] or None,
+                    credential_dir=values["credential_dir"] or None,
                     image_layer_file=values["image_layer_file"] or None,
                     hook_file=values["hook_file"] or None,
                     capabilities={"docker_in_docker": values["docker_in_docker"]},
@@ -1552,6 +1647,7 @@ class ReposScreen(ModalScreen[None]):
                     git_url=values["git_url"],
                     default_base=values["default_base"] or "main",
                     env_file=values["env_file"] or None,
+                    credential_dir=values["credential_dir"] or None,
                     image_layer_file=values["image_layer_file"] or None,
                     hook_file=values["hook_file"] or None,
                     capabilities=capabilities,
