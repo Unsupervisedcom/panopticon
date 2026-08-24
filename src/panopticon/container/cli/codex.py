@@ -3,8 +3,9 @@
 Codex satisfies the same seams as claude against its own surface (ADR 0014 §5 mapping table):
 
 - **config dir** ``~/.codex`` (``CODEX_HOME``), config file ``config.toml``;
-- **skills / operations** → custom prompts under ``~/.codex/prompts/<name>.md`` (same
-  ``---\\ndescription: …\\n---`` frontmatter claude uses, so the body renderers are shared);
+- **skills / operations** → ``~/.agents/skills/<name>/SKILL.md`` (codex's model-discoverable
+  skills mechanism; user scope so nothing reaches the task's working tree; ``---\\nname: …\\n
+  description: …\\n---`` frontmatter, body renderers shared with claude);
 - **MCP** → a ``[mcp_servers.panopticon]`` table in ``config.toml`` over streamable **HTTP** (ADR
   flag 1: codex supports remote HTTP MCP; older builds need ``experimental_use_rmcp_client``);
 - **workflow overview** → ``$CODEX_HOME/AGENTS.md`` (our config dir — *never* the repo's
@@ -37,7 +38,7 @@ from typing import Any, ClassVar, TextIO
 from panopticon.container.cli.base import AgentCLI, _Client
 from panopticon.container.config import update_toml_config
 from panopticon.container.hooks import HOOK_COMMAND
-from panopticon.container.skills import write_commands, write_operation_commands
+from panopticon.container.skills import write_agent_operation_skills, write_agent_skills
 from panopticon.core.models import Skill
 
 #: The control plane's abstract model **tiers** mapped to codex's concrete model ids (ADR 0014 §3a).
@@ -67,23 +68,19 @@ class CodexAgentCLI(AgentCLI):
     #: codex's single config file, under the config dir. MCP, trust, and the unattended posture all
     #: merge into it (each adapter method touches only its own keys, via :func:`update_toml_config`).
     CONFIG_FILE: ClassVar[str] = "config.toml"
-    #: Where the skill/operation custom prompts go, relative to the config home.
-    PROMPTS_SUBDIR: ClassVar[tuple[str, ...]] = (".codex", "prompts")
     #: The workflow overview file inside the config dir — ``$CODEX_HOME/AGENTS.md`` (ADR 0014 §5).
     WORKFLOW_OVERVIEW_FILE: ClassVar[str] = "AGENTS.md"
     #: Session transcripts live here under the config dir; their presence means "resume" (§ launch).
     SESSIONS_DIRNAME: ClassVar[str] = "sessions"
 
     def render_skills(self, client: _Client, task_id: str, home: Path) -> list[Path]:
-        """Render the workflow's skills to ``~/.codex/prompts/`` (codex's custom-prompt surface)."""
+        """Render the workflow's skills to ``~/.agents/skills/`` (codex's model-discoverable surface)."""
         skills = [Skill(**s) for s in client.list_skills(task_id)]
-        return write_commands(skills, home, task_id, self.PROMPTS_SUBDIR)
+        return write_agent_skills(skills, home, task_id)
 
     def render_operations(self, client: _Client, task_id: str, home: Path) -> list[Path]:
-        """Render the workflow's declared core operations (advance/drop/…) as codex custom prompts."""
-        return write_operation_commands(
-            client.list_operations(task_id), home, task_id, self.PROMPTS_SUBDIR
-        )
+        """Render the workflow's declared core operations (advance/drop/…) as codex agent skills."""
+        return write_agent_operation_skills(client.list_operations(task_id), home, task_id)
 
     def write_settings(self, home: Path) -> Path:
         """Wire codex's turn-flip hooks into ``config.toml``; return the path (ADR 0014 §5, M3.6).
