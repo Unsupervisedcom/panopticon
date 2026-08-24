@@ -8,8 +8,9 @@ Codex satisfies the same seams as claude against its own surface (ADR 0014 §5 m
   description: …\\n---`` frontmatter, body renderers shared with claude);
 - **MCP** → a ``[mcp_servers.panopticon]`` table in ``config.toml`` over streamable **HTTP** (ADR
   flag 1: codex supports remote HTTP MCP; older builds need ``experimental_use_rmcp_client``);
-- **workflow overview** → ``$CODEX_HOME/AGENTS.md`` (our config dir — *never* the repo's
-  ``/workspace/AGENTS.md``), which layers additively on top of the repo's own instructions;
+- **workflow overview** → ``developer_instructions`` in ``config.toml`` (codex's explicit
+  system-prompt injection channel — the ``--append-system-prompt`` analogue; *never* the repo's
+  ``/workspace/AGENTS.md``);
 - **trust / unattended posture** → ``config.toml`` (project ``trust_level`` + ``approval_policy`` /
   ``sandbox_mode``) so a headless container isn't blocked, on first run *and* on resume;
 - **auth** → an API key (``CODEX_API_KEY`` / ``OPENAI_API_KEY``) materialized into
@@ -119,8 +120,6 @@ class CodexAgentCLI(AgentCLI):
     #: codex's single config file, under the config dir. MCP, trust, and the unattended posture all
     #: merge into it (each adapter method touches only its own keys, via :func:`update_toml_config`).
     CONFIG_FILE: ClassVar[str] = "config.toml"
-    #: The workflow overview file inside the config dir — ``$CODEX_HOME/AGENTS.md`` (ADR 0014 §5).
-    WORKFLOW_OVERVIEW_FILE: ClassVar[str] = "AGENTS.md"
     #: Session transcripts live here under the config dir; their presence means "resume" (§ launch).
     SESSIONS_DIRNAME: ClassVar[str] = "sessions"
     #: codex's credentials file under the config home — what ``codex login --with-api-key`` writes.
@@ -190,19 +189,21 @@ class CodexAgentCLI(AgentCLI):
         return config
 
     def write_workflow_overview(self, config_dir: Path, overview: str) -> Path | None:
-        """Write the whole-workflow map to ``$CODEX_HOME/AGENTS.md`` (``None`` when there's none).
+        """Deliver the whole-workflow map via ``developer_instructions`` in ``config.toml``.
 
-        Codex has no ``--append-system-prompt``; it layers instruction files, reading our config
-        dir's ``AGENTS.md`` **on top of** the repo's own ``/workspace/AGENTS.md`` (ADR 0014 §5, flag
-        4). We write *only* our config-dir copy — never the working tree's — so the overview reaches
-        the agent additively without clobbering the repo's guidance.
+        ``developer_instructions`` is codex's explicit system-prompt injection channel — the
+        ``--append-system-prompt`` analogue (ADR 0014 §5, flag 4). Writing it to ``config.toml``
+        (rather than relying on ``$CODEX_HOME/AGENTS.md`` layering) gives a stronger, unambiguous
+        delivery: the content reaches the agent directly without depending on codex's file-layering
+        semantics. We never touch the working tree's ``/workspace/AGENTS.md``. Returns the
+        ``config.toml`` path, or ``None`` when there's no overview to deliver.
         """
         if not overview.strip():
             return None
-        config_dir.mkdir(parents=True, exist_ok=True)
-        path = config_dir / self.WORKFLOW_OVERVIEW_FILE
-        path.write_text(overview)
-        return path
+        config = config_dir / self.CONFIG_FILE
+        with update_toml_config(config) as data:
+            data["developer_instructions"] = overview
+        return config
 
     def trust_workspace(self, config_dir: Path, cwd: Path) -> Path:
         """Pre-accept codex's trust + approvals so the unattended container runs without prompting.
@@ -350,7 +351,10 @@ class CodexAgentCLI(AgentCLI):
         is appended as codex's first positional message so the agent picks up where it left off. On a
         **first run** (no resumable session) the ``starting_model`` tier is resolved via
         :meth:`resolve_model` and passed as ``--model`` (on resume codex uses the session's model),
-        and ``initial_prompt`` is appended as the first message.
+        and ``initial_prompt`` is appended as the first message. ``starting_model`` may carry a
+        ``<tier>:<effort>`` suffix (e.g. ``"primary:high"``) — the suffix is split off and passed
+        as ``--config model_reasoning_effort=<effort>`` (codex takes effort as a config key, not a
+        flag).
         """
         argv = [
             "codex",
@@ -366,7 +370,10 @@ class CodexAgentCLI(AgentCLI):
                 argv.append("You were interrupted. Continue.")
         else:
             if starting_model:  # first run only — on resume codex uses the session's model
-                argv += ["--model", self.resolve_model(starting_model)]
+                tier, _, effort = starting_model.partition(":")
+                argv += ["--model", self.resolve_model(tier)]
+                if effort:
+                    argv += ["--config", f"model_reasoning_effort={effort}"]
             if initial_prompt:
                 argv.append(initial_prompt)  # positional: codex's first message
         return argv
