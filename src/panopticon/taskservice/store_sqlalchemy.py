@@ -3,7 +3,10 @@
 One adapter serves every SQL backend SQLAlchemy speaks; **"in-memory" is just an in-memory
 SQLite engine**. The pure, frozen domain models (:mod:`panopticon.core.models`) never touch
 the ORM — this adapter owns mutable *row* classes and each knows how to translate itself
-``to_domain`` / ``from_domain``. Parent→child links are ORM ``relationship``\\ s (loaded
+``to_domain`` / ``from_domain``. Each row class states its domain→column mapping **once**, in
+``column_values``, which both the insert (``from_domain``) and the update (``_apply_columns``)
+go through — so a newly added column can't be carried on create and silently dropped on update.
+Parent→child links are ORM ``relationship``\\ s (loaded
 eagerly via ``selectin``), so reading a task pulls in its history and responsibilities and
 writing one cascades — no hand-written load/insert code.
 
@@ -72,6 +75,18 @@ class _Base(DeclarativeBase):
 metadata = _Base.metadata
 
 
+def _apply_columns(row: _Base, values: dict[str, Any]) -> None:
+    """Overwrite ``row``'s columns from a ``column_values`` mapping, leaving its ``id`` alone.
+
+    The counterpart to each row class's ``from_domain``: an update writes exactly the columns an
+    insert does, so a newly added column can't be persisted on create and then silently dropped
+    on update (which is how ``Repo.agent_cli`` was lost — see ``column_values``).
+    """
+    for key, value in values.items():
+        if key != "id":
+            setattr(row, key, value)
+
+
 class _RepoRow(_Base):
     __tablename__ = "repo"
 
@@ -105,21 +120,31 @@ class _RepoRow(_Base):
         )
 
     @classmethod
+    def column_values(cls, repo: Repo) -> dict[str, Any]:
+        """The domain→row column mapping: the one place a new repo column gets wired up.
+
+        Both the insert (:meth:`from_domain`) and the update (:func:`_apply_columns`) read it, so
+        the two can't drift — the failure mode this replaces was ``agent_cli`` being carried on
+        create and dropped by a hand-copied update, making a repo un-switchable to another CLI.
+        """
+        return {
+            "id": repo.id,
+            "name": repo.name,
+            "git_url": repo.git_url,
+            "default_base": repo.default_base,
+            "env_file": repo.env_file,
+            "credential_dir": repo.credential_dir,
+            "image_layer_file": repo.image_layer_file,
+            "capabilities": dict(repo.capabilities),
+            "hook_file": repo.hook_file,
+            "agent_cli": repo.agent_cli,
+            "enabled_workflows": list(repo.enabled_workflows),
+            "disabled_workflows": list(repo.disabled_workflows),
+        }
+
+    @classmethod
     def from_domain(cls, repo: Repo) -> _RepoRow:
-        return cls(
-            id=repo.id,
-            name=repo.name,
-            git_url=repo.git_url,
-            default_base=repo.default_base,
-            env_file=repo.env_file,
-            credential_dir=repo.credential_dir,
-            image_layer_file=repo.image_layer_file,
-            capabilities=dict(repo.capabilities),
-            hook_file=repo.hook_file,
-            agent_cli=repo.agent_cli,
-            enabled_workflows=list(repo.enabled_workflows),
-            disabled_workflows=list(repo.disabled_workflows),
-        )
+        return cls(**cls.column_values(repo))
 
 
 class _TaskRow(_Base):
@@ -180,29 +205,40 @@ class _TaskRow(_Base):
         )
 
     @classmethod
+    def column_values(cls, task: Task) -> dict[str, Any]:
+        """The domain→row column mapping: the one place a new task column gets wired up.
+
+        Columns only — ``history`` is a relationship, persisted append-only by ``_update_task``
+        (see the module docstring), never through this.
+        """
+        return {
+            "id": task.id,
+            "repo_id": task.repo_id,
+            "workflow": task.workflow,
+            "state": task.state,
+            "turn": task.turn.value,
+            "blocked": task.blocked,
+            "memo": task.memo,
+            "initial_prompt": task.initial_prompt,
+            "slug": task.slug,
+            "url": task.url,
+            "snoozed_until": task.snoozed_until,
+            "branch": task.branch,
+            "clone": task.clone,
+            "claimed_by": task.claimed_by,
+            "starting_model": task.starting_model,
+            "agent_cli": task.agent_cli,
+            "governor_task_id": task.governor_task_id,
+            "created_at": task.created_at,
+            "updated_at": task.updated_at,
+            "sort_weight": task.sort_weight,
+            "depends_on_task_ids": list(task.depends_on_task_ids),
+        }
+
+    @classmethod
     def from_domain(cls, task: Task) -> _TaskRow:
         return cls(
-            id=task.id,
-            repo_id=task.repo_id,
-            workflow=task.workflow,
-            state=task.state,
-            turn=task.turn.value,
-            blocked=task.blocked,
-            memo=task.memo,
-            initial_prompt=task.initial_prompt,
-            slug=task.slug,
-            url=task.url,
-            snoozed_until=task.snoozed_until,
-            branch=task.branch,
-            clone=task.clone,
-            claimed_by=task.claimed_by,
-            starting_model=task.starting_model,
-            agent_cli=task.agent_cli,
-            governor_task_id=task.governor_task_id,
-            created_at=task.created_at,
-            updated_at=task.updated_at,
-            sort_weight=task.sort_weight,
-            depends_on_task_ids=list(task.depends_on_task_ids),
+            **cls.column_values(task),
             history=[_HistoryRow.from_domain(e, seq) for seq, e in enumerate(task.history)],
         )
 
@@ -348,16 +384,7 @@ class SqlAlchemyStore(Store):
             row = await s.get(_RepoRow, repo.id)
             if row is None:
                 raise NotFound(f"repo {repo.id!r} does not exist")
-            row.name = repo.name
-            row.git_url = repo.git_url
-            row.default_base = repo.default_base
-            row.env_file = repo.env_file
-            row.credential_dir = repo.credential_dir
-            row.image_layer_file = repo.image_layer_file
-            row.capabilities = dict(repo.capabilities)
-            row.hook_file = repo.hook_file
-            row.enabled_workflows = list(repo.enabled_workflows)
-            row.disabled_workflows = list(repo.disabled_workflows)
+            _apply_columns(row, _RepoRow.column_values(repo))
 
     # -- tasks: reads + persistence primitives (the base's template methods drive these) --
 
@@ -398,19 +425,7 @@ class SqlAlchemyStore(Store):
             row = await s.get(_TaskRow, task.id)
             if row is None:  # defensive: single-writer, so it still exists after _stored_history
                 raise NotFound(f"task {task.id!r} does not exist")
-            row.state = task.state
-            row.turn = task.turn.value
-            row.blocked = task.blocked
-            row.slug = task.slug
-            row.url = task.url
-            row.snoozed_until = task.snoozed_until
-            row.branch = task.branch
-            row.clone = task.clone
-            row.claimed_by = task.claimed_by
-            row.governor_task_id = task.governor_task_id
-            row.updated_at = task.updated_at
-            row.sort_weight = task.sort_weight
-            row.depends_on_task_ids = list(task.depends_on_task_ids)
+            _apply_columns(row, _TaskRow.column_values(task))
             # The current (last stored) entry's promises may have been fulfilled in place.
             if stored:
                 _fulfil_current_promises(
