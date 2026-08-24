@@ -69,7 +69,7 @@ def main(
         return
     cli.render_skills(client, task_id, config_dir.parent)
     cli.render_operations(client, task_id, config_dir.parent)  # advance/drop/… as slash-commands
-    cli.write_settings(config_dir.parent)  # turn-flip hooks → <home>/<config_dirname>/settings
+    cli.write_settings(config_dir.parent)  # wire turn-flip hooks where the CLI supports them
     cli.write_mcp_config(config_dir, service_url)  # point the CLI at the task service's MCP server
     cli.write_workflow_overview(
         config_dir, client.workflow_overview(task_id)

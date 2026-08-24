@@ -507,7 +507,7 @@ class Workflow(ABC):
 
         The seed history entry carries the initial state's responsibilities (all ``PENDING``).
         ``memo`` is the optional brief one-line reminder of what the task is, collected at creation.
-        ``initial_prompt`` is optional text prefilled into Claude's input box on first spawn.
+        ``initial_prompt`` is optional text prefilled into the agent CLI's input box on first spawn.
         """
         state = self.initial_label
         return Task(

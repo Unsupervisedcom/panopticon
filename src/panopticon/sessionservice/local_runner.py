@@ -221,8 +221,8 @@ class LocalRunner(Runner):
             **self._extra_env,
         }
         if initial_prompt:
-            # The agent launcher reads this and passes it as a positional arg to `claude` on the
-            # first run (no prior session), so the agent's first action is to process the prompt.
+            # The agent launcher reads this and passes it as a positional arg to the resolved agent
+            # CLI on the first run (no prior session), so the agent's first action is to process the prompt.
             env["PANOPTICON_INITIAL_PROMPT"] = initial_prompt
         if turn:
             env["PANOPTICON_TASK_TURN"] = turn

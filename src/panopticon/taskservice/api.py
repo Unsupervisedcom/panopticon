@@ -110,7 +110,9 @@ class TaskOut(BaseModel):
     memo: (
         str | None
     )  # a brief one-line reminder of what the task is, collected at creation (shown in the summary)
-    initial_prompt: str | None  # optional text prefilled into Claude's input box on first spawn
+    initial_prompt: (
+        str | None
+    )  # optional text prefilled into the agent CLI's input box on first spawn
     slug: str | None
     url: str | None  # an optional external URL (PR, issue, …); the dashboard's `p` hotkey opens it
     snoozed_until: str | None = (
