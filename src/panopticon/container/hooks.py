@@ -39,7 +39,7 @@ def settings() -> dict[str, Any]:
 
     def run(actor: str, event: str | None = None, *, matcher: str | None = None) -> dict[str, Any]:
         # `actor` is the turn to set; the optional `event` selects the callback's side-effect
-        # (briefing on the prompt hook, token report on stop) — the bare question hooks pass none.
+        # (briefing on the prompt hook; background-task gating of the turn flip on stop) — the bare question hooks pass none.
         command = f"{HOOK_COMMAND} {actor}" + (f" {event}" if event else "")
         entry: dict[str, Any] = {"hooks": [{"type": "command", "command": command}]}
         if (

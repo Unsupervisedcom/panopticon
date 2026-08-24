@@ -119,11 +119,11 @@ class AgentCLI(ABC):
 
     @abstractmethod
     def has_live_background_task(self, payload: dict[str, Any]) -> bool:
-        """Whether the Stop payload reports still-running background work (gates the turn flip)."""
+        """Whether the hook payload reports still-running background work (gates the turn flip)."""
 
     @abstractmethod
     def launch(self, config_dir: Path) -> None:
-        """Exec the real CLI in the foreground (resuming if a session exists); return when it exits."""
+        """Exec the real CLI in the foreground; return when it exits."""
 
 
 #: The adapter registry, keyed by CLI name. Adding a CLI is: implement :class:`AgentCLI`, register

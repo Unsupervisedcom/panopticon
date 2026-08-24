@@ -4,8 +4,7 @@ A single agent-driven state (`ORCHESTRATING → {COMPLETE, DROPPED}`, like :clas
 workflows.spike.Spike`) whose agent decomposes a high-level request into a batch of child
 tasks and **seeds each one ready for the user to approve**: it creates the task, writes its
 `plan.md` artifact, sets its slug, marks the child's `plan-written` responsibility met, and
-hands the child's turn to the user. The user
-then only has to review the plan and advance
+hands the child's turn to the user. The user then only has to review the plan and advance
 (`PLANNING → ITERATING`). The motivating use is fanning out `github-self-reviewed` /
 `github-peer-reviewed` tasks that arrive pre-planned.
 

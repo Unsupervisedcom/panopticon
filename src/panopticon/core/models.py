@@ -271,7 +271,7 @@ class Task:
     #: lives in the task's plan artifact). Distinct from the ``slug`` (a short identifier the
     #: agent sets later); ``None`` when the creator gave none.
     memo: str | None = None
-    #: Optional text prefilled (unsent) into Claude's input box on the task's first spawn,
+    #: Optional text prefilled (unsent) into the agent CLI's input box on the task's first spawn,
     #: taking precedence over ``memo`` for that purpose. ``None`` until set at creation.
     initial_prompt: str | None = None
     slug: str | None = None
