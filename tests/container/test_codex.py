@@ -6,12 +6,13 @@ from __future__ import annotations
 
 import io
 import json
+import time
 import tomllib
 from pathlib import Path
 
 import pytest
 
-from panopticon.container.cli.codex import CodexAgentCLI
+from panopticon.container.cli.codex import CodexAgentCLI, _find_resume_target
 
 
 class _FakeClient:
@@ -241,15 +242,16 @@ def test_launch_argv_starts_fresh_without_a_session(tmp_path: Path) -> None:
     ]
 
 
-def test_launch_argv_resumes_when_a_session_transcript_exists(tmp_path: Path) -> None:
+def test_launch_argv_resumes_when_an_interactive_session_exists(tmp_path: Path) -> None:
     sessions = tmp_path / "sessions" / "2026" / "08"
     sessions.mkdir(parents=True)
-    (sessions / "rollout-abc.jsonl").write_text("{}")
+    meta = '{"payload": {"originator": "codex-tui", "thread_source": "user", "id": "sess-abc"}}'
+    (sessions / "rollout-abc.jsonl").write_text(meta)
     assert CodexAgentCLI().launch_argv(tmp_path, Path("/workspace")) == [
         "codex",
         "--dangerously-bypass-approvals-and-sandbox",
         "resume",
-        "--last",
+        "sess-abc",
     ]
 
 
@@ -260,7 +262,8 @@ def test_launch_argv_appends_initial_prompt_on_first_run(tmp_path: Path) -> None
 
 def test_launch_argv_omits_initial_prompt_when_resuming(tmp_path: Path) -> None:
     (tmp_path / "sessions").mkdir()
-    (tmp_path / "sessions" / "s.jsonl").write_text("{}")
+    meta = '{"payload": {"originator": "codex-tui", "thread_source": "user", "id": "s1"}}'
+    (tmp_path / "sessions" / "s.jsonl").write_text(meta)
     argv = CodexAgentCLI().launch_argv(tmp_path, Path("/workspace"), initial_prompt="review plan")
     assert "resume" in argv and "review plan" not in argv
 
@@ -277,7 +280,8 @@ def test_launch_argv_passes_the_resolved_model_on_first_run(tmp_path: Path) -> N
 
 def test_launch_argv_omits_model_on_resume(tmp_path: Path) -> None:
     (tmp_path / "sessions").mkdir()
-    (tmp_path / "sessions" / "s.jsonl").write_text("{}")
+    meta = '{"payload": {"originator": "codex-tui", "thread_source": "user", "id": "s1"}}'
+    (tmp_path / "sessions" / "s.jsonl").write_text(meta)
     argv = CodexAgentCLI().launch_argv(tmp_path, Path("/workspace"), starting_model="primary")
     assert "--model" not in argv and "resume" in argv
 
@@ -292,6 +296,151 @@ def test_launch_argv_passes_model_before_initial_prompt_on_first_run(tmp_path: P
         "--model",
         "gpt-5.6-sol",
         "start now",
+    ]
+
+
+# -- _find_resume_target -----------------------------------------------------------------------
+
+
+def _session_meta(
+    session_id: str, originator: str = "codex-tui", thread_source: str = "user"
+) -> str:
+    """One-liner session_meta first-line JSON for tests."""
+    import json
+
+    return json.dumps(
+        {"payload": {"originator": originator, "thread_source": thread_source, "id": session_id}}
+    )
+
+
+def test_find_resume_target_returns_none_when_no_sessions_dir(tmp_path: Path) -> None:
+    assert _find_resume_target(tmp_path / "sessions") is None
+
+
+def test_find_resume_target_returns_none_when_no_jsonl_files(tmp_path: Path) -> None:
+    (tmp_path / "sessions").mkdir()
+    assert _find_resume_target(tmp_path / "sessions") is None
+
+
+def test_find_resume_target_skips_codex_exec_rollout(tmp_path: Path) -> None:
+    # originator != "codex-tui" → not eligible
+    d = tmp_path / "sessions"
+    d.mkdir()
+    (d / "exec.jsonl").write_text(_session_meta("exec-1", originator="codex_exec"))
+    assert _find_resume_target(d) is None
+
+
+def test_find_resume_target_skips_subagent_thread(tmp_path: Path) -> None:
+    # thread_source != "user" → internal subagent thread, not resumable
+    d = tmp_path / "sessions"
+    d.mkdir()
+    (d / "sub.jsonl").write_text(_session_meta("sub-1", thread_source="agent"))
+    assert _find_resume_target(d) is None
+
+
+def test_find_resume_target_skips_malformed_first_line(tmp_path: Path) -> None:
+    d = tmp_path / "sessions"
+    d.mkdir()
+    (d / "bad.jsonl").write_text("not json\n")
+    assert _find_resume_target(d) is None
+
+
+def test_find_resume_target_skips_empty_first_line(tmp_path: Path) -> None:
+    d = tmp_path / "sessions"
+    d.mkdir()
+    (d / "empty.jsonl").write_text("\n{}\n")  # empty first line
+    assert _find_resume_target(d) is None
+
+
+def test_find_resume_target_skips_bare_object_without_payload(tmp_path: Path) -> None:
+    d = tmp_path / "sessions"
+    d.mkdir()
+    (d / "bare.jsonl").write_text("{}")  # valid JSON, but no payload → skip
+    assert _find_resume_target(d) is None
+
+
+def test_find_resume_target_returns_id_of_interactive_session(tmp_path: Path) -> None:
+    d = tmp_path / "sessions"
+    d.mkdir()
+    (d / "sess.jsonl").write_text(_session_meta("interactive-1"))
+    assert _find_resume_target(d) == "interactive-1"
+
+
+def test_find_resume_target_newest_interactive_beats_older_exec(tmp_path: Path) -> None:
+    # A newer exec rollout must not shadow an older interactive session.
+    d = tmp_path / "sessions"
+    d.mkdir()
+    old = d / "old-interactive.jsonl"
+    old.write_text(_session_meta("good-sess"))
+    time.sleep(0.01)
+    new = d / "new-exec.jsonl"
+    new.write_text(_session_meta("exec-sess", originator="codex_exec"))
+    # exec is newer by mtime but ineligible → interactive wins
+    assert _find_resume_target(d) == "good-sess"
+
+
+def test_find_resume_target_picks_newest_of_multiple_interactive(tmp_path: Path) -> None:
+    d = tmp_path / "sessions"
+    d.mkdir()
+    first = d / "first.jsonl"
+    first.write_text(_session_meta("old-sess"))
+    time.sleep(0.01)
+    second = d / "second.jsonl"
+    second.write_text(_session_meta("new-sess"))
+    assert _find_resume_target(d) == "new-sess"
+
+
+def test_find_resume_target_searches_subdirectories(tmp_path: Path) -> None:
+    d = tmp_path / "sessions"
+    sub = d / "2026" / "08"
+    sub.mkdir(parents=True)
+    (sub / "deep.jsonl").write_text(_session_meta("deep-sess"))
+    assert _find_resume_target(d) == "deep-sess"
+
+
+# -- launch_argv resume + interrupt prompt -------------------------------------------------------
+
+
+def test_launch_argv_resumes_with_interrupt_prompt_when_agent_turn(tmp_path: Path) -> None:
+    (tmp_path / "sessions").mkdir()
+    meta = '{"payload": {"originator": "codex-tui", "thread_source": "user", "id": "s1"}}'
+    (tmp_path / "sessions" / "s.jsonl").write_text(meta)
+    argv = CodexAgentCLI().launch_argv(tmp_path, Path("/workspace"), turn="agent")
+    assert argv == [
+        "codex",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "resume",
+        "s1",
+        "You were interrupted. Continue.",
+    ]
+
+
+def test_launch_argv_resumes_without_interrupt_prompt_when_user_turn(tmp_path: Path) -> None:
+    (tmp_path / "sessions").mkdir()
+    meta = '{"payload": {"originator": "codex-tui", "thread_source": "user", "id": "s1"}}'
+    (tmp_path / "sessions" / "s.jsonl").write_text(meta)
+    argv = CodexAgentCLI().launch_argv(tmp_path, Path("/workspace"), turn="user")
+    assert argv == [
+        "codex",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "resume",
+        "s1",
+    ]
+
+
+def test_launch_argv_falls_back_to_first_run_when_only_exec_sessions(tmp_path: Path) -> None:
+    (tmp_path / "sessions").mkdir()
+    exec_meta = '{"payload": {"originator": "codex_exec", "thread_source": "user", "id": "e1"}}'
+    (tmp_path / "sessions" / "exec.jsonl").write_text(exec_meta)
+    argv = CodexAgentCLI().launch_argv(
+        tmp_path, Path("/workspace"), initial_prompt="hi", starting_model="primary"
+    )
+    assert argv == [
+        "codex",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--model",
+        "gpt-5.6-sol",
+        "hi",
     ]
 
 

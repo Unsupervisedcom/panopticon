@@ -15,8 +15,8 @@ Codex satisfies the same seams as claude against its own surface (ADR 0014 §5 m
 - **auth** → an API key (``CODEX_API_KEY`` / ``OPENAI_API_KEY``) materialized into
   ``$CODEX_HOME/auth.json`` (a bare env var does *not* log codex in), or a ChatGPT workspace
   access token (``CODEX_ACCESS_TOKEN``) read straight from the env — see :meth:`write_credentials`;
-- **launch / resume** → ``codex`` first-run vs ``codex resume --last`` (the ``claude --continue``
-  analogue), probing ``$CODEX_HOME/sessions`` for a prior transcript.
+- **launch / resume** → ``codex`` first-run vs ``codex resume <session_id>`` (the ``claude
+  --continue`` analogue), selecting the resumable session via :func:`_find_resume_target`.
 
 Scope now includes the **turn-flip hooks** (M3.6): :meth:`~CodexAgentCLI.write_settings` wires
 codex's ``[hooks]`` ``Stop`` / ``UserPromptSubmit`` block to the shared callback, and the hook-payload
@@ -42,6 +42,55 @@ from panopticon.container.config import update_toml_config
 from panopticon.container.hooks import HOOK_COMMAND
 from panopticon.container.skills import write_agent_operation_skills, write_agent_skills
 from panopticon.core.models import Skill
+
+
+def _find_resume_target(sessions_dir: Path) -> str | None:
+    """Return the session id of the newest resumable codex session, or ``None``.
+
+    ``$CODEX_HOME/sessions`` is shared by **all** codex invocations in the container —
+    ``codex exec`` subprocesses (anything the agent shells out to) and codex-tui's own
+    internal subagent threads (e.g. compaction) all write ``.jsonl`` rollout files there.
+    Resuming by ``--last`` (newest mtime) can therefore land on a non-resumable or wrong
+    session. This function reads only the **first line** of each file (the ``session_meta``
+    record, cheap regardless of session length) and filters to sessions where:
+
+    - ``payload["originator"] == "codex-tui"`` — interactive TUI, not ``codex_exec``
+    - ``payload["thread_source"] == "user"`` — root thread, not an internal subagent thread
+
+    Returns ``payload["id"]`` of the eligible file with the highest ``st_mtime_ns`` (integer
+    nanoseconds — float mtime loses sub-second precision). Malformed or empty first lines and
+    any ``OSError`` are silently skipped. Returns ``None`` when nothing qualifies.
+    """
+    best_mtime: int = -1
+    best_id: str | None = None
+
+    for path in sessions_dir.rglob("*.jsonl"):
+        try:
+            first_line = path.read_text().split("\n", 1)[0].strip()
+            if not first_line:
+                continue
+            record = json.loads(first_line)
+            if not isinstance(record, dict):
+                continue
+            payload = record.get("payload", {})
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("originator") != "codex-tui":
+                continue
+            if payload.get("thread_source") != "user":
+                continue
+            session_id = payload.get("id")
+            if not session_id or not isinstance(session_id, str):
+                continue
+            mtime = path.stat().st_mtime_ns
+            if mtime > best_mtime:
+                best_mtime = mtime
+                best_id = session_id
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+
+    return best_id
+
 
 #: The control plane's abstract model **tiers** mapped to codex's concrete model ids (ADR 0014 §3a).
 #: The only place a provider model name appears; ``core``/``workflows`` name only the tier. ``primary``
@@ -273,26 +322,32 @@ class CodexAgentCLI(AgentCLI):
         turn: str | None = None,
         starting_model: str | None = None,
     ) -> list[str]:
-        """`codex` argv, resuming the config dir's most recent session if one exists.
+        """`codex` argv, resuming the most recent resumable session by id if one exists.
 
         The agent runs unattended in a throwaway container on a per-task clone, so it launches with
         ``--dangerously-bypass-approvals-and-sandbox`` (the ``claude --dangerously-skip-permissions``
         analogue) — no operator to answer prompts, blast radius the task's own checkout. Codex keeps
-        session transcripts under ``$CODEX_HOME/sessions``; when one is present we ``resume --last``
-        instead of starting fresh. The config dir is a **per-task volume**, so this resumes both
-        within a container's life and **across respawn/recreate**.
+        session transcripts under ``$CODEX_HOME/sessions``; :func:`_find_resume_target` scans them
+        and returns the id of the newest session whose first-line ``session_meta`` record marks it as
+        a resumable interactive TUI root thread (``originator=codex-tui``, ``thread_source=user``).
+        When one is found, ``codex resume <session_id>`` is used instead of starting fresh. The
+        config dir is a **per-task volume**, so this resumes both within a container's life and
+        **across respawn/recreate**.
 
-        On a **first run** (no prior session) the ``starting_model`` tier is resolved via
-        :meth:`resolve_model` and passed as ``--model`` (on resume codex uses the session's model),
-        and an ``initial_prompt`` is appended as codex's first message. ``turn`` is accepted for
-        signature parity with the claude adapter; auto-continuing a resumed session on the agent's
-        turn (claude's interrupt prompt) is deferred with the rest of the turn wiring to M3.6, since
-        injecting a prompt into a resumed codex session isn't yet verified.
+        On **resume** with ``turn == "agent"`` (the agent was interrupted mid-turn), the interrupt
+        prompt ``"You were interrupted. Continue."`` is appended as codex's first positional message
+        so the agent picks up where it left off. On a **first run** (no resumable session) the
+        ``starting_model`` tier is resolved via :meth:`resolve_model` and passed as ``--model`` (on
+        resume codex uses the session's model), and ``initial_prompt`` is appended as the first
+        message.
         """
         argv = ["codex", "--dangerously-bypass-approvals-and-sandbox"]
-        sessions = config_dir / self.SESSIONS_DIRNAME
-        if sessions.exists() and any(sessions.rglob("*.jsonl")):
-            argv += ["resume", "--last"]  # resume the config dir's most recent session
+        sessions_dir = config_dir / self.SESSIONS_DIRNAME
+        session_id = _find_resume_target(sessions_dir) if sessions_dir.exists() else None
+        if session_id:
+            argv += ["resume", session_id]
+            if turn == "agent":
+                argv.append("You were interrupted. Continue.")
         else:
             if starting_model:  # first run only — on resume codex uses the session's model
                 argv += ["--model", self.resolve_model(starting_model)]
