@@ -8,6 +8,13 @@ from panopticon.container.cli.base import (
     AgentCLI,
     get_agent_cli,
     register_agent_cli,
+    registered_agent_clis,
 )
 
-__all__ = ["DEFAULT_AGENT_CLI", "AgentCLI", "get_agent_cli", "register_agent_cli"]
+__all__ = [
+    "DEFAULT_AGENT_CLI",
+    "AgentCLI",
+    "get_agent_cli",
+    "register_agent_cli",
+    "registered_agent_clis",
+]

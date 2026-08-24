@@ -15,13 +15,15 @@ from typing import Any
 import httpx
 import pytest
 from textual.app import App
-from textual.widgets import Checkbox, DataTable, Input, Select, Static
+from textual.widgets import Checkbox, DataTable, Input, OptionList, Select, Static
 
+from panopticon.core.models import KNOWN_AGENT_CLIS
 from panopticon.terminal import dashboard
 from panopticon.terminal.dashboard import (
     _ENSEMBLE_KEY_PREFIX,
     _INDEFINITE_SNOOZE_UNTIL,
     _SNOOZE_DURATION,
+    ChoiceScreen,
     Dashboard,
     SpaceCheckbox,
     TaskDetailScreen,
@@ -115,6 +117,7 @@ class _FakeClient:
         self.list_tasks_calls = 0  # how many times the table was (re)built — counts feed refreshes
         self.created: list[tuple[str, str, str | None]] = []
         self.created_artifacts_b64: list[dict[str, str] | None] = []
+        self.created_agent_clis: list[str | None] = []
         self.applied: list[tuple[str, str]] = []
         self.released: list[str] = []
         self.snoozed: list[tuple[str, str | None]] = []
@@ -236,9 +239,11 @@ class _FakeClient:
         initial_prompt: str | None = None,
         artifacts: dict[str, str] | None = None,
         artifacts_b64: dict[str, str] | None = None,
+        agent_cli: str | None = None,
     ) -> dict[str, Any]:
         self.created.append((repo_id, workflow, memo, initial_prompt))
         self.created_artifacts_b64.append(artifacts_b64)
+        self.created_agent_clis.append(agent_cli)
         return {"id": "new"}
 
     def apply_operation(self, task_id: str, operation: str) -> dict[str, Any]:
@@ -810,11 +815,90 @@ async def test_pressing_n_creates_a_task_via_repo_workflow_then_memo() -> None:
         await pilot.pause()
         await pilot.press("enter")  # first (only) workflow: spike
         await pilot.pause()
+        await pilot.press("enter")  # agent CLI: the repo default, pre-selected
+        await pilot.pause()
         await pilot.press("f", "i", "x")  # type a memo into the prompt
         await pilot.press("enter")  # submit
         await pilot.pause()
         # Enter always submits the memo as the agent's initial prompt
         assert fake.created == [("r1", "spike", "fix", "fix")]
+        # The CLI step was left on the repo default → no per-task override recorded.
+        assert fake.created_agent_clis == [None]
+
+
+async def test_pressing_n_taking_the_repo_default_cli_sends_no_override() -> None:
+    # A repo whose default is codex: accepting the pre-selected entry must still record *no*
+    # override, not a redundant agent_cli="codex" (resolve_agent_cli's contract — ADR 0014 §3).
+    fake = _FakeClient(
+        [],
+        repos=[{"id": "r1", "name": "r1", "git_url": "", "agent_cli": "codex"}],
+        workflows=[{"name": "spike", "when_to_use": ""}],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")  # repo
+        await pilot.pause()
+        await pilot.press("enter")  # workflow
+        await pilot.pause()
+        await pilot.press("enter")  # agent CLI: codex is pre-selected as the repo default
+        await pilot.pause()
+        await pilot.press("f", "i", "x")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert fake.created == [("r1", "spike", "fix", "fix")]
+        assert fake.created_agent_clis == [None]
+
+
+async def test_pressing_n_can_override_the_repo_default_cli() -> None:
+    # The repo defaults to claude; move off the pre-selected entry to pick codex for this one task.
+    fake = _FakeClient(
+        [],
+        repos=[{"id": "r1", "name": "r1", "git_url": "", "agent_cli": "claude"}],
+        workflows=[{"name": "spike", "when_to_use": ""}],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")  # repo
+        await pilot.pause()
+        await pilot.press("enter")  # workflow
+        await pilot.pause()
+        await pilot.press("j")  # off the claude default…
+        await pilot.press("enter")  # …onto codex
+        await pilot.pause()
+        await pilot.press("f", "i", "x")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert fake.created == [("r1", "spike", "fix", "fix")]
+        assert fake.created_agent_clis == ["codex"]
+
+
+async def test_new_task_cli_picker_preselects_the_repo_default() -> None:
+    # The repo default starts highlighted, so Enter alone keeps it — the fast path stays fast even
+    # when the default isn't first in KNOWN_AGENT_CLIS.
+    fake = _FakeClient(
+        [],
+        repos=[{"id": "r1", "name": "r1", "git_url": "", "agent_cli": "codex"}],
+        workflows=[{"name": "spike", "when_to_use": ""}],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")  # repo
+        await pilot.pause()
+        await pilot.press("enter")  # workflow
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ChoiceScreen)
+        option_list = screen.query_one(OptionList)
+        assert option_list.highlighted == list(KNOWN_AGENT_CLIS).index("codex")
 
 
 async def test_pressing_n_with_a_blank_memo_creates_with_none() -> None:
@@ -831,6 +915,8 @@ async def test_pressing_n_with_a_blank_memo_creates_with_none() -> None:
         await pilot.press("enter")  # repo
         await pilot.pause()
         await pilot.press("enter")  # workflow
+        await pilot.pause()
+        await pilot.press("enter")  # agent CLI: the repo default, pre-selected
         await pilot.pause()
         await pilot.press("enter")  # submit an empty memo
         await pilot.pause()
@@ -852,6 +938,8 @@ async def test_memo_ctrl_s_sets_the_memo_without_submitting() -> None:
         await pilot.press("enter")  # repo
         await pilot.pause()
         await pilot.press("enter")  # workflow
+        await pilot.pause()
+        await pilot.press("enter")  # agent CLI: the repo default, pre-selected
         await pilot.pause()
         await pilot.press("f", "i", "x")  # type a memo
         await pilot.press("ctrl+s")  # set without submitting
@@ -880,6 +968,8 @@ async def test_memo_ctrl_g_opens_editor_and_updates_textarea(monkeypatch: Any) -
         await pilot.pause()
         await pilot.press("enter")  # workflow
         await pilot.pause()
+        await pilot.press("enter")  # agent CLI: the repo default, pre-selected
+        await pilot.pause()
         await pilot.press("h", "i")  # type initial text
         await pilot.press("ctrl+g")  # open editor
         await pilot.pause()
@@ -907,6 +997,8 @@ async def test_memo_textarea_expands_for_multiline_content(monkeypatch: Any) -> 
         await pilot.pause()
         await pilot.press("enter")  # workflow
         await pilot.pause()
+        await pilot.press("enter")  # agent CLI: the repo default, pre-selected
+        await pilot.pause()
         await pilot.press("ctrl+g")
         await pilot.pause()
         await pilot.press("enter")  # submit
@@ -931,6 +1023,8 @@ async def test_memo_ctrl_a_attaches_a_file_as_an_artifact(tmp_path: Path) -> Non
         await pilot.press("enter")  # repo
         await pilot.pause()
         await pilot.press("enter")  # workflow
+        await pilot.pause()
+        await pilot.press("enter")  # agent CLI: the repo default, pre-selected
         await pilot.pause()
         await pilot.press("f", "i", "x")  # type a memo
         await pilot.press("ctrl+a")  # open the attach-files modal
@@ -972,6 +1066,8 @@ async def test_memo_ctrl_a_preserves_spaces_in_the_filename(tmp_path: Path) -> N
         await pilot.pause()
         await pilot.press("enter")  # workflow
         await pilot.pause()
+        await pilot.press("enter")  # agent CLI: the repo default, pre-selected
+        await pilot.pause()
         await pilot.press("ctrl+a")
         await pilot.pause()
         screen = app.screen
@@ -1007,6 +1103,8 @@ async def test_memo_ctrl_a_attaches_a_binary_file(tmp_path: Path) -> None:
         await pilot.pause()
         await pilot.press("enter")  # workflow
         await pilot.pause()
+        await pilot.press("enter")  # agent CLI: the repo default, pre-selected
+        await pilot.pause()
         await pilot.press("ctrl+a")
         await pilot.pause()
         screen = app.screen
@@ -1039,6 +1137,8 @@ async def test_memo_ctrl_a_can_remove_a_queued_file(tmp_path: Path) -> None:
         await pilot.press("enter")  # repo
         await pilot.pause()
         await pilot.press("enter")  # workflow
+        await pilot.pause()
+        await pilot.press("enter")  # agent CLI: the repo default, pre-selected
         await pilot.pause()
         await pilot.press("ctrl+a")  # open the attach-files modal
         await pilot.pause()
@@ -1077,6 +1177,8 @@ async def test_memo_ctrl_a_rejects_a_missing_path(tmp_path: Path) -> None:
         await pilot.press("enter")  # repo
         await pilot.pause()
         await pilot.press("enter")  # workflow
+        await pilot.pause()
+        await pilot.press("enter")  # agent CLI: the repo default, pre-selected
         await pilot.pause()
         await pilot.press("ctrl+a")
         await pilot.pause()
@@ -1134,6 +1236,8 @@ async def test_memo_ctrl_a_accepts_a_quoted_path(tmp_path: Path) -> None:
         await pilot.press("enter")  # repo
         await pilot.pause()
         await pilot.press("enter")  # workflow
+        await pilot.pause()
+        await pilot.press("enter")  # agent CLI: the repo default, pre-selected
         await pilot.pause()
         await pilot.press("ctrl+a")
         await pilot.pause()
@@ -3470,6 +3574,8 @@ async def test_pressing_j_then_enter_picks_the_second_option_in_a_picker() -> No
         await pilot.press("enter")  # repo: r2
         await pilot.pause()
         await pilot.press("enter")  # workflow: spike (only one)
+        await pilot.pause()
+        await pilot.press("enter")  # agent CLI: the repo default, pre-selected
         await pilot.pause()
         await pilot.press("enter")  # submit an empty memo
         await pilot.pause()

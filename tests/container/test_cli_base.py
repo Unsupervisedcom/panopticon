@@ -13,17 +13,31 @@ import pytest
 from panopticon.container.cli import (
     DEFAULT_AGENT_CLI,
     AgentCLI,
+    base,
     get_agent_cli,
     register_agent_cli,
+    registered_agent_clis,
 )
 from panopticon.container.cli.claude import ClaudeAgentCLI
 from panopticon.container.cli.codex import CodexAgentCLI
+from panopticon.core import models as core_models
 
 
 def test_default_resolves_to_claude() -> None:
     assert DEFAULT_AGENT_CLI == "claude"
     assert isinstance(get_agent_cli(), ClaudeAgentCLI)  # no name → the default
     assert isinstance(get_agent_cli("claude"), ClaudeAgentCLI)
+
+
+def test_core_agent_cli_constants_match_the_adapter_registry() -> None:
+    """The control plane can't import this package at runtime (the determinism invariant — `core`
+    stays LLM-free), so `core.models` re-states the CLI name list and the default. This is the guard
+    that keeps the two copies from drifting: add an adapter, and it fails until `core` knows about it.
+    """
+    assert list(registered_agent_clis()) == sorted(core_models.KNOWN_AGENT_CLIS)
+    assert core_models.DEFAULT_AGENT_CLI == DEFAULT_AGENT_CLI
+    # The fallback must itself be a selectable CLI.
+    assert core_models.DEFAULT_AGENT_CLI in core_models.KNOWN_AGENT_CLIS
 
 
 def test_codex_is_a_registered_built_in_adapter() -> None:
@@ -73,8 +87,13 @@ def test_registering_an_adapter_makes_it_resolvable_without_a_launcher_edit() ->
             pass
 
     register_agent_cli(_Fake)
-    resolved = get_agent_cli("fake-cli")
-    assert isinstance(resolved, _Fake) and resolved.config_dirname == ".fake"
+    try:
+        resolved = get_agent_cli("fake-cli")
+        assert isinstance(resolved, _Fake) and resolved.config_dirname == ".fake"
+    finally:
+        # The registry is module-global: leaving the fake in it would leak into any other test that
+        # inspects the registered names (e.g. the KNOWN_AGENT_CLIS drift guard above).
+        base._REGISTRY.pop("fake-cli", None)
 
 
 # -- shared base-class behaviour ----------------------------------------------------------------

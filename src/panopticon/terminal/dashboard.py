@@ -105,7 +105,7 @@ from textual.worker import get_current_worker
 from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.artifacts import InvalidArtifactName, validate_segment
 from panopticon.core.dirs import ARTIFACTS_DIR
-from panopticon.core.models import resolve_agent_cli
+from panopticon.core.models import DEFAULT_AGENT_CLI, KNOWN_AGENT_CLIS, resolve_agent_cli
 from panopticon.core.state import TERMINAL_LABELS
 from panopticon.sessionservice.local_runner import session_name
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
@@ -624,10 +624,13 @@ class _OptionListModal(ModalScreen[_ResultT | None]):
     BINDINGS = [("escape", "cancel", "Cancel")]
     BOX_ID = "list-box"
 
-    def __init__(self, title: str, options: list[str]) -> None:
+    def __init__(self, title: str, options: list[str], *, initial: str | None = None) -> None:
         super().__init__()
         self._title = title
         self._options = options
+        #: Which option starts highlighted, so Enter alone picks the expected one. Ignored when it
+        #: isn't in ``options``.
+        self._initial = initial
 
     def compose(self) -> ComposeResult:
         with Vertical(id=self.BOX_ID):
@@ -639,7 +642,10 @@ class _OptionListModal(ModalScreen[_ResultT | None]):
         return ()
 
     def on_mount(self) -> None:
-        self.query_one(OptionList).focus()
+        option_list = self.query_one(OptionList)
+        if self._initial is not None and self._initial in self._options:
+            option_list.highlighted = self._options.index(self._initial)
+        option_list.focus()
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -1407,13 +1413,13 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
 
     def _initial(self, name: str) -> str:
         """A field's pre-populated value: the repo's stored value, else (create mode only)
-        ``main`` for ``default_base`` / ``claude`` for ``agent_cli``, else blank."""
+        ``main`` for ``default_base`` / the default CLI for ``agent_cli``, else blank."""
         stored = self._repo.get(name)
         if stored:
             return str(stored)
         if self._editing:
             return ""
-        return {"default_base": "main", "agent_cli": "claude"}.get(name, "")
+        return {"default_base": "main", "agent_cli": DEFAULT_AGENT_CLI}.get(name, "")
 
     def _wf_checked(self, wf: dict[str, Any]) -> bool:
         name = wf["name"]
@@ -1617,7 +1623,7 @@ class ReposScreen(ModalScreen[None]):
                     capabilities={"docker_in_docker": values["docker_in_docker"]},
                     enabled_workflows=values["enabled_workflows"],
                     disabled_workflows=values["disabled_workflows"],
-                    agent_cli=values["agent_cli"] or "claude",
+                    agent_cli=values["agent_cli"] or DEFAULT_AGENT_CLI,
                 )
             except httpx.HTTPStatusError as exc:
                 return f"Can't create: {_detail(exc)}"
@@ -1653,7 +1659,7 @@ class ReposScreen(ModalScreen[None]):
                     capabilities=capabilities,
                     enabled_workflows=values["enabled_workflows"],
                     disabled_workflows=values["disabled_workflows"],
-                    agent_cli=values["agent_cli"] or "claude",
+                    agent_cli=values["agent_cli"] or DEFAULT_AGENT_CLI,
                 )
             except httpx.HTTPStatusError as exc:
                 return f"Can't update: {_detail(exc)}"
@@ -1985,7 +1991,9 @@ class Dashboard(App[None]):
         try:
             repos = self._client.list_repos()
             self._repo_names = {str(r["id"]): str(r["name"]) for r in repos}
-            self._repo_clis = {str(r["id"]): str(r.get("agent_cli") or "claude") for r in repos}
+            self._repo_clis = {
+                str(r["id"]): str(r.get("agent_cli") or DEFAULT_AGENT_CLI) for r in repos
+            }
         except Exception:
             pass
 
@@ -2242,11 +2250,20 @@ class Dashboard(App[None]):
         self.action_refresh()
 
     def action_new_task(self) -> None:
-        """`n`: create a task — pick a repo, a workflow, describe the work, then POST it."""
-        repos = [str(r["id"]) for r in self._client.list_repos()]
-        if not repos:
+        """`n`: create a task — pick a repo, a workflow, an agent CLI, describe the work, then POST it.
+
+        The CLI step is pre-selected to the repo's own default, so the common path stays
+        Enter/Enter/Enter-and-type; picking that default sends no override at all (ADR 0014 §3)."""
+        repo_records = self._client.list_repos()
+        if not repo_records:
             self.notify("Need at least one repo to create a task.", severity="warning")
             return
+        repos = [str(r["id"]) for r in repo_records]
+        # Read each repo's CLI from the payload we just fetched rather than `self._repo_clis`, which
+        # is only filled in on a refresh pass and so can be empty or stale here.
+        repo_clis = {
+            str(r["id"]): str(r.get("agent_cli") or DEFAULT_AGENT_CLI) for r in repo_records
+        }
 
         def pick_workflow(repo: str | None) -> None:
             if repo is None:
@@ -2256,34 +2273,57 @@ class Dashboard(App[None]):
                 self.notify(f"No workflows enabled for repo {repo!r}.", severity="warning")
                 return
 
-            def describe(workflow: str | None) -> None:
+            def pick_cli(workflow: str | None) -> None:
                 if workflow is None:
                     return
+                repo_default = repo_clis.get(repo, DEFAULT_AGENT_CLI)
 
-                def create(result: tuple[str, bool, dict[str, str]] | None) -> None:
-                    if result is None:  # backed out
+                def describe(cli: str | None) -> None:
+                    if cli is None:
                         return
-                    memo_text, submit, artifacts_b64 = result
-                    stripped = memo_text.strip()
-                    if _apply_memo_filter(stripped):
-                        return
-                    if submit and stripped:
-                        self._client.create_task(
-                            repo,
-                            workflow,
-                            stripped,
-                            initial_prompt=stripped,
-                            artifacts_b64=artifacts_b64,
-                        )
-                    else:
-                        self._client.create_task(
-                            repo, workflow, stripped or None, artifacts_b64=artifacts_b64
-                        )
-                    self.action_refresh()
+                    # None = "no override, use the repo default" — what `resolve_agent_cli` expects.
+                    agent_cli = None if cli == repo_default else cli
 
-                self.push_screen(MemoScreen(), create)
+                    def create(result: tuple[str, bool, dict[str, str]] | None) -> None:
+                        if result is None:  # backed out
+                            return
+                        memo_text, submit, artifacts_b64 = result
+                        stripped = memo_text.strip()
+                        if _apply_memo_filter(stripped):
+                            return
+                        if submit and stripped:
+                            self._client.create_task(
+                                repo,
+                                workflow,
+                                stripped,
+                                initial_prompt=stripped,
+                                artifacts_b64=artifacts_b64,
+                                agent_cli=agent_cli,
+                            )
+                        else:
+                            self._client.create_task(
+                                repo,
+                                workflow,
+                                stripped or None,
+                                artifacts_b64=artifacts_b64,
+                                agent_cli=agent_cli,
+                            )
+                        self.action_refresh()
 
-            self.push_screen(WorkflowScreen(workflows), describe)
+                    self.push_screen(MemoScreen(), create)
+
+                # The default is named in the title, not baked into an option label — ChoiceScreen
+                # dismisses the option's text, so a decorated label would need stripping back off.
+                self.push_screen(
+                    ChoiceScreen(
+                        f"agent CLI (repo default: {repo_default})",
+                        list(KNOWN_AGENT_CLIS),
+                        initial=repo_default,
+                    ),
+                    describe,
+                )
+
+            self.push_screen(WorkflowScreen(workflows), pick_cli)
 
         self.push_screen(ChoiceScreen("repo", repos), pick_workflow)
 

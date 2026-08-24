@@ -172,6 +172,17 @@ def get_agent_cli(name: str | None = None) -> AgentCLI:
         raise KeyError(f"unknown agent CLI {key!r}; registered: {sorted(_REGISTRY)}") from None
 
 
+def registered_agent_clis() -> tuple[str, ...]:
+    """Return the registered adapter names, sorted (loading the built-ins first).
+
+    The registry is populated lazily, so callers that only want the *names* need this rather than
+    reaching into :data:`_REGISTRY` (which is empty until an adapter module is imported). Used by
+    the drift test that keeps :data:`panopticon.core.models.KNOWN_AGENT_CLIS` honest.
+    """
+    _load_builtin_adapters()
+    return tuple(sorted(_REGISTRY))
+
+
 def _load_builtin_adapters() -> None:
     """Register the built-in adapters (imported lazily so this module holds only the contract)."""
     from panopticon.container.cli.claude import ClaudeAgentCLI

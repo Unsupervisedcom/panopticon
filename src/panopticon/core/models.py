@@ -226,6 +226,15 @@ class Repo:
 #: The CLI a task falls back to when neither the task nor its repo names one (ADR 0014 §2/§3).
 DEFAULT_AGENT_CLI = "claude"
 
+#: The CLI names an operator can pick from (the dashboard's new-task picker offers these).
+#:
+#: The set of CLIs is a **control-plane** concept — it drives the base-image variant and the
+#: config-dir mount — so it lives here, in the LLM-free core, rather than being read from the
+#: adapter registry in :mod:`panopticon.container.cli` (the only LLM-bearing package; importing it
+#: from ``terminal``/``taskservice`` would break the determinism invariant). The two are kept in
+#: sync by a test — see ``tests/container/test_cli_base.py``.
+KNOWN_AGENT_CLIS: tuple[str, ...] = ("claude", "codex")
+
 
 def resolve_agent_cli(task_agent_cli: str | None, repo_agent_cli: str | None) -> str:
     """Resolve a task's effective agent CLI: its own override → the repo default → ``"claude"``.
