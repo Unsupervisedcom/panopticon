@@ -174,13 +174,19 @@ class CodexAgentCLI(AgentCLI):
         plane claude connects to, at ``<service_url>/mcp`` — no auth token (the server is the
         container's own task service). Older codex builds only pick up HTTP MCP with
         ``experimental_use_rmcp_client`` set, so we enable it defensively (a no-op on builds with
-        native support). Merged into ``config.toml`` so it coexists with the trust/overview keys.
+        native support). ``features.apps = false`` disables codex's built-in apps connector, which
+        cannot start in the container and otherwise stalls every spawn on its 30 s MCP timeout
+        (the ``[mcp_servers.codex_apps] enabled = false`` alternative is invalid config that
+        crash-loops codex — the feature flag is the only safe disable). Merged into ``config.toml``
+        so it coexists with the trust/overview keys.
         """
         config = config_dir / self.CONFIG_FILE
         with update_toml_config(config) as data:
             servers = data.setdefault("mcp_servers", {})
             servers["panopticon"] = {"url": f"{service_url.rstrip('/')}/mcp"}
-            data.setdefault("features", {})["experimental_use_rmcp_client"] = True
+            features = data.setdefault("features", {})
+            features["experimental_use_rmcp_client"] = True
+            features["apps"] = False
         return config
 
     def write_workflow_overview(self, config_dir: Path, overview: str) -> Path | None:
@@ -334,14 +340,24 @@ class CodexAgentCLI(AgentCLI):
         config dir is a **per-task volume**, so this resumes both within a container's life and
         **across respawn/recreate**.
 
-        On **resume** with ``turn == "agent"`` (the agent was interrupted mid-turn), the interrupt
-        prompt ``"You were interrupted. Continue."`` is appended as codex's first positional message
-        so the agent picks up where it left off. On a **first run** (no resumable session) the
-        ``starting_model`` tier is resolved via :meth:`resolve_model` and passed as ``--model`` (on
-        resume codex uses the session's model), and ``initial_prompt`` is appended as the first
-        message.
+        ``--dangerously-bypass-hook-trust`` bypasses codex's per-hash interactive trust prompt for
+        unrecognised hooks (our Stop/UserPromptSubmit hooks, wired in :meth:`write_settings`). With
+        ``session_id`` now a positional argument to ``resume``, all bypass flags are placed at the
+        global level (before the subcommand) so they parse correctly in both first-run and resume
+        paths. ``--no-alt-screen`` renders codex output into the tmux scrollback (not the alternate
+        screen) so ``tmux attach`` history stays useful. On **resume** with ``turn == "agent"`` (the
+        agent was interrupted mid-turn), the interrupt prompt ``"You were interrupted. Continue."``
+        is appended as codex's first positional message so the agent picks up where it left off. On a
+        **first run** (no resumable session) the ``starting_model`` tier is resolved via
+        :meth:`resolve_model` and passed as ``--model`` (on resume codex uses the session's model),
+        and ``initial_prompt`` is appended as the first message.
         """
-        argv = ["codex", "--dangerously-bypass-approvals-and-sandbox"]
+        argv = [
+            "codex",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--dangerously-bypass-hook-trust",
+            "--no-alt-screen",
+        ]
         sessions_dir = config_dir / self.SESSIONS_DIRNAME
         session_id = _find_resume_target(sessions_dir) if sessions_dir.exists() else None
         if session_id:

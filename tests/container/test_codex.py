@@ -75,6 +75,8 @@ def test_write_mcp_config_points_codex_at_the_task_service_over_http(tmp_path: P
     assert data["mcp_servers"]["panopticon"] == {"url": "http://host.docker.internal:8000/mcp"}
     # older codex only picks up HTTP MCP with the rmcp client enabled (a no-op where it's native)
     assert data["features"]["experimental_use_rmcp_client"] is True
+    # built-in apps connector cannot start in the container — disable it to avoid the 30 s stall
+    assert data["features"]["apps"] is False
 
 
 def test_write_mcp_config_strips_a_trailing_slash(tmp_path: Path) -> None:
@@ -239,6 +241,8 @@ def test_launch_argv_starts_fresh_without_a_session(tmp_path: Path) -> None:
     assert CodexAgentCLI().launch_argv(tmp_path, Path("/workspace")) == [
         "codex",
         "--dangerously-bypass-approvals-and-sandbox",
+        "--dangerously-bypass-hook-trust",
+        "--no-alt-screen",
     ]
 
 
@@ -250,6 +254,8 @@ def test_launch_argv_resumes_when_an_interactive_session_exists(tmp_path: Path) 
     assert CodexAgentCLI().launch_argv(tmp_path, Path("/workspace")) == [
         "codex",
         "--dangerously-bypass-approvals-and-sandbox",
+        "--dangerously-bypass-hook-trust",
+        "--no-alt-screen",
         "resume",
         "sess-abc",
     ]
@@ -257,7 +263,13 @@ def test_launch_argv_resumes_when_an_interactive_session_exists(tmp_path: Path) 
 
 def test_launch_argv_appends_initial_prompt_on_first_run(tmp_path: Path) -> None:
     argv = CodexAgentCLI().launch_argv(tmp_path, Path("/workspace"), initial_prompt="review plan")
-    assert argv == ["codex", "--dangerously-bypass-approvals-and-sandbox", "review plan"]
+    assert argv == [
+        "codex",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--dangerously-bypass-hook-trust",
+        "--no-alt-screen",
+        "review plan",
+    ]
 
 
 def test_launch_argv_omits_initial_prompt_when_resuming(tmp_path: Path) -> None:
@@ -273,6 +285,8 @@ def test_launch_argv_passes_the_resolved_model_on_first_run(tmp_path: Path) -> N
     assert argv == [
         "codex",
         "--dangerously-bypass-approvals-and-sandbox",
+        "--dangerously-bypass-hook-trust",
+        "--no-alt-screen",
         "--model",
         "gpt-5.6-sol",
     ]
@@ -293,6 +307,8 @@ def test_launch_argv_passes_model_before_initial_prompt_on_first_run(tmp_path: P
     assert argv == [
         "codex",
         "--dangerously-bypass-approvals-and-sandbox",
+        "--dangerously-bypass-hook-trust",
+        "--no-alt-screen",
         "--model",
         "gpt-5.6-sol",
         "start now",
@@ -409,6 +425,8 @@ def test_launch_argv_resumes_with_interrupt_prompt_when_agent_turn(tmp_path: Pat
     assert argv == [
         "codex",
         "--dangerously-bypass-approvals-and-sandbox",
+        "--dangerously-bypass-hook-trust",
+        "--no-alt-screen",
         "resume",
         "s1",
         "You were interrupted. Continue.",
@@ -423,6 +441,8 @@ def test_launch_argv_resumes_without_interrupt_prompt_when_user_turn(tmp_path: P
     assert argv == [
         "codex",
         "--dangerously-bypass-approvals-and-sandbox",
+        "--dangerously-bypass-hook-trust",
+        "--no-alt-screen",
         "resume",
         "s1",
     ]
@@ -438,6 +458,8 @@ def test_launch_argv_falls_back_to_first_run_when_only_exec_sessions(tmp_path: P
     assert argv == [
         "codex",
         "--dangerously-bypass-approvals-and-sandbox",
+        "--dangerously-bypass-hook-trust",
+        "--no-alt-screen",
         "--model",
         "gpt-5.6-sol",
         "hi",
