@@ -32,25 +32,32 @@ def _load_config(cli: CodexAgentCLI, config_dir: Path) -> dict[str, object]:
 # -- skills + operations → custom prompts -------------------------------------------------------
 
 
-def test_render_skills_writes_prompt_files(tmp_path: Path) -> None:
+def test_render_skills_writes_skill_files(tmp_path: Path) -> None:
     client = _FakeClient(
         [{"name": "babysit-ci", "description": "Watch CI.", "instructions": "loop"}]
     )
     CodexAgentCLI().render_skills(client, "t1", tmp_path)  # type: ignore[arg-type]
-    body = (tmp_path / ".codex" / "prompts" / "babysit-ci.md").read_text()
-    # Same frontmatter format codex + claude both read; the task id is injected for MCP calls.
-    assert body.startswith("---\ndescription: Watch CI.")
+    # Model-discoverable skills surface; user scope keeps the working tree clean.
+    path = tmp_path / ".agents" / "skills" / "babysit-ci" / "SKILL.md"
+    assert path.exists(), f"expected SKILL.md at {path}"
+    body = path.read_text()
+    assert body.startswith("---\nname: babysit-ci\ndescription: Watch CI.")
     assert 'task_id="t1"' in body
+    # Old custom-prompt surface must not be written.
+    assert not (tmp_path / ".codex" / "prompts").exists()
 
 
-def test_render_operations_writes_a_prompt_per_operation(tmp_path: Path) -> None:
+def test_render_operations_writes_a_skill_per_operation(tmp_path: Path) -> None:
     client = _FakeClient([], {"advance": "COMPLETE", "drop": "DROPPED"})
     CodexAgentCLI().render_operations(client, "t1", tmp_path)  # type: ignore[arg-type]
-    prompts = tmp_path / ".codex" / "prompts"
-    assert {p.name for p in prompts.glob("*.md")} == {"advance.md", "drop.md"}
-    body = (prompts / "advance.md").read_text()
+    skills_dir = tmp_path / ".agents" / "skills"
+    assert {p.parent.name for p in skills_dir.rglob("SKILL.md")} == {"advance", "drop"}
+    body = (skills_dir / "advance" / "SKILL.md").read_text()
+    assert body.startswith("---\nname: advance\n")
     assert "apply_operation" in body and "COMPLETE" in body
     assert 'task_id="t1"' in body
+    # Old custom-prompt surface must not be written.
+    assert not (tmp_path / ".codex" / "prompts").exists()
 
 
 # -- MCP config (config.toml [mcp_servers.panopticon]) ------------------------------------------
