@@ -9,7 +9,9 @@ is deterministic and unit-tested with fakes; the **launch** (the real CLI) is th
 The launcher is **CLI-agnostic** (ADR 0014): it resolves an :class:`~panopticon.container.cli.AgentCLI`
 adapter from the CLI name the runner passes (``PANOPTICON_AGENT_CLI``, defaulting to ``claude``) and
 drives the bootstrap-then-launch sequence against it, holding no ``claude`` literal. Auth is the
-adapter's env-var check; the launcher wires no credentials of its own.
+adapter's env-var check plus its :meth:`~panopticon.container.cli.AgentCLI.write_credentials` step
+(claude reads its token from the env; codex materializes ``auth.json``) — the launcher itself knows
+no CLI-specific credential shape.
 
 The container's entrypoint (`python -m panopticon.container`) holds the liveness connection;
 this runs alongside it in the tmux pane, so `tmux attach` reaches the live agent.
@@ -62,7 +64,7 @@ def main(
     config_dir = (home or Path.home()) / cli.config_dirname
     task_id = env["PANOPTICON_TASK_ID"]
     runner_id = env.get("PANOPTICON_RUNNER_ID")
-    detail = cli.auth_missing_detail(env)
+    detail = cli.auth_missing_detail(env, config_dir)
     if detail is not None:
         if runner_id:
             client.report_lifecycle(task_id, runner_id, phase="failed", detail=detail)
@@ -75,6 +77,9 @@ def main(
         config_dir, client.workflow_overview(task_id)
     )  # → the agent's context (the map)
     cli.trust_workspace(config_dir, Path.cwd())  # pre-accept the trust dialog (no operator to)
+    cli.write_credentials(
+        config_dir, env
+    )  # materialize on-disk creds (codex auth.json; claude no-op)
     (launch or cli.launch)(config_dir)  # the agent runs until it exits...
     on_exit()  # ...then stop the container (task → down → respawn)
 

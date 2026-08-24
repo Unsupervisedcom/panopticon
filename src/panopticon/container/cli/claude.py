@@ -113,17 +113,22 @@ class ClaudeAgentCLI(AgentCLI):
             projects.setdefault(str(cwd), {})["hasTrustDialogAccepted"] = True
         return config
 
-    def auth_missing_detail(self, env: Mapping[str, str]) -> str | None:
+    def auth_missing_detail(self, env: Mapping[str, str], config_dir: Path) -> str | None:
         """The failure detail when neither claude auth env var is set, else ``None``.
 
         Auth is the ``CLAUDE_CODE_OAUTH_TOKEN`` env var the runner injects from the repo's
-        ``env_file`` (an ``ANTHROPIC_API_KEY`` is also sufficient); the launcher wires no credentials.
+        ``env_file`` (an ``ANTHROPIC_API_KEY`` is also sufficient); claude reads it straight from the
+        env, so there's no persisted credential file to fall back on — ``config_dir`` is unused.
         """
         if env.get("CLAUDE_CODE_OAUTH_TOKEN") or env.get("ANTHROPIC_API_KEY"):
             return None
         return (
             "No auth token — set CLAUDE_CODE_OAUTH_TOKEN in the repo's env_file (see docs/auth.md)"
         )
+
+    def write_credentials(self, config_dir: Path, env: Mapping[str, str]) -> Path | None:
+        """No-op: claude authenticates from the env var itself, with no on-disk credential to write."""
+        return None
 
     def resolve_model(self, tier: str) -> str:
         """Map the control plane's abstract model tier to claude's concrete model id (ADR 0014 §3a).

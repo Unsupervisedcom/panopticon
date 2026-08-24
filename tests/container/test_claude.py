@@ -227,12 +227,17 @@ def test_trust_workspace_merges_and_is_idempotent(tmp_path: Path) -> None:
 # -- auth env check -----------------------------------------------------------------------------
 
 
-def test_auth_missing_detail_flags_the_absent_token() -> None:
+def test_auth_missing_detail_flags_the_absent_token(tmp_path: Path) -> None:
     cli = ClaudeAgentCLI()
-    assert cli.auth_missing_detail({}) is not None
-    assert "CLAUDE_CODE_OAUTH_TOKEN" in (cli.auth_missing_detail({}) or "")
-    assert cli.auth_missing_detail({"CLAUDE_CODE_OAUTH_TOKEN": "sk"}) is None
-    assert cli.auth_missing_detail({"ANTHROPIC_API_KEY": "sk"}) is None  # either is sufficient
+    assert cli.auth_missing_detail({}, tmp_path) is not None
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in (cli.auth_missing_detail({}, tmp_path) or "")
+    assert cli.auth_missing_detail({"CLAUDE_CODE_OAUTH_TOKEN": "sk"}, tmp_path) is None
+    assert cli.auth_missing_detail({"ANTHROPIC_API_KEY": "sk"}, tmp_path) is None  # either suffices
+
+
+def test_write_credentials_is_a_no_op_for_claude(tmp_path: Path) -> None:
+    # claude reads its token from the env; there's no on-disk credential to materialize.
+    assert ClaudeAgentCLI().write_credentials(tmp_path, {"CLAUDE_CODE_OAUTH_TOKEN": "sk"}) is None
 
 
 # -- hook payload seam (background-task gating) --------------------------------------------------

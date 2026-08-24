@@ -67,8 +67,21 @@ class AgentCLI(ABC):
         """Pre-accept the CLI's first-run/trust dialogs for ``cwd`` (no operator in the container)."""
 
     @abstractmethod
-    def auth_missing_detail(self, env: Mapping[str, str]) -> str | None:
-        """The failure detail if the CLI's auth env var is absent, else ``None`` (auth is present)."""
+    def auth_missing_detail(self, env: Mapping[str, str], config_dir: Path) -> str | None:
+        """The failure detail if the CLI can't authenticate, else ``None``.
+
+        Auth is present when the CLI's env var is set **or** a persisted credential already sits on
+        the per-task config volume (``config_dir``) — so a container carried across respawn isn't
+        wrongly failed. Presence check only; validity surfaces at the CLI's first call.
+        """
+
+    @abstractmethod
+    def write_credentials(self, config_dir: Path, env: Mapping[str, str]) -> Path | None:
+        """Materialize any on-disk credentials the CLI needs from the env (idempotent).
+
+        Returns the written path, or ``None`` when the CLI reads its credentials straight from the
+        env (claude) or a credential file is already present. Never clobbers an existing one.
+        """
 
     @abstractmethod
     def resolve_model(self, tier: str) -> str:
