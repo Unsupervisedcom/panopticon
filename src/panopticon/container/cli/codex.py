@@ -34,7 +34,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, ClassVar, TextIO
 
-from panopticon.container.cli.base import AgentCLI, _Client
+from panopticon.container.cli.base import AgentCLI, _Client, resolve_tier
 from panopticon.container.config import update_toml_config
 from panopticon.container.hooks import HOOK_COMMAND
 from panopticon.container.skills import write_commands, write_operation_commands
@@ -183,9 +183,11 @@ class CodexAgentCLI(AgentCLI):
 
         The only place the tier (e.g. ``"primary"``) becomes a provider model name, keeping model
         vocabulary out of ``core``/``workflows``. Unknown values pass through unchanged so a raw model
-        id set directly still reaches ``--model`` verbatim.
+        id set directly still reaches ``--model`` verbatim, while an unmapped **reserved** tier fails
+        loud instead of leaking through unresolved (see
+        :func:`~panopticon.container.cli.base.resolve_tier`).
         """
-        return _MODEL_TIERS.get(tier, tier)
+        return resolve_tier(tier, _MODEL_TIERS)
 
     def read_hook_payload(self, stdin: TextIO) -> dict[str, Any]:
         """Tolerantly parse the hook's stdin JSON; empty/invalid input yields an empty payload."""

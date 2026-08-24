@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, ClassVar, TextIO
 
-from panopticon.container.cli.base import AgentCLI, _Client
+from panopticon.container.cli.base import AgentCLI, _Client, resolve_tier
 from panopticon.container.config import update_json_config
 from panopticon.container.hooks import write_settings
 from panopticon.container.skills import write_commands, write_operation_commands
@@ -132,9 +132,10 @@ class ClaudeAgentCLI(AgentCLI):
         that tier becomes a provider's model name (``"primary"`` → ``"opus"``), keeping model
         vocabulary out of ``core``/``workflows``. Unknown values pass through unchanged so a raw
         model id set directly (or a tier already persisted as its resolved name) still reaches
-        ``--model`` verbatim.
+        ``--model`` verbatim, while an unmapped **reserved** tier fails loud instead of leaking
+        through unresolved (see :func:`~panopticon.container.cli.base.resolve_tier`).
         """
-        return _MODEL_TIERS.get(tier, tier)
+        return resolve_tier(tier, _MODEL_TIERS)
 
     def read_hook_payload(self, stdin: TextIO) -> dict[str, Any]:
         """Tolerantly parse the hook's stdin JSON; empty/invalid input yields an empty payload."""

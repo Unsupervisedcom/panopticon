@@ -147,6 +147,15 @@ def test_resolve_model_passes_unknown_values_through() -> None:
     assert ClaudeAgentCLI().resolve_model("opus") == "opus"
 
 
+def test_resolve_model_rejects_an_unmapped_reserved_tier(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A reserved tier the adapter doesn't map must fail loud, not leak through to --model — the
+    # backstop for the stale-image bug (a container running pre-resolution code forwarded the raw
+    # tier). We simulate it by stripping the tier map.
+    monkeypatch.setattr("panopticon.container.cli.claude._MODEL_TIERS", {})
+    with pytest.raises(ValueError, match="primary"):
+        ClaudeAgentCLI().resolve_model("primary")
+
+
 def test_built_in_workflow_tier_resolves_to_a_concrete_claude_model() -> None:
     # End to end across the two halves: the tier the control plane declares (never a model name)
     # resolves through the claude adapter to today's concrete model.

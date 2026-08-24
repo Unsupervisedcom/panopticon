@@ -20,6 +20,32 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, ClassVar, Protocol, TextIO
 
+from panopticon.core.models import MODEL_TIERS
+
+
+def resolve_tier(tier: str, tiers: Mapping[str, str]) -> str:
+    """Resolve an abstract model **tier** to a concrete model id, failing loud on an unresolved tier.
+
+    ``tiers`` is the CLI adapter's tier→model map. Resolution has three cases (ADR 0014 §3a):
+
+    - ``tier`` is in ``tiers`` → return its concrete model id (the normal path).
+    - ``tier`` is a **reserved** tier name (:data:`~panopticon.core.models.MODEL_TIERS`) but absent
+      from ``tiers`` → raise. An unresolved tier historically leaked straight to ``--model`` (a stale
+      container running pre-resolution code did exactly this — the bug this guards); refuse it
+      loudly instead of launching the wrong model silently.
+    - anything else → a concrete model id set directly (or a tier already persisted as its resolved
+      name); pass it through unchanged so back-compat holds.
+    """
+    if tier in tiers:
+        return tiers[tier]
+    if tier in MODEL_TIERS:
+        raise ValueError(
+            f"model tier {tier!r} is not mapped by this CLI adapter (known tiers: {sorted(tiers)}); "
+            "refusing to pass an unresolved tier through to --model. This usually means a stale "
+            "container image running pre-resolution code — rebuild with `make clean && make build`."
+        )
+    return tier
+
 
 class _Client(Protocol):
     """The slice of the task-service client the bootstrap needs (kept structural so tests fake it)."""

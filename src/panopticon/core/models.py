@@ -14,6 +14,15 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+#: The control plane's abstract model **tiers** (ADR 0014 §3a) — CLI-agnostic labels a workflow's
+#: ``default_model`` / :attr:`Task.starting_model` may hold (currently just ``"primary"``, the
+#: built-in default). These names are **reserved**: every ``AgentCLI`` adapter must map each tier to
+#: a concrete model id, so a reserved tier that reaches ``--model`` unresolved is a bug (a stale
+#: image running pre-resolution code did exactly this) and the adapters fail loud on it rather than
+#: passing it through (see ``panopticon.container.cli.base.resolve_tier``). A value *not* in this set
+#: is treated as a concrete model id and passes through unchanged.
+MODEL_TIERS: frozenset[str] = frozenset({"primary"})
+
 
 class Actor(str, Enum):
     """A party that can act on a task: the user or the agent.
