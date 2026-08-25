@@ -5,6 +5,9 @@
 #: The agent CLIs whose base variants `make build` builds (ADR 0014 §4). The claude variant must
 #: match DEFAULT_IMAGE. Override to build a subset, e.g. `make build AGENT_CLIS=codex`.
 AGENT_CLIS ?= claude codex
+#: The freshness stamp shared with ImageBuilder.build_base_if_missing.  Keep this overridable so
+#: callers can select an explicit package identity (and tests can dry-run without invoking Python).
+PANOPTICON_VERSION ?= $(shell uv run python -c 'import panopticon; print(panopticon.__version__)')
 
 help:  ## List available targets
 	@grep -h -E '^[a-z][a-z-]*:.*## ' $(MAKEFILE_LIST) | sort | awk -F':.*## ' '{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -58,6 +61,7 @@ build:  ## Build the per-CLI base task-container images (override CLIs with AGEN
 	for cli in $(AGENT_CLIS); do \
 	  docker build \
 	    --tag panopticon-base-$$cli \
+	    --label org.panopticon.version=$(PANOPTICON_VERSION) \
 	    --build-arg PANOPTICON_WHEEL=$$wheel \
 	    --build-arg AGENT_CLI=$$cli \
 	    --file src/panopticon/docker/Dockerfile \
