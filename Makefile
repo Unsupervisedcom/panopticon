@@ -54,10 +54,12 @@ stop:  ## Stop everything `make start` started: the task containers + the -L pan
 
 build:  ## Build the per-CLI base task-container images (override CLIs with AGENT_CLIS=)
 	uv build --wheel --out-dir src/panopticon/docker/
+	version=$$(uv run python -c 'import panopticon; print(panopticon.__version__)'); \
 	wheel=$$(ls -1 src/panopticon/docker/panopticon_app*.whl | xargs -n1 basename); \
 	for cli in $(AGENT_CLIS); do \
 	  docker build \
 	    --tag panopticon-base-$$cli \
+	    --label org.panopticon.version=$$version \
 	    --build-arg PANOPTICON_WHEEL=$$wheel \
 	    --build-arg AGENT_CLI=$$cli \
 	    --file src/panopticon/docker/Dockerfile \

@@ -62,6 +62,11 @@ make start       # task service + session-service runner + dashboard supervisor
 make stop        # tear it all down (task containers + the -L panopticon tmux server)
 ```
 
+Run `make build` again after updating the Panopticon source when those changes need to be
+available inside task containers. The runner uses the package-version label written by this
+manual build, so it will not replace the checkout-built image with the same published release;
+rebuilding is what refreshes source changes made without a version bump.
+
 Individual pieces, when you want just one:
 
 - `make serve` — the task service (control plane) over HTTP
