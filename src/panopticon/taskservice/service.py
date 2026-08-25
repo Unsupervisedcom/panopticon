@@ -493,6 +493,15 @@ class TaskService:
         """A short briefing on the task's current phase (state + responsibilities + how it advances),
         rendered from the workflow so the in-container agent knows *where it is* (the hook emits it)."""
         task = await self.get_task(task_id)
+        return await self.briefing_for(task)
+
+    async def briefing_for(self, task: Task) -> str:
+        """Render the briefing for an already-loaded task.
+
+        Transition callers use this with the exact post-transition object so their response cannot
+        race a second task lookup. The user-prompt hook's :meth:`briefing` path delegates here too,
+        keeping one source for phase, responsibility, and artifact-aware briefing text.
+        """
         return await self._workflow(task.workflow).briefing(task, artifacts=self._artifacts)
 
     async def workflow_overview(self, task_id: str) -> str:

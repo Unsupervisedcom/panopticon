@@ -8,7 +8,7 @@ from pathlib import Path
 
 from mcp.shared.memory import create_connected_server_and_client_session as connect
 
-from panopticon.core.models import Actor, Repo
+from panopticon.core.models import Actor, Repo, Status
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 from panopticon.taskservice.mcp import build_mcp_server
 from panopticon.taskservice.service import TaskService
@@ -69,7 +69,46 @@ async def test_tools_are_exposed_and_drive_the_task(tmp_path: Path) -> None:
         assert result.isError is False
         assert result.structuredContent is not None
         assert result.structuredContent["state"] == "COMPLETE"
+        briefing = result.structuredContent["briefing"]
+        assert "terminal state **COMPLETE**" in briefing
+        assert "Continue its work immediately" not in briefing
     assert (await svc.get_task(task.id)).state == "COMPLETE"  # the tool actually mutated the task
+
+
+async def test_advance_returns_the_entered_phase_briefing_and_continue_directive(
+    tmp_path: Path,
+) -> None:
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "github-self-reviewed")
+    await svc.put_artifact(task.id, "plan.md", b"# Build the widget")
+    await svc.resolve_responsibility(task.id, "plan-written", status=Status.MET)
+
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        result = await s.call_tool("apply_operation", {"task_id": task.id, "operation": "advance"})
+
+    assert result.structuredContent is not None
+    assert result.structuredContent["state"] == "ITERATING"  # existing flat task shape remains
+    briefing = result.structuredContent["briefing"]
+    assert "**ITERATING**" in briefing
+    assert "[pending] plan-implemented" in briefing
+    assert f"panopticon://tasks/{task.id}/artifacts/plan.md" in briefing
+    assert "Continue its work immediately in this same turn" in briefing
+
+
+async def test_set_state_returns_the_entered_phase_briefing(tmp_path: Path) -> None:
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "github-self-reviewed")
+
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        result = await s.call_tool("set_state", {"task_id": task.id, "state": "ITERATING"})
+
+    assert result.structuredContent is not None
+    assert result.structuredContent["state"] == "ITERATING"
+    briefing = result.structuredContent["briefing"]
+    assert "**ITERATING**" in briefing
+    assert "Continue its work immediately in this same turn" in briefing
 
 
 async def test_artifacts_round_trip_via_tool_and_resource(tmp_path: Path) -> None:

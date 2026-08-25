@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from panopticon.container.skills import render_command, render_operation, write_commands
+from panopticon.container.skills import (
+    render_agent_operation,
+    render_command,
+    render_operation,
+    write_commands,
+)
 from panopticon.core.models import Skill
 
 
@@ -21,6 +26,14 @@ def test_render_operation_injects_the_task_id() -> None:
     body = render_operation("advance", "COMPLETE", "t-9")
     assert "apply_operation" in body and "COMPLETE" in body
     assert 'operation="advance"' in body and 'task_id="t-9"' in body
+    assert "phase's briefing" in body and "continue immediately" in body
+    assert "starts a new turn" not in body
+
+
+def test_render_agent_operation_tells_codex_to_follow_the_returned_briefing() -> None:
+    body = render_agent_operation("advance", "ITERATING", "t-9")
+    assert "phase's briefing" in body and "continue immediately" in body
+    assert "starts a new turn" not in body
 
 
 def test_write_commands_writes_one_file_per_skill(tmp_path: Path) -> None:

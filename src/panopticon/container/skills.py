@@ -46,14 +46,15 @@ def render_operation(name: str, target_state: str, task_id: str) -> str:
 
     CLI-agnostic — both adapters write this same text; only the destination dir differs.
     Operations are the workflow's **declared, gated** moves; the agent applies one by name via the
-    `apply_operation` tool (not by editing state directly), which starts a new agentic turn.
+    `apply_operation` tool (not by editing state directly), then follows the returned briefing.
     """
     return (
         f"---\ndescription: Apply the workflow's '{name}' operation.\n---\n"
         f"Apply this workflow's `{name}` operation — it moves the task to **{target_state}**. "
         f'Invoke it with the `apply_operation` tool (`operation="{name}"`, `task_id="{task_id}"`); '
         f"don't edit the state directly. It's gated on the current state's responsibilities and "
-        f"starts a new turn.\n"
+        f"returns the entered phase's briefing. If the new phase is nonterminal and you hold its "
+        f"turn, follow that briefing and continue immediately.\n"
     )
 
 
@@ -116,7 +117,8 @@ def render_agent_operation(name: str, target_state: str, task_id: str) -> str:
         f"Apply this workflow's `{name}` operation — it moves the task to **{target_state}**. "
         f'Invoke it with the `apply_operation` tool (`operation="{name}"`, `task_id="{task_id}"`); '
         f"don't edit the state directly. It's gated on the current state's responsibilities and "
-        f"starts a new turn.\n"
+        f"returns the entered phase's briefing. If the new phase is nonterminal and you hold its "
+        f"turn, follow that briefing and continue immediately.\n"
     )
 
 
