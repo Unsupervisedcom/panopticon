@@ -130,7 +130,8 @@ def test_repo_agent_cli_defaults_and_round_trips_over_rest(client: TaskServiceCl
     assert codex["agent_cli"] == "codex"
     assert client.get_repo("r9")["agent_cli"] == "codex"  # persisted
     patched = client.update_repo("r9", agent_cli="claude")
-    assert patched["agent_cli"] == "claude"  # PATCH updates it
+    assert patched["agent_cli"] == "claude"  # PATCH updates it...
+    assert client.get_repo("r9")["agent_cli"] == "claude"  # ...and the update is persisted
 
 
 def test_create_task_carries_agent_cli_over_rest(client: TaskServiceClient) -> None:
