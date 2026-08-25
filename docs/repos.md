@@ -79,20 +79,41 @@ a repo opts in only when its tasks genuinely need to run Docker.
 
 For the GitHub-forge workflows (`github-peer-reviewed`, `github-self-reviewed`), setting
 `capabilities.tarot_review` adds a real, verified ITERATING responsibility: before `advance` out
-of ITERATING is allowed, the task must author `.tarot/strands.json` and (for non-trivial changes)
-a tour, passing `tarot strands check` / `tarot tour check`. Unlike every other responsibility
-(agent self-attested), this one is checked by an in-container hook that runs the actual commands
-and denies the `advance` call — with the checks' output as the reason — on failure. A trivial
-diff (below a changed-line threshold, default 20; override with the integer capability
-`tarot_review_threshold`) skips the checks and resolves the responsibility automatically.
+of ITERATING is allowed, the task must author its `.tarot/` review artifacts (a strand seed and a
+tour) and pass `tarot strands check` / `tarot tour check`. Unlike every other responsibility
+(agent self-attested), this one is checked for real, and a failure **refuses the advance** with
+the checks' own output — which lands in the agent's context the way a failing test's would — and
+records it as the responsibility's comment. A trivial diff (below a changed-line threshold,
+default 20; override with the integer capability `tarot_review_threshold`) skips the checks and
+resolves the responsibility automatically.
 
-The `tarot` CLI itself isn't installed by panopticon — a repo that opts in must add it to its own
-`image_layer_file` (for example `RUN pip install tarot-review`), since installing it into the
-shared workflow layer would force it onto every forge repo whether opted in or not. If `tarot`
-isn't on `PATH` for an opted-in repo, the gate denies with a message pointing back here.
+**The checks run on the host, not in the container.** The task service shells out to the
+operator's own `tarot` against the task's per-task clone — the same directory bind-mounted into
+the container at `/workspace`, so it sees exactly what the agent just wrote. Nothing needs to be
+installed in any task image, and no image rebuild or container respawn is involved in enabling
+this.
 
-Off by default, like `docker_in_docker` — a repo opts in only once it has installed `tarot` via
-its image layer.
+So the one prerequisite is host-side: **`tarot` on the task service host's `PATH`**
+(`uv tool install tarot-review`), or `$PANOPTICON_TAROT_BIN` pointing at it. That is the same
+binary the dashboard's `v` review hook uses. If it isn't there, an opted-in repo's advances are
+refused with a message saying so — the gate never silently passes.
+
+The agent authors the artifacts without a local `tarot` via three MCP tools, which run host-side
+against the clone: `tarot_strand_seed` (tarot's detector-built seed, as JSON — writes nothing),
+`tarot_check` (the same checks the gate runs, without attempting a transition — the iteration
+loop), and `tarot_tour_scaffold` (writes `.tarot/tours/<id>.json` from the *edited* seed). The
+instructions come from **tarot's own packaged authoring skill**, served automatically for an
+opted-in repo — panopticon keeps no second copy of tarot's file formats, since they change with
+tarot's validators and the judgment the skill teaches is what a schema summary would lose.
+
+Two limits worth knowing. The gate runs where the **task service** runs; if a task's clone lives
+on a remote runner's host (`runner_host` set), the checks can't reach it and the gate refuses
+rather than passing — so don't enable this for repos whose tasks run on remote runners yet. And
+tarot picks its language adapter from `git config tarot.language` (else python), so a polyglot
+repo will want that set in its clones. A clone that sets `git config tarot.base` has its own diff
+base respected, exactly as the dashboard's `v` does.
+
+Off by default, like `docker_in_docker`.
 
 ## Host hook (`hook_file`)
 

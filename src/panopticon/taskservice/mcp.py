@@ -88,6 +88,44 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
             )
         )
 
+    # -- tarot authoring passthroughs (repos opted into the review gate) ------------
+    #
+    # These run the operator's `tarot` on the HOST, against the task's clone — the same directory
+    # the container sees at /workspace. That's why the container needs no tarot of its own. Each
+    # refuses with a plain message (never a traceback) when the repo hasn't opted in, tarot isn't
+    # installed on the host, or the clone isn't readable here.
+
+    @mcp.tool(
+        description=(
+            "Tarot's detector-built strand seed for this task's diff, as JSON (read-only — writes "
+            "nothing). Edit it into .tarot/strands.json yourself. Only for repos with the tarot "
+            "review gate enabled."
+        )
+    )
+    async def tarot_strand_seed(task_id: str) -> str:
+        _log.debug("mcp tarot_strand_seed task=%s", task_id)
+        return await service.tarot_strand_seed(task_id)
+
+    @mcp.tool(
+        description=(
+            "Run tarot's strand + tour checks on this task's .tarot/ artifacts and return any "
+            "violations, WITHOUT attempting a transition. Use this to iterate before you advance."
+        )
+    )
+    async def tarot_check(task_id: str) -> str:
+        _log.debug("mcp tarot_check task=%s", task_id)
+        return await service.tarot_check(task_id)
+
+    @mcp.tool(
+        description=(
+            "Scaffold a tour from your edited .tarot/strands.json — writes .tarot/tours/<id>.json "
+            "with one chapter per strand and every note a TODO for you to replace."
+        )
+    )
+    async def tarot_tour_scaffold(task_id: str, title: str = "PR walkthrough") -> str:
+        _log.debug("mcp tarot_tour_scaffold task=%s", task_id)
+        return await service.tarot_tour_scaffold(task_id, title=title)
+
     @mcp.tool(description="Flip who holds the turn: 'user' or 'agent'.")
     async def set_turn(task_id: str, turn: str) -> dict[str, Any]:
         return _task(await service.set_turn(task_id, Actor(turn)))

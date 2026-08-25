@@ -20,7 +20,10 @@ src/panopticon/
   core/            # domain models, state classes, the Workflow interface (the state
                    # machine: resolution, queries, start_task/apply_transition),
                    # store & artifact interfaces — pure, no I/O EXCEPT git.py (local
-                   # branch/worktree ops; LLM-free, behind an injectable command-runner)
+                   # branch/worktree ops) and tarot.py (the host-side `tarot` CLI adapter:
+                   # strands/tour check, strands suggest --json, tour scaffold, the packaged
+                   # authoring skill, the shared `tarot.base` ladder) — both LLM-free, behind
+                   # an injectable command-runner
   workflows/       # built-in Workflow subclasses (Spike seed; GithubPeerReviewed [formerly Parity]
                    # = cloude-cade lifecycle; GithubSelfReviewed = same, sans the peer-review state,
                    # the user self-reviews; both share the GithubForgeWorkflow base = gh tool/layer/skills;
@@ -30,7 +33,10 @@ src/panopticon/
                    # its shell_script in a host tmux session (here: `claude setup-token`)) +
                    # discovery.py = scan the package + an optional path for Workflow subclasses
                    # (the registry build_app runs on; drop a module in → registered, ADR 0004)
-  taskservice/     # control plane: TaskService, FastAPI REST API, the SQLAlchemy store
+  taskservice/     # control plane: TaskService, FastAPI REST API, tarot_gate.py (the host-side
+                   # review-artifact gate + the served tarot-authoring skill; refuses an ITERATING
+                   # `advance` for an opted-in repo whose `.tarot/` artifacts don't check out),
+                   # the SQLAlchemy store
                    # adapter (in-memory or on-disk SQLite), filesystem artifact store, MCP
                    # server (mcp.py: operations=tools, artifacts=resources; FastMCP) mounted at /mcp
   sessionservice/  # the runner: Runner ABC + StubRunner (in-process) + LocalRunner
@@ -68,10 +74,9 @@ src/panopticon/
                    # heartbeat liveness) + agent.py (`-m panopticon.container.agent` = the tmux
                    # pane's launcher: render skills + operations, point claude at the /mcp server,
                    # put the workflow overview in its system prompt → exec `claude`) — the ONLY LLM pkg;
-                   # tarot_gate.py = the `PreToolUse` hook on `apply_operation` that real-verifies
-                   # (not self-attests) the opt-in tarot review-artifact responsibility for the
-                   # GitHub-forge workflows (`Repo.capabilities.tarot_review`, docs/repos.md) — runs
-                   # `tarot strands check` / `tarot tour check` and denies `advance` on failure
+                   # tarot_gate.py = an allow-everything SHIM; the review-artifact gate moved
+                   # host-side to taskservice/tarot_gate.py (the module survives only because a
+                   # respawned task's persisted .claude/settings.json may still name it)
 docker/Dockerfile  # base task-container image (ADR 0005 base layer): python + git + bash +
                    # the panopticon package + the `claude` CLI the agent execs; runs as the
                    # unprivileged `panopticon` user. docker/entrypoint.sh = remap that user to the
@@ -179,6 +184,22 @@ on every PR (the same commands the Makefile wraps).
   (formerly `parity`; cloude-cade's lifecycle): the full `PLANNING→…→COMPLETE` path, the fg/bg
   `advanced_by` policy, per-stage gating, going back to coding as an ungated free move
   (`set_state`), and drop. Extend it when you touch the github-peer-reviewed flow.
+- `tests/taskservice/test_tarot_gate.py` — the golden spec for the **host-side tarot review gate**:
+  pass → advance + `MET`; fail → refusal with the checks' output, `FAILED` comment, and the task
+  **left where it was**; a *second* attempt still refused (the refusal is the enforcement — a
+  `FAILED`-with-comment promise counts as resolved); honest refusals for a missing binary, an
+  absent clone, and a remote-runner clone; the trivial-diff threshold (incl. a failed numstat
+  meaning *unknown*, not *trivial*) and a clone that pins its own `tarot.base`; and every case the
+  gate must NOT run (capability off, drop, `set_state`, another state). Two tests drive a stub
+  `tarot` through the real subprocess runner so the exit-code contract is pinned for real.
+- `tests/taskservice/test_tarot_tools.py` — the three authoring passthroughs over MCP
+  (`tarot_strand_seed`/`tarot_check`/`tarot_tour_scaffold`): the read-only pair writes nothing,
+  `tarot_check` returns violations without touching task state, and every refusal is a plain
+  message. Also covers serving **tarot's own** packaged skill (verbatim + panopticon's name
+  mapping) only for an opted-in repo with tarot present.
+- `tests/core/test_tarot.py` — the tarot adapter: the exact argv of every invocation, exit-code
+  handling (0/1/2 and a missing binary), binary resolution order, the `tarot.base` ladder, and
+  `authoring_skill()` degrading to `None` rather than raising when tarot's layout moves.
 - `tests/test_store.py` — store **contract tests run against in-memory and on-disk SQLite**,
   proving the interface is backend-agnostic (and that rows/domain models stay in sync).
 - `tests/test_discovery.py` — workflow discovery (Slice 8): the built-in package + an optional

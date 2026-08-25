@@ -45,17 +45,21 @@ class GithubForgeWorkflow(PlannedWorkflow):
     )
 
     #: ITERATING responsibility added only for repos that opt in (`capabilities.tarot_review`,
-    #: see :meth:`responsibilities`). Resolution of this key is owned by the in-container
-    #: `tarot_gate` PreToolUse hook, not the agent's own `resolve_responsibility` call — it runs
-    #: the real `tarot strands check` / `tarot tour check` and blocks `advance` on failure, so the
-    #: description tells the agent to do the work, not to self-attest it.
+    #: see :meth:`responsibilities`). Resolution of this key is owned by the **host-side** gate in
+    #: :mod:`panopticon.taskservice.tarot_gate`, not the agent's own `resolve_responsibility` call
+    #: — it runs the real `tarot strands check` / `tarot tour check` against the task's clone and
+    #: refuses `advance` on failure, so the description tells the agent to do the work, not to
+    #: self-attest it. The *how* deliberately isn't spelled out here: it lives in tarot's own
+    #: `tarot-authoring` skill, served alongside this responsibility for opted-in repos, so
+    #: panopticon keeps no second copy of a file-format contract tarot owns.
     TAROT_REVIEW_ARTIFACTS: ClassVar[Responsibility] = Responsibility(
         key="tarot-review-artifacts",
         description=(
-            "For non-trivial changes: author `.tarot/strands.json` (seed via `tarot strands "
-            "suggest`, edit, pass `tarot strands check`) and a tour (`tarot tour scaffold "
-            "--from-strands`, fill the narrative, pass `tarot tour check`), committed on the "
-            "branch. Verified automatically when you advance — trivial diffs are skipped."
+            "For non-trivial changes: author this repo's `.tarot/` review artifacts (a strand "
+            "seed and a tour) and commit them on the branch — follow the `tarot-authoring` "
+            "skill, which carries tarot's own instructions and names the tools to use. Verified "
+            "for real when you advance (trivial diffs are skipped), so a failure refuses the "
+            "advance rather than taking your word for it."
         ),
     )
 
