@@ -50,11 +50,26 @@ def render_operation(name: str, target_state: str, task_id: str) -> str:
     """
     return (
         f"---\ndescription: Apply the workflow's '{name}' operation.\n---\n"
+        f"{_operation_body(name, target_state, task_id)}"
+    )
+
+
+def _operation_body(name: str, target_state: str, task_id: str) -> str:
+    """Shared operation procedure for the Claude and Codex rendering surfaces."""
+    invocation = (
+        f'Invoke the `apply_operation` tool with `operation="{name}"`, `task_id="{task_id}"`, '
+        f'and `acting_task="{task_id}"`; don\'t edit the state directly. '
+    )
+    if name == "drop":
+        detail = "Dropping is always allowed and bypasses outstanding responsibilities."
+    else:
+        detail = (
+            "The operation is gated on the current state's responsibilities. Follow the entered "
+            "phase's briefing returned by the tool."
+        )
+    return (
         f"Apply this workflow's `{name}` operation — it moves the task to **{target_state}**. "
-        f'Invoke it with the `apply_operation` tool (`operation="{name}"`, `task_id="{task_id}"`); '
-        f"don't edit the state directly. It's gated on the current state's responsibilities and "
-        f"returns the entered phase's briefing. If the new phase is nonterminal and you hold its "
-        f"turn, follow that briefing and continue immediately.\n"
+        f"{invocation}{detail}\n"
     )
 
 
@@ -114,11 +129,7 @@ def render_agent_operation(name: str, target_state: str, task_id: str) -> str:
     """The rendered ``SKILL.md`` body for a core operation on the codex agent-skills surface."""
     return (
         f"---\nname: {name}\ndescription: Apply the workflow's '{name}' operation.\n---\n"
-        f"Apply this workflow's `{name}` operation — it moves the task to **{target_state}**. "
-        f'Invoke it with the `apply_operation` tool (`operation="{name}"`, `task_id="{task_id}"`); '
-        f"don't edit the state directly. It's gated on the current state's responsibilities and "
-        f"returns the entered phase's briefing. If the new phase is nonterminal and you hold its "
-        f"turn, follow that briefing and continue immediately.\n"
+        f"{_operation_body(name, target_state, task_id)}"
     )
 
 

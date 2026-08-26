@@ -32,19 +32,30 @@ def _task(task: object) -> dict[str, Any]:
     return TaskOut.model_validate(task).model_dump(mode="json")
 
 
-async def _transition_result(service: TaskService, task: Task) -> dict[str, Any]:
+async def _transition_result(
+    service: TaskService, task: Task, *, acting_task: str | None
+) -> dict[str, Any]:
     """Serialize a transition and put the entered phase's briefing in the tool result.
 
     A transition happens mid-model-turn, after the user-prompt hook emitted the old phase's
     briefing. Returning the new one here closes that context gap for every MCP-capable agent CLI.
     """
-    briefing = await service.briefing_for(task)
-    if task.turn is Actor.AGENT:
+    result = _task(task)
+    try:
+        briefing = await service.briefing_for(task)
+    except Exception:  # The persisted transition must not look like a failed tool call.
+        _log.exception("task %s transitioned but its briefing could not be rendered", task.id)
+        return result
+    if (
+        task.turn is Actor.AGENT
+        and not service.is_terminal(task)
+        and (acting_task is None or acting_task == task.id)
+    ):
         briefing += (
             "\n\nYou now hold the turn in this phase. Continue its work immediately in this "
             "same turn; do not stop merely to wait for another user prompt."
         )
-    return {**_task(task), "briefing": briefing}
+    return {**result, "briefing": briefing}
 
 
 def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastMCP:
@@ -71,16 +82,18 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
         return _task(await service.set_url(task_id, url))
 
     @mcp.tool(description="Apply a named core operation (e.g. 'advance', 'drop').")
-    async def apply_operation(task_id: str, operation: str) -> dict[str, Any]:
+    async def apply_operation(
+        task_id: str, operation: str, acting_task: str | None = None
+    ) -> dict[str, Any]:
         _log.debug("mcp apply_operation task=%s operation=%s", task_id, operation)
         task = await service.apply_operation(task_id, operation)
-        return await _transition_result(service, task)
+        return await _transition_result(service, task, acting_task=acting_task)
 
     @mcp.tool(description="Move the task to any state directly (free move; bypasses the gate).")
-    async def set_state(task_id: str, state: str) -> dict[str, Any]:
+    async def set_state(task_id: str, state: str, acting_task: str | None = None) -> dict[str, Any]:
         _log.debug("mcp set_state task=%s state=%s", task_id, state)
         task = await service.set_state(task_id, state)
-        return await _transition_result(service, task)
+        return await _transition_result(service, task, acting_task=acting_task)
 
     @mcp.tool(
         description="Resolve one promised responsibility ('met', or 'failed' with a comment)."

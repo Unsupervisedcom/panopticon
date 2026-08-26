@@ -104,8 +104,9 @@ Three ways a task changes state:
 
 - **`advance`** — the happy path. A state with a single non-`DROPPED` transition derives an
   `advance` operation automatically; taking it is **gated on the state's responsibilities**
-  all being resolved. This starts a new agentic turn, so an in-container agent skill invokes
-  it (over MCP), never the dashboard.
+  all being resolved. An in-container agent skill invokes it (over MCP), never the dashboard;
+  the result carries the entered phase's briefing so the task's agent can continue immediately
+  when it holds that phase's turn.
 - **`drop`** — the universal escape. Every non-terminal state can go straight to `DROPPED`
   (dashboard `x`), no gate. Nothing lands.
 - **free move (`set_state`)** — moving a task to *any* state directly, off the declared

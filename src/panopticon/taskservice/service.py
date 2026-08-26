@@ -504,6 +504,10 @@ class TaskService:
         """
         return await self._workflow(task.workflow).briefing(task, artifacts=self._artifacts)
 
+    def is_terminal(self, task: Task) -> bool:
+        """Whether an already-loaded task is in a terminal state of its workflow."""
+        return self._workflow(task.workflow).is_terminal(task.state)
+
     async def workflow_overview(self, task_id: str) -> str:
         """A one-time map of the task's whole workflow (the agent gets this in its system prompt)."""
         task = await self.get_task(task_id)
