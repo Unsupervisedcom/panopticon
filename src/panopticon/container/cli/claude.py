@@ -19,7 +19,7 @@ from typing import Any, ClassVar
 
 from panopticon.container.cli.base import AgentCLI, _Client
 from panopticon.container.config import update_json_config
-from panopticon.container.hooks import write_settings
+from panopticon.container.hooks import THEME, write_settings
 from panopticon.container.skills import write_commands, write_operation_commands
 from panopticon.core.models import Skill
 
@@ -97,6 +97,11 @@ class ClaudeAgentCLI(AgentCLI):
         - ``hasAcknowledgedCostThreshold`` — cost-acknowledgment dialog shown when authenticating
           via ``ANTHROPIC_API_KEY`` (not shown for OAuth tokens).
 
+        It also seeds :data:`~panopticon.container.hooks.THEME` here, claude's *legacy* home for the
+        setting — the settings file :meth:`write_settings` renders is the modern one, and seeding
+        both covers either resolution order (the values agree). Seeded, not enforced, for the same
+        reason: an operator's ``/theme`` inside the container must survive a respawn.
+
         Merge-in-place so we don't clobber config claude writes itself, and idempotent. The path
         encoding is undocumented internals — a safe degradation if it ever drifts is that the dialog
         reappears, which only matters in an (already attended) interactive re-attach.
@@ -105,6 +110,7 @@ class ClaudeAgentCLI(AgentCLI):
         with update_json_config(config) as data:
             data["hasCompletedOnboarding"] = True
             data["hasAcknowledgedCostThreshold"] = True
+            data.setdefault("theme", THEME)
             projects = data.setdefault("projects", {})
             projects.setdefault(str(cwd), {})["hasTrustDialogAccepted"] = True
         return config
