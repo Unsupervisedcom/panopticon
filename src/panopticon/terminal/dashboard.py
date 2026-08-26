@@ -26,9 +26,9 @@ one with the host's default handler (`xdg-open`/`open`) by fetching it over REST
 opens the on-disk file in place when the dashboard shares the artifact store, `y` **copies the
 task's slug** and `Y` its **id** to the clipboard (OSC 52 + the host's `pbcopy`/`xclip`/`wl-copy`,
 so it works on Linux and macOS). Drop is the only state
-*transition* the dashboard drives: every other transition starts a new agentic turn, so it's
-triggered by an in-container agent skill (`advance` over REST/MCP; going back to coding is a free
-`set_state` move), not the operator (ADR 0004).
+*transition* the dashboard drives: every other transition is triggered by an in-container agent
+skill (`advance` over REST/MCP; going back to coding is a free `set_state` move), and its MCP result
+briefs the agent on the entered phase (ADR 0004).
 
 `/` enters **search-as-you-type** (cloude-cade's `/`): a query box reveals at the bottom and the
 table filters live to tasks whose slug/state/workflow/memo contains the query
@@ -2289,8 +2289,8 @@ class Dashboard(App[None]):
 
     def action_drop(self) -> None:
         """`x`: abandon the highlighted task. Drop is the **only** transition the dashboard
-        drives — every other transition starts a new agentic turn, so it's triggered by an
-        in-container agent skill, not the operator (ADR 0004)."""
+        drives — every other transition is triggered by an in-container agent skill and returns
+        the entered phase's briefing, not by the operator (ADR 0004)."""
         task_id = self._current
         if task_id is None:
             return

@@ -264,8 +264,9 @@ on every PR (the same commands the Makefile wraps).
   commands): `advance` is the **happy path** — auto-derived as a state's single non-`DROPPED`
   declared transition (gated by responsibilities) — and `drop` (→ `DROPPED`) is the universal
   escape. Those are the core operations (a workflow may declare more, but each must target a
-  legal transition). `advance` starts a new agentic turn, so it's invoked by an **in-container
-  agent skill** (over REST/MCP); the dashboard drives only `drop` (`x`).
+  legal transition). `advance` is invoked by an **in-container agent skill** (over REST/MCP);
+  its tool result carries the entered phase's briefing so the task's agent continues immediately
+  when it still holds the turn. The dashboard drives only `drop` (`x`).
 - **Free move / set state** — moving a task to *any* state directly (`set_state` /
   `PUT …/state`), bypassing the declared graph **and** the responsibility gate. A workflow's
   `transitions` declare only the intended path (what `advance` follows); the user is never boxed
