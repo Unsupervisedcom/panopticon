@@ -10,6 +10,9 @@
   *agent* once it's answered. ``AskUserQuestion`` is a mid-turn tool call — it never fires ``Stop``
   — so without this the turn would wrongly read *agent* the whole time the question is pending.
 
+It also seeds the two *non-hook* settings a fresh container needs: the Bypass Permissions
+pre-accept (see :func:`settings`) and the starting :data:`THEME`.
+
 claude-specific (`.claude/settings.json`); M3 revisits for other CLIs. Pure — the callback the
 hooks invoke is :mod:`panopticon.container.hook`. `:blocked:` is preserved by construction: the
 callback only sets the turn, never the block.
@@ -24,6 +27,14 @@ from panopticon.container.config import update_json_config
 
 #: The command claude runs for each hook event (sets the turn via the task service).
 HOOK_COMMAND = "python -m panopticon.container.hook"
+
+#: The theme a fresh container's claude starts in. ``auto`` follows the terminal's background, so a
+#: pane an operator attaches over `tmux`/`ssh` is readable on a light *or* dark terminal — claude's
+#: own default is a fixed ``dark``. claude has no ``--theme`` flag, so this is config-file state:
+#: ``theme`` is a *user setting*, i.e. it lives in the settings file :func:`write_settings` writes
+#: (:meth:`~panopticon.container.cli.claude.ClaudeAgentCLI.trust_workspace` seeds the same value
+#: into claude's legacy global config for older builds that read it from there).
+THEME = "auto"
 
 
 def settings() -> dict[str, Any]:
@@ -61,8 +72,15 @@ def settings() -> dict[str, Any]:
 
 
 def write_settings(home: Path) -> Path:
-    """Merge the turn-flip hooks into ``<home>/.claude/settings.json``; return the path."""
+    """Merge the turn-flip hooks into ``<home>/.claude/settings.json``; return the path.
+
+    :data:`THEME` is seeded rather than enforced: the config dir is a **per-task volume** that
+    outlives a respawn, and the ask is what a claude instance *starts* in — so a deliberate
+    ``/theme`` change made inside the container survives every later launch, while the hooks and the
+    permission pre-accept (which the container can't work without) are re-applied each time.
+    """
     path = home / ".claude" / "settings.json"
     with update_json_config(path) as data:
         data.update(settings())
+        data.setdefault("theme", THEME)
     return path

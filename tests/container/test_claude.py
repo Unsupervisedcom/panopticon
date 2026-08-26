@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from panopticon.container.cli.claude import INTERRUPT_PROMPT, ClaudeAgentCLI
+from panopticon.container.hooks import THEME
 
 
 class _FakeClient:
@@ -199,6 +200,18 @@ def test_trust_workspace_seeds_acceptance_for_a_fresh_config(tmp_path: Path) -> 
     assert data["projects"]["/workspace"]["hasTrustDialogAccepted"] is True
     assert data["hasCompletedOnboarding"] is True
     assert data["hasAcknowledgedCostThreshold"] is True  # suppresses the API-key cost dialog
+    assert data["theme"] == THEME  # claude's legacy home for the starting theme
+
+
+def test_trust_workspace_keeps_a_theme_the_container_already_chose(tmp_path: Path) -> None:
+    # Seeded, not enforced — a `/theme` run inside the container survives the next launch.
+    config_dir = tmp_path / ".claude"
+    config_dir.mkdir()
+    (config_dir / ClaudeAgentCLI.CONFIG_FILE).write_text(json.dumps({"theme": "light"}))
+    ClaudeAgentCLI().trust_workspace(config_dir, Path("/workspace"))
+    data = json.loads((config_dir / ClaudeAgentCLI.CONFIG_FILE).read_text())
+    assert data["theme"] == "light"
+    assert data["hasCompletedOnboarding"] is True  # the pre-accepts are still applied
 
 
 def test_trust_workspace_merges_and_is_idempotent(tmp_path: Path) -> None:
