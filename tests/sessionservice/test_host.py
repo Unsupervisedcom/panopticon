@@ -150,6 +150,48 @@ def test_tick_heals_each_task_in_the_snapshot() -> None:
     assert healed == ["t1", "t2"]
 
 
+def test_tick_watches_each_task_and_isolates_a_watcher_failure() -> None:
+    watched: list[str] = []
+
+    class _Spawner:
+        def mark_healing(self, task: JsonObj) -> None:
+            pass
+
+        def spawn_one(self, task: JsonObj) -> None:
+            pass
+
+        def reconcile(self, task: JsonObj) -> None:
+            pass
+
+        def heal(self, task: JsonObj) -> None:
+            pass
+
+        def cleanup(self, task: JsonObj) -> None:
+            pass
+
+    class _Provisioner:
+        def provision(self, task: JsonObj) -> None:
+            pass
+
+    class _Watcher:
+        def watch(self, task: JsonObj) -> None:
+            watched.append(task["id"])
+            if task["id"] == "t1":
+                raise RuntimeError("gh failed")
+
+    HostDaemon(
+        _FakeClient([]),
+        _Spawner(),
+        _Provisioner(),
+        watcher=_Watcher(),  # type: ignore[arg-type]
+    ).tick([{"id": "t1"}, {"id": "t2"}])
+    assert watched == ["t1", "t2"]
+
+
+def test_host_parser_accepts_gh_binary_override() -> None:
+    assert build_arg_parser().parse_args(["--gh", "/opt/gh"]).gh == "/opt/gh"
+
+
 def test_tick_flags_every_orphan_healing_before_any_respawn() -> None:
     # The visibility fix: because respawns are serial (each heal blocks), the pass flags *all*
     # orphans `healing` up front — so t2 reads `healing` while t1's slow respawn is still running,

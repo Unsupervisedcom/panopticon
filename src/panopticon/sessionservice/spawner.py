@@ -562,7 +562,9 @@ class Spawner:
         container could clean up)."""
         if task["state"] not in TERMINAL_LABELS:
             return
-        if self._runner_for(task).is_running(task["id"]):
+        if not self._executions.is_forge(task.get("workflow")) and self._runner_for(
+            task
+        ).is_running(task["id"]):
             return  # container/session still up — wait for it to exit naturally
         if task.get("claimed_by") == self._runner_id:
             with contextlib.suppress(httpx.HTTPError):

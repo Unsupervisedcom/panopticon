@@ -199,10 +199,15 @@ class TaskServiceClient:
             ),
         )
 
-    def set_state(self, task_id: str, state: str) -> JsonObj:
+    def set_state(self, task_id: str, state: str, *, note: str | None = None) -> JsonObj:
         """The user's free override — move the task to any state (bypasses the graph and gate)."""
         return cast(
-            JsonObj, self._json(self._http.put(f"/tasks/{task_id}/state", json={"state": state}))
+            JsonObj,
+            self._json(
+                self._http.put(
+                    f"/tasks/{task_id}/state", json={"state": state}, params={"note": note}
+                )
+            ),
         )
 
     def set_turn(self, task_id: str, turn: str) -> JsonObj:
@@ -260,10 +265,13 @@ class TaskServiceClient:
         body: JsonObj = {"to_state": to_state, "trigger": trigger, "note": note}
         return cast(JsonObj, self._json(self._http.post(f"/tasks/{task_id}/transition", json=body)))
 
-    def apply_operation(self, task_id: str, operation: str) -> JsonObj:
+    def apply_operation(self, task_id: str, operation: str, *, note: str | None = None) -> JsonObj:
         """Apply a named core operation (e.g. advance/drop); the workflow resolves the target."""
         return cast(
-            JsonObj, self._json(self._http.post(f"/tasks/{task_id}/operations/{operation}"))
+            JsonObj,
+            self._json(
+                self._http.post(f"/tasks/{task_id}/operations/{operation}", params={"note": note})
+            ),
         )
 
     def resolve_responsibility(

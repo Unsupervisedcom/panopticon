@@ -559,8 +559,8 @@ def create_app(service: TaskService) -> FastAPI:
         return await service.operations(task_id)
 
     @app.post("/tasks/{task_id}/operations/{operation}")
-    async def apply_operation(task_id: str, operation: str) -> TaskOut:
-        return _task_out(await service.apply_operation(task_id, operation))
+    async def apply_operation(task_id: str, operation: str, note: str | None = None) -> TaskOut:
+        return _task_out(await service.apply_operation(task_id, operation, note=note))
 
     @app.get("/tasks/{task_id}/states")
     async def list_states(task_id: str) -> list[str]:

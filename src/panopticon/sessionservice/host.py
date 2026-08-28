@@ -38,6 +38,7 @@ from panopticon.core.git import GitClones
 from panopticon.sessionservice._migration import migrate_session_dirs
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.executions import WorkflowExecutions
+from panopticon.sessionservice.forge_watch import ForgeWatcher
 from panopticon.sessionservice.host_runner import HostRunner
 from panopticon.sessionservice.images import ImageBuilder
 from panopticon.sessionservice.kubernetes_runner import KubernetesRunner
@@ -58,12 +59,14 @@ class HostDaemon:
         spawner: Spawner,
         provisioner: Provisioner,
         *,
+        watcher: ForgeWatcher | None = None,
         sleep: Callable[[float], None] = time.sleep,
         interval: float = 2.0,
     ) -> None:
         self._client = client
         self._spawner = spawner
         self._provisioner = provisioner
+        self._watcher = watcher
         self._sleep = sleep
         self._interval = interval
 
@@ -87,6 +90,8 @@ class HostDaemon:
             try:
                 self._spawner.spawn_one(task)
                 self._provisioner.provision(task)
+                if self._watcher is not None:
+                    self._watcher.watch(task)
                 self._spawner.reconcile(task)
                 self._spawner.heal(task)
                 self._spawner.cleanup(task)
@@ -174,6 +179,7 @@ def run_host(
     shell_runner: ShellRunner | None = None,
     host_runner: HostRunner | None = None,
     kubernetes_runner: KubernetesRunner | None = None,
+    gh: str = "gh",
     images: ImageBuilder | None = None,
     makedirs: Callable[[str], None] = lambda p: Path(p).mkdir(parents=True, exist_ok=True),
     interval: float = 2.0,
@@ -182,6 +188,7 @@ def run_host(
 ) -> None:
     """Wire the spawner + provisioner over a shared per-task-clone root and run the host loop."""
     executions = WorkflowExecutions(client)  # one shared "how is this workflow run" cache for both
+    watcher = ForgeWatcher(client, executions, runner_id=runner_id, gh=gh)
     spawner = Spawner(
         client,
         runner,
@@ -191,13 +198,16 @@ def run_host(
         shell_runner=shell_runner,
         host_runner=host_runner,
         kubernetes_runner=kubernetes_runner,
+        forge_watcher=watcher,
         executions=executions,
         git=git,
         images=images,
         makedirs=makedirs,
     )
     provisioner = Provisioner(client, clones_root=tasks_root, git=git, executions=executions)
-    HostDaemon(client, spawner, provisioner, interval=interval, sleep=sleep).run(until=until)
+    HostDaemon(client, spawner, provisioner, watcher=watcher, interval=interval, sleep=sleep).run(
+        until=until
+    )
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -226,6 +236,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="hostname or alias reported to the task service",
     )
     parser.add_argument("--image", default=DEFAULT_IMAGE)
+    parser.add_argument("--gh", default="gh", help="GitHub CLI binary used by forge watchers")
     parser.add_argument(
         "--kubernetes",
         action="store_true",
@@ -312,6 +323,7 @@ def main(
         shell_runner=shell_runner,
         host_runner=host_runner,
         kubernetes_runner=kubernetes_runner,
+        gh=args.gh,
         images=ImageBuilder(
             base=args.image
         ),  # compose workflow layers onto the same base (ADR 0005)
