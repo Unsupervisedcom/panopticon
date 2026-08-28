@@ -23,6 +23,11 @@
   # `.venv`, so pinning a second one here would leave two answers to the same question. `make sync`
   # is the first command in a fresh checkout.
 
+  # uv's wheels are built against the manylinux C++ runtime: `greenlet` (SQLAlchemy's async
+  # bridge) dlopens `libstdc++.so.6`, which a Nix shell does not put on the loader path — so every
+  # store-backed test failed with "the greenlet library is required" until the runtime was named.
+  env.LD_LIBRARY_PATH = "${pkgs.stdenv.cc.cc.lib}/lib";
+
   # There are no `processes` either: panopticon *is* a process supervisor. `make start` runs the
   # task service and the host daemon in its own `-L panopticon` tmux server — the same server that
   # holds every task session, and what `make stop` tears down. Declaring those as devenv processes
