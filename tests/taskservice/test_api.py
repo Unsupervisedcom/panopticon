@@ -124,6 +124,8 @@ def test_workflow_execution_endpoint_carries_the_backend_and_its_agent(tmp_path:
         spec = c.get("/workflows/research/execution").json()
     assert spec["runner_type"] == "kubernetes"
     assert spec["operator_agent"] == "researcher"
+    assert spec["poll_interval_seconds"] is None
+    assert spec["pr_timeout_seconds"] is None
 
 
 def test_workflow_execution_endpoint_reports_no_agent_for_a_docker_workflow(

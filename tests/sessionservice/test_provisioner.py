@@ -120,6 +120,23 @@ def test_skips_a_shell_workflow_task_which_has_no_clone() -> None:
     assert client.recorded == []
 
 
+def test_skips_a_forge_workflow_task_which_has_no_clone() -> None:
+    calls, run = _recording_runner()
+    client = _FakeClient(runner_type="forge")
+    provisioner = _provisioner(client, run)
+
+    task = {
+        "id": "t1",
+        "repo_id": "r1",
+        "workflow": "resident-agent",
+        "slug": "delegate",
+        "provisioned": False,
+    }
+    assert provisioner.provision(task) is None
+    assert calls == []
+    assert client.recorded == []
+
+
 def test_provisioner_against_the_real_service(tmp_path: Path) -> None:
     """End to end against the real task service over REST: provisioning records the branch + clone
     path, and the second pass is a no-op (the pull loop can call it repeatedly)."""

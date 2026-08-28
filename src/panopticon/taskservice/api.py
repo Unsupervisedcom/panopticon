@@ -448,8 +448,8 @@ def create_app(service: TaskService) -> FastAPI:
 
     @app.get("/workflows/{name}/execution")
     async def workflow_execution(name: str) -> dict[str, Any]:
-        """How the runner executes this workflow's tasks: ``runner_type`` (``"docker"``/``"shell"``),
-        the shell ``script``, ``clone_repo``, and a shell ``workdir`` override."""
+        """How the runner executes this workflow's tasks: backend, shell settings, agent identity,
+        and forge polling/PR-timeout settings."""
         return await service.workflow_execution(name)
 
     # -- repos --------------------------------------------------------------------

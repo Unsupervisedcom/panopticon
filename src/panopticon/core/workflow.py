@@ -113,7 +113,9 @@ class Workflow(ABC):
     #: and, deliberately, no isolation, since the agent runs as the operator. ``"kubernetes"`` runs
     #: the task image as a Job in the namespace of the agent-operator ``Agent`` named by
     #: :attr:`operator_agent` (ADR 0014), where the pod clones its own workspace instead of mounting
-    #: a host one. A ``"docker"``, ``"host"`` or ``"shell"`` task runs in the task's own directory
+    #: a host one. ``"forge"`` claims the task for a session service that watches it on the forge;
+    #: it spawns no container, process, tmux session, or clone. A ``"docker"``, ``"host"`` or
+    #: ``"shell"`` task runs in the task's own directory
     #: (``<tasks_root>/<task_id>``); docker and host tasks always get the repo cloned there, a shell
     #: task only if :attr:`clone_repo`. Use ``"shell"`` for short operator utilities that just need a
     #: host shell (e.g. minting an auth token). The runner picks the backend off this flag.
@@ -135,6 +137,9 @@ class Workflow(ABC):
     #: ``None`` (default) runs in the task dir; set an absolute path for a workflow that operates
     #: somewhere else (e.g. the operator's home). Ignored for ``"docker"`` (which works in ``/workspace``).
     shell_workdir: ClassVar[str | None] = None
+    #: Polling controls for a ``"forge"`` workflow. Other backends leave these unset.
+    poll_interval_seconds: ClassVar[int | None] = None
+    pr_timeout_seconds: ClassVar[int | None] = None
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         """Check the execution-backend attributes as soon as the class is defined.

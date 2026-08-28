@@ -18,6 +18,7 @@ import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import httpx
 
@@ -33,6 +34,9 @@ from panopticon.sessionservice.kubernetes_runner import KubernetesRunner
 from panopticon.sessionservice.local_runner import LocalRunner
 from panopticon.sessionservice.shell_runner import ShellRunner
 from panopticon.sessionservice.spawn import cleanup_workspace, prepare_workspace
+
+if TYPE_CHECKING:
+    from panopticon.sessionservice.forge_watch import ForgeWatcher
 
 _log = logging.getLogger(__name__)
 
@@ -97,6 +101,7 @@ class Spawner:
         shell_runner: ShellRunner | None = None,
         host_runner: HostRunner | None = None,
         kubernetes_runner: KubernetesRunner | None = None,
+        forge_watcher: ForgeWatcher | None = None,
         executions: WorkflowExecutions | None = None,
         git: object | None = None,
         images: ImageBuilder | None = None,
@@ -122,6 +127,7 @@ class Spawner:
         #: ``"kubernetes"`` workflow's task cannot spawn here — reported as a failed spawn rather
         #: than silently falling back to Docker, which would run the task under the wrong identity.
         self._kubernetes_runner = kubernetes_runner
+        self._forge_watcher = forge_watcher
         self._runner_id = runner_id
         #: The cached "how is this workflow run" lookup (runner_type + shell details), shared with the
         #: provisioner so both agree on which tasks are shell. The per-pass calls (reconcile/cleanup/
@@ -186,6 +192,8 @@ class Spawner:
             _log.info("task %s: claiming", task_id)
             self._report(task_id, LifecyclePhase.CLAIMING)
             repo = self._client.get_repo(task["repo_id"])
+            if self._executions.is_forge(task["workflow"]):
+                return self._spawn_forge(task, repo)
             if self._executions.is_shell(task["workflow"]):
                 return self._spawn_shell(task, repo)
             if self._executions.is_host(task["workflow"]):
@@ -196,6 +204,17 @@ class Spawner:
         except Exception as exc:
             self._report(task_id, LifecyclePhase.FAILED, detail=str(exc))
             raise
+
+    def _spawn_forge(self, task: JsonObj, repo: JsonObj) -> str:
+        """Claim a forge task for its watcher without creating any local execution resource."""
+        del repo
+        if self._forge_watcher is None:
+            raise RuntimeError(
+                f"task {task['id']!r} uses forge workflow {task['workflow']!r} "
+                "but this runner has no forge watcher"
+            )
+        self._report(task["id"], LifecyclePhase.AWAITING)
+        return f"forge-{task['id']}"
 
     def _prepare_task_dir(self, task: JsonObj, repo: JsonObj, *, clone: bool) -> str:
         """The task's working directory (``<tasks_root>/<task_id>``) — shared by both backends.
@@ -358,7 +377,7 @@ class Spawner:
 
     def _runner_for(
         self, task: JsonObj
-    ) -> LocalRunner | ShellRunner | HostRunner | KubernetesRunner:
+    ) -> LocalRunner | ShellRunner | HostRunner | KubernetesRunner | ForgeWatcher:
         """The runner that owns ``task``'s session — the shell runner for a shell workflow, the host
         runner for a host one, the Kubernetes runner for a kubernetes one (when each is configured),
         else the Docker runner.
@@ -366,6 +385,8 @@ class Spawner:
         :meth:`cleanup`, :meth:`startup_reclaim` and :meth:`_is_orphan` check the right backend.
         Tasks without a ``workflow`` key (some internal callers) fall back to the Docker runner."""
         workflow = task.get("workflow")
+        if self._forge_watcher is not None and self._executions.is_forge(workflow):
+            return self._forge_watcher
         if self._shell_runner is not None and self._executions.is_shell(workflow):
             return self._shell_runner
         if self._host_runner is not None and self._executions.is_host(workflow):
@@ -411,7 +432,9 @@ class Spawner:
         operator cancelling), not a crash to respawn — so re-running it would be wrong."""
         if task.get("claimed_by") != self._runner_id or task["state"] in TERMINAL_LABELS:
             return False
-        if self._executions.is_shell(task.get("workflow")):
+        if self._executions.is_shell(task.get("workflow")) or self._executions.is_forge(
+            task.get("workflow")
+        ):
             return False
         return not self._runner_for(task).has_session(task["id"])
 
@@ -515,7 +538,9 @@ class Spawner:
                 continue
             if task["state"] in TERMINAL_LABELS:
                 continue
-            if self._executions.is_shell(task.get("workflow")):
+            if self._executions.is_shell(task.get("workflow")) or self._executions.is_forge(
+                task.get("workflow")
+            ):
                 continue  # never auto-respawn a shell task — leave it claimed (reconciles to `down`)
             if self._runner_for(task).is_running(task["id"]):
                 continue  # container survived (runner-only crash) — keep claim, heal handles it

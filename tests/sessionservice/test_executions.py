@@ -47,6 +47,13 @@ def test_is_shell_reflects_runner_type() -> None:
     assert execs.is_shell("dk") is False
 
 
+def test_is_forge_reflects_runner_type() -> None:
+    client = _FakeClient({"resident-agent": {"runner_type": "forge"}})
+    execs = WorkflowExecutions(client)  # type: ignore[arg-type]
+    assert execs.is_forge("resident-agent") is True
+    assert execs.is_forge(None) is False
+
+
 def test_is_shell_is_false_for_a_missing_workflow_name() -> None:
     # Callers pass a task's `workflow` straight through; None/empty must not hit the client.
     client = _FakeClient({})
@@ -78,6 +85,8 @@ def test_spec_returns_docker_fallback_for_unknown_workflow() -> None:
     spec = execs.spec("parity")
     assert spec["runner_type"] == "docker"
     assert spec["clone_repo"] is False
+    assert spec["poll_interval_seconds"] is None
+    assert spec["pr_timeout_seconds"] is None
     # Second call is served from cache — no second HTTP hit.
     spec2 = execs.spec("parity")
     assert spec2 is spec

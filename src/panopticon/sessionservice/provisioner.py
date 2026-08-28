@@ -59,7 +59,9 @@ class Provisioner:
         """
         if not task.get("slug") or task.get("provisioned"):
             return None
-        if self._executions.is_shell(task.get("workflow")):
+        if self._executions.is_shell(task.get("workflow")) or self._executions.is_forge(
+            task.get("workflow")
+        ):
             return None
         clone = f"{self._clones_root}/{task['id']}"
         branch = branch_name(task["slug"])

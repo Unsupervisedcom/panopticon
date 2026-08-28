@@ -1,7 +1,7 @@
 """A cache of each workflow's execution spec — the one place that answers "how does the session
 service run this workflow's tasks?".
 
-A workflow's ``runner_type`` (``"docker"``/``"shell"``/``"host"``/``"kubernetes"``), shell ``script``,
+A workflow's ``runner_type`` (``"docker"``/``"shell"``/``"host"``/``"kubernetes"``/``"forge"``), shell ``script``,
 ``clone_repo``, shell ``workdir`` override, and ``operator_agent`` are static per workflow, so the
 session service fetches them once over REST (``GET /workflows/{name}/execution``) and caches them.
 Both the :class:`~panopticon.sessionservice.spawner.Spawner` and the
@@ -25,6 +25,8 @@ _FALLBACK_SPEC: JsonObj = {
     "clone_repo": False,
     "workdir": None,
     "operator_agent": None,
+    "poll_interval_seconds": None,
+    "pr_timeout_seconds": None,
 }
 
 
@@ -72,6 +74,10 @@ class WorkflowExecutions:
 
         ``None``/missing → False, the docker default, matching :meth:`is_shell`."""
         return self._runner_type(workflow) == "kubernetes"
+
+    def is_forge(self, workflow: str | None) -> bool:
+        """Whether ``workflow`` is watched on a forge without spawning anything."""
+        return self._runner_type(workflow) == "forge"
 
     def operator_agent(self, workflow: str) -> str:
         """The agent-operator ``Agent`` a ``"kubernetes"`` workflow runs as.

@@ -154,7 +154,9 @@ class _FakeClient:
         return {"id": task_id}
 
 
-def _spawner(client: object, runner: object, images: object = None) -> Spawner:
+def _spawner(
+    client: object, runner: object, images: object = None, forge_watcher: object | None = None
+) -> Spawner:
     cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
     return Spawner(
         client,
@@ -162,6 +164,7 @@ def _spawner(client: object, runner: object, images: object = None) -> Spawner:
         runner_id="host-1",
         cache=cache,
         tasks_root="/tasks",  # type: ignore[arg-type]
+        forge_watcher=forge_watcher,  # type: ignore[arg-type]
         git=GitClones(run=_no_op_run),
         images=images or _FakeImageBuilder(),  # type: ignore[arg-type]
         makedirs=lambda _p: None,
@@ -169,6 +172,53 @@ def _spawner(client: object, runner: object, images: object = None) -> Spawner:
 
 
 _REPO: JsonObj = {"id": "r1", "git_url": "https://forge/r1.git", "env_file": "r1.env"}
+
+
+class _FakeForgeWatcher:
+    def is_running(self, task_id: str) -> bool:
+        return True
+
+    def has_session(self, task_id: str) -> bool:
+        return True
+
+    def stop(self, task_id: str) -> None:
+        pass
+
+
+_FORGE_TASK: JsonObj = {
+    "id": "t1",
+    "repo_id": "r1",
+    "workflow": "resident-agent",
+    "state": "FILING",
+    "claimed_by": None,
+}
+
+
+def test_forge_task_is_claimed_without_spawning_or_preparing() -> None:
+    client = _FakeClient(repo=_REPO, runner_type="forge")
+    runner = _FakeRunner()
+
+    result = _spawner(client, runner, forge_watcher=_FakeForgeWatcher()).spawn_one(
+        dict(_FORGE_TASK)
+    )
+
+    assert result == "forge-t1"
+    assert client.claims == [("t1", "host-1")]
+    assert [phase for _, phase, _ in client.phases] == ["claiming", "awaiting"]
+    assert runner.spawned == []
+
+
+def test_forge_task_is_never_an_orphan_and_keeps_its_claim_at_startup() -> None:
+    client = _FakeClient(repo=_REPO, runner_type="forge")
+    runner = _FakeRunner(running=False, session=False)
+    spawner = _spawner(client, runner, forge_watcher=_FakeForgeWatcher())
+    task = {**_FORGE_TASK, "claimed_by": "host-1"}
+
+    assert spawner.heal(dict(task)) is None
+    spawner.startup_reclaim([dict(task)])
+
+    assert client.releases == []
+    assert runner.spawned == []
 
 
 def test_spawn_one_claims_then_spawns_a_fresh_task() -> None:
