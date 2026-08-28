@@ -51,11 +51,24 @@ in the ADRs; this file is for the smaller stuff that doesn't have a home there y
   _(Slice 1, P2)_
 - [ ] **Factor the polling loops** — coordination is moving to pull/poll: the session service
   observing slug-set + assigned work (ADR 0010), the agent waiting for "provisioned", dashboard
-  refresh, the container heartbeat. Before they multiply, see whether they can share one
+  refresh, the container heartbeat, and the forge watcher's per-task poll throttle. Before they
+  multiply, see whether they can share one
   observe/poll abstraction — a single place to set intervals/backoff, batch reads, and later swap
   poll → long-poll/SSE uniformly. _(ADR 0010, P3)_
 
 ## Deferred features (not yet scheduled, or scheduled but flagged here)
+
+- [ ] **`WATCHING` lifecycle phase for forge tasks** — a forge claim currently remains `awaiting`,
+  whose wording implies a container registration that will never arrive. Add a dedicated lifecycle
+  phase/container status so the dashboard names the real activity. _(ADR 0015, P2.)_
+- [ ] **GraphQL `closingIssuesReferences` for issue-to-PR linkage** — the watcher uses the issue
+  timeline's cross-reference events. GitHub GraphQL can express the closing relationship more
+  strictly and avoid unrelated cross-referenced PRs. _(ADR 0015, P2.)_
+- [ ] **Optional workflow `merge_gate`** — allow a forge workflow to make MERGING user-gated after
+  code-owner approval, while keeping the resident workflow's default tracked-not-gated merge.
+  _(ADR 0015, P3.)_
+- [ ] **Forgejo backend for forge-watched workflows** — abstract the GitHub-specific `gh` queries
+  behind a forge adapter and implement equivalent Forgejo issue/PR observation. _(ADR 0015, P3.)_
 
 - [ ] **Runnable task-service entrypoint** — there's no `uvicorn`-runnable server +
   config (host/interface, DB path, artifact root, workflow path). Tests drive `create_app`

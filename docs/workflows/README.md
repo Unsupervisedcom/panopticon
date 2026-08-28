@@ -21,6 +21,7 @@ lifecycle — see [Tasks](../tasks.md).
 | [`spike`](spike.md) | **Open-ended** agent work with no gates. Use for exploration, debugging, and research, until you call it done. | Nothing lands on its own |
 | [`orchestrator`](orchestrator.md) | An agent that **decomposes a goal into child tasks**, each pre-planned and handed to you ready to approve. Use to fan work out across agents. | New pre-planned child tasks |
 | [`setup-repo`](setup-repo.md) | A host-side **setup utility** (no container) that mints a repo's `claude` auth token. Launched from the repos screen, not the task picker. | A token in the repo's env-file |
+| [`resident-agent`](resident-agent.md) | Delegates a GitHub issue to the repo's configured long-lived resident, then deterministically watches its PR through CODEOWNERS review and merge. Panopticon runs no agent. | A code-owner-approved GitHub PR |
 
 Any task can also be **dropped** at any time (dashboard `x`), which moves it to `DROPPED`
 without merging or shipping anything.
@@ -55,7 +56,7 @@ Each state is advanced by either **you** or the **agent**:
 ## How workflows are offered
 
 - **Default-on vs. opt-in.** `spike` and `orchestrator` are shown for every repo by
-  default. `github-peer-reviewed`, `github-self-reviewed`, and `local-git-self-reviewed`
+default. `github-peer-reviewed`, `github-self-reviewed`, `local-git-self-reviewed`, and `resident-agent`
   are **opt-in**: enable them per repo (in the repo's workflow settings) before they show
   up in the task-creation picker.
 - **Hidden utilities.** `setup-repo` is hidden from the pickers entirely; you launch it

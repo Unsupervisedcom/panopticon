@@ -21,7 +21,8 @@ src/panopticon/
                    # machine: resolution, queries, start_task/apply_transition),
                    # store & artifact interfaces — pure, no I/O EXCEPT git.py (local
                    # branch/worktree ops; LLM-free, behind an injectable command-runner)
-  workflows/       # built-in Workflow subclasses (Spike seed; GithubPeerReviewed [formerly Parity]
+  workflows/       # built-in Workflow subclasses (Spike seed; ResidentAgent = no local agent,
+                   # files a GitHub issue for the repo's resident and watches its PR; GithubPeerReviewed [formerly Parity]
                    # = cloude-cade lifecycle; GithubSelfReviewed = same, sans the peer-review state,
                    # the user self-reviews; both share the GithubForgeWorkflow base = gh tool/layer/skills;
                    # Orchestrator = an agent that creates + pre-plans other tasks, `orchestrates=True`
@@ -34,6 +35,8 @@ src/panopticon/
                    # adapter (in-memory or on-disk SQLite), filesystem artifact store, MCP
                    # server (mcp.py: operations=tools, artifacts=resources; FastMCP) mounted at /mcp
   sessionservice/  # the runner: Runner ABC + StubRunner (in-process) + LocalRunner
+                   # + forge_watch.py = `runner_type="forge"`: claim without spawn, then
+                   # deterministically observe issue/PR/review/merge facts through injectable `gh`
                    # (real Docker+tmux via the CLIs) + KubernetesRunner (kubernetes_runner.py = one
                    # task Job in an agent-operator Agent's namespace, for a `runner_type="kubernetes"`
                    # workflow; agent_operator.py resolves the Agent CR into the Job's namespace/
@@ -199,6 +202,9 @@ on every PR (the same commands the Makefile wraps).
   session is gone → respawn via the idempotent spawn path; skips healthy/unclaimed/terminal tasks;
   the crash-loop cap + survivor-window budget reset), and the `spawnable_tasks` filter; an
   integration test claims + spawns against the real task service over REST (fake git/runner).
+- `tests/sessionservice/test_forge_watch.py` — the forge-watched resident lifecycle: fake `gh`
+  responses pin issue filing/recovery, PR discovery, code-owner review, approval/merge, credentials,
+  blocking, throttling, and restart-safe durable progress. No network, container, or LLM.
 - `tests/test_host.py` — the unified per-host daemon (ADR 0008/0011): a unit test isolates a
   failing task and another pins that each pass also `heal`s every task; an integration test drives
   spawn → set slug → provision against the real task service over REST (claimed + spawned, then
