@@ -27,7 +27,7 @@ class Custom(Workflow):
 
 def test_discovers_the_builtin_workflows() -> None:
     registry = discover_workflows()
-    assert {"spike", "github-peer-reviewed"} <= set(registry)  # built-ins, keyed by name
+    assert {"spike", "github-peer-reviewed", "resident-agent"} <= set(registry)
     assert registry["spike"].name == "spike"  # instances, validated on construction
 
 
