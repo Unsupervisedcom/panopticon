@@ -397,3 +397,48 @@ def test_probe_surface_tracks_the_claim(tmp_path: Path) -> None:
     assert watcher.has_session("t1") is True
     task["claimed_by"] = "other"
     assert watcher.is_running("t1") is False
+
+
+def _xref(url: str, *, state: str = "open", author: str = "octo-resident") -> dict[str, object]:
+    return {
+        "event": "cross-referenced",
+        "source": {
+            "issue": {
+                "html_url": url,
+                "state": state,
+                "user": {"login": author},
+                "pull_request": {},
+            }
+        },
+    }
+
+
+def test_implementing_decodes_multi_page_timeline(tmp_path: Path) -> None:
+    task = _task("IMPLEMENTING", url="https://github.com/acme/widgets/issues/12")
+    page1 = json.dumps([{"event": "commented"}])
+    page2 = json.dumps([_xref("https://github.com/acme/widgets/pull/34")])
+    watcher, client = _watcher(tmp_path, task, _Gh(page1 + "\n" + page2))
+    watcher.watch(task)
+    assert client.urls == ["https://github.com/acme/widgets/pull/34"]
+
+
+def test_implementing_prefers_the_residents_open_pull_request(tmp_path: Path) -> None:
+    task = _task("IMPLEMENTING", url="https://github.com/acme/widgets/issues/12")
+    timeline = [
+        _xref("https://github.com/acme/widgets/pull/30", state="closed"),
+        _xref("https://github.com/acme/widgets/pull/31", author="someone-else"),
+        _xref("https://github.com/acme/widgets/pull/32"),
+    ]
+    watcher, client = _watcher(tmp_path, task, _Gh(json.dumps(timeline)))
+    watcher.watch(task)
+    assert client.urls == ["https://github.com/acme/widgets/pull/32"]
+
+
+def test_linked_pull_request_falls_back_to_open_then_latest() -> None:
+    from panopticon.sessionservice.forge_watch import _linked_pull_request
+
+    open_other = [_xref("u/30", state="closed"), _xref("u/31", author="x")]
+    assert _linked_pull_request(open_other, resident="octo-resident") == "u/31"
+    all_closed = [_xref("u/30", state="closed"), _xref("u/31", state="closed")]
+    assert _linked_pull_request(all_closed, resident="octo-resident") == "u/31"
+    assert _linked_pull_request([{"event": "commented"}], resident=None) is None

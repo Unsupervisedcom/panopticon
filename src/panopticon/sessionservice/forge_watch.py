@@ -74,6 +74,52 @@ def _number(url: str | None, pattern: re.Pattern[str]) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _json_documents(text: str) -> list[list[JsonObj]]:
+    """Decode ``gh api --paginate`` output: one JSON array per page, concatenated.
+
+    A single page is one document; a long timeline is several back-to-back, which
+    ``json.loads`` rejects. Decode them in sequence instead."""
+    decoder = json.JSONDecoder()
+    pages: list[list[JsonObj]] = []
+    index = 0
+    text = text.strip()
+    while index < len(text):
+        document, end = decoder.raw_decode(text, index)
+        pages.append(list(document) if isinstance(document, list) else [document])
+        index = end
+        while index < len(text) and text[index].isspace():
+            index += 1
+    return pages
+
+
+def _linked_pull_request(timeline: Sequence[JsonObj], *, resident: str | None) -> str | None:
+    """The pull request that works the issue, from its timeline's cross-references.
+
+    An issue collects references over its life — a follow-up, a revert, a closed
+    attempt — so "the first one" is wrong. Prefer an **open** pull request by the
+    resident, then any open one, then the most recent reference."""
+    candidates: list[tuple[str, str | None, bool]] = []
+    for event in timeline:
+        source = event.get("source") or {}
+        issue = source.get("issue") or {}
+        if event.get("event") != "cross-referenced" or "pull_request" not in issue:
+            continue
+        url = issue.get("html_url") or (issue.get("pull_request") or {}).get("html_url")
+        if not url:
+            continue
+        author = (issue.get("user") or {}).get("login")
+        candidates.append((str(url), author, str(issue.get("state", "")).lower() == "open"))
+    if not candidates:
+        return None
+    for url, author, is_open in candidates:
+        if is_open and resident and author == resident:
+            return url
+    for url, _author, is_open in candidates:
+        if is_open:
+            return url
+    return candidates[-1][0]
+
+
 class ForgeWatcher:
     """Poll claimed forge tasks and apply one idempotent workflow step per task per interval."""
 
@@ -139,7 +185,7 @@ class ForgeWatcher:
             if state == "FILING":
                 self._filing(task, repo, slug, env)
             elif state == "IMPLEMENTING":
-                self._implementing(task, slug, env)
+                self._implementing(task, repo, slug, env)
             elif state == "REVIEW":
                 self._review(task, slug, env)
             elif state == "MERGING":
@@ -245,30 +291,32 @@ class ForgeWatcher:
         self._resolve(task, "issue-filed")
         self._advance(task, note=f"GitHub issue #{issue_number}" if issue_number else None)
 
-    def _implementing(self, task: JsonObj, slug: str, env: Mapping[str, str]) -> None:
+    def _implementing(
+        self, task: JsonObj, repo: JsonObj, slug: str, env: Mapping[str, str]
+    ) -> None:
         if _number(task.get("url"), _PR_URL):
             return self._pr_opened(task)
         issue_number = _number(task.get("url"), _ISSUE_URL)
         if issue_number is None:
             self._block_once(task, "task URL is not a GitHub issue")
             return
-        timeline = json.loads(
-            self._call(
-                slug,
-                env,
-                "api",
-                f"repos/{slug}/issues/{issue_number}/timeline",
-                "--paginate",
+        timeline = [
+            event
+            for page in _json_documents(
+                self._call(
+                    slug,
+                    env,
+                    "api",
+                    f"repos/{slug}/issues/{issue_number}/timeline",
+                    "--paginate",
+                )
             )
-            or "[]"
-        )
-        for event in timeline:
-            source = event.get("source", {}).get("issue", {})
-            if event.get("event") == "cross-referenced" and "pull_request" in source:
-                pr_url = source.get("html_url") or source["pull_request"].get("html_url")
-                if pr_url:
-                    self._client.set_url(str(task["id"]), str(pr_url))
-                    return self._pr_opened(task)
+            for event in page
+        ]
+        pr_url = _linked_pull_request(timeline, resident=repo.get("resident_agent"))
+        if pr_url:
+            self._client.set_url(str(task["id"]), pr_url)
+            return self._pr_opened(task)
         issue = json.loads(
             self._call(slug, env, "issue", "view", str(issue_number), "--json", "state") or "{}"
         )
