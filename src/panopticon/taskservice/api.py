@@ -581,8 +581,8 @@ def create_app(service: TaskService) -> FastAPI:
         return {"overview": await service.workflow_overview(task_id)}
 
     @app.put("/tasks/{task_id}/state")
-    async def set_state(task_id: str, body: StateIn) -> TaskOut:
-        return _task_out(await service.set_state(task_id, body.state))
+    async def set_state(task_id: str, body: StateIn, note: str | None = None) -> TaskOut:
+        return _task_out(await service.set_state(task_id, body.state, note=note))
 
     @app.post("/tasks/{task_id}/transition")
     async def transition(task_id: str, body: TransitionIn) -> TaskOut:

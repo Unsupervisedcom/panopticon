@@ -193,7 +193,7 @@ class Spawner:
             self._report(task_id, LifecyclePhase.CLAIMING)
             repo = self._client.get_repo(task["repo_id"])
             if self._executions.is_forge(task["workflow"]):
-                return self._spawn_forge(task, repo)
+                return self._spawn_forge(task)
             if self._executions.is_shell(task["workflow"]):
                 return self._spawn_shell(task, repo)
             if self._executions.is_host(task["workflow"]):
@@ -205,9 +205,8 @@ class Spawner:
             self._report(task_id, LifecyclePhase.FAILED, detail=str(exc))
             raise
 
-    def _spawn_forge(self, task: JsonObj, repo: JsonObj) -> str:
+    def _spawn_forge(self, task: JsonObj) -> str:
         """Claim a forge task for its watcher without creating any local execution resource."""
-        del repo
         if self._forge_watcher is None:
             raise RuntimeError(
                 f"task {task['id']!r} uses forge workflow {task['workflow']!r} "
@@ -419,6 +418,8 @@ class Spawner:
             return  # not ours (or unclaimed) — spawn_one handles the unclaimed case
         if task.get("container_status") not in _IN_PROGRESS:
             return  # live / down / failed / queued / disconnected — nothing to reconcile
+        if self._executions.is_forge(task.get("workflow")):
+            return  # no local resource to go down — it stays `awaiting` while watched
         if self._runner_for(task).is_running(task["id"]):
             return  # container/session present, just not registered yet — still coming up
         self._client.clear_lifecycle(task["id"])  # container gone → composes `down`
@@ -432,9 +433,7 @@ class Spawner:
         operator cancelling), not a crash to respawn — so re-running it would be wrong."""
         if task.get("claimed_by") != self._runner_id or task["state"] in TERMINAL_LABELS:
             return False
-        if self._executions.is_shell(task.get("workflow")) or self._executions.is_forge(
-            task.get("workflow")
-        ):
+        if self._executions.is_unmanaged(task.get("workflow")):
             return False
         return not self._runner_for(task).has_session(task["id"])
 
@@ -538,10 +537,8 @@ class Spawner:
                 continue
             if task["state"] in TERMINAL_LABELS:
                 continue
-            if self._executions.is_shell(task.get("workflow")) or self._executions.is_forge(
-                task.get("workflow")
-            ):
-                continue  # never auto-respawn a shell task — leave it claimed (reconciles to `down`)
+            if self._executions.is_unmanaged(task.get("workflow")):
+                continue  # never auto-respawn a shell/forge task — leave it claimed
             if self._runner_for(task).is_running(task["id"]):
                 continue  # container survived (runner-only crash) — keep claim, heal handles it
             # best-effort — heal() picks up unclaimed tasks that failed to release
@@ -565,7 +562,7 @@ class Spawner:
         if not self._executions.is_forge(task.get("workflow")) and self._runner_for(
             task
         ).is_running(task["id"]):
-            return  # container/session still up — wait for it to exit naturally
+            return  # container/session still up — wait for it to exit naturally (forge has none)
         if task.get("claimed_by") == self._runner_id:
             with contextlib.suppress(httpx.HTTPError):
                 self._client.release(task["id"])

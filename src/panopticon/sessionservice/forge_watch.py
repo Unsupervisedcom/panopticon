@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import re
-import shlex
 import subprocess
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -15,7 +14,7 @@ from pathlib import Path
 from typing import Protocol
 
 from panopticon.client import JsonObj, TaskServiceClient
-from panopticon.core.dirs import secrets_file_path
+from panopticon.core.dirs import read_env_file, secrets_file_path
 from panopticon.core.models import Status
 from panopticon.core.state import TERMINAL_LABELS
 from panopticon.sessionservice.executions import WorkflowExecutions
@@ -25,8 +24,8 @@ _log = logging.getLogger(__name__)
 _GITHUB_URL = re.compile(
     r"^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([^/]+)/([^/]+?)(?:\.git)?/?$"
 )
-_ISSUE_URL = re.compile(r"/issues/(\d+)(?:/)?$")
-_PR_URL = re.compile(r"/pull/(\d+)(?:/)?$")
+_ISSUE_URL = re.compile(r"/issues/(\d+)/?$")
+_PR_URL = re.compile(r"/pull/(\d+)/?$")
 
 
 class GhRunner(Protocol):
@@ -34,7 +33,6 @@ class GhRunner(Protocol):
         self,
         args: Sequence[str],
         *,
-        check: bool = True,
         env: Mapping[str, str] | None = None,
         input: str | None = None,
     ) -> str: ...
@@ -43,14 +41,13 @@ class GhRunner(Protocol):
 def subprocess_run(
     args: Sequence[str],
     *,
-    check: bool = True,
     env: Mapping[str, str] | None = None,
     input: str | None = None,
 ) -> str:
     """Run ``gh`` with captured text output and the caller's narrowly supplied environment."""
     return subprocess.run(
         list(args),
-        check=check,
+        check=True,
         input=input,
         capture_output=True,
         text=True,
@@ -70,22 +67,6 @@ def github_repo_slug(git_url: str) -> str:
     if match is None:
         raise ValueError(f"not a supported GitHub repository URL: {git_url!r}")
     return f"{match.group(1)}/{match.group(2)}"
-
-
-def _env_values(path: str) -> dict[str, str]:
-    values: dict[str, str] = {}
-    for raw in Path(path).read_text().splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line.removeprefix("export ").lstrip()
-        if "=" not in line:
-            continue
-        key, raw_value = line.split("=", 1)
-        parsed = shlex.split(raw_value, comments=True, posix=True)
-        values[key.strip()] = " ".join(parsed)
-    return values
 
 
 def _number(url: str | None, pattern: re.Pattern[str]) -> int | None:
@@ -117,16 +98,9 @@ class ForgeWatcher:
         self._now = now
         self._wall_clock = wall_clock
         self._next_poll: dict[str, float] = {}
-        self._blocked_sent: set[str] = set()
-
-    def spawn(self, task_id: str) -> str:
-        raise NotImplementedError("forge tasks are claimed and watched; they are never spawned")
 
     def stop(self, task_id: str) -> None:
         """There is no local execution resource to stop."""
-
-    def attach_command(self, task_id: str) -> None:
-        raise NotImplementedError("forge-watched tasks have no tmux session to attach")
 
     def is_running(self, task_id: str) -> bool:
         try:
@@ -141,11 +115,13 @@ class ForgeWatcher:
     def watch(self, task: JsonObj) -> None:
         task_id = str(task.get("id", ""))
         workflow = task.get("workflow")
+        if task.get("state") in TERMINAL_LABELS:
+            self._next_poll.pop(task_id, None)
+            return
         if (
             not task_id
             or task.get("claimed_by") != self._runner_id
             or not self._executions.is_forge(workflow)
-            or task.get("state") in TERMINAL_LABELS
         ):
             return
         now = float(self._now())
@@ -174,7 +150,7 @@ class ForgeWatcher:
     def _gh_env(self, task: JsonObj, repo: JsonObj) -> dict[str, str] | None:
         try:
             path = secrets_file_path(repo.get("env_file"), secrets_dir=self._secrets_dir)
-            token = _env_values(path).get("GH_TOKEN") if path else None
+            token = read_env_file(path).get("GH_TOKEN") if path else None
         except (OSError, ValueError):
             token = None
         if not token:
@@ -192,20 +168,16 @@ class ForgeWatcher:
         return self._run(gh_argv(self._gh, slug, *args), env=env, input=input)
 
     def _block_once(self, task: JsonObj, reason: str) -> None:
-        task_id = str(task["id"])
-        if task_id in self._blocked_sent or task.get("blocked"):
-            self._blocked_sent.add(task_id)
+        """Set the durable ``blocked`` marker unless the task already carries it."""
+        if task.get("blocked"):
             return
-        _log.info("task %s: blocked — %s", task_id, reason)
-        self._client.set_blocked(task_id, True)
-        self._blocked_sent.add(task_id)
+        _log.info("task %s: blocked — %s", task["id"], reason)
+        self._client.set_blocked(str(task["id"]), True)
 
     def _clear_blocked(self, task: JsonObj) -> None:
-        task_id = str(task["id"])
-        if task.get("blocked") or task_id in self._blocked_sent:
-            self._client.set_blocked(task_id, False)
-            _log.info("task %s: blocking condition cleared", task_id)
-        self._blocked_sent.discard(task_id)
+        if task.get("blocked"):
+            self._client.set_blocked(str(task["id"]), False)
+            _log.info("task %s: blocking condition cleared", task["id"])
 
     @staticmethod
     def _met(task: JsonObj, key: str) -> bool:
@@ -275,10 +247,7 @@ class ForgeWatcher:
 
     def _implementing(self, task: JsonObj, slug: str, env: Mapping[str, str]) -> None:
         if _number(task.get("url"), _PR_URL):
-            self._clear_blocked(task)
-            self._resolve(task, "pr-opened")
-            self._advance(task)
-            return
+            return self._pr_opened(task)
         issue_number = _number(task.get("url"), _ISSUE_URL)
         if issue_number is None:
             self._block_once(task, "task URL is not a GitHub issue")
@@ -299,10 +268,7 @@ class ForgeWatcher:
                 pr_url = source.get("html_url") or source["pull_request"].get("html_url")
                 if pr_url:
                     self._client.set_url(str(task["id"]), str(pr_url))
-                    self._clear_blocked(task)
-                    self._resolve(task, "pr-opened")
-                    self._advance(task)
-                    return
+                    return self._pr_opened(task)
         issue = json.loads(
             self._call(slug, env, "issue", "view", str(issue_number), "--json", "state") or "{}"
         )
@@ -313,9 +279,14 @@ class ForgeWatcher:
         entered = history[-1].get("at") if history else None
         timeout = self._executions.spec(str(task["workflow"])).get("pr_timeout_seconds") or 21600
         if entered and self._wall_clock() - datetime.fromisoformat(
-            str(entered).replace("Z", "+00:00")
+            str(entered)
         ).timestamp() > float(timeout):
             self._block_once(task, "resident has not opened a pull request before the timeout")
+
+    def _pr_opened(self, task: JsonObj) -> None:
+        self._clear_blocked(task)
+        self._resolve(task, "pr-opened")
+        self._advance(task)
 
     def _review(self, task: JsonObj, slug: str, env: Mapping[str, str]) -> None:
         number = _number(task.get("url"), _PR_URL)
@@ -330,7 +301,7 @@ class ForgeWatcher:
                 "view",
                 str(number),
                 "--json",
-                "isDraft,state,mergedAt,closedAt,reviewDecision,reviewRequests,latestReviews",
+                "isDraft,state,mergedAt,reviewDecision,reviewRequests,latestReviews",
             )
             or "{}"
         )
@@ -356,15 +327,16 @@ class ForgeWatcher:
             )
             _log.info("task %s: review requested changes; returning to IMPLEMENTING", task["id"])
             return
-        if not pr.get("isDraft"):
-            self._resolve(task, "pr-ready")
-        if pr.get("reviewRequests") or pr.get("latestReviews"):
-            self._resolve(task, "review-requested")
-        if pr.get("reviewDecision") == "APPROVED":
-            self._resolve(task, "pr-approved")
         ready = not pr.get("isDraft")
         reviewed = bool(pr.get("reviewRequests") or pr.get("latestReviews"))
-        if ready and reviewed and pr.get("reviewDecision") == "APPROVED":
+        approved = pr.get("reviewDecision") == "APPROVED"
+        if ready:
+            self._resolve(task, "pr-ready")
+        if reviewed:
+            self._resolve(task, "review-requested")
+        if approved:
+            self._resolve(task, "pr-approved")
+        if ready and reviewed and approved:
             self._advance(task)
 
     def _merging(self, task: JsonObj, slug: str, env: Mapping[str, str]) -> None:
@@ -373,8 +345,7 @@ class ForgeWatcher:
             self._block_once(task, "task URL is not a GitHub pull request")
             return
         pr = json.loads(
-            self._call(slug, env, "pr", "view", str(number), "--json", "state,mergedAt,closedAt")
-            or "{}"
+            self._call(slug, env, "pr", "view", str(number), "--json", "state,mergedAt") or "{}"
         )
         if pr.get("mergedAt"):
             self._clear_blocked(task)

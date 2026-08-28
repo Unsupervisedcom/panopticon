@@ -43,6 +43,11 @@ class ResidentAgent(Workflow):
     poll_interval_seconds: ClassVar[int] = 60
     pr_timeout_seconds: ClassVar[int] = 6 * 3600
     ISSUE_ARTIFACT_NAME: ClassVar[str] = "issue.md"
+    _NO_AGENT_NOTE: ClassVar[tuple[str, ...]] = (
+        "Panopticon runs no agent for this task. The repo's resident implements the issue and "
+        "GitHub code owners review the pull request; the deterministic forge watcher advances it.",
+        "The task URL is the issue until a pull request exists, then it is the pull request.",
+    )
 
     class Filing(InitialState):
         label = "FILING"
@@ -102,15 +107,8 @@ class ResidentAgent(Workflow):
     initial = Filing
 
     def _overview_extras(self) -> Sequence[str]:
-        return (
-            "Panopticon runs no agent for this task. The repo's resident implements the issue and "
-            "GitHub code owners review the pull request; the deterministic forge watcher advances it.",
-            "The task URL is the issue until a pull request exists, then it is the pull request.",
-        )
+        return self._NO_AGENT_NOTE
 
     async def _briefing_extras(self, task: Task, *, artifacts: ArtifactStore) -> Sequence[str]:
         del task, artifacts
-        return (
-            "No Panopticon agent runs for this task: the resident implements it and code owners review "
-            "it on GitHub. The task URL is the issue until a pull request exists, then the pull request.",
-        )
+        return self._NO_AGENT_NOTE

@@ -54,6 +54,21 @@ def test_is_forge_reflects_runner_type() -> None:
     assert execs.is_forge(None) is False
 
 
+def test_is_unmanaged_covers_shell_and_forge() -> None:
+    client = _FakeClient(
+        {
+            "sh": {"runner_type": "shell"},
+            "resident-agent": {"runner_type": "forge"},
+            "dk": {"runner_type": "docker"},
+        }
+    )
+    execs = WorkflowExecutions(client)  # type: ignore[arg-type]
+    assert execs.is_unmanaged("sh") is True
+    assert execs.is_unmanaged("resident-agent") is True
+    assert execs.is_unmanaged("dk") is False
+    assert execs.is_unmanaged(None) is False
+
+
 def test_is_shell_is_false_for_a_missing_workflow_name() -> None:
     # Callers pass a task's `workflow` straight through; None/empty must not hit the client.
     client = _FakeClient({})

@@ -105,5 +105,5 @@ async def test_briefing_explains_no_agent_and_url_convention() -> None:
 
     task = WF.start_task("t1", "r1", at="t0")
     briefing = await WF.briefing(task, artifacts=_Artifacts())  # type: ignore[arg-type]
-    assert "No Panopticon agent runs" in briefing
+    assert "Panopticon runs no agent" in briefing
     assert "issue until a pull request exists" in briefing

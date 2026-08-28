@@ -71,6 +71,7 @@ class _Client:
 
     def set_blocked(self, task_id: str, blocked: bool) -> JsonObj:
         self.blocked.append(blocked)
+        self.task["blocked"] = blocked
         return self.task
 
     def resolve_responsibility(

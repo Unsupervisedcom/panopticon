@@ -79,6 +79,13 @@ class WorkflowExecutions:
         """Whether ``workflow`` is watched on a forge without spawning anything."""
         return self._runner_type(workflow) == "forge"
 
+    def is_unmanaged(self, workflow: str | None) -> bool:
+        """Whether ``workflow``'s tasks run with no agent session the runner manages — a shell
+        script or a forge-watched task. Such tasks get no per-task clone, are never self-healed,
+        and are never auto-respawned (a vanished session is a completed/cancelled run, not a
+        crash)."""
+        return self._runner_type(workflow) in ("shell", "forge")
+
     def operator_agent(self, workflow: str) -> str:
         """The agent-operator ``Agent`` a ``"kubernetes"`` workflow runs as.
 

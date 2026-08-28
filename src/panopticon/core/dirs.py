@@ -16,6 +16,7 @@ not listed here (e.g. ``workflows/``, ``hooks/``) calls the ``user_*_dir()`` fun
 from __future__ import annotations
 
 import os
+import shlex
 from pathlib import Path
 
 
@@ -226,3 +227,22 @@ def relativize_hook_file(path: str, *, hooks_dir: str | Path | None = None) -> s
             return str(resolved.relative_to(root))
         return p.name
     return path
+
+
+def read_env_file(path: str | Path) -> dict[str, str]:
+    """Parse a secrets env-file (the one :func:`secrets_file_path` resolves) into a mapping.
+
+    Accepts the shell-ish form the shell/host runners ``source``: blank lines and ``#`` comments
+    skipped, an optional ``export`` prefix, and shell quoting on the value.
+    """
+    values: dict[str, str] = {}
+    for raw in Path(path).read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        line = line.removeprefix("export ").lstrip()
+        if "=" not in line:
+            continue
+        key, raw_value = line.split("=", 1)
+        values[key.strip()] = " ".join(shlex.split(raw_value, comments=True, posix=True))
+    return values
