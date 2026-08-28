@@ -85,8 +85,15 @@ def test_lists_states_and_sets_state_freely(client: TaskServiceClient) -> None:
 
 
 def test_create_repo_over_rest(client: TaskServiceClient) -> None:
-    client.create_repo("r2", "acme/other", "https://x/r2.git")
+    created = client.create_repo(
+        "r2", "acme/other", "https://x/r2.git", resident_agent="acme-resident"
+    )
+    assert created["resident_agent"] == "acme-resident"
     assert {r["id"] for r in client.list_repos()} == {"r1", "r2"}
+
+    updated = client.update_repo("r2", resident_agent="new-resident")
+    assert updated["resident_agent"] == "new-resident"
+    assert client.get_repo("r2")["resident_agent"] == "new-resident"
 
 
 def test_create_repo_with_secret_references(

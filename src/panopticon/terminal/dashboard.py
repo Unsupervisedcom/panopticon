@@ -1100,6 +1100,11 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
                     for name in self.FIELDS[1:]:  # git_url already rendered above
                         yield Input(value=self._initial(name), placeholder=name, id=f"field-{name}")
                     yield EnvFileField(initial=self._initial("env_file"), id="field-env_file")
+                    yield Input(
+                        value=self._initial("resident_agent"),
+                        placeholder="resident agent",
+                        id="field-resident_agent",
+                    )
                     yield ImageLayerField(
                         initial=self._initial("image_layer_file"), id="field-image_layer_file"
                     )
@@ -1163,6 +1168,9 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
         for name in self.FIELDS:
             values[name] = self.query_one(f"#field-{name}", Input).value.strip()
         values["env_file"] = self.query_one("#field-env_file", EnvFileField).env_file_value or None
+        values["resident_agent"] = (
+            self.query_one("#field-resident_agent", Input).value.strip() or None
+        )
         values["image_layer_file"] = (
             self.query_one("#field-image_layer_file", ImageLayerField).image_layer_value or None
         )
@@ -1269,6 +1277,7 @@ class ReposScreen(ModalScreen[None]):
                     values["git_url"],
                     values["default_base"] or "main",
                     env_file=values["env_file"] or None,
+                    resident_agent=values["resident_agent"] or None,
                     image_layer_file=values["image_layer_file"] or None,
                     hook_file=values["hook_file"] or None,
                     capabilities={"docker_in_docker": values["docker_in_docker"]},
@@ -1303,6 +1312,7 @@ class ReposScreen(ModalScreen[None]):
                     git_url=values["git_url"],
                     default_base=values["default_base"] or "main",
                     env_file=values["env_file"] or None,
+                    resident_agent=values["resident_agent"] or None,
                     image_layer_file=values["image_layer_file"] or None,
                     hook_file=values["hook_file"] or None,
                     capabilities=capabilities,

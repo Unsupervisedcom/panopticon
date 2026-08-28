@@ -161,6 +161,10 @@ class Tool:
 class Repo:
     """A repository tasks operate on.
 
+    ``resident_agent`` is the forge login for the long-lived external agent assigned resident
+    workflow issues. It is per-repo because a resident belongs to a forge organization, not to a
+    workflow.
+
     Holds a *reference* to its per-repo secrets (ADR 0007), never the values: ``env_file`` is a
     **name relative to the secrets dir** (``$PANOPTICON_CONFIG/secrets``) naming an env-file of
     API-key-style secrets, injected into the task container at launch (``--env-file``), so secrets
@@ -193,6 +197,7 @@ class Repo:
     git_url: str
     default_base: str = "main"
     env_file: str | None = None
+    resident_agent: str | None = None
     image_layer_file: str | None = None
     capabilities: dict[str, Any] = field(default_factory=dict)
     hook_file: str | None = None

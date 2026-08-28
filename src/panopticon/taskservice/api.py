@@ -158,6 +158,7 @@ class RepoIn(BaseModel):
     git_url: str
     default_base: str = "main"
     env_file: str | None = None
+    resident_agent: str | None = None
     image_layer_file: str | None = None
     capabilities: dict[str, Any] = Field(default_factory=dict)
     hook_file: str | None = None
@@ -173,6 +174,7 @@ class RepoOut(BaseModel):
     git_url: str
     default_base: str
     env_file: str | None = None
+    resident_agent: str | None = None
     image_layer_file: str | None = None
     capabilities: dict[str, Any] = Field(default_factory=dict)
     hook_file: str | None = None
@@ -190,6 +192,7 @@ class RepoPatchIn(BaseModel):
     git_url: str | None = None
     default_base: str | None = None
     env_file: str | None = None
+    resident_agent: str | None = None
     image_layer_file: str | None = None
     capabilities: dict[str, Any] | None = None
     hook_file: str | None = None

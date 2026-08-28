@@ -65,6 +65,7 @@ async def test_create_and_get_repo(store: Store) -> None:
     assert got.name == "acme/widgets"
     assert got.default_base == "main"
     assert got.env_file is None  # the env-file reference defaults to unset
+    assert got.resident_agent is None
     assert got.image_layer_file is None  # no repo image layer by default
     assert got.capabilities == {}  # no elevated capabilities by default
 
@@ -76,6 +77,7 @@ async def test_repo_secret_references_round_trip(store: Store) -> None:
             name="acme/widgets",
             git_url="https://x/r1.git",
             env_file="r1.env",
+            resident_agent="acme-resident",
             image_layer_file="r1.layer",
             capabilities={"docker_in_docker": True},
         )
@@ -83,6 +85,7 @@ async def test_repo_secret_references_round_trip(store: Store) -> None:
     got = await store.get_repo("r1")
     assert got is not None
     assert got.env_file == "r1.env"
+    assert got.resident_agent == "acme-resident"
     assert got.capabilities == {"docker_in_docker": True}  # JSON capabilities round-trip
     assert got.image_layer_file == "r1.layer"  # ADR 0005 repo tier round-trips
 
@@ -120,6 +123,7 @@ async def test_update_repo_round_trips(store: Store) -> None:
             git_url="https://x/new.git",
             default_base="trunk",
             env_file="r1.env",
+            resident_agent="new-resident",
             image_layer_file="r1.layer",
             capabilities={"docker_in_docker": True},
         )
@@ -130,6 +134,7 @@ async def test_update_repo_round_trips(store: Store) -> None:
     assert got.git_url == "https://x/new.git"
     assert got.default_base == "trunk"
     assert got.env_file == "r1.env"
+    assert got.resident_agent == "new-resident"
     assert got.image_layer_file == "r1.layer"  # untouched fields persist
     assert got.capabilities == {"docker_in_docker": True}
 
