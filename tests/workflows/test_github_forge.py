@@ -36,8 +36,12 @@ def test_tarot_responsibility_present_for_an_opted_in_repo() -> None:
     responsibilities = list(wf.responsibilities("ITERATING", repo=repo))
     assert "tarot-review-artifacts" in {r.key for r in responsibilities}
     tarot = next(r for r in responsibilities if r.key == "tarot-review-artifacts")
-    assert "tarot strands check" in tarot.description
-    assert "tarot tour check" in tarot.description
+    # The *how* lives in tarot's own `tarot-authoring` skill (served for opted-in repos), not
+    # here — panopticon keeps no second copy of tarot's file-format contract. What this text must
+    # carry is the pointer and the fact that it's verified rather than self-attested.
+    assert "tarot-authoring" in tarot.description
+    assert ".tarot/" in tarot.description
+    assert "refuses the advance" in tarot.description
     # every other ITERATING responsibility is untouched
     assert {"plan-implemented", "tests-pass", "url-recorded"} <= {r.key for r in responsibilities}
 

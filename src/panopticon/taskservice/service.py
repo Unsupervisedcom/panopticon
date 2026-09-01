@@ -38,6 +38,14 @@ from panopticon.core.provisioning import PROVISION_SKILL
 from panopticon.core.state import TERMINAL_LABELS, Dropped
 from panopticon.core.store import NotFound, Store
 from panopticon.core.workflow import Workflow
+from panopticon.taskservice.tarot_gate import (
+    RESPONSIBILITY_KEY as TAROT_RESPONSIBILITY_KEY,
+)
+from panopticon.taskservice.tarot_gate import (
+    TarotGate,
+    TarotGateRefused,
+    authoring_skill,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -137,6 +145,7 @@ class TaskService:
         layers: LayerStore | None = None,
         clock: Callable[[], str] = _utc_now_iso,
         id_factory: Callable[[], str] = _uuid_hex,
+        tarot_gate: TarotGate | None = None,
     ) -> None:
         self._store = store
         self._workflows = dict(workflows)
@@ -144,6 +153,9 @@ class TaskService:
         self._layers = layers
         self._clock = clock
         self._id = id_factory
+        #: The review-artifact gate (host-side `tarot`). Always present — it no-ops for every repo
+        #: that hasn't opted in, so there's no conditional wiring to get wrong.
+        self._tarot_gate = tarot_gate if tarot_gate is not None else TarotGate()
         self._registrations: dict[str, Registration] = {}
         self._runner_registrations: dict[str, RunnerRegistration] = {}
         self._lifecycles: dict[str, ContainerLifecycle] = {}
@@ -479,9 +491,95 @@ class TaskService:
 
     async def skills(self, task_id: str) -> list[Skill]:
         """The in-container skills for a task: the agnostic `provision` skill (every task names
-        itself to get a branch, ADR 0011) followed by the active workflow's own skills."""
+        itself to get a branch, ADR 0011), the active workflow's own skills, and — for a repo
+        opted into the review-artifact gate — tarot's **own** packaged authoring skill.
+
+        Serving tarot's text rather than paraphrasing it keeps one copy of a contract tarot owns:
+        the file formats change with tarot's validators, and the judgment it teaches (what to
+        retitle, what a description is for) is exactly what a schema summary would lose."""
         task = await self.get_task(task_id)
-        return [PROVISION_SKILL, *self._workflow(task.workflow).skills()]
+        skills = [PROVISION_SKILL, *self._workflow(task.workflow).skills()]
+        repo = await self.get_repo(task.repo_id)
+        if self._tarot_gate.opted_in(repo):
+            tarot_skill = authoring_skill(self._tarot_gate.cli)
+            if tarot_skill is not None:
+                skills.append(tarot_skill)
+        return skills
+
+    # -- tarot authoring passthroughs ---------------------------------------------
+    #
+    # Tarot's authoring skill has seven steps; four invoke the CLI. These are those four, run
+    # host-side against the task's clone — the same directory the container sees at /workspace, so
+    # a seed the agent asked for is computed from exactly the code it just wrote. The agent stays
+    # the author: `strand_seed` and `check` write nothing at all, and `tour_scaffold` writes only
+    # the stub file the agent then fills in.
+
+    async def _tarot_target(self, task_id: str) -> tuple[Task, Repo, str, list[str]]:
+        """The ``(task, repo, clone, base_args)`` for a tarot authoring tool, or refuse.
+
+        Refuses — with the operator/agent-facing message, never a traceback — when the repo hasn't
+        opted in, tarot isn't on this host, or the clone isn't readable here.
+        """
+        task = await self.get_task(task_id)
+        repo = await self.get_repo(task.repo_id)
+        if not self._tarot_gate.opted_in(repo):
+            raise TarotGateRefused(
+                f"repo {repo.id!r} hasn't opted into the tarot review gate "
+                "(`capabilities.tarot_review`), so the tarot authoring tools aren't available here."
+            )
+        host = self.runner_host(task.claimed_by) if task.claimed_by else None
+        unusable = self._tarot_gate.unusable_reason(task, runner_host=host)
+        if unusable is not None:
+            raise TarotGateRefused(unusable)
+        assert task.clone is not None  # guaranteed by unusable_reason
+        cli = self._tarot_gate.cli
+        return task, repo, task.clone, cli.resolve_base_args(task.clone, repo.default_base)
+
+    async def tarot_strand_seed(self, task_id: str) -> str:
+        """`tarot strands suggest --json`: the detector-built strand seed, for the agent to edit.
+
+        **Read-only** — ``--json`` prints the seed instead of writing ``.tarot/strands.json``, so
+        nothing in the agent's working tree changes. What it supplies is the one thing an agent
+        can't derive from a diff: tarot's own enumeration of changed nodes, which is the set
+        ``strands check`` will insist is claimed exactly once.
+        """
+        _task, _repo, clone, base_args = await self._tarot_target(task_id)
+        result = self._tarot_gate.cli.suggest(clone, base_args=base_args)
+        if not result.ok:
+            raise TarotGateRefused(result.output.strip() or "`tarot strands suggest` failed")
+        return result.output
+
+    async def tarot_check(self, task_id: str) -> str:
+        """`tarot strands check` + `tarot tour check`, **without attempting a transition**.
+
+        The tight authoring loop. Without it the only way for an agent to see its violations is to
+        attempt an `advance` and be refused, which turns the gate from a backstop into the
+        iteration mechanism and spends a transition per round.
+        """
+        task, _repo, clone, base_args = await self._tarot_target(task_id)
+        outcome = self._tarot_gate.cli.check(clone, base_args=base_args)
+        if outcome.missing_binary:
+            raise TarotGateRefused(
+                self._tarot_gate.unusable_reason(task) or "`tarot` is not available on this host"
+            )
+        if outcome.ok:
+            return "tarot: the strand seed and every tour are valid."
+        return outcome.output
+
+    async def tarot_tour_scaffold(self, task_id: str, *, title: str = "PR walkthrough") -> str:
+        """`tarot tour scaffold --from-strands`: step stubs built from the *edited* strand seed.
+
+        The one authoring tool that **writes** (`.tarot/tours/<id>.json`; tarot has no ``--json``
+        for scaffold). Worth it: the scaffold carries one chapter per strand with the author's own
+        titles, a real trail/cursor per step, and blast-radius steps taken from tarot's call graph
+        — none of which a hand enumeration produces — and leaves every note a ``TODO`` for the
+        agent to replace with the narrative, which is the part that wants judgment.
+        """
+        _task, _repo, clone, base_args = await self._tarot_target(task_id)
+        result = self._tarot_gate.cli.scaffold(clone, base_args=base_args, title=title)
+        if not result.ok:
+            raise TarotGateRefused(result.output.strip() or "`tarot tour scaffold` failed")
+        return result.output.strip() or "tarot: wrote the tour scaffold."
 
     async def briefing(self, task_id: str) -> str:
         """A short briefing on the task's current phase (state + responsibilities + how it advances),
@@ -516,6 +614,40 @@ class TaskService:
             task, wf, to_state, force=False, trigger=trigger, note=note
         )
 
+    async def _run_tarot_gate(self, task: Task, repo: Repo) -> None:
+        """Verify the task's `.tarot/` review artifacts, refusing the transition if they fail.
+
+        Runs for an `advance` out of ITERATING on an opted-in repo (:meth:`TarotGate.applies`).
+        The outcome is recorded on the ``tarot-review-artifacts`` responsibility either way; on
+        failure the recorded ``FAILED`` comment is persisted and :class:`TarotGateRefused` is
+        raised **before** the transition, so the task stays where it is. The refusal — not the
+        comment — is the enforcement (a ``FAILED``-with-comment promise counts as resolved), which
+        is why this runs on every attempt rather than only while the promise is pending.
+        """
+        host = self.runner_host(task.claimed_by) if task.claimed_by else None
+        decision = self._tarot_gate.evaluate(task, repo, runner_host=host)
+        if decision.resolution is not None:
+            self._record_tarot_resolution(task, *decision.resolution)
+        if decision.allowed:
+            return
+        await self._save_task(task)  # persist the FAILED comment; the transition does not happen
+        _log.info("task %s: tarot review gate refused advance", task.id)
+        raise TarotGateRefused(decision.refusal or "the tarot review checks failed")
+
+    @staticmethod
+    def _record_tarot_resolution(task: Task, status: Status, comment: str) -> None:
+        """Resolve the gate's responsibility, if the current state actually promised it.
+
+        A repo can be opted in *after* a task entered ITERATING, in which case the promise was
+        never seeded on this history entry and ``resolve_responsibility`` would raise. The gate
+        still runs (and still refuses) — it just has nowhere to write the comment.
+        """
+        promised = {r.key for r in task.current_entry.responsibilities}
+        if TAROT_RESPONSIBILITY_KEY in promised:
+            task.resolve_responsibility(
+                key=TAROT_RESPONSIBILITY_KEY, status=status, comment=comment
+            )
+
     async def set_state(self, task_id: str, to_state: str, *, note: str | None = None) -> Task:
         """The user's free override: move the task to any state, bypassing the graph and the gate."""
         task = await self.get_task(task_id)
@@ -537,6 +669,13 @@ class TaskService:
         from_state = task.state
         _log.info("task %s: %s → %s (trigger=%s)", task.id, from_state, to_state, trigger)
         repo = await self.get_repo(task.repo_id)
+        if not force and self._tarot_gate.applies(
+            task,
+            repo,
+            trigger=trigger,
+            declared={r.key for r in wf.responsibilities(task.state, repo=repo)},
+        ):
+            await self._run_tarot_gate(task, repo)
         if force:
             wf.force_transition(
                 task, to_state, at=self._clock(), trigger=trigger, note=note, repo=repo

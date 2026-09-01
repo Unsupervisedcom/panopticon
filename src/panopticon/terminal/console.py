@@ -27,7 +27,6 @@ exactly like detaching from a task session.
 from __future__ import annotations
 
 import enum
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -39,6 +38,7 @@ from pathlib import Path
 import httpx
 
 from panopticon.client import TaskServiceClient
+from panopticon.core import tarot as core_tarot
 from panopticon.sessionservice.local_runner import TMUX_SOCKET
 from panopticon.terminal.attach import attach_command
 
@@ -238,8 +238,10 @@ def _tmux_show_env(session: str, key: str, *, socket: str) -> str | None:
 
 
 def _git_configured_base(clone: str) -> str | None:
-    """The clone's ``tarot.base`` git config, if the operator set one (else ``None``). When set we
-    let tarot read its own config rather than forcing ``--base origin/<default_base>``."""
+    """The clone's ``tarot.base`` git config, if the operator set one (else ``None``).
+
+    What it *means* is :func:`panopticon.core.tarot.base_args`' decision — this only reads it, so
+    the hook can inject a fake in tests."""
     result = subprocess.run(
         ["git", "-C", clone, "config", "--get", "tarot.base"],
         capture_output=True,
@@ -316,8 +318,7 @@ def _resolve_review(
     - else ``None``."""
     if target.clone is not None and target.runner_host is None and present(target.clone):
         base = configured_base(target.clone)
-        tarot_args = [] if base else ["--base", f"origin/{target.default_base}"]
-        return target.clone, tarot_args, True
+        return target.clone, core_tarot.base_args(base, target.default_base), True
     if target.url:
         return None, [target.url], False
     return None
@@ -355,7 +356,7 @@ def make_review_switch(
     session env updated, then attached (``RELOADED``). The url/remote case has no on-disk HEAD to
     diff, so it stays a pure re-attach. Every host interaction is injected for tests."""
     session_running = exists or (lambda s: session_exists(s, socket=socket))
-    installed = tarot_installed or (lambda: shutil.which("tarot") is not None)
+    installed = tarot_installed or (lambda: core_tarot.binary() is not None)
     present = clone_present or (lambda path: Path(path).is_dir())
     read_stored = stored_sha or (lambda s: _tmux_show_env(s, REVIEW_HEAD_SHA_VAR, socket=socket))
     launch = run or (lambda argv: subprocess.run(argv, check=False))

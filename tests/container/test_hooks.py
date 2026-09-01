@@ -29,13 +29,14 @@ def test_settings_flip_to_user_while_asking_a_question_and_back_when_answered() 
     assert post["hooks"][0]["command"].endswith("hook agent")
 
 
-def test_settings_wires_the_tarot_gate_on_apply_operation() -> None:
-    # Registered unconditionally (like the turn-flip hooks) — the gate script itself decides
-    # relevance per task/repo at runtime (see tests/container/test_tarot_gate.py).
+def test_settings_no_longer_wires_the_tarot_gate() -> None:
+    # The review-artifact gate runs host-side now (panopticon.taskservice.tarot_gate), so nothing
+    # hooks `apply_operation` in a freshly rendered config. The container module survives only as
+    # an allow-everything shim for containers whose *persisted* settings still name it.
     entries = settings()["hooks"]["PreToolUse"]
-    tarot = next(e for e in entries if e.get("matcher") == "mcp__panopticon__apply_operation")
-    assert tarot["hooks"][0]["command"] == "python -m panopticon.container.tarot_gate"
-    # AskUserQuestion's turn-flip entry is still present alongside it.
+    assert not any(e.get("matcher") == "mcp__panopticon__apply_operation" for e in entries)
+    assert not any("tarot" in h["command"] for e in entries for h in e["hooks"])
+    # AskUserQuestion's turn-flip entry is untouched.
     assert any(e.get("matcher") == "AskUserQuestion" for e in entries)
 
 

@@ -31,6 +31,7 @@ from panopticon.taskservice.service import (
     TaskService,
     UnknownWorkflow,
 )
+from panopticon.taskservice.tarot_gate import TarotGateRefused
 
 # Artifact content-types must not depend on the stdlib table's vintage: Python only
 # gained the .md mapping in newer 3.13s, and requires-python floors at 3.11. Register
@@ -493,6 +494,13 @@ def create_app(service: TaskService) -> FastAPI:
     async def _ask_queue_full(_: Request, exc: AskQueueFull) -> JSONResponse:
         # The task's ask queue is at capacity — 409 with a "queue full" detail (asks are otherwise
         # queued, never rejected for one being in flight).
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @app.exception_handler(TarotGateRefused)
+    async def _tarot_refused(_: Request, exc: TarotGateRefused) -> JSONResponse:
+        # The repo opted into the tarot review gate and the artifacts don't pass. 409 (like the
+        # other "you can't do that *right now*" cases) with the checks' own output as the detail,
+        # so the agent sees the violations the way it would see a failing test's.
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     @app.exception_handler(AskGone)
