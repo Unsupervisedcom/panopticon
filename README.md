@@ -2,9 +2,11 @@
 
 **Agents write the code, you own what ships.**
 
+Status: research preview. Interfaces still move between releases.
+
 That's easy with one agent. Run a fleet of them and it breaks down: the fleet stalls
-waiting on you, and you lose track of which agent is doing what. Panopticon gives you
-one place to watch them all.
+waiting on you, and you lose track of which agent is doing what. Panopticon drives
+Claude Code as the coding agent for each task and gives you one place to watch them all.
 
 - **A live dashboard** of all your tasks, showing which agents are working and which are blocked
   waiting on you, so you stop cycling through terminals to find the one that's stuck.
