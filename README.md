@@ -22,6 +22,19 @@ prototype.
 New here? [`docs/overview.md`](docs/overview.md) explains how the pieces fit together: the
 mental model behind the dashboard.
 
+## Quick start
+
+Prerequisites: [uv](https://docs.astral.sh/uv/), `tmux`, and Docker (tasks run in containers).
+
+```sh
+make sync    # create the venv and install dependencies
+make start   # task service + session runner (background tmux) + the dashboard
+```
+
+The dashboard opens in your terminal. `make stop` tears down everything `make start`
+started — the services and the task containers. For the mental model behind what
+you're looking at, read [`docs/overview.md`](docs/overview.md).
+
 ## The dashboard
 
 See the whole fleet in one terminal view, with every task's `state`, whose `turn` it is (agent or you),
