@@ -22,6 +22,13 @@ prototype.
 New here? [`docs/overview.md`](docs/overview.md) explains how the pieces fit together: the
 mental model behind the dashboard.
 
+## Working on panopticon
+
+Set up a dev environment and bring the stack up with `make sync`, then `make start`
+(`make stop` tears it down). The full development loop — checks, base-image build,
+migrations — is in [`docs/dev.md`](docs/dev.md); to *use* panopticon, see
+[Install](#install) below.
+
 ## The dashboard
 
 See the whole fleet in one terminal view, with every task's `state`, whose `turn` it is (agent or you),
