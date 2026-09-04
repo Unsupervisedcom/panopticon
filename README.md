@@ -22,18 +22,12 @@ prototype.
 New here? [`docs/overview.md`](docs/overview.md) explains how the pieces fit together: the
 mental model behind the dashboard.
 
-## Quick start
+## Working on panopticon
 
-Prerequisites: [uv](https://docs.astral.sh/uv/), `tmux`, and Docker (tasks run in containers).
-
-```sh
-make sync    # create the venv and install dependencies
-make start   # task service + session runner (background tmux) + the dashboard
-```
-
-The dashboard opens in your terminal. `make stop` tears down everything `make start`
-started — the services and the task containers. For the mental model behind what
-you're looking at, read [`docs/overview.md`](docs/overview.md).
+Set up a dev environment and bring the stack up with `make sync`, then `make start`
+(`make stop` tears it down). The full development loop — checks, base-image build,
+migrations — is in [`docs/dev.md`](docs/dev.md); to *use* panopticon, see
+[Install](#install) below.
 
 ## The dashboard
 
