@@ -91,6 +91,11 @@ class TaskSummaryOut(BaseModel):
     sort_weight: int = 0
     depends_on_task_ids: list[str] = []
     provisioned: bool
+    #: Whether the task has at least one unhidden artifact — the dashboard's artifact mark.
+    #: Computed like ``container_status`` (artifacts are files, not a task column), attached on
+    #: serialization by ``_task_summary_out``. Summary-only: the single-task shapes don't carry
+    #: it, since ``GET /tasks/{id}/artifacts`` already answers it exactly for one task.
+    has_artifacts: bool = False
     container_status: str = "–"
     lifecycle_detail: str | None = None
     runner_host: str | None = (
@@ -398,9 +403,14 @@ def create_app(service: TaskService) -> FastAPI:
             out.runner_host = service.runner_host(task.claimed_by)
         return out
 
-    def _task_summary_out(task: Task) -> TaskSummaryOut:
-        """Serialize a task to the cheap summary shape (no history), with computed status fields."""
+    def _task_summary_out(task: Task, *, has_artifacts: bool = False) -> TaskSummaryOut:
+        """Serialize a task to the cheap summary shape (no history), with computed status fields.
+
+        ``has_artifacts`` is passed in rather than read here: the caller resolves it for the
+        whole page in one bulk query, so serializing a list doesn't hit the artifact store once
+        per task."""
         out = TaskSummaryOut.model_validate(task)
+        out.has_artifacts = has_artifacts
         out.container_status = service.container_status(task).value
         lifecycle = service.lifecycle(task.id)
         out.lifecycle_detail = lifecycle.detail if lifecycle is not None else None
@@ -557,7 +567,8 @@ def create_app(service: TaskService) -> FastAPI:
             # Read version and snapshot in a single thread call so no event-loop yield can
             # interleave a mutation between them — preserving the original atomicity invariant.
             version, tasks_raw = await service._tasks_snapshot(terminal=terminal)
-        tasks = [_task_summary_out(t) for t in tasks_raw]
+        with_artifacts = await service.tasks_with_artifacts([t.id for t in tasks_raw])
+        tasks = [_task_summary_out(t, has_artifacts=t.id in with_artifacts) for t in tasks_raw]
         response.headers[TASKS_VERSION_HEADER] = str(version)
         return tasks
 

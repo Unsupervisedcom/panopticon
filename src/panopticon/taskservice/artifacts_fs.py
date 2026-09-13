@@ -9,9 +9,16 @@ reach a task's artifacts by its readable label as well as its opaque id.
 from __future__ import annotations
 
 import asyncio
+import os
+from collections.abc import Iterable
 from pathlib import Path
 
-from panopticon.core.artifacts import ArtifactStore, InvalidArtifactName, validate_segment
+from panopticon.core.artifacts import (
+    ArtifactStore,
+    InvalidArtifactName,
+    is_hidden,
+    validate_segment,
+)
 
 
 class FilesystemArtifactStore(ArtifactStore):
@@ -51,6 +58,33 @@ class FilesystemArtifactStore(ArtifactStore):
             return []
         return await asyncio.to_thread(
             lambda: sorted(p.name for p in task_dir.iterdir() if p.is_file())
+        )
+
+    def _has_artifacts_sync(self, task_id: str) -> bool:
+        """Whether the task's directory holds at least one unhidden file.
+
+        ``os.scandir`` rather than ``Path.iterdir``: it stops at the first hit (the caller wants
+        a boolean, not a listing), its entries answer ``is_file()`` from the data the scan already
+        returned instead of a ``stat`` apiece, and it raises for a missing directory *here* rather
+        than lazily on iteration — ``Path.iterdir`` is a generator before 3.13, so the error would
+        escape this ``try`` on the Python versions we still support.
+        """
+        try:
+            with os.scandir(self._task_dir(task_id)) as entries:
+                return any(not is_hidden(entry.name) and entry.is_file() for entry in entries)
+        except (FileNotFoundError, NotADirectoryError):
+            return False
+
+    async def tasks_with_artifacts(self, task_ids: Iterable[str]) -> set[str]:
+        """Scan each task's directory directly, in one worker thread.
+
+        The inherited default would call :meth:`list` per id — a full listing plus a sort, for a
+        question answered by the first unhidden entry — and hop threads once per task. The
+        dashboard asks this for every visible task on every refresh, so it's worth the override.
+        """
+        ids = list(task_ids)
+        return await asyncio.to_thread(
+            lambda: {task_id for task_id in ids if self._has_artifacts_sync(task_id)}
         )
 
     def _link_slug_sync(self, task_id: str, slug: str) -> None:

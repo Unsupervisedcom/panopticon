@@ -19,8 +19,10 @@ from textual.widgets import Checkbox, DataTable, Input, Select, Static
 
 from panopticon.terminal import dashboard
 from panopticon.terminal.dashboard import (
+    _ARTIFACT_MARK,
     _ENSEMBLE_KEY_PREFIX,
     _INDEFINITE_SNOOZE_UNTIL,
+    _LINK_MARK,
     _SNOOZE_DURATION,
     Dashboard,
     SpaceCheckbox,
@@ -29,6 +31,7 @@ from panopticon.terminal.dashboard import (
     _group_by_governor,
     _group_section,
     _make_sort_key,
+    _marks_cell,
     _matches,
     _repo_cell,
     _slug_cell,
@@ -63,6 +66,21 @@ _TASK: dict[str, Any] = {
         },
     ],
 }
+
+
+def _col_labels(table: DataTable) -> list[str]:
+    return [str(c.label) for c in table.columns.values()]
+
+
+def _col_index(table: DataTable, label: str) -> int:
+    """A column's position, by header label. Row cells are read positionally, so resolving the
+    index here keeps a newly inserted column from renumbering assertions all over this file."""
+    return _col_labels(table).index(label)
+
+
+def _slug_of(table: DataTable, row_key: str) -> Any:
+    """The row's ``slug[memo]`` cell — the one most assertions here reach for."""
+    return table.get_row(row_key)[_col_index(table, "slug[memo]")]
 
 
 def _raise(*args: Any, **kwargs: Any) -> Any:
@@ -490,7 +508,7 @@ async def test_terminal_tasks_are_faded() -> None:
         assert keys == ["t-a", "t-b", "t-done", "t-drop"]  # active before terminal, no separator
         # Active rows: slug cell has no dim span.
         for task_id in ("t-a", "t-b"):
-            slug_cell = table.get_row(task_id)[4]
+            slug_cell = _slug_of(table, task_id)
             assert not any(s.style == "dim" for s in slug_cell._spans)
         # Terminal rows: every cell carries dim styling.
         for task_id in ("t-done", "t-drop"):
@@ -509,7 +527,7 @@ async def test_active_only_rows_not_faded() -> None:
         keys = [str(k.value) for k in table.rows]
         assert keys == ["t-a", "t-b"]
         for task_id in ("t-a", "t-b"):
-            slug_cell = table.get_row(task_id)[4]
+            slug_cell = _slug_of(table, task_id)
             assert not any(s.style == "dim" for s in slug_cell._spans)
 
 
@@ -619,7 +637,7 @@ async def test_expired_snooze_resumes_normal_presentation_without_mutating() -> 
         table = app.query_one("#tasks", DataTable)
         row = table.get_row("task-abcdef0123")
         assert row[1].plain == "agent" and row[1].style == "green"  # ordinary turn derivation
-        slug_cell = row[4]
+        slug_cell = _slug_of(table, "task-abcdef0123")
         assert not any(s.style == "dim" for s in slug_cell._spans)  # not muted
     # Expiry is display-only: the dashboard never wrote the stored fact.
     assert client.snoozed == []
@@ -1267,6 +1285,37 @@ def test_status_cell_displays_the_composed_status_color_coded() -> None:
     assert _status_cell({"container_status": "disconnected"}).style == "red"
     assert _status_cell({"container_status": "–"}).plain == "–"  # terminal task
     assert _status_cell({}).plain == "–"  # missing → em-dash, no crash
+
+
+def test_marks_cell_flags_artifacts_and_links_in_fixed_slots() -> None:
+    # Slot 1 is the artifact mark, slot 2 the link mark; an absent mark leaves its slot blank so
+    # the other one doesn't slide over.
+    assert _marks_cell({"has_artifacts": True, "url": "https://pr"}).plain == (
+        _ARTIFACT_MARK + _LINK_MARK
+    )
+    assert _marks_cell({"has_artifacts": True}).plain == f"{_ARTIFACT_MARK} "
+    assert _marks_cell({"url": "https://pr"}).plain == f" {_LINK_MARK}"
+    assert _marks_cell({}).plain == "  "  # neither
+    assert _marks_cell({"has_artifacts": False, "url": None}).plain == "  "
+    assert _marks_cell({}).style == "dim"  # annotation, not competing with the name
+
+
+def test_marks_cell_is_the_same_width_whatever_it_carries() -> None:
+    # The column only stays aligned while every combination measures the same. This is the guard
+    # against swapping in an East_Asian_Width=Wide glyph (an emoji) later: cell_len would jump to
+    # 3 or 4 for the marked rows and the column would render ragged.
+    from rich.cells import cell_len
+
+    widths = {
+        cell_len(_marks_cell(task).plain)
+        for task in (
+            {"has_artifacts": True, "url": "https://pr"},
+            {"has_artifacts": True},
+            {"url": "https://pr"},
+            {},
+        )
+    }
+    assert widths == {2}
 
 
 async def test_task_counter_shows_agent_versus_active_counts() -> None:
@@ -2928,10 +2977,8 @@ async def test_governed_task_appears_under_governor_in_dashboard() -> None:
         await pilot.pause()
         order = [str(k.value) for k in table.rows]
         assert order == ["gov", "wrk"]
-        gov_row = table.get_row("gov")
-        wrk_row = table.get_row("wrk")
-        assert gov_row[4].plain == "orchestrator"  # slug column (index 4) — no prefix
-        assert wrk_row[4].plain == "└─ worker"  # last (only) child gets └─
+        assert _slug_of(table, "gov").plain == "orchestrator"  # no prefix
+        assert _slug_of(table, "wrk").plain == "└─ worker"  # last (only) child gets └─
 
 
 async def test_active_governor_keeps_terminal_child_in_active_section() -> None:
@@ -2974,9 +3021,9 @@ async def test_active_governor_keeps_terminal_child_in_active_section() -> None:
         assert keys.index("gov") < keys.index("done")
         assert keys.index("wrk") < keys.index("done")
         # Active governor is not faded; both terminal tasks (standalone and governed) are.
-        assert not any(s.style == "dim" for s in table.get_row("gov")[4]._spans)
+        assert not any(s.style == "dim" for s in _slug_of(table, "gov")._spans)
         for task_id in ("wrk", "done"):
-            slug = table.get_row(task_id)[4]
+            slug = _slug_of(table, task_id)
             assert slug._spans and all(s.style == "dim" for s in slug._spans), (
                 f"{task_id} slug should be dim"
             )
@@ -3067,8 +3114,7 @@ async def test_enter_on_governor_collapses_to_ensemble_row() -> None:
         assert "wrk" not in keys
         assert f"{_ENSEMBLE_KEY_PREFIX}gov" in keys
         # The ensemble row's slug cell reads "..." (dim, checked by plain text).
-        ens_row = table.get_row(f"{_ENSEMBLE_KEY_PREFIX}gov")
-        assert ens_row[4].plain == "└─ ..."
+        assert _slug_of(table, f"{_ENSEMBLE_KEY_PREFIX}gov").plain == "└─ ..."
 
 
 async def test_enter_again_on_governor_expands_ensemble() -> None:
@@ -3183,11 +3229,64 @@ async def test_search_shows_all_ancestors_when_deep_child_matches() -> None:
         assert set(keys) == {"root", "mid", "leaf"}  # whole chain visible
 
 
+# -- marks column ------------------------------------------------------------------
+
+
+async def test_marks_column_sits_left_of_the_name_in_both_layouts() -> None:
+    # Present whether or not the runner column is, and always immediately left of slug[memo] —
+    # the marks annotate the name, and the variable-width name column stays rightmost.
+    header = _ARTIFACT_MARK + _LINK_MARK
+    single = _FakeClient([{**_TASK, "id": "t-a"}], runners=[{"id": "r1", "host": "host-a"}])
+    multi = _FakeClient(
+        [{**_TASK, "id": "t-a", "runner_host": "host-a"}],
+        runners=[{"id": "r1", "host": "host-a"}, {"id": "r2", "host": "host-b"}],
+    )
+    for client in (single, multi):
+        app = Dashboard(client)  # type: ignore[arg-type]
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            labels = _col_labels(app.query_one("#tasks", DataTable))
+            assert labels.index(header) == labels.index("slug[memo]") - 1
+
+
+async def test_marks_column_reflects_artifacts_and_url() -> None:
+    tasks = [
+        {**_TASK, "id": "t-both", "has_artifacts": True, "url": "https://pr/1"},
+        {**_TASK, "id": "t-artifact", "has_artifacts": True, "url": None},
+        {**_TASK, "id": "t-link", "has_artifacts": False, "url": "https://pr/2"},
+        {**_TASK, "id": "t-bare", "has_artifacts": False, "url": None},
+    ]
+    app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        idx = _col_index(table, _ARTIFACT_MARK + _LINK_MARK)
+        assert table.get_row("t-both")[idx].plain == _ARTIFACT_MARK + _LINK_MARK
+        assert table.get_row("t-artifact")[idx].plain == f"{_ARTIFACT_MARK} "
+        assert table.get_row("t-link")[idx].plain == f" {_LINK_MARK}"
+        assert table.get_row("t-bare")[idx].plain == "  "
+
+
+async def test_ensemble_placeholder_row_spans_every_column() -> None:
+    # The synthetic collapsed-ensemble row stands in for hidden tasks, so it carries no marks —
+    # but it still needs a cell per column or the table misaligns.
+    governor = {**_TASK, "id": "gov", "slug": "orchestrator", "has_artifacts": True}
+    governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov"}
+    app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        ens_row = table.get_row(f"{_ENSEMBLE_KEY_PREFIX}gov")  # governors start collapsed
+        assert len(ens_row) == len(table.columns)
+        assert ens_row[_col_index(table, _ARTIFACT_MARK + _LINK_MARK)].plain == ""
+        # The governor itself still shows its own marks.
+        assert (
+            table.get_row("gov")[_col_index(table, _ARTIFACT_MARK + _LINK_MARK)].plain
+            == f"{_ARTIFACT_MARK} "
+        )
+
+
 # -- multi-runner column -----------------------------------------------------------
-
-
-def _col_labels(table: DataTable) -> list[str]:
-    return [str(c.label) for c in table.columns.values()]
 
 
 async def test_runner_column_absent_for_single_runner() -> None:

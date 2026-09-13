@@ -550,3 +550,26 @@ def test_report_unknown_responsibility(gated_client: TestClient) -> None:
         f"/tasks/{task_id}/responsibilities", json={"key": "ghost", "status": "met"}
     )
     assert resp.status_code == 400
+
+
+def test_task_list_reports_whether_a_task_has_unhidden_artifacts(client: TestClient) -> None:
+    # The dashboard renders a mark per row, so presence has to ride along on the list response
+    # rather than costing a request per task. Dotfile artifacts are agent bookkeeping: they
+    # don't count as something the operator can open.
+    def make() -> str:
+        task_id: str = client.post("/tasks", json={"repo_id": "r1", "workflow": "spike"}).json()[
+            "id"
+        ]
+        return task_id
+
+    visible, hidden_only, bare = make(), make(), make()
+    assert client.put(f"/tasks/{visible}/artifacts/plan.md", content=b"# Plan").status_code == 204
+    assert (
+        client.put(
+            f"/tasks/{hidden_only}/artifacts/.babysit-ci-state.json", content=b"{}"
+        ).status_code
+        == 204
+    )
+
+    marks = {t["id"]: t["has_artifacts"] for t in client.get("/tasks").json()}
+    assert marks == {visible: True, hidden_only: False, bare: False}

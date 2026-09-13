@@ -14,7 +14,7 @@ import asyncio
 import logging
 import os
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
@@ -739,6 +739,11 @@ class TaskService:
     async def put_artifact(self, task_id: str, name: str, content: bytes) -> None:
         await self.get_task(task_id)  # ensure the task exists
         await self._artifacts.put(task_id, name, content)
+        # Artifacts live outside the store, so writing one bumps no version of its own — but the
+        # task list reports whether a task *has* one, so a parked long-poll has to wake or the
+        # first plan.md would go unnoticed until some unrelated mutation. Same treatment as the
+        # other ephemeral (non-stored) changes.
+        self._notify_change()
         _log.debug("task %s: artifact %s written", task_id, name)
 
     async def get_artifact(self, task_id: str, name: str) -> bytes | None:
@@ -748,6 +753,14 @@ class TaskService:
     async def list_artifacts(self, task_id: str) -> list[str]:
         await self.get_task(task_id)
         return await self._artifacts.list(task_id)
+
+    async def tasks_with_artifacts(self, task_ids: Iterable[str]) -> set[str]:
+        """Which of ``task_ids`` have an unhidden artifact — the task list's artifact mark.
+
+        No per-id ``get_task`` (unlike the single-task readers above): the caller passes ids it
+        just read out of the store, and this answers a display question for a whole page at
+        once. Unknown ids are simply absent from the result."""
+        return await self._artifacts.tasks_with_artifacts(task_ids)
 
     # -- liveness -----------------------------------------------------------------
     #

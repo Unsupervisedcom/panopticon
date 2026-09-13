@@ -10,6 +10,7 @@ from __future__ import annotations
 import binascii
 from abc import ABC, abstractmethod
 from base64 import b64decode
+from collections.abc import Iterable
 from urllib.parse import quote, unquote
 
 MCP_URI_SCHEME = "panopticon"
@@ -46,6 +47,16 @@ def validate_segment(segment: str) -> None:
         raise InvalidArtifactName(f"invalid artifact segment: {segment!r}")
 
 
+def is_hidden(name: str) -> bool:
+    """Whether an artifact is hidden from the operator's default view.
+
+    Dotfile artifacts are agent bookkeeping — cross-turn state like ``.babysit-ci-state.json`` —
+    rather than documents a human asked for. The dashboard hides them behind a "Show hidden"
+    toggle and the task list's artifact mark ignores them, so the rule lives here rather than
+    being spelled out at each surface."""
+    return name.startswith(".")
+
+
 def mcp_uri(task_id: str, name: str) -> str:
     """The canonical MCP resource URI for an artifact (the shared resolver).
 
@@ -78,6 +89,19 @@ class ArtifactStore(ABC):
     @abstractmethod
     async def list(self, task_id: str) -> list[str]:
         """Return the names of a task's artifacts (empty if none)."""
+
+    async def tasks_with_artifacts(self, task_ids: Iterable[str]) -> set[str]:
+        """Which of ``task_ids`` have at least one **unhidden** artifact.
+
+        A bulk query so a surface rendering many tasks at once (the dashboard's task list) asks
+        once per response rather than once per task. Concrete, not abstract: the default answers
+        it with :meth:`list` per id, so an adapter that has no cheaper way to tell inherits a
+        correct implementation (the filesystem store overrides it with a directory scan)."""
+        found = set()
+        for task_id in task_ids:
+            if any(not is_hidden(name) for name in await self.list(task_id)):
+                found.add(task_id)
+        return found
 
     async def link_slug(self, task_id: str, slug: str) -> None:
         """Expose a task's artifacts under a readable ``slug`` alias (best-effort).
