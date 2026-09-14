@@ -14,7 +14,7 @@ import asyncio
 import logging
 import os
 import uuid
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
@@ -754,13 +754,14 @@ class TaskService:
         await self.get_task(task_id)
         return await self._artifacts.list(task_id)
 
-    async def tasks_with_artifacts(self, task_ids: Iterable[str]) -> set[str]:
-        """Which of ``task_ids`` have an unhidden artifact — the task list's artifact mark.
+    async def has_unhidden_artifacts(self, task_id: str) -> bool:
+        """Whether the task has an artifact worth marking in the task list.
 
-        No per-id ``get_task`` (unlike the single-task readers above): the caller passes ids it
-        just read out of the store, and this answers a display question for a whole page at
-        once. Unknown ids are simply absent from the result."""
-        return await self._artifacts.tasks_with_artifacts(task_ids)
+        No ``get_task`` guard (unlike the readers above): this is a display predicate asked of
+        tasks the caller has already read, once per row, and a task with no artifacts and a task
+        that doesn't exist both answer ``False``. Paying for a store read per row to tell those
+        apart would buy nothing."""
+        return await self._artifacts.has_unhidden_artifacts(task_id)
 
     # -- liveness -----------------------------------------------------------------
     #

@@ -167,23 +167,20 @@ def test_is_hidden_is_the_dotfile_rule() -> None:
     assert not is_hidden("notes.tar.gz")
 
 
-def test_tasks_with_artifacts_ignores_hidden_and_missing(tmp_path: Path) -> None:
+def test_has_unhidden_artifacts_ignores_hidden_and_missing(tmp_path: Path) -> None:
     store = FilesystemArtifactStore(tmp_path)
     asyncio.run(store.put("visible", "plan.md", b"# Plan"))
     asyncio.run(store.put("mixed", ".babysit-ci-state.json", b"{}"))
     asyncio.run(store.put("mixed", "notes.md", b"notes"))
     asyncio.run(store.put("hidden-only", ".babysit-ci-state.json", b"{}"))
-    # "absent" was never written at all — no directory on disk.
-    found = asyncio.run(store.tasks_with_artifacts(["visible", "mixed", "hidden-only", "absent"]))
-    assert found == {"visible", "mixed"}
+    assert asyncio.run(store.has_unhidden_artifacts("visible"))
+    assert asyncio.run(store.has_unhidden_artifacts("mixed"))  # hidden siblings don't mask it
+    assert not asyncio.run(store.has_unhidden_artifacts("hidden-only"))
+    # "absent" was never written at all — no directory on disk, and that's not an error.
+    assert not asyncio.run(store.has_unhidden_artifacts("absent"))
 
 
-def test_tasks_with_artifacts_accepts_an_empty_query(tmp_path: Path) -> None:
-    store = FilesystemArtifactStore(tmp_path)
-    assert asyncio.run(store.tasks_with_artifacts([])) == set()
-
-
-def test_tasks_with_artifacts_default_works_without_the_override() -> None:
+def test_has_unhidden_artifacts_default_works_without_the_override() -> None:
     # An adapter with no cheaper way to answer inherits a correct implementation from the ABC:
     # the default is written in terms of list(), which every store must provide.
     class InMemoryStore(ArtifactStore):
@@ -202,5 +199,6 @@ def test_tasks_with_artifacts_default_works_without_the_override() -> None:
     store = InMemoryStore()
     asyncio.run(store.put("visible", "plan.md", b"# Plan"))
     asyncio.run(store.put("hidden-only", ".state.json", b"{}"))
-    found = asyncio.run(store.tasks_with_artifacts(["visible", "hidden-only", "absent"]))
-    assert found == {"visible"}
+    assert asyncio.run(store.has_unhidden_artifacts("visible"))
+    assert not asyncio.run(store.has_unhidden_artifacts("hidden-only"))
+    assert not asyncio.run(store.has_unhidden_artifacts("absent"))

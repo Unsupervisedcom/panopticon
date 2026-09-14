@@ -406,9 +406,8 @@ def create_app(service: TaskService) -> FastAPI:
     def _task_summary_out(task: Task, *, has_artifacts: bool = False) -> TaskSummaryOut:
         """Serialize a task to the cheap summary shape (no history), with computed status fields.
 
-        ``has_artifacts`` is passed in rather than read here: the caller resolves it for the
-        whole page in one bulk query, so serializing a list doesn't hit the artifact store once
-        per task."""
+        ``has_artifacts`` is passed in rather than read here: it lives in the artifact store,
+        not on the task, so resolving it needs an await this synchronous serializer can't do."""
         out = TaskSummaryOut.model_validate(task)
         out.has_artifacts = has_artifacts
         out.container_status = service.container_status(task).value
@@ -567,8 +566,10 @@ def create_app(service: TaskService) -> FastAPI:
             # Read version and snapshot in a single thread call so no event-loop yield can
             # interleave a mutation between them — preserving the original atomicity invariant.
             version, tasks_raw = await service._tasks_snapshot(terminal=terminal)
-        with_artifacts = await service.tasks_with_artifacts([t.id for t in tasks_raw])
-        tasks = [_task_summary_out(t, has_artifacts=t.id in with_artifacts) for t in tasks_raw]
+        tasks = [
+            _task_summary_out(t, has_artifacts=await service.has_unhidden_artifacts(t.id))
+            for t in tasks_raw
+        ]
         response.headers[TASKS_VERSION_HEADER] = str(version)
         return tasks
 

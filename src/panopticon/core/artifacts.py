@@ -10,7 +10,6 @@ from __future__ import annotations
 import binascii
 from abc import ABC, abstractmethod
 from base64 import b64decode
-from collections.abc import Iterable
 from urllib.parse import quote, unquote
 
 MCP_URI_SCHEME = "panopticon"
@@ -90,18 +89,15 @@ class ArtifactStore(ABC):
     async def list(self, task_id: str) -> list[str]:
         """Return the names of a task's artifacts (empty if none)."""
 
-    async def tasks_with_artifacts(self, task_ids: Iterable[str]) -> set[str]:
-        """Which of ``task_ids`` have at least one **unhidden** artifact.
+    async def has_unhidden_artifacts(self, task_id: str) -> bool:
+        """Whether the task has at least one artifact the operator would want to open.
 
-        A bulk query so a surface rendering many tasks at once (the dashboard's task list) asks
-        once per response rather than once per task. Concrete, not abstract: the default answers
-        it with :meth:`list` per id, so an adapter that has no cheaper way to tell inherits a
-        correct implementation (the filesystem store overrides it with a directory scan)."""
-        found = set()
-        for task_id in task_ids:
-            if any(not is_hidden(name) for name in await self.list(task_id)):
-                found.add(task_id)
-        return found
+        The task list renders a mark per row from this, so it answers the question without
+        materialising names. Concrete, not abstract: the default is written in terms of
+        :meth:`list`, which every adapter must provide, so one that has no cheaper way to tell
+        still inherits a correct implementation (the filesystem store overrides it with a
+        directory scan that stops at the first hit)."""
+        return any(not is_hidden(name) for name in await self.list(task_id))
 
     async def link_slug(self, task_id: str, slug: str) -> None:
         """Expose a task's artifacts under a readable ``slug`` alias (best-effort).
