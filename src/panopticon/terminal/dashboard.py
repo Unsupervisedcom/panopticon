@@ -41,7 +41,7 @@ single dim placeholder row (its slug cell renders ``...``); pressing `Enter` aga
 Arrow keys skip the ensemble row (it is not a real task). Expanding or collapsing does not affect the task service — it is pure
 display state local to the dashboard.
 
-The `❏➚` **marks column** (left of `slug[memo]`, its header doubling as the legend) flags what a
+The `❏ ➚` **marks column** (left of `slug[memo]`, its header doubling as the legend) flags what a
 task carries: `❏` when it has at least one unhidden artifact (`a` lists them — dotfile artifacts
 are agent bookkeeping and don't count) and `➚` when it has a `url` (`p` opens it). Each mark keeps
 its own slot, so they read as two vertical rails rather than shifting per row.
@@ -192,8 +192,9 @@ def _dim(cell: Text | str) -> Text:
     return t
 
 
-# The task-list marks column: one glyph per slot, so each mark reads down its own vertical line
-# (slot 1 artifact, slot 2 link) and a row missing one doesn't shift the other.
+# The task-list marks column: one glyph per slot, separated by a space, so each mark reads down
+# its own vertical line (slot 1 artifact, slot 2 link) and a row missing one doesn't shift the
+# other.
 #
 # Both glyphs are East_Asian_Width=Neutral with no emoji presentation form, i.e. exactly one cell
 # in every terminal. That is the whole reason for these two rather than 📁/🔗: emoji are
@@ -202,17 +203,19 @@ def _dim(cell: Text | str) -> Text:
 # are the other examples.
 _ARTIFACT_MARK = "❏"  # U+274F, has at least one unhidden artifact (`a` lists them)
 _LINK_MARK = "➚"  # U+279A, has a url (`p` opens it)
-_MARKS_HEADER = Text(_ARTIFACT_MARK + _LINK_MARK)  # the header doubles as the legend
+_MARKS_LABEL = f"{_ARTIFACT_MARK} {_LINK_MARK}"  # the header doubles as the legend
+_MARKS_HEADER = Text(_MARKS_LABEL)
 
 
 def _marks_cell(task: JsonObj) -> Text:
     """The marks column: ``❏`` when the task has an unhidden artifact, ``➚`` when it has a url.
 
-    Always two cells wide — an absent mark renders as a space rather than collapsing — so the
-    two marks stay in their own columns and the cell width can't vary by row."""
+    Always three cells wide (mark, gap, mark) — an absent mark renders as a space rather than
+    collapsing — so the two marks stay in their own columns and the cell width can't vary by
+    row."""
     artifact = _ARTIFACT_MARK if task.get("has_artifacts") else " "
     link = _LINK_MARK if task.get("url") else " "
-    return Text(f"{artifact}{link}", style="dim")
+    return Text(f"{artifact} {link}", style="dim")
 
 
 def _slug_cell(task: JsonObj, prefix: str = "") -> Text:

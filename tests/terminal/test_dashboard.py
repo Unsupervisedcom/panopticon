@@ -23,6 +23,7 @@ from panopticon.terminal.dashboard import (
     _ENSEMBLE_KEY_PREFIX,
     _INDEFINITE_SNOOZE_UNTIL,
     _LINK_MARK,
+    _MARKS_LABEL,
     _SNOOZE_DURATION,
     Dashboard,
     SpaceCheckbox,
@@ -1290,20 +1291,18 @@ def test_status_cell_displays_the_composed_status_color_coded() -> None:
 def test_marks_cell_flags_artifacts_and_links_in_fixed_slots() -> None:
     # Slot 1 is the artifact mark, slot 2 the link mark; an absent mark leaves its slot blank so
     # the other one doesn't slide over.
-    assert _marks_cell({"has_artifacts": True, "url": "https://pr"}).plain == (
-        _ARTIFACT_MARK + _LINK_MARK
-    )
-    assert _marks_cell({"has_artifacts": True}).plain == f"{_ARTIFACT_MARK} "
-    assert _marks_cell({"url": "https://pr"}).plain == f" {_LINK_MARK}"
-    assert _marks_cell({}).plain == "  "  # neither
-    assert _marks_cell({"has_artifacts": False, "url": None}).plain == "  "
+    assert _marks_cell({"has_artifacts": True, "url": "https://pr"}).plain == _MARKS_LABEL
+    assert _marks_cell({"has_artifacts": True}).plain == f"{_ARTIFACT_MARK}  "
+    assert _marks_cell({"url": "https://pr"}).plain == f"  {_LINK_MARK}"
+    assert _marks_cell({}).plain == "   "  # neither
+    assert _marks_cell({"has_artifacts": False, "url": None}).plain == "   "
     assert _marks_cell({}).style == "dim"  # annotation, not competing with the name
 
 
 def test_marks_cell_is_the_same_width_whatever_it_carries() -> None:
     # The column only stays aligned while every combination measures the same. This is the guard
     # against swapping in an East_Asian_Width=Wide glyph (an emoji) later: cell_len would jump to
-    # 3 or 4 for the marked rows and the column would render ragged.
+    # 4 or 5 for the marked rows and the column would render ragged.
     from rich.cells import cell_len
 
     widths = {
@@ -1315,7 +1314,7 @@ def test_marks_cell_is_the_same_width_whatever_it_carries() -> None:
             {},
         )
     }
-    assert widths == {2}
+    assert widths == {3}
 
 
 async def test_task_counter_shows_agent_versus_active_counts() -> None:
@@ -3235,7 +3234,7 @@ async def test_search_shows_all_ancestors_when_deep_child_matches() -> None:
 async def test_marks_column_sits_left_of_the_name_in_both_layouts() -> None:
     # Present whether or not the runner column is, and always immediately left of slug[memo] —
     # the marks annotate the name, and the variable-width name column stays rightmost.
-    header = _ARTIFACT_MARK + _LINK_MARK
+    header = _MARKS_LABEL
     single = _FakeClient([{**_TASK, "id": "t-a"}], runners=[{"id": "r1", "host": "host-a"}])
     multi = _FakeClient(
         [{**_TASK, "id": "t-a", "runner_host": "host-a"}],
@@ -3260,11 +3259,11 @@ async def test_marks_column_reflects_artifacts_and_url() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
-        idx = _col_index(table, _ARTIFACT_MARK + _LINK_MARK)
-        assert table.get_row("t-both")[idx].plain == _ARTIFACT_MARK + _LINK_MARK
-        assert table.get_row("t-artifact")[idx].plain == f"{_ARTIFACT_MARK} "
-        assert table.get_row("t-link")[idx].plain == f" {_LINK_MARK}"
-        assert table.get_row("t-bare")[idx].plain == "  "
+        idx = _col_index(table, _MARKS_LABEL)
+        assert table.get_row("t-both")[idx].plain == _MARKS_LABEL
+        assert table.get_row("t-artifact")[idx].plain == f"{_ARTIFACT_MARK}  "
+        assert table.get_row("t-link")[idx].plain == f"  {_LINK_MARK}"
+        assert table.get_row("t-bare")[idx].plain == "   "
 
 
 async def test_ensemble_placeholder_row_spans_every_column() -> None:
@@ -3278,12 +3277,9 @@ async def test_ensemble_placeholder_row_spans_every_column() -> None:
         table = app.query_one("#tasks", DataTable)
         ens_row = table.get_row(f"{_ENSEMBLE_KEY_PREFIX}gov")  # governors start collapsed
         assert len(ens_row) == len(table.columns)
-        assert ens_row[_col_index(table, _ARTIFACT_MARK + _LINK_MARK)].plain == ""
+        assert ens_row[_col_index(table, _MARKS_LABEL)].plain == ""
         # The governor itself still shows its own marks.
-        assert (
-            table.get_row("gov")[_col_index(table, _ARTIFACT_MARK + _LINK_MARK)].plain
-            == f"{_ARTIFACT_MARK} "
-        )
+        assert table.get_row("gov")[_col_index(table, _MARKS_LABEL)].plain == f"{_ARTIFACT_MARK}  "
 
 
 # -- multi-runner column -----------------------------------------------------------
