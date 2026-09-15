@@ -62,6 +62,12 @@ class FilesystemArtifactStore(ArtifactStore):
     def _has_artifacts_sync(self, task_id: str) -> bool:
         """Whether the task's directory holds at least one unhidden file.
 
+        Synchronous because it is blocking filesystem I/O: every public method here keeps that
+        work off the event loop by handing it to a worker thread, and this is the body
+        :meth:`has_unhidden_artifacts` hands over. It's a named method rather than the inline
+        ``lambda`` the other methods use because it needs ``with`` and ``try``, which a lambda
+        can't hold — the same reason :meth:`_link_slug_sync` is split out from its caller.
+
         ``os.scandir`` rather than ``Path.iterdir``: it stops at the first hit (the caller wants
         a boolean, not a listing), its entries answer ``is_file()`` from the data the scan already
         returned instead of a ``stat`` apiece, and it raises for a missing directory *here* rather
