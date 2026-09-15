@@ -86,7 +86,7 @@ def test_mcp_and_trust_coexist_in_one_config_toml(tmp_path: Path) -> None:
     # The launcher calls both; neither must clobber the other's keys in the shared config.toml.
     cli = CodexAgentCLI()
     cli.write_mcp_config(tmp_path, "http://svc:8000")
-    cli.trust_workspace(tmp_path, Path("/workspace"))
+    cli.trust_workspace(tmp_path, Path("/workspace"), {})
     data = _load_config(cli, tmp_path)
     assert data["mcp_servers"]["panopticon"]["url"] == "http://svc:8000/mcp"  # preserved
     assert data["projects"]["/workspace"]["trust_level"] == "trusted"
@@ -97,7 +97,7 @@ def test_overview_coexists_with_mcp_and_trust_in_one_config_toml(tmp_path: Path)
     cli = CodexAgentCLI()
     cli.write_workflow_overview(tmp_path, "# overview")
     cli.write_mcp_config(tmp_path, "http://svc:8000")
-    cli.trust_workspace(tmp_path, Path("/workspace"))
+    cli.trust_workspace(tmp_path, Path("/workspace"), {})
     data = _load_config(cli, tmp_path)
     assert data["developer_instructions"] == "# overview"
     assert data["mcp_servers"]["panopticon"]["url"] == "http://svc:8000/mcp"
@@ -126,7 +126,7 @@ def test_write_workflow_overview_skips_when_empty(tmp_path: Path) -> None:
 
 def test_trust_workspace_seeds_trust_and_unattended_posture(tmp_path: Path) -> None:
     cli = CodexAgentCLI()
-    cli.trust_workspace(tmp_path, Path("/workspace"))
+    cli.trust_workspace(tmp_path, Path("/workspace"), {})
     data = _load_config(cli, tmp_path)
     assert data["projects"]["/workspace"]["trust_level"] == "trusted"
     # persisted (not just a launch flag) so resume stays unattended too (codex issue #9144)
@@ -139,8 +139,8 @@ def test_trust_workspace_merges_and_is_idempotent(tmp_path: Path) -> None:
     config = tmp_path / cli.CONFIG_FILE
     # codex already wrote config (incl. another trusted project) — we must not clobber it.
     config.write_text('[projects."/other"]\ntrust_level = "trusted"\n')
-    cli.trust_workspace(tmp_path, Path("/workspace"))
-    cli.trust_workspace(tmp_path, Path("/workspace"))  # idempotent
+    cli.trust_workspace(tmp_path, Path("/workspace"), {})
+    cli.trust_workspace(tmp_path, Path("/workspace"), {})  # idempotent
     data = _load_config(cli, tmp_path)
     assert data["projects"]["/other"]["trust_level"] == "trusted"  # preserved
     assert data["projects"]["/workspace"]["trust_level"] == "trusted"
@@ -224,6 +224,26 @@ def test_write_credentials_symlinks_auth_json_from_credential_dir(tmp_path: Path
     assert _load_config(cli, config_dir)["cli_auth_credentials_store"] == "file"
 
 
+def test_write_credentials_reads_through_env_file_quoting(tmp_path: Path) -> None:
+    # `docker run --env-file` keeps dotenv quotes literally; without normalizing they'd be baked
+    # into auth.json and every codex call would fail opaquely.
+    cli = CodexAgentCLI()
+    path = cli.write_credentials(tmp_path, {"OPENAI_API_KEY": '"sk-quoted"'})
+    assert path is not None
+    assert json.loads(path.read_text())["OPENAI_API_KEY"] == "sk-quoted"
+
+
+def test_auth_missing_detail_reads_through_env_file_quoting(tmp_path: Path) -> None:
+    cli = CodexAgentCLI()
+    assert cli.auth_missing_detail({"OPENAI_API_KEY": "'sk'"}, tmp_path) is None
+    assert cli.auth_missing_detail({"OPENAI_API_KEY": '""'}, tmp_path) is not None  # blank, truthy
+
+
+def test_launch_env_normalizes_codex_credentials() -> None:
+    assert CodexAgentCLI().launch_env({"OPENAI_API_KEY": '"sk"'}) == {"OPENAI_API_KEY": "sk"}
+    assert CodexAgentCLI().launch_env({"GH_TOKEN": "ghp_bare"}) == {}  # already correct
+
+
 def test_write_credentials_never_clobbers_an_existing_auth_json(tmp_path: Path) -> None:
     cli = CodexAgentCLI()
     auth = tmp_path / cli.AUTH_FILE
@@ -257,7 +277,7 @@ def test_write_credentials_coexists_with_mcp_and_trust_in_one_config_toml(tmp_pa
     # The cred-store key lands in the shared config.toml alongside the MCP/trust blocks.
     cli = CodexAgentCLI()
     cli.write_mcp_config(tmp_path, "http://svc:8000")
-    cli.trust_workspace(tmp_path, Path("/workspace"))
+    cli.trust_workspace(tmp_path, Path("/workspace"), {})
     cli.write_credentials(tmp_path, {"OPENAI_API_KEY": "sk"})
     data = _load_config(cli, tmp_path)
     assert data["cli_auth_credentials_store"] == "file"
@@ -594,7 +614,7 @@ def test_hooks_coexist_with_mcp_and_trust_in_one_config_toml(tmp_path: Path) -> 
     config_dir = tmp_path / cli.config_dirname
     cli.write_settings(tmp_path)  # takes home; the others take the config dir
     cli.write_mcp_config(config_dir, "http://svc:8000")
-    cli.trust_workspace(config_dir, Path("/workspace"))
+    cli.trust_workspace(config_dir, Path("/workspace"), {})
     data = tomllib.loads((config_dir / cli.CONFIG_FILE).read_text())
     assert _hook_command(data["hooks"]["Stop"]).endswith("user stop")  # preserved
     assert data["mcp_servers"]["panopticon"]["url"] == "http://svc:8000/mcp"

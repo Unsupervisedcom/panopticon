@@ -5,6 +5,7 @@ fake here. The claude-specific seams live in :mod:`tests.container.test_claude`.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -114,7 +115,10 @@ def test_main_resolves_the_adapter_from_the_agent_cli_env_var(
             calls.append("overview")
             return None
 
-        def trust_workspace(self, config_dir: Path, cwd: Path) -> Path:
+        def trust_workspace(self, config_dir: Path, cwd: Path, env: object) -> Path:
+            # The env reaches this seam because claude's API-key approval is keyed to the
+            # credential's own value, not just to the workspace path.
+            assert isinstance(env, Mapping) and env.get("PANOPTICON_TASK_ID") == "t1"
             calls.append("trust")
             return config_dir
 

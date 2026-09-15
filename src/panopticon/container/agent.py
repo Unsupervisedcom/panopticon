@@ -76,7 +76,9 @@ def main(
     cli.write_workflow_overview(
         config_dir, client.workflow_overview(task_id)
     )  # → the agent's context (the map)
-    cli.trust_workspace(config_dir, Path.cwd())  # pre-accept the trust dialog (no operator to)
+    cli.trust_workspace(
+        config_dir, Path.cwd(), env
+    )  # pre-accept the trust/first-run dialogs (no operator to)
     cli.write_credentials(
         config_dir, env
     )  # materialize on-disk creds (codex auth.json; claude no-op)

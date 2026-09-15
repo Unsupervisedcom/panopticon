@@ -69,8 +69,9 @@ The seams, one method (or small method group) each:
 | **write MCP client config** | `panopticon-mcp.json` (`{"mcpServers": …}`) via `--mcp-config` | `[mcp_servers.panopticon]` in `config.toml` |
 | **render workflow-overview / system prompt** | `--append-system-prompt <overview>` | `$CODEX_HOME/AGENTS.md` (our config dir) — **not** the repo's `/workspace/AGENTS.md` |
 | **build launch argv incl. resume** | `claude --dangerously-skip-permissions [--continue \| --model M PROMPT]` | `codex …` first-run vs `codex resume --last`/session-id |
-| **trust / first-run pre-accept** | `.claude.json` onboarding + trust + cost keys | codex trust / sandbox-approval seed |
+| **trust / first-run pre-accept** (takes the env — some gates are keyed to a credential's value) | `.claude.json` onboarding + trust + cost keys + `customApiKeyResponses.approved` (the env API key) | codex trust / sandbox-approval seed |
 | **auth env var(s) + missing-auth check** | `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` | `OPENAI_API_KEY` / codex login token |
+| **normalize env-file secrets** (`SECRET_ENV_VARS` → `launch_env`) | `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` / `GH_TOKEN` | `CODEX_API_KEY` / `OPENAI_API_KEY` / `CODEX_ACCESS_TOKEN` / `GH_TOKEN` |
 | **resolve tier → concrete model** | tier `"opus"` → `claude --model opus` | tier → a codex model id |
 
 The bootstrap/launch split (AGENTS.md "No LLMs in tests") is preserved: the adapter's rendering

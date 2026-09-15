@@ -16,6 +16,7 @@ from panopticon.container.cli import (
     get_agent_cli,
     register_agent_cli,
 )
+from panopticon.container.cli.base import secret_from_env, unquote_secret
 from panopticon.container.cli.claude import ClaudeAgentCLI
 from panopticon.container.cli.codex import CodexAgentCLI
 
@@ -57,7 +58,7 @@ def test_registering_an_adapter_makes_it_resolvable_without_a_launcher_edit() ->
         def write_workflow_overview(self, config_dir: Path, overview: str) -> Path | None:
             return None
 
-        def trust_workspace(self, config_dir: Path, cwd: Path) -> Path:
+        def trust_workspace(self, config_dir: Path, cwd: Path, env: object) -> Path:
             return config_dir
 
         def auth_missing_detail(self, env: object, config_dir: object) -> str | None:
@@ -100,3 +101,68 @@ def test_resolve_model_rejects_an_unmapped_reserved_tier(monkeypatch: pytest.Mon
     monkeypatch.setattr(ClaudeAgentCLI, "MODEL_TIERS", {})
     with pytest.raises(ValueError, match="primary"):
         ClaudeAgentCLI().resolve_model("primary")
+
+
+# -- env-file secret normalization --------------------------------------------------------------
+#
+# `docker run --env-file` does no dotenv parsing: everything after the first `=` is the value,
+# quotes and all. The shell runner, which *sources* the same file, strips them. These pin the
+# reconciliation (unquote_secret) both runners' consumers now go through.
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("sk-ant-bare", "sk-ant-bare"),  # the correct spelling — untouched
+        ('"sk-ant-dq"', "sk-ant-dq"),  # KEY="v"
+        ("'sk-ant-sq'", "sk-ant-sq"),  # KEY='v'
+        ("  sk-ant-pad  ", "sk-ant-pad"),  # stray whitespace
+        ("sk-ant-crlf\r", "sk-ant-crlf"),  # CRLF env-file leaves the \r on the value
+        ('"sk-ant-crlf"\r\n', "sk-ant-crlf"),  # ...quoted *and* CRLF
+        ('"sk-ant-unbalanced', '"sk-ant-unbalanced'),  # unbalanced → not a legible mistake
+        ('sk-ant-unbalanced"', 'sk-ant-unbalanced"'),
+        ("'sk-ant-mismatched\"", "'sk-ant-mismatched\""),  # ends must *match*
+        ('sk-ant-"inner"-quotes', 'sk-ant-"inner"-quotes'),  # inner quotes preserved
+        ("'\"sk-ant-nested\"'", '"sk-ant-nested"'),  # one pair only — no guessing
+        ('""', ""),  # a deliberately blank value
+        ("   ", ""),
+        ("", ""),
+        ('"', '"'),  # a lone quote isn't a pair
+    ],
+)
+def test_unquote_secret_normalizes_env_file_values(raw: str, expected: str) -> None:
+    assert unquote_secret(raw) == expected
+
+
+def test_secret_from_env_reads_absent_and_blank_alike() -> None:
+    # `KEY=""` arrives as the two *literal* characters `""` — truthy, so a raw presence check reads
+    # a deliberately blank credential as present-but-broken. Normalizing reads it as absent.
+    assert secret_from_env({}, "KEY") is None
+    assert secret_from_env({"KEY": ""}, "KEY") is None
+    assert secret_from_env({"KEY": '""'}, "KEY") is None
+    assert secret_from_env({"KEY": "  "}, "KEY") is None
+    assert secret_from_env({"KEY": '"v"'}, "KEY") == "v"
+
+
+def test_launch_env_overlays_only_the_vars_that_need_normalizing() -> None:
+    cli = ClaudeAgentCLI()
+    overlay = cli.launch_env(
+        {
+            "ANTHROPIC_API_KEY": '"sk-ant-quoted"',
+            "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-bare",  # already correct
+            "GH_TOKEN": "'ghp_quoted'",  # gh inherits the CLI's env, so it's fixed too
+            "PATH": '"/usr/bin"',  # not a secret var — never touched
+        }
+    )
+    assert overlay == {"ANTHROPIC_API_KEY": "sk-ant-quoted", "GH_TOKEN": "ghp_quoted"}
+
+
+def test_launch_env_is_empty_for_a_correctly_written_env_file() -> None:
+    # The no-op case: merging this over the process env changes nothing.
+    assert ClaudeAgentCLI().launch_env({"ANTHROPIC_API_KEY": "sk-ant-bare"}) == {}
+    assert ClaudeAgentCLI().launch_env({}) == {}
+
+
+def test_launch_env_defaults_to_normalizing_nothing() -> None:
+    # SECRET_ENV_VARS is opt-in: an adapter that declares none inherits a no-op overlay.
+    assert AgentCLI.SECRET_ENV_VARS == ()

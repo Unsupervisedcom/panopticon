@@ -38,7 +38,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 
-from panopticon.container.cli.base import AgentCLI, _Client
+from panopticon.container.cli.base import AgentCLI, _Client, secret_from_env
 from panopticon.container.config import update_toml_config
 from panopticon.container.hooks import HOOK_COMMAND
 from panopticon.container.skills import write_agent_operation_skills, write_agent_skills
@@ -121,6 +121,13 @@ class CodexAgentCLI(AgentCLI):
     API_KEY_VARS: ClassVar[tuple[str, ...]] = ("CODEX_API_KEY", "OPENAI_API_KEY")
     #: The ChatGPT workspace access token (the ``claude setup-token`` analog); read from the env, no file.
     ACCESS_TOKEN_VAR: ClassVar[str] = "CODEX_ACCESS_TOKEN"
+    #: codex's own auth vars, plus ``GH_TOKEN`` — the forge skills' ``gh`` runs as a child of codex,
+    #: so normalizing it here is what reaches it (see :meth:`~AgentCLI.launch_env`).
+    SECRET_ENV_VARS: ClassVar[tuple[str, ...]] = (
+        *API_KEY_VARS,
+        ACCESS_TOKEN_VAR,
+        "GH_TOKEN",
+    )
 
     def render_skills(self, client: _Client, task_id: str, home: Path) -> list[Path]:
         """Render the workflow's skills to ``~/.agents/skills/`` (codex's model-discoverable surface)."""
@@ -198,7 +205,7 @@ class CodexAgentCLI(AgentCLI):
             data["developer_instructions"] = overview
         return config
 
-    def trust_workspace(self, config_dir: Path, cwd: Path) -> Path:
+    def trust_workspace(self, config_dir: Path, cwd: Path, env: Mapping[str, str]) -> Path:
         """Pre-accept codex's trust + approvals so the unattended container runs without prompting.
 
         A fresh container has no operator to answer codex's first-run gates, so we seed ``config.toml``:
@@ -212,7 +219,8 @@ class CodexAgentCLI(AgentCLI):
           radius is the task's own per-task clone.
 
         Merged (read-modify-write), so it never clobbers the MCP table or anything codex wrote, and
-        is idempotent.
+        is idempotent. ``env`` is unused: codex has no dialog keyed to an injected credential's
+        value (claude's API-key approval is), but the seam takes it so adapters that do can use it.
         """
         config = config_dir / self.CONFIG_FILE
         with update_toml_config(config) as data:
@@ -235,7 +243,7 @@ class CodexAgentCLI(AgentCLI):
         checks only: we don't validate the key shape; an invalid credential surfaces at codex's first
         call.
         """
-        if any(env.get(var) for var in (*self.API_KEY_VARS, self.ACCESS_TOKEN_VAR)):
+        if any(secret_from_env(env, var) for var in (*self.API_KEY_VARS, self.ACCESS_TOKEN_VAR)):
             return None
         if (config_dir / self.AUTH_FILE).exists():
             return None
@@ -283,7 +291,9 @@ class CodexAgentCLI(AgentCLI):
         if creds and (Path(creds) / self.AUTH_FILE).exists():
             auth.symlink_to(Path(creds) / self.AUTH_FILE)
             return auth
-        key = next((env[var] for var in self.API_KEY_VARS if env.get(var)), None)
+        key = next(
+            (k for var in self.API_KEY_VARS if (k := secret_from_env(env, var)) is not None), None
+        )
         if not key:
             return None
         config_dir.mkdir(parents=True, exist_ok=True)
@@ -378,4 +388,7 @@ class CodexAgentCLI(AgentCLI):
             turn=turn,
             starting_model=starting_model,
         )
-        subprocess.run(argv, env={**os.environ, "CODEX_HOME": str(config_dir)})
+        subprocess.run(
+            argv,
+            env={**os.environ, **self.launch_env(os.environ), "CODEX_HOME": str(config_dir)},
+        )
