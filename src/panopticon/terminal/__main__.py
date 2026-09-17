@@ -8,7 +8,9 @@ straight to — that task's container session first, falling into the dashboard 
 `panopticon console` opens the supervisor only (assumes services are already running) and takes
 the same optional task argument. `panopticon dashboard` runs the dashboard once without the attach loop;
 `panopticon tasks` lists tasks as plain text; `panopticon migrate` applies DB migrations to head
-via the bundled Alembic config. `panopticon quickstart` registers panopticon itself as a repo
+via the bundled Alembic config. `panopticon restart [service|runner|dashboard|all]` bounces those
+background control-plane sessions in place, leaving every task container running (the `make stop` +
+`make start` alternative kills them). `panopticon quickstart` registers panopticon itself as a repo
 (idempotent) then starts everything. `panopticon doctor` checks that the host has the
 prerequisites (git, docker + a running daemon, tmux, claude, Python 3.11+) those flows need.
 """
@@ -24,6 +26,7 @@ from pathlib import Path
 import httpx
 
 from panopticon.client import TaskServiceClient
+from panopticon.terminal.sessions import TARGETS, restart_sessions, start_sessions
 
 DEFAULT_SERVICE_URL = "http://localhost:8000"
 
@@ -38,38 +41,13 @@ def _run_migrate() -> None:
         alembic.config.main(argv=["--config", str(ini_path), "upgrade", "head"])
 
 
-def _start_sessions() -> None:
-    import shlex
-    import subprocess
-    import sys
-
-    # `cmd` below is a shell string (it pipes to `tee`), so quote the interpreter path: a
-    # pipx install on macOS lives under `~/Library/Application Support/...`, whose space would
-    # otherwise word-split and fail with "no such file or directory: …/Application".
-    python = shlex.quote(sys.executable)
-    for name, cmd in [
-        ("service", f"{python} -m panopticon.taskservice 2>&1 | tee /tmp/panopticon-service.log"),
-        (
-            "runner",
-            f"{python} -m panopticon.sessionservice.host 2>&1 | tee /tmp/panopticon-runner.log",
-        ),
-    ]:
-        # Don't bounce an already-running session. Restarting the task service wipes its in-memory
-        # registrations (connection-scoped liveness), so a `panopticon start <task>` that restarts a
-        # healthy service would find no container to join until every task reconnects its /live
-        # stream — the join races the reconnect and falls back to the dashboard. Leave it be.
-        if (
-            subprocess.run(
-                ["tmux", "-L", "panopticon", "has-session", "-t", name],
-                capture_output=True,
-            ).returncode
-            == 0
-        ):
-            continue
-        subprocess.run(
-            ["tmux", "-L", "panopticon", "new-session", "-d", "-s", name, cmd],
-            check=True,
+def _restart_target(value: str) -> str:
+    """An argparse validator for `panopticon restart`'s targets."""
+    if value not in (*TARGETS, "all"):
+        raise argparse.ArgumentTypeError(
+            f"invalid target {value!r} (choose from {', '.join((*TARGETS, 'all'))})"
         )
+    return value
 
 
 def main(
@@ -105,6 +83,21 @@ def main(
     start = sub.add_parser("start", help="start everything and open the dashboard supervisor")
     start.add_argument("task", nargs="?", help="task id or slug to join (attach to) on startup")
     sub.add_parser("stop", help="stop task containers and the panopticon tmux server")
+    restart = sub.add_parser(
+        "restart",
+        help="restart the control-plane sessions in place (task containers keep running)",
+    )
+    restart.add_argument(
+        "targets",
+        nargs="*",
+        # Validated by `type` rather than `choices`: argparse checks a `nargs="*"` positional's
+        # *default* against `choices` too, so the empty default (meaning "service + runner")
+        # would itself be rejected.
+        type=_restart_target,
+        default=[],
+        metavar=f"{{{','.join((*TARGETS, 'all'))}}}",
+        help="which sessions to restart (default: service + runner)",
+    )
     sub.add_parser(
         "quickstart",
         help=(
@@ -134,7 +127,7 @@ def main(
         return doctor.report(doctor.run_checks())
     elif args.command == "host":
         _run_migrate()
-        _start_sessions()
+        start_sessions()
         return 0
     elif args.command == "quickstart":
         from panopticon.terminal import doctor
@@ -147,7 +140,7 @@ def main(
             return 1
 
         _run_migrate()
-        _start_sessions()
+        start_sessions()
         _qs.wait_for_service(args.service_url)
         env_file = _qs.ensure_secrets_file()
         git_url = _qs.detect_git_url()
@@ -160,6 +153,12 @@ def main(
         # in `claude setup-token`; if its shell session isn't up yet, join falls back to the dashboard.
         run_console_local(args.service_url, client=qs_client, join=task_id)
         return 0
+    elif args.command == "restart":
+        return restart_sessions(
+            args.targets,
+            service_url=args.service_url,
+            migrate=_run_migrate,
+        )
     elif args.command == "stop":
         import subprocess
 
@@ -216,7 +215,7 @@ def main(
     else:  # "start", "console", or no subcommand (no subcommand → alias for "start")
         if args.command in (None, "start"):  # "console" assumes services are already running
             _run_migrate()
-            _start_sessions()
+            start_sessions()
         from panopticon.terminal.console import run_console_local
 
         run_console_local(args.service_url, client=client, join=getattr(args, "task", None))

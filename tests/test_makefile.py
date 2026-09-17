@@ -22,3 +22,14 @@ def test_build_stamps_base_image_with_panopticon_version() -> None:
     assert "docker build" in result.stdout
     assert "--tag panopticon-base-$cli" in result.stdout
     assert "--label org.panopticon.version=9.8.7" in result.stdout
+
+
+def test_restart_wraps_the_cli_command() -> None:
+    result = subprocess.run(
+        ["make", "--dry-run", "restart"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "panopticon restart" in result.stdout

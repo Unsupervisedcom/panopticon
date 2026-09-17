@@ -110,6 +110,8 @@ make check       # lint + typecheck + test (what CI runs)
 make serve       # run the task service over HTTP (python -m panopticon.taskservice)
 make dashboard   # run the dashboard once (no attach loop)
 make start       # bring up everything: task service + session-service runner + dashboard supervisor
+make stop        # stop the task containers + kill the -L panopticon tmux server
+make restart     # restart the control plane (service + runner) in place — task containers keep running
 make build       # docker build the base task-container image (panopticon-base)
 make clean       # remove the base + composed panopticon-* images
 make migrate     # alembic upgrade head (uses $PANOPTICON_DB; override DB=<url>)
@@ -142,6 +144,15 @@ with `ssh -t <host>` when set. Crucially the runner spawns task sessions on the 
 `switch-client`), so the same loop reaches a remote task over ssh at M5; `s` jumps to the
 `service` session. The background sessions persist after `q`
 (stop them with `make stop`, which stops the task containers and kills the `-L panopticon` server).
+**`make restart`** (`panopticon restart [service|runner|dashboard|all]`) is the in-place bounce for
+picking up new control-plane code: it kills and relaunches the `service` and `runner` sessions from
+the same launch table `start` uses (`terminal/sessions.py`), waiting for each old process to exit
+before relaunching (the port must be free) and for the new one to answer. It never touches `docker`
+or the `panopticon-<task-id>` task sessions — the containers stay up and re-register with the new
+task service over their `/live` heartbeat, and the runner returns under the same runner id so its
+claims survive; the printed before/after summary (task sessions, tasks reporting `live`) is the
+proof. The `dashboard` is opt-in (restarting it drops an attached supervisor back to the shell —
+rejoin with `panopticon console`).
 Spawning needs the base image — `make build`
 first. `make dashboard` runs the dashboard once without the attach loop (talks to
 `PANOPTICON_SERVICE_URL`).
