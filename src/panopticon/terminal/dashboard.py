@@ -2112,7 +2112,14 @@ class Dashboard(App[None]):
             table.clear(columns=True)  # rows already gone; also clears columns for rebuild
             self._multi_runner = new_multi_runner
             _setup_task_columns(table, multi_runner=self._multi_runner)
-        active = [t for t in ordered if t.get("state") not in TERMINAL_LABELS]
+        # An actively snoozed task is muted, so it leaves both halves of the counter — the
+        # operator asked for it to stop demanding attention. Governed or not: unlike the sort
+        # demotion (which exempts children so an ensemble isn't split), muting is per-task.
+        active = [
+            t
+            for t in ordered
+            if t.get("state") not in TERMINAL_LABELS and _snooze_label(t, display_now) is None
+        ]
         agent_on = sum(1 for t in active if t.get("turn") == "agent")
         sort_label = "sort: updated" if self._sort_by_updated else "sort: created"
         self.query_one(_StatusFooter).set_counter(
