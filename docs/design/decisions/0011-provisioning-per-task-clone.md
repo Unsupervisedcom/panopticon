@@ -66,11 +66,41 @@ The "mounts at any container path" property survives, because `submodule update`
 submodule's gitdir pointer (`gitdir: ../../.git/modules/<name>`) and its `core.worktree`
 **relatively** — nothing absolute to mirror, same as the superproject.
 
-The repo's **cache** clone stays submodule-free: the per-task clone fetches submodules from their
-forge-resolved URLs, so cache-side submodule checkouts would be disk and time for nothing. The cost
-is one submodule fetch per task; sharing the cache's object store instead
-(`submodule.alternateLocation=superproject`) computes the alternate from the superproject's *origin*,
-which is exactly what we repoint at the forge — so it needs more than a flag. Backlogged.
+### 1c. Submodules come from the repo's own checkout when there is one
+
+Fetching each submodule from its URL is paid by **every** task on the repo, and for a large
+submodule it dominates spawn-prep — while the superproject itself is nearly free (`clone --local`
+hardlinks the cache's objects). When the repo's `git_url` names a checkout on this host (the
+local-git flow), that checkout already holds every submodule's objects, so spawn-prep clones them
+**from it** — a local clone, hardlinked object store, no network (`hydrate_submodules`).
+
+The donor is matched **by path**, never by URL: the donor resolved its relative `.gitmodules` URLs
+against *its own* `origin` while the per-task clone resolves them against `git_url`, so the same
+submodule can legitimately have two different URLs. Per superproject level:
+
+1. `submodule init` — git resolves the declared URLs into `submodule.<name>.url`;
+2. for each submodule the donor has checked out, that resolved URL is overwritten with the donor's
+   path (one the donor lacks keeps its own URL and is simply fetched);
+3. `submodule update` for **this level only** — a nested submodule's URL cannot be resolved, let
+   alone redirected, before its parent exists;
+4. recurse into each submodule against the matching donor level.
+
+Then, once at the top, `submodule sync --recursive` restores the canonical URLs — in the config
+*and* in each submodule's own `origin` — so no host path from the donor reaches the container, and
+the agent fetches and pushes where it should.
+
+It is **only** an optimisation, never a precondition: if there's no local checkout, if hydration
+raises, or if it leaves any submodule uninitialized (a donor behind the recorded commit), spawn-prep
+falls back to the plain `submodule update --init --recursive` above. Hardlinks make the task's
+objects independent of a later `git gc` in the donor — the same property `clone --local` already
+relies on for the superproject — and a cross-filesystem donor degrades to a copy, still local.
+
+The repo's **cache** clone stays submodule-free: it is not the donor, and cache-side submodule
+checkouts would be disk and time for nothing. A repo whose `git_url` is a hosted forge has no local
+donor and still pays one submodule fetch per task; making the cache clone submodule-aware would
+close that too (backlogged) — `submodule.alternateLocation=superproject` isn't the lever, since it
+computes the alternate from the superproject's *origin*, which is exactly what we repoint at the
+forge.
 
 ### 2. Provisioning = branch whatever's there
 
