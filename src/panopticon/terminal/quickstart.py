@@ -8,6 +8,10 @@ operator mints their Claude auth token as the last first-time-setup step.
 
 from __future__ import annotations
 
+import subprocess
+from collections.abc import Callable
+from pathlib import Path
+
 import httpx
 
 from panopticon.client import TaskServiceClient
@@ -102,6 +106,65 @@ def choose_enabled_workflow(git_url: str) -> str:
     return _FORGE_WORKFLOW if _is_forge_url(git_url) else _LOCAL_WORKFLOW
 
 
+def local_repo_path(git_url: str) -> str | None:
+    """The filesystem path ``git_url`` names, or ``None`` when it names a networked remote.
+
+    The counterpart of :func:`_is_forge_url`: a bare path or a ``file://`` URL is somewhere on this
+    host, which is what makes panopticon's host-side push (and the config below) possible at all.
+    """
+    if _is_forge_url(git_url):
+        return None
+    url = git_url.strip()
+    if url.lower().startswith("file://"):
+        url = url[len("file://") :]
+    return str(Path(url).expanduser()) if url else None
+
+
+def allow_pushes_into_local_repo(
+    git_url: str, *, run: Callable[..., subprocess.CompletedProcess[str]] | None = None
+) -> bool:
+    """Let panopticon's merges land in a local repo by setting ``receive.denyCurrentBranch``.
+
+    Git refuses a push to the branch a non-bare repo currently has **checked out**: the push would
+    move the branch pointer without touching the files on disk, leaving that repo reporting the
+    newly-arrived commits as uncommitted changes reverting them. ``updateInstead`` accepts such a
+    push *and* updates the files to match — like a ``git pull`` — and still refuses when the
+    worktree is dirty, so it can't clobber work in progress.
+
+    Running quickstart **inside** the repo is the operator adopting it for panopticon, so this is
+    set without a prompt; the `setup-repo` flow asks first for repos registered another way. Only
+    ever sets an **unset** value, so an operator who chose something else keeps it, and is
+    best-effort: any failure warns and returns ``False`` rather than derailing quickstart.
+
+    Returns whether it set the value. A networked remote is a no-op (nothing local to configure).
+    """
+    path = local_repo_path(git_url)
+    if path is None:
+        return False
+    run = run or subprocess.run  # late-bound, like the rest of this module's git calls
+    try:
+        existing = run(
+            ["git", "-C", path, "config", "--get", "receive.denyCurrentBranch"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if existing.stdout.strip():
+            return False  # already decided by the operator — don't override it
+        run(
+            ["git", "-C", path, "config", "receive.denyCurrentBranch", "updateInstead"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as err:
+        print(f"  → Could not configure {path} to accept panopticon's pushes ({err}).")
+        print("    Set `git config receive.denyCurrentBranch updateInstead` there yourself.")
+        return False
+    print(f"  → Configured {path} to accept panopticon's merges (denyCurrentBranch=updateInstead).")
+    return True
+
+
 def _ensure_workflow_enabled(
     client: TaskServiceClient, repo: dict[str, object], workflow: str
 ) -> None:
@@ -193,6 +256,7 @@ def setup_repo(client: TaskServiceClient, git_url: str, env_file: str) -> tuple[
     if existing is not None:
         print(f"Repo already configured for {git_url!r} — skipping registration.")
         _ensure_workflow_enabled(client, existing, workflow)
+        allow_pushes_into_local_repo(git_url)  # also fixes a repo registered before this existed
         repo_id = str(existing["id"])
         return repo_id, str(existing.get("name") or repo_id)
     repo_id = repo_id_from_url(git_url)
@@ -213,6 +277,7 @@ def setup_repo(client: TaskServiceClient, git_url: str, env_file: str) -> tuple[
     print(f"Registered repo {repo_id!r} (git_url={git_url!r}).")
     print(f"  → Secrets file: {env_file}")
     print(f"  → Enabled the {workflow!r} workflow.")
+    allow_pushes_into_local_repo(git_url)
     return repo_id, repo_id
 
 

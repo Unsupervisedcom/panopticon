@@ -120,6 +120,9 @@ The execution-backend ABC realized as a separate **host process** (ADR 0008). Pe
 - **provisions the worktree** once the slug is set — observing the task over its pull loop, it
   builds the slug-named worktree on its host and repoints the container into it, then runs the
   workflow's provisioning (ADR 0010);
+- **pushes a finished merge back to the repo's origin** when a task asks (the forge-free local-git
+  flow): the container can't reach a local-filesystem origin, so the session service does that git
+  where the per-task clone lives and records the outcome on the task;
 - **registers with the task service** and reports session status.
 
 Concrete adapters behind the same interface, over time: local Docker+tmux (now), remote

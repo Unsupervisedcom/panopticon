@@ -103,6 +103,13 @@ When the session service spawns a task, it uses the repo's fields in order:
 5. **`docker run`** the container with the repo's config: `--env-file` from `env_file`, the
    `/workspace` mount, and `--privileged` when `capabilities.docker_in_docker` is set.
 
+A **local-path `git_url`** (a repo on this host rather than a hosted forge) is also where the
+session service pushes a finished merge back to, on behalf of the
+[`local-git-self-reviewed`](workflows/local-git-self-reviewed.md#pushing-back-to-your-repo)
+workflow — the container can't, since that path doesn't exist inside it. Such a repo needs
+`receive.denyCurrentBranch=updateInstead` to accept a push to its checked-out branch;
+`panopticon quickstart` sets it, and `setup-repo` offers to.
+
 ## Managing repos
 
 Repos are managed over the task service's REST API:

@@ -55,6 +55,19 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
     async def set_url(task_id: str, url: str) -> dict[str, Any]:
         return _task(await service.set_url(task_id, url))
 
+    @mcp.tool(
+        description=(
+            "Ask the session service to push this task's merge back to origin: the task branch "
+            "first (a backup that always lands), then `branch` (the base branch you merged into). "
+            "The container cannot do this itself when origin is a local path, so the host does it "
+            "and reports back — poll `get_task` and read the `push` field for the outcome "
+            "('pushed', 'partial' = only the backup landed, or 'failed', with a `detail`)."
+        )
+    )
+    async def request_push(task_id: str, branch: str) -> dict[str, Any]:
+        _log.debug("mcp request_push task=%s branch=%s", task_id, branch)
+        return _task(await service.request_push(task_id, branch=branch))
+
     @mcp.tool(description="Apply a named core operation (e.g. 'advance', 'drop').")
     async def apply_operation(task_id: str, operation: str) -> dict[str, Any]:
         _log.debug("mcp apply_operation task=%s operation=%s", task_id, operation)

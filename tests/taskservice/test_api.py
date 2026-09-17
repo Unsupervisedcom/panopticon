@@ -404,6 +404,42 @@ def test_claim_release_over_rest(client: TestClient) -> None:
     )
 
 
+def test_push_request_and_result_over_rest(client: TestClient) -> None:
+    task_id = _new_task(client)
+    assert client.get(f"/tasks/{task_id}").json()["push"] is None
+
+    requested = client.post(f"/tasks/{task_id}/push", json={"branch": "master"})
+    assert requested.status_code == 200
+    assert requested.json()["push"]["status"] == "requested"
+    assert requested.json()["push"]["branch"] == "master"
+
+    recorded = client.put(
+        f"/tasks/{task_id}/push", json={"status": "partial", "detail": "master is checked out"}
+    )
+    assert recorded.status_code == 200
+    push = recorded.json()["push"]
+    assert (push["status"], push["detail"]) == ("partial", "master is checked out")
+    assert push["branch"] == "master"  # the request's own facts survive the outcome report
+
+
+def test_push_endpoints_reject_unknown_tasks_and_unrequested_results(client: TestClient) -> None:
+    assert client.post("/tasks/ghost/push", json={"branch": "main"}).status_code == 404
+    task_id = _new_task(client)
+    # nothing asked for a push, so there is no outcome to record against
+    assert client.put(f"/tasks/{task_id}/push", json={"status": "pushed"}).status_code == 400
+
+
+def test_task_list_summary_carries_the_push_record(client: TestClient) -> None:
+    # The host daemon polls GET /tasks (the *summary* shape) and publishes from that snapshot, so
+    # a push request invisible here would simply never be serviced.
+    task_id = _new_task(client)
+    client.post(f"/tasks/{task_id}/push", json={"branch": "main"})
+
+    listed = {t["id"]: t for t in client.get("/tasks").json()}
+    assert listed[task_id]["push"]["status"] == "requested"
+    assert listed[task_id]["push"]["branch"] == "main"
+
+
 # -- artifacts ----------------------------------------------------------------------
 
 

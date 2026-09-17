@@ -26,6 +26,8 @@ from panopticon.core.models import (
     Actor,
     ContainerStatus,
     LifecyclePhase,
+    Push,
+    PushStatus,
     Repo,
     Skill,
     Status,
@@ -732,6 +734,44 @@ class TaskService:
         task.clone = clone
         await self._save_task(task)
         _log.info("task %s: provisioned (branch=%s)", task_id, branch)
+        return task
+
+    # -- pushing the merge back to origin (again: the session service does the git) -------
+
+    async def request_push(self, task_id: str, *, branch: str, at: str | None = None) -> Task:
+        """Record the agent's request to push ``branch`` (and the task branch) to ``origin``.
+
+        The container can't do this itself when ``origin`` is a local filesystem path — that path
+        exists on the *host*, not in the container — so the agent asks and the session service's
+        publisher performs it, reporting back through :meth:`record_push`. Writing the request
+        bumps the change feed, so the host daemon wakes on it within a pass.
+
+        Refused on a terminal task: nothing would ever service the request, and the workspace the
+        push reads from is cleaned up once a task is terminal.
+        """
+        task = await self.get_task(task_id)
+        if self._workflow(task.workflow).is_terminal(task.state):
+            raise ValueError(f"cannot request a push on a terminal task (state {task.state!r})")
+        task.push = Push(
+            branch=branch, status=PushStatus.REQUESTED, requested_at=at or self._clock()
+        )
+        await self._save_task(task)
+        _log.info("task %s: push requested (branch=%s)", task_id, branch)
+        return task
+
+    async def record_push(self, task_id: str, *, status: PushStatus, detail: str | None) -> Task:
+        """Record how the session service's push turned out — a pure recorded fact, like
+        :meth:`record_provisioning`.
+
+        Keeps the requested ``branch`` and ``requested_at`` (the host reports only an outcome) and
+        refuses to record against a task that never asked, so a stray report can't invent one.
+        """
+        task = await self.get_task(task_id)
+        if task.push is None:
+            raise ValueError("cannot record a push that was never requested")
+        task.push = replace(task.push, status=status, detail=detail)
+        await self._save_task(task)
+        _log.info("task %s: push %s (%s)", task_id, status.value, detail or "")
         return task
 
     # -- artifacts ----------------------------------------------------------------

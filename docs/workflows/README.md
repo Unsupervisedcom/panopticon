@@ -17,7 +17,7 @@ lifecycle — see [Tasks](../tasks.md).
 |---|---|---|
 | [`github-peer-reviewed`](github-peer-reviewed.md) | Ships a GitHub PR that a **peer** reviews before it merges. Use for GitHub changes that need a second person's sign-off. | A GitHub PR (peer-approved) |
 | [`github-self-reviewed`](github-self-reviewed.md) | Ships a GitHub PR that **you** review yourself, with no peer-review gate. | A GitHub PR (self-approved) |
-| [`local-git-self-reviewed`](local-git-self-reviewed.md) | Keeps the work **local**: commits to a branch and merges it, with no GitHub, PR, or CI. Use when the change never leaves the machine. | A local branch merged into the base |
+| [`local-git-self-reviewed`](local-git-self-reviewed.md) | **No PR, no CI**: commits to a branch, merges it into the base branch, and pushes that straight back into your repo. Use when the change never needs to become a pull request. | Your repo's base branch, merged and pushed |
 | [`spike`](spike.md) | **Open-ended** agent work with no gates. Use for exploration, debugging, and research, until you call it done. | Nothing lands on its own |
 | [`orchestrator`](orchestrator.md) | An agent that **decomposes a goal into child tasks**, each pre-planned and handed to you ready to approve. Use to fan work out across agents. | New pre-planned child tasks |
 | [`setup-repo`](setup-repo.md) | A host-side **setup utility** (no container) that mints a repo's `claude` auth token. Launched from the repos screen, not the task picker. | A token in the repo's env-file |
@@ -49,7 +49,8 @@ Each state is advanced by either **you** or the **agent**:
   fills in its responsibilities and then waits; nothing proceeds until you say so. Attach
   with `t` and run `/advance` to approve, and the agent starts a fresh turn.
 - **The agent advances** the background states (merging). Once its responsibilities are
-  met (the PR is merged, or the branch is merged locally) it moves the task on by itself.
+  met (the PR is merged, or the branch is merged and pushed back to your repo) it moves the
+  task on by itself.
 
 ## How workflows are offered
 

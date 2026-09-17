@@ -41,6 +41,7 @@ from panopticon.sessionservice.executions import WorkflowExecutions
 from panopticon.sessionservice.images import ImageBuilder
 from panopticon.sessionservice.local_runner import DEFAULT_IMAGE, LocalRunner
 from panopticon.sessionservice.provisioner import Provisioner
+from panopticon.sessionservice.publisher import Publisher
 from panopticon.sessionservice.shell_runner import ShellRunner
 from panopticon.sessionservice.spawner import Spawner
 
@@ -55,6 +56,7 @@ class HostDaemon:
         client: TaskServiceClient,
         spawner: Spawner,
         provisioner: Provisioner,
+        publisher: Publisher,
         *,
         sleep: Callable[[float], None] = time.sleep,
         interval: float = 2.0,
@@ -62,14 +64,18 @@ class HostDaemon:
         self._client = client
         self._spawner = spawner
         self._provisioner = provisioner
+        self._publisher = publisher
         self._sleep = sleep
         self._interval = interval
 
     def tick(self, tasks: list[JsonObj]) -> None:
         """One pass over a task snapshot: spawn each spawnable task, provision each slugged one,
-        reconcile each claimed one's container-lifecycle status (down-detection), and heal each
-        orphan (a claimed task whose tmux session is gone → respawn). All self-gate, so re-running
-        over an unchanged snapshot is a no-op.
+        publish each pending push, reconcile each claimed one's container-lifecycle status
+        (down-detection), and heal each orphan (a claimed task whose tmux session is gone →
+        respawn). All self-gate, so re-running over an unchanged snapshot is a no-op.
+
+        ``publish`` runs **before** ``cleanup``: a task can request its push and reach a terminal
+        state in the same breath, and cleanup deletes the per-task clone the push reads from.
 
         A cheap REST-only **pre-pass flags every orphan ``healing`` first**, before any respawn. The
         respawn loop below is serial (each :meth:`Spawner.heal` blocks on ``docker run`` + the tmux
@@ -85,6 +91,7 @@ class HostDaemon:
             try:
                 self._spawner.spawn_one(task)
                 self._provisioner.provision(task)
+                self._publisher.publish(task)
                 self._spawner.reconcile(task)
                 self._spawner.heal(task)
                 self._spawner.cleanup(task)
@@ -176,7 +183,7 @@ def run_host(
     until: Callable[[], bool] | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
-    """Wire the spawner + provisioner over a shared per-task-clone root and run the host loop."""
+    """Wire the spawner + provisioner + publisher over a shared clone root, run the host loop."""
     executions = WorkflowExecutions(client)  # one shared "how is this workflow run" cache for both
     spawner = Spawner(
         client,
@@ -191,7 +198,10 @@ def run_host(
         makedirs=makedirs,
     )
     provisioner = Provisioner(client, clones_root=tasks_root, git=git, executions=executions)
-    HostDaemon(client, spawner, provisioner, interval=interval, sleep=sleep).run(until=until)
+    publisher = Publisher(client, clones_root=tasks_root, git=git, executions=executions)
+    HostDaemon(client, spawner, provisioner, publisher, interval=interval, sleep=sleep).run(
+        until=until
+    )
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
