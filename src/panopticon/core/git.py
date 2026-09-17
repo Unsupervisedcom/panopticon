@@ -24,6 +24,21 @@ from typing import Protocol
 BRANCH_PREFIX = "panopticon"
 
 
+class GitError(RuntimeError):
+    """A ``git`` command that exited non-zero, carrying its ``stderr``.
+
+    Callers that must *interpret* a failure (the session service's publisher classifies a refused
+    push into an actionable remedy) need git's message, not just an exit code — and they shouldn't
+    have to catch :class:`subprocess.CalledProcessError`, which would tie them to the real runner
+    and make test fakes raise something they don't otherwise import. Ops that can fail meaningfully
+    raise this instead; the plumbing ops keep raising whatever the runner raises.
+    """
+
+    def __init__(self, message: str, *, stderr: str = "") -> None:
+        super().__init__(message)
+        self.stderr = stderr
+
+
 class CommandRunner(Protocol):
     """Runs an external command and returns its stdout; ``check`` raises on non-zero exit."""
 
@@ -107,3 +122,17 @@ class GitClones:
     def set_origin(self, *, repo_path: str, url: str) -> None:
         """``git -C <repo> remote set-url origin <url>`` — point at the forge, not the cache."""
         self._run(["git", "-C", repo_path, "remote", "set-url", "origin", url])
+
+    def push(self, *, repo_path: str, remote: str, branch: str) -> None:
+        """``git -C <repo> push <remote> <branch>`` — send one branch, as-is (never forced).
+
+        Raises :class:`GitError` with git's ``stderr`` on a rejected push, so the caller can tell a
+        refused checked-out branch from a non-fast-forward and act on it. Pushing *from* the
+        per-task clone is how a merge reaches a local-filesystem origin the container can't see.
+        """
+        try:
+            self._run(["git", "-C", repo_path, "push", remote, branch])
+        except subprocess.CalledProcessError as err:
+            raise GitError(
+                f"pushing {branch!r} to {remote!r} failed", stderr=err.stderr or ""
+            ) from err

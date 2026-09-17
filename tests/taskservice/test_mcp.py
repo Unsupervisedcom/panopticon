@@ -62,6 +62,7 @@ async def test_tools_are_exposed_and_drive_the_task(tmp_path: Path) -> None:
             "set_turn",
             "set_blocked",
             "set_sort_weight",
+            "request_push",
             "put_artifact",
             "list_artifacts",
         } <= names
@@ -211,6 +212,20 @@ async def test_set_url_via_tool(tmp_path: Path) -> None:
         assert result.structuredContent is not None
         assert result.structuredContent["url"] == url
     assert (await svc.get_task(task.id)).url == url  # the tool actually mutated the task
+
+
+async def test_request_push_via_tool(tmp_path: Path) -> None:
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        result = await s.call_tool("request_push", {"task_id": task.id, "branch": "master"})
+        assert result.structuredContent is not None
+        # The agent reads the outcome back off the same shape it gets from get_task.
+        assert result.structuredContent["push"]["status"] == "requested"
+        assert result.structuredContent["push"]["branch"] == "master"
+    recorded = (await svc.get_task(task.id)).push
+    assert recorded is not None and recorded.branch == "master"
 
 
 async def test_set_sort_weight_via_tool(tmp_path: Path) -> None:

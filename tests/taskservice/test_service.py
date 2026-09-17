@@ -16,7 +16,7 @@ from panopticon.core import (
     Workflow,
 )
 from panopticon.core.artifacts import InvalidArtifactContent
-from panopticon.core.models import Actor, LifecyclePhase, Repo, Responsibility, Status
+from panopticon.core.models import Actor, LifecyclePhase, PushStatus, Repo, Responsibility, Status
 from panopticon.core.store import NotFound
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 from panopticon.taskservice.service import (
@@ -524,6 +524,58 @@ async def test_record_provisioning_is_slug_gated(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="slug"):
         await svc.record_provisioning(task.id, branch="panopticon/x", clone="/clones/x")
     assert (await svc.get_task(task.id)).branch is None
+
+
+# -- pushing the merge back to origin: same split — the session service does the git ---------
+
+
+async def test_request_push_records_the_request_with_its_branch(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+
+    out = await svc.request_push(task.id, branch="master")
+
+    assert out.push is not None
+    assert (out.push.branch, out.push.status) == ("master", PushStatus.REQUESTED)
+    assert out.push.requested_at is not None  # stamped by the service, never read from the core
+    assert (await svc.get_task(task.id)).push == out.push  # persisted, so the daemon can see it
+
+
+async def test_request_push_is_refused_on_a_terminal_task(tmp_path: Path) -> None:
+    # Nothing would service it: the host only publishes live tasks, and cleanup deletes the
+    # per-task clone the push would read from once a task is terminal.
+    svc = await make_service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    await svc.apply_operation(task.id, "drop")
+
+    with pytest.raises(ValueError, match="terminal"):
+        await svc.request_push(task.id, branch="main")
+    assert (await svc.get_task(task.id)).push is None
+
+
+async def test_record_push_keeps_the_requested_branch_and_timestamp(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    requested = (await svc.request_push(task.id, branch="master")).push
+    assert requested is not None
+
+    out = await svc.record_push(task.id, status=PushStatus.PARTIAL, detail="main is checked out")
+
+    assert out.push is not None
+    assert out.push.status is PushStatus.PARTIAL
+    assert out.push.detail == "main is checked out"
+    # The host reports only an outcome, so the request's own facts must survive it.
+    assert (out.push.branch, out.push.requested_at) == (
+        requested.branch,
+        requested.requested_at,
+    )
+
+
+async def test_record_push_refuses_a_push_that_was_never_requested(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    with pytest.raises(ValueError, match="never requested"):
+        await svc.record_push(task.id, status=PushStatus.PUSHED, detail="pushed")
 
 
 async def test_illegal_transition_rejected(tmp_path: Path) -> None:

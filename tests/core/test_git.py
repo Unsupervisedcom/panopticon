@@ -10,7 +10,14 @@ from pathlib import Path
 
 import pytest
 
-from panopticon.core.git import GitClones, GitWorktrees, Worktree, branch_name, worktree_path
+from panopticon.core.git import (
+    GitClones,
+    GitError,
+    GitWorktrees,
+    Worktree,
+    branch_name,
+    worktree_path,
+)
 
 
 class _Recorder:
@@ -96,6 +103,38 @@ def test_create_branch_and_set_origin() -> None:
         "origin",
         "https://forge/r1.git",
     ]
+
+
+def test_push_emits_a_plain_push() -> None:
+    rec = _Recorder()
+    GitClones(run=rec).push(repo_path="/tasks/t1", remote="origin", branch="main")
+    # Never forced, never with --set-upstream: one branch, exactly as it stands.
+    assert rec.calls[0][0] == ["git", "-C", "/tasks/t1", "push", "origin", "main"]
+
+
+def test_push_raises_git_error_carrying_stderr() -> None:
+    """A rejected push must surface git's own words — the publisher classifies them into a remedy."""
+
+    def _reject(args: Sequence[str], *, check: bool = True) -> str:
+        raise subprocess.CalledProcessError(
+            1,
+            list(args),
+            stderr="! [remote rejected] main -> main (branch is currently checked out)",
+        )
+
+    with pytest.raises(GitError) as err:
+        GitClones(run=_reject).push(repo_path="/tasks/t1", remote="origin", branch="main")
+    assert "currently checked out" in err.value.stderr
+    assert "main" in str(err.value)
+
+
+def test_push_tolerates_a_failure_with_no_stderr() -> None:
+    def _reject(args: Sequence[str], *, check: bool = True) -> str:
+        raise subprocess.CalledProcessError(1, list(args))  # stderr is None
+
+    with pytest.raises(GitError) as err:
+        GitClones(run=_reject).push(repo_path="/tasks/t1", remote="origin", branch="main")
+    assert err.value.stderr == ""
 
 
 # -- integration: a real git repo ---------------------------------------------------

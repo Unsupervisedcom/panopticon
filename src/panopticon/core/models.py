@@ -236,6 +236,45 @@ def resolve_agent_cli(task_agent_cli: str | None, repo_agent_cli: str | None) ->
     return task_agent_cli or repo_agent_cli or DEFAULT_AGENT_CLI
 
 
+class PushStatus(str, Enum):
+    """How a task's requested push to ``origin`` ended (see :class:`Push`).
+
+    The session service performs the push on the host and reports one of these back; the task
+    service only records it. ``PARTIAL`` is the interesting one: the task branch reached the
+    origin but the base branch did not, so the work is safe even though the merge didn't land.
+    """
+
+    REQUESTED = "requested"  # the agent asked; the session service hasn't acted yet
+    PUSHED = "pushed"  # both the task branch and the base branch reached origin
+    PARTIAL = "partial"  # the task branch landed; the base branch was refused
+    FAILED = "failed"  # nothing landed
+
+
+@dataclass(frozen=True)
+class Push:
+    """A request to push this task's merge back to ``origin``, and how it turned out.
+
+    The agent merges in its own clone and then *asks* for the push (``REQUESTED``); the session
+    service — which runs where the clone lives, so it can reach a local-filesystem origin the
+    container never could — performs it and records the outcome. A pure recorded fact: the task
+    service does no git (ADR 0011's split), it just carries this between the two.
+
+    ``branch`` is the base branch to push. ``detail`` carries the pushed sha on success, or an
+    operator-actionable explanation on ``PARTIAL``/``FAILED`` (the remedy for a refused push, not
+    just git's stderr). Timestamps are supplied by the caller, as everywhere in the core.
+    """
+
+    branch: str
+    status: PushStatus = PushStatus.REQUESTED
+    detail: str | None = None
+    requested_at: str | None = None
+
+    @property
+    def pending(self) -> bool:
+        """True while the session service still owes this push — the publisher's gate."""
+        return self.status is PushStatus.REQUESTED
+
+
 @dataclass(frozen=True)
 class HistoryEntry:
     """One entry in a task's log — recorded when the task *enters* ``to_state``.
@@ -298,6 +337,11 @@ class Task:
     #: itself — so this stays correct when the runner is remote. Both ``None`` until provisioning.
     branch: str | None = None
     clone: str | None = None
+    #: The pending-or-finished push of this task's merge back to ``origin`` (:class:`Push`), or
+    #: ``None`` when none was ever requested. The agent requests it; the session service performs
+    #: the host git and records the result here. Only the forge-free local-git flow uses it today
+    #: — the GitHub flows push from the container, which can reach their networked origin.
+    push: Push | None = None
     #: The runner that has **claimed** this task (its ``runner_id``), or ``None`` if unclaimed. A
     #: session service claims an unclaimed task before spawning its container, so exactly one host
     #: owns it; the claim is the spawn gate (ADR 0008). Released (back to ``None``) to hand it off

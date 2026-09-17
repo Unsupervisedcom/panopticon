@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from panopticon.core.artifacts import ArtifactError
-from panopticon.core.models import Actor, LifecyclePhase, Repo, Status, Task
+from panopticon.core.models import Actor, LifecyclePhase, PushStatus, Repo, Status, Task
 from panopticon.core.store import AlreadyExists, NotFound, StoreError
 from panopticon.core.workflow import IllegalTransition, InvalidWorkflow, ResponsibilitiesNotMet
 from panopticon.taskservice.service import (
@@ -82,6 +82,9 @@ class TaskSummaryOut(BaseModel):
     snoozed_until: str | None = None
     branch: str | None
     clone: str | None
+    push: PushOut | None = (
+        None  # the requested/finished push of the merge back to origin; None if never requested
+    )
     claimed_by: str | None
     starting_model: str | None = None
     agent_cli: str | None = None  # per-task CLI override; None = use the repo default (ADR 0014 §3)
@@ -125,6 +128,9 @@ class TaskOut(BaseModel):
     )
     branch: str | None
     clone: str | None
+    push: PushOut | None = (
+        None  # the requested/finished push of the merge back to origin; None if never requested
+    )
     claimed_by: str | None  # the runner that owns this task (the spawn gate), or None
     starting_model: str | None = (
         None  # the model seeded at creation from the workflow's default_model
@@ -268,6 +274,24 @@ class StateIn(BaseModel):
 class ProvisioningIn(BaseModel):
     branch: str
     clone: str
+
+
+class PushRequestIn(BaseModel):
+    branch: str  # the base branch to push; the task branch goes with it as the backup
+
+
+class PushResultIn(BaseModel):
+    status: PushStatus
+    detail: str | None = None
+
+
+class PushOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    branch: str
+    status: PushStatus
+    detail: str | None = None
+    requested_at: str | None = None
 
 
 class SkillOut(BaseModel):
@@ -685,6 +709,26 @@ def create_app(service: TaskService) -> FastAPI:
             task = await service.record_provisioning(task_id, branch=body.branch, clone=body.clone)
         except ValueError as exc:  # slug not set yet
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _task_out(task)
+
+    @app.post("/tasks/{task_id}/push")
+    async def request_push(task_id: str, body: PushRequestIn) -> TaskOut:
+        try:  # the agent asks; the session service's publisher performs the host git
+            task = await service.request_push(task_id, branch=body.branch)
+        except ValueError as exc:  # terminal task — nothing would service it
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except NotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return _task_out(task)
+
+    @app.put("/tasks/{task_id}/push")
+    async def record_push(task_id: str, body: PushResultIn) -> TaskOut:
+        try:  # the session service reports how the push it performed turned out
+            task = await service.record_push(task_id, status=body.status, detail=body.detail)
+        except ValueError as exc:  # no push was ever requested
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except NotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         return _task_out(task)
 
     # -- artifacts ----------------------------------------------------------------

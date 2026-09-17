@@ -16,7 +16,16 @@ from typing import Any, get_args, get_origin, get_type_hints
 import pytest
 from sqlalchemy import inspect
 
-from panopticon.core.models import Actor, HistoryEntry, Repo, Responsibility, Status, Task
+from panopticon.core.models import (
+    Actor,
+    HistoryEntry,
+    Push,
+    PushStatus,
+    Repo,
+    Responsibility,
+    Status,
+    Task,
+)
 from panopticon.core.store import (
     AlreadyExists,
     IntegrityError,
@@ -529,6 +538,12 @@ def _fully_populated_task() -> Task:
         snoozed_until="2026-08-06T03:00:00+00:00",
         branch="panopticon/fix-the-widget",
         clone="/clones/t-full",
+        push=Push(
+            branch="main",
+            status=PushStatus.PARTIAL,
+            detail="origin has main checked out",
+            requested_at="t1",
+        ),
         claimed_by="local",
         starting_model="primary",
         agent_cli="codex",
@@ -584,6 +599,9 @@ def _mutated_task(task: Task) -> Task:
         snoozed_until="2026-09-06T03:00:00+00:00",
         branch="panopticon/fix-the-gadget",
         clone="/clones/t-full-again",
+        push=Push(
+            branch="master", status=PushStatus.PUSHED, detail="pushed master", requested_at="t2"
+        ),
         claimed_by="remote",
         starting_model="secondary",
         agent_cli="claude",

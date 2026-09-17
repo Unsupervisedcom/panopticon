@@ -45,7 +45,16 @@ from sqlalchemy.orm import (
 )
 from sqlalchemy.pool import StaticPool
 
-from panopticon.core.models import Actor, HistoryEntry, Repo, Responsibility, Status, Task
+from panopticon.core.models import (
+    Actor,
+    HistoryEntry,
+    Push,
+    PushStatus,
+    Repo,
+    Responsibility,
+    Status,
+    Task,
+)
 from panopticon.core.store import (
     AlreadyExists,
     IntegrityError,
@@ -147,6 +156,30 @@ class _RepoRow(_Base):
         return cls(**cls.column_values(repo))
 
 
+def _push_to_row(push: Push | None) -> dict[str, Any] | None:
+    """A :class:`Push` as the plain JSON object the column stores (``None`` stays ``None``)."""
+    if push is None:
+        return None
+    return {
+        "branch": push.branch,
+        "status": push.status.value,
+        "detail": push.detail,
+        "requested_at": push.requested_at,
+    }
+
+
+def _push_from_row(row: dict[str, Any] | None) -> Push | None:
+    """The stored JSON object back as a :class:`Push` (``None``/empty stays ``None``)."""
+    if not row:
+        return None
+    return Push(
+        branch=str(row["branch"]),
+        status=PushStatus(row["status"]),
+        detail=row.get("detail"),
+        requested_at=row.get("requested_at"),
+    )
+
+
 class _TaskRow(_Base):
     __tablename__ = "task"
 
@@ -163,6 +196,10 @@ class _TaskRow(_Base):
     snoozed_until: Mapped[str | None] = mapped_column(default=None)
     branch: Mapped[str | None] = mapped_column(default=None)
     clone: Mapped[str | None] = mapped_column(default=None)
+    #: The task's push record (:class:`~panopticon.core.models.Push`) as a JSON object, or NULL
+    #: when none was ever requested. A single small record with no rows of its own to query, so a
+    #: JSON column earns its place here the way ``Repo.capabilities`` does.
+    push: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
     claimed_by: Mapped[str | None] = mapped_column(default=None)
     starting_model: Mapped[str | None] = mapped_column(default=None)
     agent_cli: Mapped[str | None] = mapped_column(default=None)
@@ -193,6 +230,7 @@ class _TaskRow(_Base):
             snoozed_until=self.snoozed_until,
             branch=self.branch,
             clone=self.clone,
+            push=_push_from_row(self.push),
             claimed_by=self.claimed_by,
             starting_model=self.starting_model,
             agent_cli=self.agent_cli,
@@ -225,6 +263,7 @@ class _TaskRow(_Base):
             "snoozed_until": task.snoozed_until,
             "branch": task.branch,
             "clone": task.clone,
+            "push": _push_to_row(task.push),
             "claimed_by": task.claimed_by,
             "starting_model": task.starting_model,
             "agent_cli": task.agent_cli,

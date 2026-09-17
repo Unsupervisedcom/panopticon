@@ -253,6 +253,19 @@ class TaskServiceClient:
             JsonObj, self._json(self._http.put(f"/tasks/{task_id}/provisioning", json=body))
         )
 
+    def request_push(self, task_id: str, branch: str) -> JsonObj:
+        """Ask the session service to push this task's merge (``branch`` + the task branch) to
+        origin — the agent's half of the local-git push protocol."""
+        return cast(
+            JsonObj,
+            self._json(self._http.post(f"/tasks/{task_id}/push", json={"branch": branch})),
+        )
+
+    def record_push(self, task_id: str, status: str, detail: str | None = None) -> JsonObj:
+        """Record how the push the session service performed turned out (its half of the same)."""
+        body: JsonObj = {"status": status, "detail": detail}
+        return cast(JsonObj, self._json(self._http.put(f"/tasks/{task_id}/push", json=body)))
+
     def claim(self, task_id: str, runner_id: str) -> JsonObj:
         """Claim an unclaimed task for `runner_id` (the spawn gate); 409 if another runner holds it."""
         return cast(

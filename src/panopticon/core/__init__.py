@@ -7,6 +7,8 @@ calls happen inside task containers).
 from panopticon.core.models import (
     Actor,
     HistoryEntry,
+    Push,
+    PushStatus,
     Repo,
     Responsibility,
     Skill,
@@ -40,6 +42,8 @@ __all__ = [
     "IllegalTransition",
     "InitialState",
     "InvalidWorkflow",
+    "Push",
+    "PushStatus",
     "Repo",
     "ResponsibilitiesNotMet",
     "Responsibility",
