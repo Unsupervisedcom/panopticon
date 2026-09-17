@@ -57,7 +57,7 @@ need you. The `container` column tracks each agent's sandbox as it spawns (`queu
 or `down` when one needs a respawn), and governed sub-tasks nest under their governor (`└─`).
 The `❏ ➚` column marks what a task carries — `❏` an artifact to read (`a` lists them), `➚` a link
 such as its PR (`p` opens it). Press `t` to drop into any task's session, `?` for the full key
-list.
+list — or see [the keybinding reference](docs/dashboard.md).
 
 ## Requirements
 
