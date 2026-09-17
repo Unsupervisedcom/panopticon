@@ -11,11 +11,16 @@ from pathlib import Path
 import pytest
 
 from panopticon.core.git import (
+    SUBMODULE_CONFLICTED,
+    SUBMODULE_CURRENT,
+    SUBMODULE_MODIFIED,
+    SUBMODULE_UNINITIALIZED,
     GitClones,
     GitError,
     GitWorktrees,
     Worktree,
     branch_name,
+    parse_submodule_status,
     worktree_path,
 )
 
@@ -105,12 +110,36 @@ def test_create_branch_and_set_origin() -> None:
     ]
 
 
-def test_submodule_status_is_a_read_and_returns_its_output() -> None:
+def test_submodule_status_parses_a_state_per_submodule() -> None:
+    output = (
+        "-abc123 vendor/lib\n"  # uninitialized: no ` (describe)` suffix
+        "+def456 vendor/other (heads/main)\n"  # at a commit other than the gitlink's
+        " 789abc vendor/other/nested (v1.2.3)\n"  # --recursive descended into it
+        "Uc0ffee vendor/conflicted (heads/main)\n"
+    )
+
     def _status(args: Sequence[str], *, check: bool = True) -> str:
         assert args == ["git", "-C", "/tasks/t1", "submodule", "status", "--recursive"]
-        return "-abc123 vendor/lib\n"
+        return output
 
-    assert GitClones(run=_status).submodule_status(repo_path="/tasks/t1") == "-abc123 vendor/lib\n"
+    assert GitClones(run=_status).submodule_status(repo_path="/tasks/t1") == {
+        "vendor/lib": SUBMODULE_UNINITIALIZED,
+        "vendor/other": SUBMODULE_MODIFIED,
+        "vendor/other/nested": SUBMODULE_CURRENT,
+        "vendor/conflicted": SUBMODULE_CONFLICTED,
+    }
+
+
+def test_submodule_status_is_empty_without_submodules() -> None:
+    assert GitClones(run=lambda *_a, **_kw: "").submodule_status(repo_path="/tasks/t1") == {}
+
+
+def test_parse_submodule_status_keeps_a_path_with_spaces() -> None:
+    # Taking the path as everything between the sha and the ` (describe)` suffix — rather than by
+    # field index — is what makes this work.
+    assert parse_submodule_status(" abc123 vendor/my lib (heads/main)\n") == {
+        "vendor/my lib": SUBMODULE_CURRENT
+    }
 
 
 def test_update_submodules_is_recursive_and_allows_local_transports() -> None:

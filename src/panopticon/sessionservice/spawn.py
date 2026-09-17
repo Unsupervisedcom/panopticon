@@ -16,11 +16,11 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from panopticon.client import JsonObj
-from panopticon.core.git import GitClones
+from panopticon.core.git import SUBMODULE_UNINITIALIZED, GitClones
 from panopticon.sessionservice.clones import CloneCache
 
 _log = logging.getLogger(__name__)
@@ -74,17 +74,17 @@ def prepare_workspace(
     return clone
 
 
-def _needs_submodules(status: str) -> bool:
-    """Whether ``git submodule status`` reports a submodule that isn't checked out yet (``-``).
+def _needs_submodules(states: Mapping[str, str]) -> bool:
+    """Whether any of the repo's submodules isn't checked out yet.
 
     Gated on *uninitialized* rather than on *freshly cloned* for two reasons. A submodule fetch that
     fails transiently leaves the checkout in place, so the clone gate above would skip it forever
     after — here the next spawn pass retries. And on a container re-creation the checkout is the one
-    the agent has been working in: an initialized submodule reports ``+``/``U``/space even when its
-    commit or working tree has moved, so we never run an update that would try to check the recorded
-    commit out over the agent's changes.
+    the agent has been working in: an initialized submodule reports modified/conflicted/current even
+    when its commit or working tree has moved, so we never run an update that would try to check the
+    recorded commit out over the agent's changes.
     """
-    return any(line.startswith("-") for line in status.splitlines())
+    return any(state == SUBMODULE_UNINITIALIZED for state in states.values())
 
 
 def cleanup_workspace(

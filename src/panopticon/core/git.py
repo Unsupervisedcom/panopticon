@@ -59,6 +59,34 @@ def worktree_path(worktrees_root: str, repo_id: str, branch: str) -> str:
     return f"{worktrees_root.rstrip('/')}/{repo_id}/{branch}"
 
 
+#: ``git submodule status`` state characters — the first column of each line.
+SUBMODULE_UNINITIALIZED = "-"  # not checked out (no objects, an empty directory)
+SUBMODULE_MODIFIED = "+"  # checked out at a commit other than the gitlink's
+SUBMODULE_CONFLICTED = "U"  # has merge conflicts
+SUBMODULE_CURRENT = " "  # checked out at the recorded commit
+
+
+def parse_submodule_status(output: str) -> dict[str, str]:
+    """Parse ``git submodule status`` output into ``{submodule path: state character}``.
+
+    Each line is ``<state><sha> <path>``, plus a `` (<describe>)`` suffix on an initialized
+    submodule. The path is taken as everything between the sha and that suffix rather than by
+    field index, so a submodule path containing spaces survives. A line that doesn't match the
+    shape is skipped — a parse this thin should ignore what it doesn't recognize, not guess.
+    """
+    states: dict[str, str] = {}
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        state, entry = line[0], line[1:]
+        _sha, _, path = entry.partition(" ")
+        if path.endswith(")"):
+            path = path.rpartition(" (")[0] or path
+        if path:
+            states[path] = state
+    return states
+
+
 @dataclass(frozen=True)
 class Worktree:
     """A created worktree: its branch and on-disk path."""
@@ -123,16 +151,18 @@ class GitClones:
         """``git -C <repo> remote set-url origin <url>`` — point at the forge, not the cache."""
         self._run(["git", "-C", repo_path, "remote", "set-url", "origin", url])
 
-    def submodule_status(self, *, repo_path: str) -> str:
-        """``git -C <repo> submodule status --recursive`` — a line per submodule, empty when none.
+    def submodule_status(self, *, repo_path: str) -> dict[str, str]:
+        """The repo's submodules and their states — ``{path: state}``, empty when there are none.
 
-        The leading character of each line is the state: ``-`` uninitialized, ``+`` checked out at a
-        different commit than the gitlink, ``U`` conflicted, a space in sync. The caller reads it to
-        decide whether :meth:`update_submodules` is needed (no network, nothing written).
-        ``--recursive`` descends into the submodules that *are* initialized, so a nested one that
-        isn't shows up too.
+        Reads ``git -C <repo> submodule status --recursive`` (no network, nothing written) and parses
+        it, so callers ask about a submodule instead of slicing git's columns. ``--recursive``
+        descends into the submodules that *are* initialized, so a nested one that isn't shows up too.
+        The state is one of the :data:`SUBMODULE_UNINITIALIZED`/:data:`SUBMODULE_MODIFIED`/
+        :data:`SUBMODULE_CONFLICTED`/:data:`SUBMODULE_CURRENT` characters git puts in the first
+        column.
         """
-        return self._run(["git", "-C", repo_path, "submodule", "status", "--recursive"])
+        out = self._run(["git", "-C", repo_path, "submodule", "status", "--recursive"])
+        return parse_submodule_status(out)
 
     def update_submodules(self, *, repo_path: str) -> None:
         """``git -C <repo> submodule update --init --recursive`` — fill in the submodule checkouts.
