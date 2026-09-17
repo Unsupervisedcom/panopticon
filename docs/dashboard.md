@@ -72,8 +72,13 @@ placeholder row and the full list. This is display-only — it does not touch th
 | --- | --- |
 | `Enter` | Open the selected artifact with the host's default handler |
 | `e` | Open the on-disk file in place (when the dashboard shares the artifact store) |
+| `f` | Open the task's artifact **folder** in the host's file manager (when it's on this machine) |
 | `Ctrl-a` | Attach new local files to the task |
 | `Esc` | Cancel |
+
+`f` needs no selection — the folder belongs to the task, not an entry, so it works on an empty
+list too. A task's folder is created with its first artifact, so before then there is nothing to
+open and `f` says so.
 
 ## Repo artifacts modal (`A`, or `a` in the repos modal)
 

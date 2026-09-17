@@ -2723,6 +2723,79 @@ async def test_e_warns_when_the_artifact_is_not_local(monkeypatch: Any, tmp_path
         assert fake.fetched == []  # and no REST fallback
 
 
+async def test_artifact_f_opens_the_tasks_artifact_folder(monkeypatch: Any, tmp_path: Path) -> None:
+    # `f` hands the task's artifact *directory* to the host's file manager — the repo modal's key,
+    # scoped to the task, so the operator can browse the whole folder instead of one file.
+    calls = _record_popen(monkeypatch)
+    folder = tmp_path / "tasks" / str(_TASK["id"])
+    folder.mkdir(parents=True)
+    (folder / "plan.md").write_text("# Plan\n")
+    fake = _FakeClient([_TASK], artifacts={_TASK["id"]: ["plan.md"]}, artifact_content=b"REST")
+    app = Dashboard(fake, artifacts_root=tmp_path)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        assert calls == [[dashboard._open_command(), str(folder)]]
+        assert fake.fetched == []  # a folder open fetches nothing
+
+
+async def test_artifact_f_warns_when_there_is_no_folder(monkeypatch: Any, tmp_path: Path) -> None:
+    # Nothing written yet (the directory is created on the first artifact) or a dashboard remote
+    # from the store: either way there's no folder here, so warn and stay put.
+    calls = _record_popen(monkeypatch)
+    fake = _FakeClient([_TASK], artifacts={_TASK["id"]: ["plan.md"]})
+    app = Dashboard(fake, artifacts_root=tmp_path)  # empty root  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        assert calls == []
+        assert app.is_running
+
+
+async def test_artifact_f_works_on_an_empty_list(monkeypatch: Any, tmp_path: Path) -> None:
+    # The folder is the task's, not an entry's — so `f` needs no selection. A task holding only
+    # hidden (agent bookkeeping) artifacts lists nothing, and its folder still opens.
+    calls = _record_popen(monkeypatch)
+    folder = tmp_path / "tasks" / str(_TASK["id"])
+    folder.mkdir(parents=True)
+    (folder / ".state.json").write_text("{}")
+    fake = _FakeClient([_TASK], artifacts={_TASK["id"]: [".state.json"]})
+    app = Dashboard(fake, artifacts_root=tmp_path)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        assert isinstance(app.screen, dashboard.ArtifactScreen)
+        await pilot.press("f")
+        await pilot.pause()
+        assert calls == [[dashboard._open_command(), str(folder)]]
+
+
+async def test_artifact_f_survives_a_host_with_no_opener(monkeypatch: Any, tmp_path: Path) -> None:
+    # A headless host without `xdg-open` must notify, not take the TUI down with it.
+    def _raise(argv: Any, *a: Any, **k: Any) -> None:
+        raise FileNotFoundError(argv[0])
+
+    monkeypatch.setattr(dashboard.subprocess, "Popen", _raise)
+    folder = tmp_path / "tasks" / str(_TASK["id"])
+    folder.mkdir(parents=True)
+    fake = _FakeClient([_TASK], artifacts={_TASK["id"]: []})
+    app = Dashboard(fake, artifacts_root=tmp_path)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        assert app.is_running
+
+
 async def test_missing_opener_binary_is_handled_not_crashed(monkeypatch: Any) -> None:
     # On a headless host without `xdg-open`, Popen raises FileNotFoundError; the dashboard must
     # notify and stay up rather than let it escape the screen callback and kill the TUI.

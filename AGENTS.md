@@ -358,8 +358,8 @@ on every PR (the same commands the Makefile wraps).
   (`<artifacts>/repos/<repo-id>/<name…>`) — the documents every task in a repo shares, whose
   names may be nested. The agent writes the latter with `put_repo_artifact`/`list_repo_artifacts`,
   naming its own task (the service resolves its repo, so it can only write to its own); the
-  dashboard gives them their own modal (`A`, or `a` in the repos screen) where `f` opens the
-  repo's artifact folder on the host.
+  dashboard gives them their own modal (`A`, or `a` in the repos screen). Either scope's modal
+  opens its artifact **folder** on the host with `f` — the task's under `a`, the repo's under `A`.
 - **Lifecycle hook** — a deterministic `Workflow` method the task service runs at a defined
   moment (currently `on_transition`, after a transition, before persistence). It may write
   artifacts or mutate the task's own record — no LLM, no clock. The seam; the built-in workflows
