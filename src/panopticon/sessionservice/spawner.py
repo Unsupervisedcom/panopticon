@@ -230,16 +230,17 @@ class Spawner:
         return self._runner.spawn(
             task_id,
             env_file=repo.get("env_file"),
+            credential_dir=repo.get("credential_dir"),
             workspace=workspace,
             image=image,
             docker_in_docker=bool((repo.get("capabilities") or {}).get("docker_in_docker")),
             initial_prompt=task.get(
                 "initial_prompt"
-            ),  # passed as a CLI arg to claude on the first run
+            ),  # passed as a CLI arg to the agent CLI on the first run
             turn=task.get("turn"),  # agent's turn → INTERRUPT_PROMPT on respawn
             starting_model=task.get(
                 "starting_model"
-            ),  # model selection passed to claude --model on first launch
+            ),  # model selection passed to the agent CLI on first launch
             agent_cli=agent_cli,  # picks the launcher's adapter + the config-mount path
             progress=lambda phase: self._report(task_id, phase),  # STARTING then AWAITING
         )

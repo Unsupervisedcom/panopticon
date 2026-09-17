@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from panopticon.container import hook
-from panopticon.container.hooks import settings, write_settings
+from panopticon.container.hooks import THEME, settings, write_settings
 
 
 def test_settings_wire_stop_to_user_and_prompt_to_agent() -> None:
@@ -39,6 +39,28 @@ def test_write_settings_writes_claude_settings(tmp_path: Path) -> None:
     path = write_settings(tmp_path)
     assert path == tmp_path / ".claude" / "settings.json"
     assert "Stop" in json.loads(path.read_text())["hooks"]
+
+
+def test_write_settings_seeds_the_starting_theme(tmp_path: Path) -> None:
+    # claude has no --theme flag and defaults to a fixed dark; `auto` follows the terminal's
+    # background, so an attached pane is readable on a light or dark terminal alike.
+    path = write_settings(tmp_path)
+    assert THEME == "auto"
+    assert json.loads(path.read_text())["theme"] == "auto"
+
+
+def test_write_settings_keeps_a_theme_the_container_already_chose(tmp_path: Path) -> None:
+    # Seeded, not enforced: the config dir outlives a respawn, so a `/theme` run inside the
+    # container must survive the next launch — while the hooks are still re-applied.
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text('{"theme": "dark"}')
+
+    write_settings(tmp_path)
+
+    data = json.loads(settings_path.read_text())
+    assert data["theme"] == "dark"  # the operator's choice wins
+    assert "Stop" in data["hooks"]
 
 
 def test_write_settings_merges_without_clobbering_existing_keys(tmp_path: Path) -> None:

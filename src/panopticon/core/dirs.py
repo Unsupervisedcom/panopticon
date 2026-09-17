@@ -148,6 +148,49 @@ def secrets_file_path(name: str | None, *, secrets_dir: str | Path | None = None
     return str(path)
 
 
+def credential_dir_path(name: str | None, *, secrets_dir: str | Path | None = None) -> str | None:
+    """Resolve a stored ``credential_dir`` *name* to an absolute path under the secrets dir.
+
+    Mirrors :func:`secrets_file_path` but for a directory reference. ``name`` is a path relative
+    to the secrets dir (see :data:`SECRETS_DIR`); ``secrets_dir`` defaults to this host's.
+    Returns ``None`` for a falsy name; raises :class:`ValueError` on path escape (``..`` or an
+    absolute name). The runner calls this to build the ``docker run --volume`` argument for the
+    shared credential-dir mount (``/panopticon/credentials``).
+    """
+    if not name:
+        return None
+    root = (Path(secrets_dir) if secrets_dir is not None else _secrets_dir()).resolve()
+    path = (root / name).resolve()
+    if path != root and root not in path.parents:
+        raise ValueError(f"credential_dir name {name!r} escapes the secrets dir")
+    return str(path)
+
+
+def relativize_credential_dir(path: str, *, secrets_dir: str | Path | None = None) -> str:
+    """Normalize a user-entered credential-dir ``path`` to a name relative to the secrets dir.
+
+    The ``credential_dir`` analogue of :func:`relativize_secrets_file`. Accepts an absolute or
+    relative path and always yields a stored *relative name*:
+
+    - a path inside the secrets dir → its subpath relative to the dir;
+    - any other absolute path → its basename;
+    - a relative path → returned unchanged.
+
+    An empty/whitespace input yields ``""``. ``secrets_dir`` defaults to this host's.
+    """
+    path = path.strip()
+    if not path:
+        return ""
+    p = Path(path)
+    if p.is_absolute():
+        root = (Path(secrets_dir) if secrets_dir is not None else _secrets_dir()).resolve()
+        resolved = p.resolve()
+        if resolved == root or root in resolved.parents:
+            return str(resolved.relative_to(root))
+        return p.name
+    return path
+
+
 def _hooks_dir() -> Path:
     """The hooks dir, resolved dynamically (so ``$PANOPTICON_CONFIG``/XDG overrides take effect).
 

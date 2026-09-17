@@ -3,23 +3,30 @@
 Codex satisfies the same seams as claude against its own surface (ADR 0014 §5 mapping table):
 
 - **config dir** ``~/.codex`` (``CODEX_HOME``), config file ``config.toml``;
-- **skills / operations** → custom prompts under ``~/.codex/prompts/<name>.md`` (same
-  ``---\\ndescription: …\\n---`` frontmatter claude uses, so the body renderers are shared);
+- **skills / operations** → ``~/.agents/skills/<name>/SKILL.md`` (codex's model-discoverable
+  skills mechanism; user scope so nothing reaches the task's working tree; ``---\\nname: …\\n
+  description: …\\n---`` frontmatter, body renderers shared with claude);
 - **MCP** → a ``[mcp_servers.panopticon]`` table in ``config.toml`` over streamable **HTTP** (ADR
   flag 1: codex supports remote HTTP MCP; older builds need ``experimental_use_rmcp_client``);
-- **workflow overview** → ``$CODEX_HOME/AGENTS.md`` (our config dir — *never* the repo's
-  ``/workspace/AGENTS.md``), which layers additively on top of the repo's own instructions;
+- **workflow overview** → ``developer_instructions`` in ``config.toml`` (codex's explicit
+  system-prompt injection channel — the ``--append-system-prompt`` analogue; *never* the repo's
+  ``/workspace/AGENTS.md``);
 - **trust / unattended posture** → ``config.toml`` (project ``trust_level`` + ``approval_policy`` /
   ``sandbox_mode``) so a headless container isn't blocked, on first run *and* on resume;
-- **auth** → ``OPENAI_API_KEY``;
-- **launch / resume** → ``codex`` first-run vs ``codex resume --last`` (the ``claude --continue``
-  analogue), probing ``$CODEX_HOME/sessions`` for a prior transcript.
+- **auth** → an API key (``CODEX_API_KEY`` / ``OPENAI_API_KEY``) materialized into
+  ``$CODEX_HOME/auth.json`` (a bare env var does *not* log codex in), or a ChatGPT workspace
+  access token (``CODEX_ACCESS_TOKEN``) read straight from the env — see :meth:`write_credentials`;
+- **launch / resume** → ``codex`` first-run vs ``codex resume <session_id>`` (the ``claude
+  --continue`` analogue), selecting the resumable session via :func:`_find_resume_target`.
 
-Scope is **M3.5**: everything needed to boot codex, reach the MCP server, see its skills + overview,
-and resume. The **turn-flip hooks** (``write_settings`` wiring, the background-task gating payload)
-are **M3.6** — the three hook seam methods are implemented here only enough to keep this class
-concrete and degrade safely (see each method's docstring). The determinism invariant holds: this
-lives in ``container/`` and only :meth:`launch` execs the real CLI (injected in tests).
+Scope now includes the **turn-flip hooks** (M3.6): :meth:`~CodexAgentCLI.write_settings` wires
+codex's ``[hooks]`` ``Stop`` / ``UserPromptSubmit`` block to the shared callback, and the hook-payload
+seam (:meth:`~CodexAgentCLI.read_hook_payload` / :meth:`~CodexAgentCLI.has_live_background_task`)
+parses codex's Stop payload. Codex feeds a ``UserPromptSubmit`` hook's stdout back as developer
+context (ADR 0014 flag 6), so the briefing + provisioning nudge ride the same channel as claude; its
+Stop payload has no background-task array so the flip always hands the turn back (flag 2), and it has
+no ``AskUserQuestion`` analogue (flag 7) — both handled as documented. The determinism invariant
+holds: this lives in ``container/`` and only :meth:`launch` execs the real CLI (injected in tests).
 """
 
 from __future__ import annotations
@@ -29,18 +36,71 @@ import os
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, ClassVar, TextIO
+from typing import Any, ClassVar
 
-from panopticon.container.cli.base import AgentCLI, _Client
+from panopticon.container.cli.base import AgentCLI, _Client, secret_from_env
 from panopticon.container.config import update_toml_config
-from panopticon.container.skills import write_commands, write_operation_commands
+from panopticon.container.hooks import HOOK_COMMAND
+from panopticon.container.skills import write_agent_operation_skills, write_agent_skills
 from panopticon.core.models import Skill
 
-#: The control plane's abstract model **tiers** mapped to codex's concrete model ids (ADR 0014 §3a).
-#: The only place a provider model name appears; ``core``/``workflows`` name only the tier. The exact
-#: codex model slug is a verify-against-the-pinned-codex item (ROADMAP M3.4 base image); unknown
-#: values pass through unchanged (see :meth:`CodexAgentCLI.resolve_model`).
-_MODEL_TIERS = {"primary": "gpt-5.6-codex"}
+
+def _find_resume_target(sessions_dir: Path) -> str | None:
+    """Return the session id of the newest resumable codex session, or ``None``.
+
+    ``$CODEX_HOME/sessions`` is shared by **all** codex invocations in the container —
+    ``codex exec`` subprocesses (anything the agent shells out to) and codex-tui's own
+    internal subagent threads (e.g. compaction) all write ``.jsonl`` rollout files there.
+    Resuming by ``--last`` (newest mtime) can therefore land on a non-resumable or wrong
+    session. This function reads only the **first line** of each file (the ``session_meta``
+    record, cheap regardless of session length) and filters to sessions where:
+
+    - ``payload["originator"] == "codex-tui"`` — interactive TUI, not ``codex_exec``
+    - ``payload["thread_source"] == "user"`` — root thread, not an internal subagent thread
+
+    Returns ``payload["id"]`` of the eligible file with the highest ``st_mtime_ns`` (integer
+    nanoseconds — float mtime loses sub-second precision). Malformed or empty first lines and
+    any ``OSError`` are silently skipped. Returns ``None`` when nothing qualifies.
+    """
+    best_mtime: int = -1
+    best_id: str | None = None
+
+    for path in sessions_dir.rglob("*.jsonl"):
+        try:
+            first_line = path.read_text().split("\n", 1)[0].strip()
+            if not first_line:
+                continue
+            record = json.loads(first_line)
+            if not isinstance(record, dict):
+                continue
+            payload = record.get("payload", {})
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("originator") != "codex-tui":
+                continue
+            if payload.get("thread_source") != "user":
+                continue
+            session_id = payload.get("id")
+            if not session_id or not isinstance(session_id, str):
+                continue
+            mtime = path.stat().st_mtime_ns
+            if mtime > best_mtime:
+                best_mtime = mtime
+                best_id = session_id
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+
+    return best_id
+
+
+def _command_hook(actor: str, event: str) -> dict[str, Any]:
+    """One codex hook group: run the shared turn-flip callback with ``<actor> <event>``.
+
+    Codex nests a command under an event as ``{"hooks": [{"type": "command", "command": …}]}`` — the
+    ``[[hooks.<Event>]]`` → ``[[hooks.<Event>.hooks]]`` TOML shape. The command is the CLI-agnostic
+    callback (:data:`~panopticon.container.hooks.HOOK_COMMAND`) claude invokes too.
+    """
+    return {"hooks": [{"type": "command", "command": f"{HOOK_COMMAND} {actor} {event}"}]}
 
 
 class CodexAgentCLI(AgentCLI):
@@ -48,40 +108,62 @@ class CodexAgentCLI(AgentCLI):
 
     name = "codex"
     config_dirname = ".codex"
+    MODEL_TIERS: ClassVar[Mapping[str, str]] = {"primary": "gpt-5.6-sol"}
 
     #: codex's single config file, under the config dir. MCP, trust, and the unattended posture all
     #: merge into it (each adapter method touches only its own keys, via :func:`update_toml_config`).
     CONFIG_FILE: ClassVar[str] = "config.toml"
-    #: Where the skill/operation custom prompts go, relative to the config home.
-    PROMPTS_SUBDIR: ClassVar[tuple[str, ...]] = (".codex", "prompts")
-    #: The workflow overview file inside the config dir — ``$CODEX_HOME/AGENTS.md`` (ADR 0014 §5).
-    WORKFLOW_OVERVIEW_FILE: ClassVar[str] = "AGENTS.md"
     #: Session transcripts live here under the config dir; their presence means "resume" (§ launch).
     SESSIONS_DIRNAME: ClassVar[str] = "sessions"
+    #: codex's credentials file under the config home — what ``codex login --with-api-key`` writes.
+    AUTH_FILE: ClassVar[str] = "auth.json"
+    #: Env-var spellings carrying an OpenAI API key we materialize into :attr:`AUTH_FILE`.
+    API_KEY_VARS: ClassVar[tuple[str, ...]] = ("CODEX_API_KEY", "OPENAI_API_KEY")
+    #: The ChatGPT workspace access token (the ``claude setup-token`` analog); read from the env, no file.
+    ACCESS_TOKEN_VAR: ClassVar[str] = "CODEX_ACCESS_TOKEN"
+    #: codex's own auth vars, plus ``GH_TOKEN`` — the forge skills' ``gh`` runs as a child of codex,
+    #: so normalizing it here is what reaches it (see :meth:`~AgentCLI.launch_env`).
+    SECRET_ENV_VARS: ClassVar[tuple[str, ...]] = (
+        *API_KEY_VARS,
+        ACCESS_TOKEN_VAR,
+        "GH_TOKEN",
+    )
 
     def render_skills(self, client: _Client, task_id: str, home: Path) -> list[Path]:
-        """Render the workflow's skills to ``~/.codex/prompts/`` (codex's custom-prompt surface)."""
+        """Render the workflow's skills to ``~/.agents/skills/`` (codex's model-discoverable surface)."""
         skills = [Skill(**s) for s in client.list_skills(task_id)]
-        return write_commands(skills, home, task_id, self.PROMPTS_SUBDIR)
+        return write_agent_skills(skills, home, task_id)
 
     def render_operations(self, client: _Client, task_id: str, home: Path) -> list[Path]:
-        """Render the workflow's declared core operations (advance/drop/…) as codex custom prompts."""
-        return write_operation_commands(
-            client.list_operations(task_id), home, task_id, self.PROMPTS_SUBDIR
-        )
+        """Render the workflow's declared core operations (advance/drop/…) as codex agent skills."""
+        return write_agent_operation_skills(client.list_operations(task_id), home, task_id)
 
     def write_settings(self, home: Path) -> Path:
-        """Return codex's ``config.toml`` path; the turn-flip **hooks are M3.6**, not wired here.
+        """Wire codex's turn-flip hooks into ``config.toml``; return the path (ADR 0014 §5, M3.6).
 
-        The launcher calls this to wire the Stop/UserPromptSubmit turn-flip hooks. Codex's hooks
-        config schema (and its background-task payload shape) is ADR 0014 flag 2, owned by the
-        **Codex turn-flip hooks** slice (M3.6) — until it lands a codex task's turn doesn't auto-flip
-        (a documented interim, ADR §5). So this only ensures the config dir exists and returns the
-        path other methods merge into; it writes no hook entries. When M3.6 lands, it merges codex's
-        ``[hooks]`` block invoking ``python -m panopticon.container.hook`` here.
+        Codex's hooks live under a ``[hooks]`` table keyed by event, each event an array of groups
+        whose ``hooks`` array holds ``{type = "command", command = …}`` entries (the same shape
+        claude uses, just TOML). We wire the two turn-flip events the same callback
+        (:mod:`panopticon.container.hook`) serves for claude:
+
+        - **Stop** → ``hook user stop`` (flip the ball to the user; the callback applies the
+          background-task guard). The callback prints nothing on the stop path, satisfying codex's
+          rule that plain-text stdout is invalid for ``Stop`` (JSON-only).
+        - **UserPromptSubmit** → ``hook agent prompt`` (flip to the agent, then print the phase
+          briefing + provisioning nudge — codex feeds a ``UserPromptSubmit`` hook's stdout back as
+          developer context, so the same channel claude relies on works here; ADR 0014 flag 6).
+
+        Codex's ``Stop``/``UserPromptSubmit`` don't support a ``matcher``, and codex has no
+        ``AskUserQuestion`` tool, so — unlike claude — we wire *no* ``PreToolUse``/``PostToolUse``
+        pair; the "agent is asking the user" turn state simply stays on the agent until the next Stop
+        (the documented degradation, ADR 0014 flag 7). Merged read-modify-write so it coexists with
+        the MCP / trust / overview keys already in ``config.toml``.
         """
         config = home / self.config_dirname / self.CONFIG_FILE
-        config.parent.mkdir(parents=True, exist_ok=True)
+        with update_toml_config(config) as data:
+            hooks = data.setdefault("hooks", {})
+            hooks["Stop"] = [_command_hook("user", "stop")]
+            hooks["UserPromptSubmit"] = [_command_hook("agent", "prompt")]
         return config
 
     def write_mcp_config(self, config_dir: Path, service_url: str) -> Path:
@@ -91,31 +173,39 @@ class CodexAgentCLI(AgentCLI):
         plane claude connects to, at ``<service_url>/mcp`` — no auth token (the server is the
         container's own task service). Older codex builds only pick up HTTP MCP with
         ``experimental_use_rmcp_client`` set, so we enable it defensively (a no-op on builds with
-        native support). Merged into ``config.toml`` so it coexists with the trust/overview keys.
+        native support). ``features.apps = false`` disables codex's built-in apps connector, which
+        cannot start in the container and otherwise stalls every spawn on its 30 s MCP timeout
+        (the ``[mcp_servers.codex_apps] enabled = false`` alternative is invalid config that
+        crash-loops codex — the feature flag is the only safe disable). Merged into ``config.toml``
+        so it coexists with the trust/overview keys.
         """
         config = config_dir / self.CONFIG_FILE
         with update_toml_config(config) as data:
             servers = data.setdefault("mcp_servers", {})
             servers["panopticon"] = {"url": f"{service_url.rstrip('/')}/mcp"}
-            data.setdefault("features", {})["experimental_use_rmcp_client"] = True
+            features = data.setdefault("features", {})
+            features["experimental_use_rmcp_client"] = True
+            features["apps"] = False
         return config
 
     def write_workflow_overview(self, config_dir: Path, overview: str) -> Path | None:
-        """Write the whole-workflow map to ``$CODEX_HOME/AGENTS.md`` (``None`` when there's none).
+        """Deliver the whole-workflow map via ``developer_instructions`` in ``config.toml``.
 
-        Codex has no ``--append-system-prompt``; it layers instruction files, reading our config
-        dir's ``AGENTS.md`` **on top of** the repo's own ``/workspace/AGENTS.md`` (ADR 0014 §5, flag
-        4). We write *only* our config-dir copy — never the working tree's — so the overview reaches
-        the agent additively without clobbering the repo's guidance.
+        ``developer_instructions`` is codex's explicit system-prompt injection channel — the
+        ``--append-system-prompt`` analogue (ADR 0014 §5, flag 4). Writing it to ``config.toml``
+        (rather than relying on ``$CODEX_HOME/AGENTS.md`` layering) gives a stronger, unambiguous
+        delivery: the content reaches the agent directly without depending on codex's file-layering
+        semantics. We never touch the working tree's ``/workspace/AGENTS.md``. Returns the
+        ``config.toml`` path, or ``None`` when there's no overview to deliver.
         """
         if not overview.strip():
             return None
-        config_dir.mkdir(parents=True, exist_ok=True)
-        path = config_dir / self.WORKFLOW_OVERVIEW_FILE
-        path.write_text(overview)
-        return path
+        config = config_dir / self.CONFIG_FILE
+        with update_toml_config(config) as data:
+            data["developer_instructions"] = overview
+        return config
 
-    def trust_workspace(self, config_dir: Path, cwd: Path) -> Path:
+    def trust_workspace(self, config_dir: Path, cwd: Path, env: Mapping[str, str]) -> Path:
         """Pre-accept codex's trust + approvals so the unattended container runs without prompting.
 
         A fresh container has no operator to answer codex's first-run gates, so we seed ``config.toml``:
@@ -129,7 +219,8 @@ class CodexAgentCLI(AgentCLI):
           radius is the task's own per-task clone.
 
         Merged (read-modify-write), so it never clobbers the MCP table or anything codex wrote, and
-        is idempotent.
+        is idempotent. ``env`` is unused: codex has no dialog keyed to an injected credential's
+        value (claude's API-key approval is), but the seam takes it so adapters that do can use it.
         """
         config = config_dir / self.CONFIG_FILE
         with update_toml_config(config) as data:
@@ -139,48 +230,86 @@ class CodexAgentCLI(AgentCLI):
             projects.setdefault(str(cwd), {})["trust_level"] = "trusted"
         return config
 
-    def auth_missing_detail(self, env: Mapping[str, str]) -> str | None:
-        """The failure detail when codex's auth env var is absent, else ``None``.
+    def auth_missing_detail(self, env: Mapping[str, str], config_dir: Path) -> str | None:
+        """The failure detail when codex has no way to authenticate, else ``None``.
 
-        Auth is ``OPENAI_API_KEY``, injected by the runner from the repo's ``env_file`` (ADR 0007 /
-        0012 generalize per CLI); the launcher wires no credentials.
+        Codex is satisfied by any of the auth vars the runner injects from the repo's ``env_file``
+        (ADR 0007 / 0012 generalize per CLI) — an API key (``CODEX_API_KEY`` / ``OPENAI_API_KEY``,
+        which :meth:`write_credentials` materializes into ``auth.json``) or a ChatGPT workspace access
+        token (``CODEX_ACCESS_TOKEN``, read straight from the env) — **or** a pre-existing
+        ``auth.json`` on the per-task config volume (a container already logged in, e.g. carried
+        across respawn) — **or** a ``PANOPTICON_CREDENTIALS`` mount holding ``auth.json`` (ChatGPT
+        Plus/Pro subscription; :meth:`write_credentials` symlinks it into the config dir). Presence
+        checks only: we don't validate the key shape; an invalid credential surfaces at codex's first
+        call.
         """
-        if env.get("OPENAI_API_KEY"):
+        if any(secret_from_env(env, var) for var in (*self.API_KEY_VARS, self.ACCESS_TOKEN_VAR)):
             return None
-        return "No auth token — set OPENAI_API_KEY in the repo's env_file (see docs/auth.md)"
+        if (config_dir / self.AUTH_FILE).exists():
+            return None
+        creds = env.get("PANOPTICON_CREDENTIALS")
+        if creds and (Path(creds) / self.AUTH_FILE).exists():
+            return None
+        return (
+            "No codex auth — set OPENAI_API_KEY (or CODEX_API_KEY / CODEX_ACCESS_TOKEN) in the "
+            "repo's env_file, or give the repo a credential_dir holding a ChatGPT auth.json "
+            "(see docs/auth.md)"
+        )
 
-    def resolve_model(self, tier: str) -> str:
-        """Map the control plane's abstract model tier to codex's concrete model id (ADR 0014 §3a).
+    def write_credentials(self, config_dir: Path, env: Mapping[str, str]) -> Path | None:
+        """Materialize codex's ``auth.json`` from an API key in the env, and pin the file cred store.
 
-        The only place the tier (e.g. ``"primary"``) becomes a provider model name, keeping model
-        vocabulary out of ``core``/``workflows``. Unknown values pass through unchanged so a raw model
-        id set directly still reaches ``--model`` verbatim.
+        A bare ``OPENAI_API_KEY`` in the container env does **not** log codex in — codex
+        authenticates from ``$CODEX_HOME/auth.json`` and may otherwise reach for an OS keyring the
+        container lacks. So we:
+
+        - set ``cli_auth_credentials_store = "file"`` (top-level ``config.toml``) so codex reads
+          credentials from the file, never a keyring — done unconditionally, so it also governs a
+          pre-existing ``auth.json`` carried across respawn;
+        - when ``auth.json`` is absent, try the credential-dir mount first: if
+          ``PANOPTICON_CREDENTIALS`` points at a directory containing ``auth.json``, create a
+          **symlink** from the config dir into that shared host path. Codex opens ``auth.json``
+          in-place with truncate-and-write (``FileAuthStorage::save`` in the open-source
+          ``codex-rs/login/src/auth/storage.rs``), following the symlink to the shared file, so
+          refreshed tokens propagate back and all concurrent containers on the host stay consistent.
+        - otherwise, render ``auth.json`` from ``CODEX_API_KEY`` or ``OPENAI_API_KEY`` in the
+          exact shape ``codex login --with-api-key`` writes — ``{"auth_mode": "apikey",
+          "OPENAI_API_KEY": <key>}`` — at mode ``0600``.
+
+        **Idempotent: an existing ``auth.json`` (or symlink, even dangling) is never clobbered**,
+        so a container already logged in keeps its credentials. Returns the ``auth.json`` path when
+        written or symlinked, else ``None``. A workspace access token (``CODEX_ACCESS_TOKEN``) needs
+        no file — codex reads it from the env — so it doesn't trigger a write here.
         """
-        return _MODEL_TIERS.get(tier, tier)
-
-    def read_hook_payload(self, stdin: TextIO) -> dict[str, Any]:
-        """Tolerantly parse the hook's stdin JSON; empty/invalid input yields an empty payload."""
-        try:
-            raw = stdin.read()
-        except (OSError, ValueError):
-            return {}
-        if not raw or not raw.strip():
-            return {}
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            return {}
-        return data if isinstance(data, dict) else {}
+        config = config_dir / self.CONFIG_FILE
+        with update_toml_config(config) as data:
+            data["cli_auth_credentials_store"] = "file"
+        auth = config_dir / self.AUTH_FILE
+        if auth.exists() or auth.is_symlink():  # is_symlink catches a dangling symlink
+            return None
+        creds = env.get("PANOPTICON_CREDENTIALS")
+        if creds and (Path(creds) / self.AUTH_FILE).exists():
+            auth.symlink_to(Path(creds) / self.AUTH_FILE)
+            return auth
+        key = next(
+            (k for var in self.API_KEY_VARS if (k := secret_from_env(env, var)) is not None), None
+        )
+        if not key:
+            return None
+        config_dir.mkdir(parents=True, exist_ok=True)
+        auth.write_text(json.dumps({"auth_mode": "apikey", "OPENAI_API_KEY": key}))
+        auth.chmod(0o600)
+        return auth
 
     def has_live_background_task(self, payload: dict[str, Any]) -> bool:
-        """Whether the Stop payload reports still-running background work — **M3.6**, ``False`` for now.
+        """Whether the Stop payload reports still-running background work (gates the turn flip).
 
-        The turn-flip background-task gating needs codex's background-task payload shape (the
-        ``background_tasks`` analogue), which is ADR 0014 flag 2, owned by the Codex turn-flip hooks
-        slice (M3.6). Until then this degrades to the plain turn flip — exactly the safe degradation
-        claude already uses when the field is absent (an older CLI): the turn flips to the user on
-        Stop. Codex's hooks aren't wired yet either (see :meth:`write_settings`), so this isn't
-        reached in practice; it's implemented conservatively so it's correct the moment M3.6 wires it.
+        Always ``False`` for codex: its documented ``Stop`` payload (ADR 0014 flag 2, verified against
+        the hooks schema) is ``session_id`` / ``transcript_path`` / ``cwd`` / ``hook_event_name`` /
+        ``model`` / ``permission_mode`` / ``turn_id`` / ``stop_hook_active`` / ``last_assistant_message``
+        — it carries **no** background-task array (unlike claude's ``background_tasks``), and codex's
+        ``Stop`` fires only when the turn has genuinely ended, so there's nothing in flight to strand.
+        The turn flips to the user, matching claude's exact behaviour when the field is absent.
         """
         return False
 
@@ -193,29 +322,51 @@ class CodexAgentCLI(AgentCLI):
         turn: str | None = None,
         starting_model: str | None = None,
     ) -> list[str]:
-        """`codex` argv, resuming the config dir's most recent session if one exists.
+        """`codex` argv, resuming the most recent resumable session by id if one exists.
 
         The agent runs unattended in a throwaway container on a per-task clone, so it launches with
         ``--dangerously-bypass-approvals-and-sandbox`` (the ``claude --dangerously-skip-permissions``
         analogue) — no operator to answer prompts, blast radius the task's own checkout. Codex keeps
-        session transcripts under ``$CODEX_HOME/sessions``; when one is present we ``resume --last``
-        instead of starting fresh. The config dir is a **per-task volume**, so this resumes both
-        within a container's life and **across respawn/recreate**.
+        session transcripts under ``$CODEX_HOME/sessions``; :func:`_find_resume_target` scans them
+        and returns the id of the newest session whose first-line ``session_meta`` record marks it as
+        a resumable interactive TUI root thread (``originator=codex-tui``, ``thread_source=user``).
+        When one is found, ``codex resume <session_id>`` is used instead of starting fresh. The
+        config dir is a **per-task volume**, so this resumes both within a container's life and
+        **across respawn/recreate**.
 
-        On a **first run** (no prior session) the ``starting_model`` tier is resolved via
+        ``--dangerously-bypass-hook-trust`` bypasses codex's per-hash interactive trust prompt for
+        unrecognised hooks (our Stop/UserPromptSubmit hooks, wired in :meth:`write_settings`). With
+        ``session_id`` now a positional argument to ``resume``, all bypass flags are placed at the
+        global level (before the subcommand) so they parse correctly in both first-run and resume
+        paths. ``--no-alt-screen`` renders codex output into the tmux scrollback (not the alternate
+        screen) so ``tmux attach`` history stays useful. On **resume** with ``turn == "agent"`` (the
+        agent was interrupted mid-turn), the interrupt prompt ``"You were interrupted. Continue."``
+        is appended as codex's first positional message so the agent picks up where it left off. On a
+        **first run** (no resumable session) the ``starting_model`` tier is resolved via
         :meth:`resolve_model` and passed as ``--model`` (on resume codex uses the session's model),
-        and an ``initial_prompt`` is appended as codex's first message. ``turn`` is accepted for
-        signature parity with the claude adapter; auto-continuing a resumed session on the agent's
-        turn (claude's interrupt prompt) is deferred with the rest of the turn wiring to M3.6, since
-        injecting a prompt into a resumed codex session isn't yet verified.
+        and ``initial_prompt`` is appended as the first message. ``starting_model`` may carry a
+        ``<tier>:<effort>`` suffix (e.g. ``"primary:high"``) — the suffix is split off and passed
+        as ``--config model_reasoning_effort=<effort>`` (codex takes effort as a config key, not a
+        flag).
         """
-        argv = ["codex", "--dangerously-bypass-approvals-and-sandbox"]
-        sessions = config_dir / self.SESSIONS_DIRNAME
-        if sessions.exists() and any(sessions.rglob("*.jsonl")):
-            argv += ["resume", "--last"]  # resume the config dir's most recent session
+        argv = [
+            "codex",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--dangerously-bypass-hook-trust",
+            "--no-alt-screen",
+        ]
+        sessions_dir = config_dir / self.SESSIONS_DIRNAME
+        session_id = _find_resume_target(sessions_dir) if sessions_dir.exists() else None
+        if session_id:
+            argv += ["resume", session_id]
+            if turn == "agent":
+                argv.append("You were interrupted. Continue.")
         else:
             if starting_model:  # first run only — on resume codex uses the session's model
-                argv += ["--model", self.resolve_model(starting_model)]
+                tier, _, effort = starting_model.partition(":")
+                argv += ["--model", self.resolve_model(tier)]
+                if effort:
+                    argv += ["--config", f"model_reasoning_effort={effort}"]
             if initial_prompt:
                 argv.append(initial_prompt)  # positional: codex's first message
         return argv
@@ -237,4 +388,7 @@ class CodexAgentCLI(AgentCLI):
             turn=turn,
             starting_model=starting_model,
         )
-        subprocess.run(argv, env={**os.environ, "CODEX_HOME": str(config_dir)})
+        subprocess.run(
+            argv,
+            env={**os.environ, **self.launch_env(os.environ), "CODEX_HOME": str(config_dir)},
+        )

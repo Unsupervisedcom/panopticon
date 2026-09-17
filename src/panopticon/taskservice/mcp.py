@@ -120,8 +120,8 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
             "workflows). The task is created in your own repo. Pass your own task id as "
             "orchestrator_task_id. The `memo` is a brief reminder of what the task "
             "is (shown in the dashboard) — not a full description; the full description goes "
-            "in the task's plan.md. `initial_prompt` (optional) is passed as Claude's first "
-            "message on first spawn — the agent starts autonomously without waiting for user "
+            "in the task's plan.md. `initial_prompt` (optional) is prefilled as the agent's first "
+            "prompt on first spawn — the agent starts autonomously without waiting for user "
             'input, e.g. "review your plan". `artifacts` '
             "(optional) is a name→content map of text artifacts to write immediately (e.g. "
             '{"plan.md": "..."}) — written before the call returns so the spawner always '
@@ -167,7 +167,7 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
         description=(
             "Write (create or overwrite) a task artifact, e.g. the plan. Returns its URI. "
             "Pass text in `content`; for a binary artifact (e.g. a screenshot) pass base64 in "
-            "`content_base64` instead — supply exactly one. For a large binary the token-cheap "
+            "`content_base64` instead — supply exactly one. For a large binary the more efficient "
             "path is the REST endpoint (PUT /tasks/{id}/artifacts/{name} with the raw bytes), which "
             "keeps the base64 out of your context."
         )

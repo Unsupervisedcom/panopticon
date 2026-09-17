@@ -14,6 +14,15 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+#: The control plane's abstract model **tiers** (ADR 0014 §3a) — CLI-agnostic labels a workflow's
+#: ``default_model`` / :attr:`Task.starting_model` may hold (currently just ``"primary"``, the
+#: built-in default). These names are **reserved**: every ``AgentCLI`` adapter must map each tier to
+#: a concrete model id, so a reserved tier that reaches ``--model`` unresolved is a bug (a stale
+#: image running pre-resolution code did exactly this) and the adapters fail loud on it rather than
+#: passing it through (see ``panopticon.container.cli.base.resolve_tier``). A value *not* in this set
+#: is treated as a concrete model id and passes through unchanged.
+MODEL_TIERS: frozenset[str] = frozenset({"primary"})
+
 
 class Actor(str, Enum):
     """A party that can act on a task: the user or the agent.
@@ -161,12 +170,20 @@ class Tool:
 class Repo:
     """A repository tasks operate on.
 
-    Holds a *reference* to its per-repo secrets (ADR 0007), never the values: ``env_file`` is a
+    Holds *references* to its per-repo secrets (ADR 0007), never the values: ``env_file`` is a
     **name relative to the secrets dir** (``$PANOPTICON_CONFIG/secrets``) naming an env-file of
     API-key-style secrets, injected into the task container at launch (``--env-file``), so secrets
     stay out of the DB, artifacts, and image layers. The runner resolves it against its **own**
     host's secrets dir, so a remote runner uses its own secrets and the value stays host-agnostic;
     the file's content never crosses the wire.
+
+    ``credential_dir`` is also a **name relative to the secrets dir**, but naming a *directory*
+    that holds rotating credential files (e.g. ``openai.d/`` containing ``auth.json`` for a Codex
+    ChatGPT-subscription login). The runner mounts it **read-write** at ``/panopticon/credentials``
+    and exports ``PANOPTICON_CREDENTIALS`` so the in-container adapter can find it. The mount is
+    shared across all containers for the same repo on the same host, letting codex write refreshed
+    tokens back through a symlink (see ``docs/auth.md`` and ADR 0012 for why symlinks work for
+    codex but not Claude).
 
     ``image_layer_file`` *references* the repo's Dockerfile fragment (ADR 0005's repo tier): a file
     name resolved relative to the task service's layers directory, not inline content. The task
@@ -193,6 +210,7 @@ class Repo:
     git_url: str
     default_base: str = "main"
     env_file: str | None = None
+    credential_dir: str | None = None
     image_layer_file: str | None = None
     capabilities: dict[str, Any] = field(default_factory=dict)
     hook_file: str | None = None
@@ -262,7 +280,7 @@ class Task:
     #: lives in the task's plan artifact). Distinct from the ``slug`` (a short identifier the
     #: agent sets later); ``None`` when the creator gave none.
     memo: str | None = None
-    #: Optional text prefilled (unsent) into Claude's input box on the task's first spawn,
+    #: Optional text prefilled (unsent) into the agent CLI's input box on the task's first spawn,
     #: taking precedence over ``memo`` for that purpose. ``None`` until set at creation.
     initial_prompt: str | None = None
     slug: str | None = None

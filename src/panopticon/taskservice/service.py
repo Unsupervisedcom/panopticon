@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from panopticon.core.artifacts import ArtifactStore, decode_b64_artifact
-from panopticon.core.dirs import secrets_file_path
+from panopticon.core.dirs import credential_dir_path, secrets_file_path
 from panopticon.core.layers import LayerStore
 from panopticon.core.models import (
     Actor,
@@ -147,6 +147,7 @@ class TaskService:
 
     async def create_repo(self, repo: Repo) -> Repo:
         await self._validate_env_file(repo.env_file)
+        await self._validate_credential_dir(repo.credential_dir)
         await self._store.create_repo(repo)
         return repo
 
@@ -172,6 +173,27 @@ class TaskService:
         if not await asyncio.to_thread(os.path.isfile, path):
             raise ValueError(f"env_file {env_file!r} does not exist under the secrets dir")
 
+    async def _validate_credential_dir(self, credential_dir: str | None) -> None:
+        """Reject a repo whose credential-dir reference points at a missing directory.
+
+        ``credential_dir`` is a *name* relative to the secrets dir — the same root as
+        ``env_file`` (ADR 0007). Validated on create/update so a bad reference surfaces at
+        registration rather than as an obscure ``--volume`` failure at spawn. ``None`` (no
+        credential dir) is valid. Raises :class:`ValueError` for a name that escapes the secrets
+        dir or one that resolves to a missing or non-directory path.
+
+        NOTE(M5): resolved against *this host's* secrets dir (same caveat as
+        :meth:`_validate_env_file`).
+        """
+        path = credential_dir_path(credential_dir)  # None for no reference; raises on escape
+        if path is None:
+            return
+        if not await asyncio.to_thread(os.path.isdir, path):
+            raise ValueError(
+                f"credential_dir {credential_dir!r} does not exist or is not a directory"
+                " under the secrets dir"
+            )
+
     async def get_repo(self, repo_id: str) -> Repo:
         repo = await self._store.get_repo(repo_id)
         if repo is None:
@@ -196,6 +218,8 @@ class TaskService:
             await self._validate_env_file(
                 updated.env_file
             )  # so an unrelated patch never fails on it
+        if "credential_dir" in changes:
+            await self._validate_credential_dir(updated.credential_dir)
         await self._store.update_repo(updated)
         return updated
 
@@ -715,6 +739,11 @@ class TaskService:
     async def put_artifact(self, task_id: str, name: str, content: bytes) -> None:
         await self.get_task(task_id)  # ensure the task exists
         await self._artifacts.put(task_id, name, content)
+        # Artifacts live outside the store, so writing one bumps no version of its own — but the
+        # task list reports whether a task *has* one, so a parked long-poll has to wake or the
+        # first plan.md would go unnoticed until some unrelated mutation. Same treatment as the
+        # other ephemeral (non-stored) changes.
+        self._notify_change()
         _log.debug("task %s: artifact %s written", task_id, name)
 
     async def get_artifact(self, task_id: str, name: str) -> bytes | None:
@@ -724,6 +753,15 @@ class TaskService:
     async def list_artifacts(self, task_id: str) -> list[str]:
         await self.get_task(task_id)
         return await self._artifacts.list(task_id)
+
+    async def has_unhidden_artifacts(self, task_id: str) -> bool:
+        """Whether the task has an artifact worth marking in the task list.
+
+        No ``get_task`` guard (unlike the readers above): this is a display predicate asked of
+        tasks the caller has already read, once per row, and a task with no artifacts and a task
+        that doesn't exist both answer ``False``. Paying for a store read per row to tell those
+        apart would buy nothing."""
+        return await self._artifacts.has_unhidden_artifacts(task_id)
 
     # -- liveness -----------------------------------------------------------------
     #

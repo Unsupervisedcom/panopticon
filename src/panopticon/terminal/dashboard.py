@@ -41,6 +41,11 @@ single dim placeholder row (its slug cell renders ``...``); pressing `Enter` aga
 Arrow keys skip the ensemble row (it is not a real task). Expanding or collapsing does not affect the task service — it is pure
 display state local to the dashboard.
 
+The `❏ ➚` **marks column** (left of `slug[memo]`, its header doubling as the legend) flags what a
+task carries: `❏` when it has at least one unhidden artifact (`a` lists them — dotfile artifacts
+are agent bookkeeping and don't count) and `➚` when it has a `url` (`p` opens it). Each mark keeps
+its own slot, so they read as two vertical rails rather than shifting per row.
+
 The `container` column shows each task's container status: `live` (an active registration), `down`
 (was up, container gone — respawn with `R`), `starting` (claimed, no registration yet — its
 container is still coming up), `healing` (the runner is self-healing an orphan), or `–` (unclaimed
@@ -103,7 +108,7 @@ from textual.widgets._select import NoSelection as _SelectNoSelection
 from textual.worker import get_current_worker
 
 from panopticon.client import JsonObj, TaskServiceClient
-from panopticon.core.artifacts import InvalidArtifactName, validate_segment
+from panopticon.core.artifacts import InvalidArtifactName, is_hidden, validate_segment
 from panopticon.core.dirs import ARTIFACTS_DIR
 from panopticon.core.models import resolve_agent_cli
 from panopticon.core.state import TERMINAL_LABELS
@@ -185,6 +190,32 @@ def _dim(cell: Text | str) -> Text:
     t = Text(cell if isinstance(cell, str) else cell.plain)
     t.stylize("dim")
     return t
+
+
+# The task-list marks column: one glyph per slot, separated by a space, so each mark reads down
+# its own vertical line (slot 1 artifact, slot 2 link) and a row missing one doesn't shift the
+# other.
+#
+# Both glyphs are East_Asian_Width=Neutral with no emoji presentation form, i.e. exactly one cell
+# in every terminal. That is the whole reason for these two rather than 📁/🔗: emoji are
+# Width=Wide (two cells, and fonts disagree on the details), which would make the column's width
+# depend on the viewer. Keep any replacement in the same class — `⚠`/`✓` elsewhere in this file
+# are the other examples.
+_ARTIFACT_MARK = "❏"  # U+274F, has at least one unhidden artifact (`a` lists them)
+_LINK_MARK = "➚"  # U+279A, has a url (`p` opens it)
+_MARKS_LABEL = f"{_ARTIFACT_MARK} {_LINK_MARK}"  # the header doubles as the legend
+_MARKS_HEADER = Text(_MARKS_LABEL)
+
+
+def _marks_cell(task: JsonObj) -> Text:
+    """The marks column: ``❏`` when the task has an unhidden artifact, ``➚`` when it has a url.
+
+    Always three cells wide (mark, gap, mark) — an absent mark renders as a space rather than
+    collapsing — so the two marks stay in their own columns and the cell width can't vary by
+    row."""
+    artifact = _ARTIFACT_MARK if task.get("has_artifacts") else " "
+    link = _LINK_MARK if task.get("url") else " "
+    return Text(f"{artifact} {link}", style="dim")
 
 
 def _slug_cell(task: JsonObj, prefix: str = "") -> Text:
@@ -1080,6 +1111,94 @@ class EnvFileField(Widget):
             inp.display = False
 
 
+def _list_secrets_dirs() -> list[str]:
+    """Return the sorted **names** (relative to the secrets dir) of directories in the secrets dir.
+
+    A ``credential_dir`` is stored relative to the secrets dir so it resolves on whichever host
+    runs the task (mirrors :func:`_list_secrets_files` but filters for directories)."""
+    from panopticon.core.dirs import _secrets_dir
+
+    secrets_dir = _secrets_dir()
+    if not secrets_dir.is_dir():
+        return []
+    return sorted(p.name for p in secrets_dir.iterdir() if p.is_dir())
+
+
+class CredentialDirField(Widget):
+    """Credential-dir picker for the repo form (ChatGPT-subscription / rotating-token auth).
+
+    Mirrors :class:`EnvFileField` but lists **directory names** found in the config secrets dir
+    (``~/.config/panopticon/secrets/``). The stored value is always a **name relative to the
+    secrets dir** (so it resolves on whichever host runs the task, ADR 0007); the custom input
+    accepts an absolute or relative path and normalizes it to that relative name on read (see
+    :func:`~panopticon.core.dirs.relativize_credential_dir`).
+    """
+
+    DEFAULT_CSS = """
+    CredentialDirField { margin-bottom: 1; height: auto; }
+    CredentialDirField #credential-dir-input { margin-top: 1; }
+    """
+
+    _CUSTOM = "__custom__"
+
+    def __init__(self, initial: str = "", id: str | None = None) -> None:
+        super().__init__(id=id)
+        self._initial = initial
+        self._known = _list_secrets_dirs()
+
+    def compose(self) -> ComposeResult:
+        known_set = set(self._known)
+        options: list[tuple[str, str]] = [(p, p) for p in self._known]
+        options.append(("enter custom path…", self._CUSTOM))
+        is_custom = bool(self._initial and self._initial not in known_set)
+        yield Select(
+            options,
+            prompt="credential_dir (directory name in secrets dir or custom path)",
+            allow_blank=True,
+            value=self._initial if (self._initial and not is_custom) else Select.NULL,
+            id="credential-dir-select",
+        )
+        inp = Input(
+            value=self._initial if is_custom else "",
+            placeholder="openai.d (or a path — normalized to a secrets-dir name)",
+            id="credential-dir-input",
+        )
+        inp.display = is_custom
+        yield inp
+
+    @property
+    def credential_dir_value(self) -> str:
+        """The stored ``credential_dir`` **name** (relative to the secrets dir), or ``""`` unset.
+
+        A dropdown pick is already a bare name; a custom entry is normalized via
+        :func:`~panopticon.core.dirs.relativize_credential_dir`."""
+        from panopticon.core.dirs import relativize_credential_dir
+
+        try:
+            sel = self.query_one("#credential-dir-select", Select)
+        except NoMatches:
+            return ""
+        v = sel.value
+        if isinstance(v, _SelectNoSelection) or v == self._CUSTOM:
+            try:
+                return relativize_credential_dir(
+                    self.query_one("#credential-dir-input", Input).value
+                )
+            except NoMatches:
+                return ""
+        return str(v)
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id != "credential-dir-select":
+            return
+        inp = self.query_one("#credential-dir-input", Input)
+        if event.value == self._CUSTOM:
+            inp.display = True
+            inp.focus()
+        else:
+            inp.display = False
+
+
 def _list_layers_files() -> list[str]:
     """Return the sorted **names** (relative to the layers dir) of files in the config layers dir.
 
@@ -1252,7 +1371,10 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
 
     Two tabs: **general** (git URL, id, name, base branch, env file, image layer, hook file,
     privileged docker) and **workflows** (a per-workflow opt-in/opt-out checklist). Both tabs'
-    values are collected on save — submitting from either tab captures everything.
+    values are collected on save — submitting from either tab captures everything. Both panes
+    **scroll** when the terminal is too short to show every field (the general tab needs ~40
+    rows): the scrollbar is the affordance that the fields below the fold exist, and Tab/Shift-Tab
+    scrolls the focused field into view.
 
     **Space toggles checkboxes; Enter saves the form** from any field. The :class:`SpaceCheckbox`
     subclass drops the default ``enter`` binding so Enter always bubbles up to the screen's save
@@ -1265,10 +1387,15 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
 
     CSS = """
     RepoFormScreen { align: center middle; }
-    #repo-form { width: 72; height: 80%; padding: 1 2; border: round $accent; background: $surface; }
+    #repo-form { width: 72; max-width: 100%; height: 80%; padding: 1 2; border: round $accent; background: $surface; }
     #repo-form Input { margin-bottom: 1; }
     #repo-form Checkbox { margin-bottom: 1; }
     #form-tabs { height: 1fr; }
+    /* TabbedContent's ContentSwitcher and TabPane both default to height:auto, so a pane taller
+       than the modal is silently clipped with no scrollbar. Pin both to the tab area's height and
+       let the general pane scroll, so every field stays reachable on a short terminal. */
+    #form-tabs ContentSwitcher { height: 1fr; }
+    #pane-general { height: 1fr; overflow-y: auto; }
     #pane-workflows { height: 1fr; }
     #wf-scroll { height: 1fr; }
     #wf-scroll SpaceCheckbox { margin-bottom: 0; }
@@ -1348,6 +1475,9 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
                     for name in self.FIELDS[1:]:  # git_url already rendered above
                         yield Input(value=self._initial(name), placeholder=name, id=f"field-{name}")
                     yield EnvFileField(initial=self._initial("env_file"), id="field-env_file")
+                    yield CredentialDirField(
+                        initial=self._initial("credential_dir"), id="field-credential_dir"
+                    )
                     yield ImageLayerField(
                         initial=self._initial("image_layer_file"), id="field-image_layer_file"
                     )
@@ -1368,7 +1498,7 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
                     else:
                         yield Label("no workflows available")
             yield Static("", id="form-error")
-            yield Static("enter: save   esc: cancel", id="form-hint")
+            yield Static("enter: save   esc: cancel   ↑/↓: scroll", id="form-hint")
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
@@ -1411,6 +1541,9 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
         for name in self.FIELDS:
             values[name] = self.query_one(f"#field-{name}", Input).value.strip()
         values["env_file"] = self.query_one("#field-env_file", EnvFileField).env_file_value or None
+        values["credential_dir"] = (
+            self.query_one("#field-credential_dir", CredentialDirField).credential_dir_value or None
+        )
         values["image_layer_file"] = (
             self.query_one("#field-image_layer_file", ImageLayerField).image_layer_value or None
         )
@@ -1517,6 +1650,7 @@ class ReposScreen(ModalScreen[None]):
                     values["git_url"],
                     values["default_base"] or "main",
                     env_file=values["env_file"] or None,
+                    credential_dir=values["credential_dir"] or None,
                     image_layer_file=values["image_layer_file"] or None,
                     hook_file=values["hook_file"] or None,
                     capabilities={"docker_in_docker": values["docker_in_docker"]},
@@ -1552,6 +1686,7 @@ class ReposScreen(ModalScreen[None]):
                     git_url=values["git_url"],
                     default_base=values["default_base"] or "main",
                     env_file=values["env_file"] or None,
+                    credential_dir=values["credential_dir"] or None,
                     image_layer_file=values["image_layer_file"] or None,
                     hook_file=values["hook_file"] or None,
                     capabilities=capabilities,
@@ -1625,22 +1760,18 @@ class ArtifactScreen(_OptionListModal[tuple[str, str]]):
 
     def __init__(self, title: str, all_names: list[str]) -> None:
         self._all_names = all_names
-        visible = [n for n in all_names if not n.startswith(".")]
+        visible = [n for n in all_names if not is_hidden(n)]
         super().__init__(title, visible)
 
     def _extra_widgets(self) -> Iterable[Widget]:
         yield Label(
             "enter: open · e: open local file · ctrl+a: attach · esc: cancel", id="artifact-hint"
         )
-        if any(n.startswith(".") for n in self._all_names):
+        if any(is_hidden(n) for n in self._all_names):
             yield SpaceCheckbox("Show hidden", id="show-hidden")
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
-        names = (
-            self._all_names
-            if event.value
-            else [n for n in self._all_names if not n.startswith(".")]
-        )
+        names = self._all_names if event.value else [n for n in self._all_names if not is_hidden(n)]
         option_list = self.query_one(OptionList)
         option_list.clear_options()
         for name in names:
@@ -1810,11 +1941,16 @@ class TaskDetailScreen(ModalScreen[None]):
 
 
 def _setup_task_columns(table: DataTable[Any], *, multi_runner: bool) -> None:
-    """Add the task table's columns. Includes a "runner" column when tasks span multiple hosts."""
+    """Add the task table's columns. Includes a "runner" column when tasks span multiple hosts.
+
+    The marks column sits immediately left of the name it annotates, and last among the
+    fixed-width columns so the variable-width ``slug[memo]`` stays rightmost."""
     if multi_runner:
-        table.add_columns("state", "turn", "container", "runner", "repo", Text("slug[memo]"))
+        table.add_columns(
+            "state", "turn", "container", "runner", "repo", _MARKS_HEADER, Text("slug[memo]")
+        )
     else:
-        table.add_columns("state", "turn", "container", "repo", Text("slug[memo]"))
+        table.add_columns("state", "turn", "container", "repo", _MARKS_HEADER, Text("slug[memo]"))
 
 
 class Dashboard(App[None]):
@@ -2044,6 +2180,7 @@ class Dashboard(App[None]):
                     Text(""),
                     *runner_blank,
                     Text(""),
+                    Text(""),  # marks: a placeholder stands for hidden rows, so it carries none
                     slug_cell,
                     key=f"{_ENSEMBLE_KEY_PREFIX}{gov_id}",
                 )
@@ -2055,6 +2192,7 @@ class Dashboard(App[None]):
                     Text(task.get("runner_host") or "") if self._multi_runner else None
                 )
                 repo_cell: Text | str = _repo_cell(task, self._repo_names)
+                marks_cell = _marks_cell(task)
                 slug_cell_real = _slug_cell(task, prefix)
                 if task["state"] in TERMINAL_LABELS:
                     state_cell = _dim(state_cell)
@@ -2063,6 +2201,7 @@ class Dashboard(App[None]):
                     if runner_cell is not None:
                         runner_cell = _dim(runner_cell)
                     repo_cell = _dim(repo_cell)
+                    marks_cell = _dim(marks_cell)
                     slug_cell_real = _dim(slug_cell_real)
                 elif _snooze_label(task, display_now) is not None:
                     # An active snooze mutes the whole row (the turn cell already carries the label).
@@ -2072,6 +2211,7 @@ class Dashboard(App[None]):
                     if runner_cell is not None:
                         runner_cell = _dim(runner_cell)
                     repo_cell = _dim(repo_cell)
+                    marks_cell = _dim(marks_cell)
                     slug_cell_real = _dim(slug_cell_real)
                 runner_extra = (runner_cell,) if runner_cell is not None else ()
                 table.add_row(
@@ -2080,6 +2220,7 @@ class Dashboard(App[None]):
                     status_cell,
                     *runner_extra,
                     repo_cell,
+                    marks_cell,
                     slug_cell_real,
                     key=task["id"],
                 )

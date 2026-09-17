@@ -43,6 +43,7 @@ class _FakeRunner:
         task_id: str,
         *,
         env_file: str | None = None,
+        credential_dir: str | None = None,
         workspace: str | None = None,
         image: str | None = None,
         docker_in_docker: bool = False,
@@ -56,6 +57,7 @@ class _FakeRunner:
             {
                 "task_id": task_id,
                 "env_file": env_file,
+                "credential_dir": credential_dir,
                 "workspace": workspace,
                 "image": image,
                 "docker_in_docker": docker_in_docker,

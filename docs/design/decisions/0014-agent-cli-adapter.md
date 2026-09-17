@@ -69,8 +69,9 @@ The seams, one method (or small method group) each:
 | **write MCP client config** | `panopticon-mcp.json` (`{"mcpServers": …}`) via `--mcp-config` | `[mcp_servers.panopticon]` in `config.toml` |
 | **render workflow-overview / system prompt** | `--append-system-prompt <overview>` | `$CODEX_HOME/AGENTS.md` (our config dir) — **not** the repo's `/workspace/AGENTS.md` |
 | **build launch argv incl. resume** | `claude --dangerously-skip-permissions [--continue \| --model M PROMPT]` | `codex …` first-run vs `codex resume --last`/session-id |
-| **trust / first-run pre-accept** | `.claude.json` onboarding + trust + cost keys | codex trust / sandbox-approval seed |
+| **trust / first-run pre-accept** (takes the env — some gates are keyed to a credential's value) | `.claude.json` onboarding + trust + cost keys + `customApiKeyResponses.approved` (the env API key) | codex trust / sandbox-approval seed |
 | **auth env var(s) + missing-auth check** | `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` | `OPENAI_API_KEY` / codex login token |
+| **normalize env-file secrets** (`SECRET_ENV_VARS` → `launch_env`) | `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` / `GH_TOKEN` | `CODEX_API_KEY` / `OPENAI_API_KEY` / `CODEX_ACCESS_TOKEN` / `GH_TOKEN` |
 | **resolve tier → concrete model** | tier `"opus"` → `claude --model opus` | tier → a codex model id |
 
 The bootstrap/launch split (AGENTS.md "No LLMs in tests") is preserved: the adapter's rendering
@@ -201,8 +202,15 @@ spike the implementer resolves against the installed codex version):
 
 1. MCP transport — HTTP vs stdio support (we serve HTTP today; if codex is stdio-only we front it
    with a local proxy or add an stdio MCP entrypoint).
-2. The exact codex **hooks config schema** and payload shape (for the turn-flip callback's
-   background-task gating — the `background_tasks` analogue).
+2. ~~The exact codex **hooks config schema** and payload shape (for the turn-flip callback's
+   background-task gating — the `background_tasks` analogue).~~ **Resolved (M3.6):** hooks live under
+   a `[hooks]` table keyed by event, each an array of groups whose `hooks` array holds
+   `{type = "command", command = …}` (`[[hooks.Stop]]` → `[[hooks.Stop.hooks]]`); `Stop` /
+   `UserPromptSubmit` take no `matcher`. The `Stop` stdin payload is `session_id` /
+   `transcript_path` / `cwd` / `hook_event_name` / `model` / `permission_mode` / `turn_id` /
+   `stop_hook_active` / `last_assistant_message` — **no `background_tasks` analogue**, so the flip
+   degrades to the plain turn hand-back (claude's exact behaviour when the field is absent) and
+   `has_live_background_task` is always `False` for codex.
 3. The `CODEX_HOME` config-dir override and its precedence.
 4. The **instructions-merge precedence** — confirm `$CODEX_HOME/AGENTS.md` (or
    `experimental_instructions_file`) layers *additively* on top of the repo's root `AGENTS.md`
@@ -211,12 +219,16 @@ spike the implementer resolves against the installed codex version):
    without touching the working tree.
 5. The unattended / **skip-approvals sandbox** flag (the `--dangerously-skip-permissions`
    analogue — codex runs headless in a throwaway container on a per-task clone).
-6. Whether codex **feeds hook stdout into the agent's context** (as claude does for
-   `UserPromptSubmit`). If not, the per-turn briefing + provisioning nudge need a different channel
-   (e.g. writing them into `$CODEX_HOME/AGENTS.md`, or a session-start injection).
-7. The codex trigger for the **"agent is asking the user" turn state** — the `AskUserQuestion`
-   PreToolUse/PostToolUse flip has no direct codex analogue; find the equivalent (or accept that
-   the turn simply stays on the agent until the next `Stop`, a documented degradation).
+6. ~~Whether codex **feeds hook stdout into the agent's context** (as claude does for
+   `UserPromptSubmit`).~~ **Resolved (M3.6): yes** — a `UserPromptSubmit` hook's plain-text stdout
+   is added to the agent as extra developer context, so the per-turn briefing + provisioning nudge
+   ride the same channel as claude, no alternate needed. (`Stop` is the opposite: plain-text stdout
+   is invalid there — JSON only — but our callback prints nothing on the stop path, so it's fine.)
+7. ~~The codex trigger for the **"agent is asking the user" turn state** — the `AskUserQuestion`
+   PreToolUse/PostToolUse flip has no direct codex analogue.~~ **Resolved (M3.6):** codex has no
+   `AskUserQuestion` tool (and `Stop`/`UserPromptSubmit` take no `matcher`), so we wire no
+   `PreToolUse`/`PostToolUse` pair — the turn stays on the agent until the next `Stop`, the accepted
+   documented degradation.
 
 ### 6. The determinism invariant holds
 

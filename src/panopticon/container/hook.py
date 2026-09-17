@@ -73,7 +73,8 @@ def main(
             return 0
     client.set_turn(task_id, actor)
     # `prompt` (UserPromptSubmit): ground the agent in its current phase, and (while the task is
-    # unslugged) nudge toward provisioning. claude adds this hook's stdout to its context.
+    # unslugged) nudge toward provisioning. The CLI adds this hook's stdout to the agent's context
+    # (claude and codex both do — ADR 0014 flag 6).
     if event == "prompt":
         print(client.get_briefing(task_id))
         if client.get_task(task_id).get("slug") is None:

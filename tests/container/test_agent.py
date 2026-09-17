@@ -5,6 +5,7 @@ fake here. The claude-specific seams live in :mod:`tests.container.test_claude`.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -90,7 +91,7 @@ def test_main_resolves_the_adapter_from_the_agent_cli_env_var(
         name = "fake"
         config_dirname = ".fake"
 
-        def auth_missing_detail(self, env: object) -> str | None:
+        def auth_missing_detail(self, env: object, config_dir: object) -> str | None:
             calls.append("auth")
             return None
 
@@ -114,9 +115,16 @@ def test_main_resolves_the_adapter_from_the_agent_cli_env_var(
             calls.append("overview")
             return None
 
-        def trust_workspace(self, config_dir: Path, cwd: Path) -> Path:
+        def trust_workspace(self, config_dir: Path, cwd: Path, env: object) -> Path:
+            # The env reaches this seam because claude's API-key approval is keyed to the
+            # credential's own value, not just to the workspace path.
+            assert isinstance(env, Mapping) and env.get("PANOPTICON_TASK_ID") == "t1"
             calls.append("trust")
             return config_dir
+
+        def write_credentials(self, config_dir: Path, env: object) -> Path | None:
+            calls.append("credentials")
+            return None
 
         def launch(self, config_dir: Path) -> None:
             calls.append(f"launch:{config_dir}")
@@ -136,6 +144,7 @@ def test_main_resolves_the_adapter_from_the_agent_cli_env_var(
         f"mcp:{tmp_path / '.fake'}",
         "overview",
         "trust",
+        "credentials",
         f"launch:{tmp_path / '.fake'}",
         "on_exit",
     ]

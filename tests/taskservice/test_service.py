@@ -841,3 +841,78 @@ async def test_update_repo_not_touching_env_file_skips_validation(
     )  # no env_file in the patch
     assert updated.enabled_workflows == ["spike"]
     assert updated.env_file == "r1.env"  # preserved, not re-validated
+
+
+# -- credential_dir validation ------------------------------------------------------------------
+
+
+def _make_cred_dir(config_dir: Path, name: str) -> None:
+    """Create a secrets directory ``name`` under ``config_dir/secrets``."""
+    (config_dir / "secrets" / name).mkdir(parents=True, exist_ok=True)
+
+
+async def test_create_repo_accepts_no_credential_dir(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    await svc.create_repo(
+        Repo(id="r2", name="acme/other", git_url="https://x/r2.git", credential_dir=None)
+    )
+    assert (await svc.get_repo("r2")).credential_dir is None
+
+
+async def test_create_repo_accepts_an_existing_credential_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PANOPTICON_CONFIG", str(tmp_path))
+    _make_cred_dir(tmp_path, "openai.d")
+    svc = await make_service(tmp_path)
+    await svc.create_repo(
+        Repo(id="r2", name="acme/other", git_url="https://x/r2.git", credential_dir="openai.d")
+    )
+    assert (await svc.get_repo("r2")).credential_dir == "openai.d"
+
+
+async def test_create_repo_rejects_a_missing_credential_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PANOPTICON_CONFIG", str(tmp_path))
+    svc = await make_service(tmp_path)
+    with pytest.raises(ValueError, match="credential_dir"):
+        await svc.create_repo(
+            Repo(
+                id="r2",
+                name="acme/other",
+                git_url="https://x/r2.git",
+                credential_dir="absent.d",
+            )
+        )
+    with pytest.raises(NotFound):  # the rejected repo was not persisted
+        await svc.get_repo("r2")
+
+
+async def test_create_repo_rejects_a_credential_dir_that_escapes_the_secrets_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PANOPTICON_CONFIG", str(tmp_path))
+    svc = await make_service(tmp_path)
+    with pytest.raises(ValueError, match="escapes"):
+        await svc.create_repo(
+            Repo(
+                id="r2",
+                name="acme/other",
+                git_url="https://x/r2.git",
+                credential_dir="../evil.d",
+            )
+        )
+
+
+async def test_update_repo_not_touching_credential_dir_skips_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PANOPTICON_CONFIG", str(tmp_path))
+    _make_cred_dir(tmp_path, "openai.d")
+    svc = await make_service(tmp_path)
+    await svc.update_repo("r1", {"credential_dir": "openai.d"})
+    (tmp_path / "secrets" / "openai.d").rmdir()  # dir goes away out of band
+    updated = await svc.update_repo("r1", {"enabled_workflows": ["spike"]})
+    assert updated.enabled_workflows == ["spike"]
+    assert updated.credential_dir == "openai.d"  # preserved, not re-validated

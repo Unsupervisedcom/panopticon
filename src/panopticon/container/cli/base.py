@@ -15,10 +15,79 @@ so the determinism invariant holds (ADR 0014 §6): the control plane runs no CLI
 
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, ClassVar, Protocol, TextIO
+
+from panopticon.core.models import MODEL_TIERS
+
+
+def resolve_tier(tier: str, tiers: Mapping[str, str]) -> str:
+    """Resolve an abstract model **tier** to a concrete model id, failing loud on an unresolved tier.
+
+    ``tiers`` is the CLI adapter's tier→model map. Resolution has three cases (ADR 0014 §3a):
+
+    - ``tier`` is in ``tiers`` → return its concrete model id (the normal path).
+    - ``tier`` is a **reserved** tier name (:data:`~panopticon.core.models.MODEL_TIERS`) but absent
+      from ``tiers`` → raise. An unresolved tier historically leaked straight to ``--model`` (a stale
+      container running pre-resolution code did exactly this — the bug this guards); refuse it
+      loudly instead of launching the wrong model silently.
+    - anything else → a concrete model id set directly (or a tier already persisted as its resolved
+      name); pass it through unchanged so back-compat holds.
+    """
+    if tier in tiers:
+        return tiers[tier]
+    if tier in MODEL_TIERS:
+        raise ValueError(
+            f"model tier {tier!r} is not mapped by this CLI adapter (known tiers: {sorted(tiers)}); "
+            "refusing to pass an unresolved tier through to --model. This usually means a stale "
+            "container image running pre-resolution code — rebuild with `make clean && make build`."
+        )
+    return tier
+
+
+#: The quote characters an operator might wrap an env-file value in (dotenv habit).
+_QUOTES = ('"', "'")
+
+
+def unquote_secret(value: str) -> str:
+    """An env-file value as the operator *meant* it: whitespace- and quote-stripped.
+
+    The two runners disagree about dotenv quoting, on the very same file. :class:`ShellRunner`
+    **sources** the repo's ``env_file`` (``set -a; . <file>; set +a``), so the shell strips quoting
+    for it. :class:`LocalRunner` hands the file to ``docker run --env-file``, which does **no**
+    dotenv parsing at all: everything after the first ``=`` becomes the value, quotes included, with
+    no trimming — so ``KEY="v"`` reaches the container as the five characters ``"v"``, and a
+    CRLF-terminated file leaves a trailing ``\\r``. Neither claude nor codex strips either, so the
+    credential is silently malformed and every API call fails with an opaque 401.
+
+    This is the one place that reconciles them: strip surrounding whitespace, remove **one** matching
+    leading/trailing quote pair, strip again. Deliberately conservative —
+
+    - both ends must carry the *same* quote character, so an unbalanced ``"v`` (or a value that
+      merely contains quotes) is left alone: an unbalanced quote isn't a recognizable mistake;
+    - only one pair is removed, so ``'"v"'`` yields ``"v"`` rather than guessing at intent.
+
+    No real credential begins and ends with the same quote character, so this cannot corrupt a
+    valid one.
+    """
+    stripped = value.strip()
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in _QUOTES:
+        stripped = stripped[1:-1].strip()
+    return stripped
+
+
+def secret_from_env(env: Mapping[str, str], name: str) -> str | None:
+    """``env[name]`` normalized by :func:`unquote_secret`, or ``None`` when unset or empty.
+
+    The empty case matters: ``KEY=""`` in the env-file reaches the container as the two-character
+    string ``""``, which is *truthy* — so a presence check on the raw value reads a deliberately
+    blank credential as present-but-broken. Normalizing first reads it as absent, which is what the
+    operator wrote.
+    """
+    return unquote_secret(env.get(name) or "") or None
 
 
 class _Client(Protocol):
@@ -41,6 +110,14 @@ class AgentCLI(ABC):
     name: ClassVar[str]
     #: The CLI's config dir, relative to the container home (the launcher mounts it per-task).
     config_dirname: ClassVar[str]
+    #: The control plane's abstract model **tiers** mapped to this CLI's concrete model ids (ADR
+    #: 0014 §3a). Subclasses set the mapping; :meth:`resolve_model` reads it. Unknown tiers pass
+    #: through unchanged so a raw model id set directly still reaches ``--model`` verbatim.
+    MODEL_TIERS: ClassVar[Mapping[str, str]]
+    #: Credential env vars (injected from the repo's ``env_file``) whose values are normalized by
+    #: :func:`unquote_secret` before the CLI — and everything it shells out to — sees them.
+    #: Subclasses list their own; the default is empty, so an adapter opts in explicitly.
+    SECRET_ENV_VARS: ClassVar[tuple[str, ...]] = ()
 
     @abstractmethod
     def render_skills(self, client: _Client, task_id: str, home: Path) -> list[Path]:
@@ -63,28 +140,86 @@ class AgentCLI(ABC):
         """Deliver the whole-workflow map into the agent's context (system prompt). ``None`` if empty."""
 
     @abstractmethod
-    def trust_workspace(self, config_dir: Path, cwd: Path) -> Path:
-        """Pre-accept the CLI's first-run/trust dialogs for ``cwd`` (no operator in the container)."""
+    def trust_workspace(self, config_dir: Path, cwd: Path, env: Mapping[str, str]) -> Path:
+        """Pre-accept the CLI's first-run/trust dialogs for ``cwd`` (no operator in the container).
+
+        Takes ``env`` because not every first-run gate is keyed to the workspace: claude gates a
+        ``ANTHROPIC_API_KEY`` injected from the repo's ``env_file`` behind an approval dialog keyed
+        to the key's own *value*, so pre-accepting it needs the credential, not just the path.
+        """
 
     @abstractmethod
-    def auth_missing_detail(self, env: Mapping[str, str]) -> str | None:
-        """The failure detail if the CLI's auth env var is absent, else ``None`` (auth is present)."""
+    def auth_missing_detail(self, env: Mapping[str, str], config_dir: Path) -> str | None:
+        """The failure detail if the CLI can't authenticate, else ``None``.
+
+        Auth is present when the CLI's env var is set **or** a persisted credential already sits on
+        the per-task config volume (``config_dir``) — so a container carried across respawn isn't
+        wrongly failed. Presence check only; validity surfaces at the CLI's first call.
+        """
 
     @abstractmethod
+    def write_credentials(self, config_dir: Path, env: Mapping[str, str]) -> Path | None:
+        """Materialize any on-disk credentials the CLI needs from the env (idempotent).
+
+        Returns the written path, or ``None`` when the CLI reads its credentials straight from the
+        env (claude) or a credential file is already present. Never clobbers an existing one.
+        """
+
+    def launch_env(self, env: Mapping[str, str]) -> dict[str, str]:
+        """The overlay of normalized credential values to launch the CLI with (changed keys only).
+
+        Each of this adapter's :attr:`SECRET_ENV_VARS` that is set and not already normalized maps
+        to its :func:`unquote_secret` form; everything else is omitted, so merging this over the
+        process env is a no-op for a correctly written env-file. :meth:`launch` merges it, which also
+        covers every tool the CLI shells out to (``gh`` in the forge skills, say) — they inherit the
+        corrected env from their parent.
+
+        Concrete and non-abstract: the default :attr:`SECRET_ENV_VARS` is empty, so an adapter that
+        needs nothing normalized inherits correct behaviour, and this stays unit-testable without
+        widening the abstract surface.
+        """
+        overlay: dict[str, str] = {}
+        for var in self.SECRET_ENV_VARS:
+            raw = env.get(var)
+            if raw is None:
+                continue
+            normalized = unquote_secret(raw)
+            if normalized != raw:
+                overlay[var] = normalized
+        return overlay
+
     def resolve_model(self, tier: str) -> str:
-        """Map the control plane's abstract model **tier** to this CLI's concrete model id (§3a)."""
+        """Map the control plane's abstract model **tier** to this CLI's concrete model id (§3a).
 
-    @abstractmethod
+        The control plane stores a CLI-agnostic tier (e.g. ``"primary"``); adapters declare their
+        :attr:`MODEL_TIERS` mapping and this is the only place a tier becomes a provider model name,
+        keeping model vocabulary out of ``core``/``workflows``. Reserved tiers that are absent from
+        the mapping raise, so a stale image running pre-resolution code fails loud rather than leaking
+        the raw tier to ``--model`` (see :func:`resolve_tier`).
+        """
+        return resolve_tier(tier, self.MODEL_TIERS)
+
     def read_hook_payload(self, stdin: TextIO) -> dict[str, Any]:
-        """Tolerantly parse the turn-flip hook's stdin payload (empty/invalid → ``{}``)."""
+        """Tolerantly parse the hook's stdin JSON; empty/invalid input yields an empty payload."""
+        try:
+            raw = stdin.read()
+        except (OSError, ValueError):
+            return {}
+        if not raw or not raw.strip():
+            return {}
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return data if isinstance(data, dict) else {}
 
     @abstractmethod
     def has_live_background_task(self, payload: dict[str, Any]) -> bool:
-        """Whether the Stop payload reports still-running background work (gates the turn flip)."""
+        """Whether the hook payload reports still-running background work (gates the turn flip)."""
 
     @abstractmethod
     def launch(self, config_dir: Path) -> None:
-        """Exec the real CLI in the foreground (resuming if a session exists); return when it exits."""
+        """Exec the real CLI in the foreground; return when it exits."""
 
 
 #: The adapter registry, keyed by CLI name. Adding a CLI is: implement :class:`AgentCLI`, register

@@ -9,7 +9,7 @@ silently drift apart.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from dataclasses import MISSING, fields, is_dataclass
+from dataclasses import MISSING, fields, is_dataclass, replace
 from pathlib import Path
 from typing import Any, get_args, get_origin, get_type_hints
 
@@ -477,6 +477,42 @@ def test_rows_and_domain_models_stay_in_sync(domain: type) -> None:
     )
 
 
+def _fully_populated_repo() -> Repo:
+    """A repo touching every field of Repo with a non-default value."""
+    return Repo(
+        id="r-full",
+        name="acme/widgets",
+        git_url="https://github.com/acme/widgets.git",
+        default_base="trunk",
+        env_file="r-full.env",
+        credential_dir="r-full-creds",
+        image_layer_file="r-full.layer",
+        capabilities={"docker_in_docker": True},
+        hook_file="prep.sh",
+        enabled_workflows=["spike"],
+        disabled_workflows=["github-peer-reviewed"],
+        agent_cli="codex",
+    )
+
+
+def _mutated_repo(repo: Repo) -> Repo:
+    """``repo`` with every updatable field moved to a second distinct value."""
+    return replace(
+        repo,
+        name="acme/gadgets",
+        git_url="https://github.com/acme/gadgets.git",
+        default_base="main",
+        env_file="other.env",
+        credential_dir="other-creds",
+        image_layer_file="other.layer",
+        capabilities={"docker_in_docker": False},
+        hook_file="other.sh",
+        enabled_workflows=["github-self-reviewed"],
+        disabled_workflows=["spike"],
+        agent_cli="claude",
+    )
+
+
 def _fully_populated_task() -> Task:
     """A task touching every field of Task/HistoryEntry/Responsibility with a non-default value."""
     return Task(
@@ -530,6 +566,38 @@ def _fully_populated_task() -> Task:
     )
 
 
+def _mutated_task(task: Task) -> Task:
+    """``task`` with every updatable field moved to a second distinct value.
+
+    The appended history entry carries the new state (a task's state must match its history
+    tail) — updating in place is not allowed for recorded transitions.
+    """
+    return replace(
+        task,
+        state="REVIEW",
+        turn=Actor.USER,
+        blocked=False,
+        memo="make the widget blue",
+        initial_prompt="have another look",
+        slug="fix-the-gadget",
+        url="https://github.com/acme/widgets/pull/8",
+        snoozed_until="2026-09-06T03:00:00+00:00",
+        branch="panopticon/fix-the-gadget",
+        clone="/clones/t-full-again",
+        claimed_by="remote",
+        starting_model="secondary",
+        agent_cli="claude",
+        governor_task_id=None,
+        updated_at="t3",
+        sort_weight=9,
+        depends_on_task_ids=["t-dep-2"],
+        history=[
+            *task.history,
+            HistoryEntry(at="t3", from_state="WORKING", to_state="REVIEW", trigger="advance"),
+        ],
+    )
+
+
 def _assert_every_field_exercised(instances: list[Any], domain: type) -> None:
     """Fail if any field of ``domain`` equals its default across *all* ``instances``.
 
@@ -547,6 +615,52 @@ def _assert_every_field_exercised(instances: list[Any], domain: type) -> None:
             pytest.fail(
                 f"{domain.__name__}.{f.name} is never exercised — extend _fully_populated_task"
             )
+
+
+def _assert_every_field_changed(before: Any, after: Any, domain: type, immutable: set[str]) -> None:
+    """Fail if any updatable field of ``domain`` holds the same value in ``before`` and ``after``.
+
+    The mirror of :func:`_assert_every_field_exercised` for the *update* path: it forces the
+    mutation fixture to move every new field, so the round-trip below genuinely proves the field
+    is written by an update — the gap that let ``Repo.agent_cli`` be carried on create and
+    silently dropped on update.
+    """
+    for f in fields(domain):
+        if f.name in immutable:
+            continue
+        if getattr(before, f.name) == getattr(after, f.name):
+            pytest.fail(
+                f"{domain.__name__}.{f.name} is never changed — extend the mutation fixture"
+            )
+
+
+async def test_full_repo_round_trips_on_create_and_update(store: Store) -> None:
+    repo = _fully_populated_repo()
+    updated = _mutated_repo(repo)
+    _assert_every_field_exercised([repo], Repo)
+    _assert_every_field_changed(repo, updated, Repo, immutable={"id"})
+
+    await store.create_repo(repo)
+    assert await store.get_repo(repo.id) == repo  # dataclass __eq__: every field survives
+
+    await store.update_repo(updated)
+    assert await store.get_repo(repo.id) == updated  # ...and an update writes every one of them
+
+
+# Identity and creation facts: set once by the insert and never rewritten, so the update
+# round-trip below doesn't assert on them. Any *new* field is guarded by default.
+_TASK_IMMUTABLE = {"id", "repo_id", "workflow", "created_at", "history"}
+
+
+async def test_full_task_update_round_trips_and_exercises_every_field(store: Store) -> None:
+    await _seed_repo(store)
+    task = _fully_populated_task()
+    updated = _mutated_task(task)
+    _assert_every_field_changed(task, updated, Task, immutable=_TASK_IMMUTABLE)
+
+    await store.create_task(task)
+    await store.save_task(updated)
+    assert await store.get_task(task.id) == updated
 
 
 async def test_full_task_round_trips_and_exercises_every_field(store: Store) -> None:
