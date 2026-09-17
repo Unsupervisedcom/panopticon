@@ -631,6 +631,40 @@ async def test_artifact_roundtrip(tmp_path: Path) -> None:
     assert await svc.list_artifacts(task.id) == ["plan.md"]
 
 
+# -- repo artifacts -----------------------------------------------------------------
+
+
+async def test_repo_artifacts_require_the_repo(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    with pytest.raises(NotFound):
+        await svc.put_repo_artifact("ghost", "notes.md", b"x")
+    with pytest.raises(NotFound):
+        await svc.list_repo_artifacts("ghost")
+    with pytest.raises(NotFound):
+        await svc.get_repo_artifact("ghost", "notes.md")
+
+
+async def test_repo_artifact_roundtrip(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    await svc.put_repo_artifact("r1", "notes/api.md", b"beware")
+    assert await svc.get_repo_artifact("r1", "notes/api.md") == b"beware"
+    assert await svc.list_repo_artifacts("r1") == ["notes/api.md"]
+
+
+async def test_repo_artifact_for_task_writes_to_that_tasks_repo(tmp_path: Path) -> None:
+    # The agent-facing entry point: a task names itself and the write lands in its own repo, so
+    # it can't reach another repo's documents by passing a different id.
+    svc = await make_service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    repo_id = await svc.put_repo_artifact_for_task(task.id, "conventions.md", b"# How we work")
+    assert repo_id == "r1"
+    assert await svc.get_repo_artifact("r1", "conventions.md") == b"# How we work"
+    assert await svc.list_repo_artifacts_for_task(task.id) == ("r1", ["conventions.md"])
+    assert await svc.list_artifacts(task.id) == []  # the task's own artifacts are untouched
+    with pytest.raises(NotFound):
+        await svc.put_repo_artifact_for_task("ghost", "x.md", b"x")
+
+
 async def test_create_task_seeds_binary_artifacts_from_base64(tmp_path: Path) -> None:
     png = b"\x89PNG\r\n\x1a\n\x00\xff\xfe\x01binary"
     svc = await make_service(tmp_path)

@@ -19,11 +19,13 @@ rest still work but are hidden from the legend (both the footer bindings and `He
 from the single ``HOTKEYS`` keymap): `r` refreshes from the task service over REST, `R` **respawns**
 a down task (releases its claim so the host runner re-spawns it), `p` opens the task's `url` in the
 browser (cloude-cade's `p` "open PR"), `g` opens the **repo config screen** (list / create / edit
-repos — and it **opens automatically on start when no repos are configured**, the first-run
-nudge to add one), `s` switches to the task-service session, and `a` opens a modal listing the task's
-artifacts — Enter opens the selected
-one with the host's default handler (`xdg-open`/`open`) by fetching it over REST to a temp file, `e`
-opens the on-disk file in place when the dashboard shares the artifact store, `y` **copies the
+repos, `a` for a repo's artifacts — and it **opens automatically on start when no repos are
+configured**, the first-run nudge to add one), `s` switches to the task-service session, and `a`
+opens a modal listing the task's artifacts — Enter opens the selected one with the host's default
+handler (`xdg-open`/`open`) by fetching it over REST to a temp file, `e` opens the on-disk file in
+place when the dashboard shares the artifact store. `A` opens the task's **repo** artifacts — the
+documents every task in that repo shares, in their own modal, where `f` additionally opens the
+repo's artifact **folder** on this machine. `y` **copies the
 task's slug** and `Y` its **id** to the clipboard (OSC 52 + the host's `pbcopy`/`xclip`/`wl-copy`,
 so it works on Linux and macOS). Drop is the only state
 *transition* the dashboard drives: every other transition starts a new agentic turn, so it's
@@ -626,6 +628,22 @@ def _open_via_rest(client: TaskServiceClient, task_id: str, name: str, tmpdir: s
     (cleaned on exit), so opens don't leak a directory each."""
     content = client.get_artifact(task_id, name)
     path = Path(tmpdir) / task_id / Path(name).name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    _open_path(str(path))
+
+
+def _open_repo_artifact_via_rest(
+    client: TaskServiceClient, repo_id: str, name: str, tmpdir: str
+) -> None:
+    """:func:`_open_via_rest` for a **repo** artifact: fetch it over REST, write it under
+    ``tmpdir``, then open that — so it works when the dashboard is remote from the artifact store.
+
+    The scratch copy keeps the artifact's **whole relative name** rather than just its basename:
+    repo artifact names may be nested, and two subdirectories can legitimately hold the same file
+    name (``api/notes.md`` and ``ui/notes.md``), which flattening would collide."""
+    content = client.get_repo_artifact(repo_id, name)
+    path = Path(tmpdir) / "repos" / repo_id / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
     _open_path(str(path))
@@ -1580,8 +1598,9 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
 
 
 class ReposScreen(ModalScreen[None]):
-    """Repo management: list repos, create (`n`) / edit (`e`) them; Escape returns to the task
-    view. Mutations go through the task service over REST, then the table refreshes."""
+    """Repo management: list repos, create (`n`) / edit (`e`) them, open a repo's artifacts (`a`);
+    Escape returns to the task view. Mutations go through the task service over REST, then the
+    table refreshes."""
 
     CSS = """
     ReposScreen { align: center middle; }
@@ -1591,18 +1610,25 @@ class ReposScreen(ModalScreen[None]):
         ("n", "new_repo", "New repo"),
         ("e", "edit_repo", "Edit repo"),
         ("s", "setup_repo", "Setup repo"),
+        ("a", "repo_artifacts", "Artifacts"),
         ("escape", "close", "Close"),
     ]
 
-    def __init__(self, client: TaskServiceClient) -> None:
+    def __init__(
+        self, client: TaskServiceClient, *, on_artifacts: Callable[[str, str], None]
+    ) -> None:
         super().__init__()
         self._client = client
+        # `a` hands the picked repo (id, name) back to the Dashboard, which owns the
+        # artifact-store root and the REST-open scratch dir — the same callback shape
+        # ``RepoFormScreen`` uses for its values, so this screen stays presentation-only.
+        self._on_artifacts = on_artifacts
         self._repos: dict[str, JsonObj] = {}
         self._current: str | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="repos-box"):
-            yield Label("repos — n: new   e: edit   s: setup   esc: close")
+            yield Label("repos — n: new   e: edit   s: setup   a: artifacts   esc: close")
             yield _VimDataTable(id="repos")
 
     def on_mount(self) -> None:
@@ -1706,6 +1732,14 @@ class ReposScreen(ModalScreen[None]):
             )
         )
 
+    def action_repo_artifacts(self) -> None:
+        """`a`: open the highlighted repo's artifact modal (the documents its tasks share)."""
+        if self._current is None:
+            self.notify("Highlight a repo first.", severity="warning")
+            return
+        repo_id = self._current
+        self._on_artifacts(repo_id, str(self._repos[repo_id].get("name", repo_id)))
+
     def action_setup_repo(self) -> None:
         """`s`: run host-side setup for the highlighted repo — create a `setup-repo` task.
 
@@ -1733,30 +1767,23 @@ def _detail(exc: httpx.HTTPStatusError) -> str:
         return str(exc)
 
 
-class ArtifactScreen(_OptionListModal[tuple[str, str]]):
-    """A modal list of a task's artifacts: Enter opens the highlighted one over REST, `e` opens
-    its local on-disk file in place, `ctrl+a` attaches new files; Escape cancels.
+class _ArtifactListScreen(_OptionListModal[tuple[str, str]]):
+    """Shared skeleton for the two artifact-list modals — a task's (`a`) and a repo's (`A`).
 
-    Dismisses ``(name, mode)`` where ``mode`` is ``"rest"`` (Enter), ``"local"`` (`e`), or
-    ``"attach"`` (`ctrl+a`, ``name`` unused — the Dashboard then opens the file-picker), or
-    ``None`` on cancel. Local-open is bound to `e` (as in "edit in place"), **not** Shift+Enter:
-    many terminals can't deliver Shift+Enter distinctly from Enter, so the local mode would be
-    silently unreachable. Attach is `ctrl+a`, mirroring the task-creation memo's attach key.
+    Both dismiss ``(name, mode)``, telling the Dashboard *how* to act on the highlighted entry:
+    ``"rest"`` (Enter — fetch over REST and open with the host's handler), ``"local"`` (`e` —
+    open the on-disk file in place), ``"attach"`` (`ctrl+a`, ``name`` unused — the Dashboard then
+    opens the file-picker), or ``None`` on cancel. Local-open is bound to `e` (as in "edit in
+    place"), **not** Shift+Enter: many terminals can't deliver Shift+Enter distinctly from Enter,
+    so the local mode would be silently unreachable. Attach is `ctrl+a`, mirroring the
+    task-creation memo's attach key.
 
-    Dotfile artifacts (names starting with ``.``) are hidden by default.  A "Show hidden"
-    checkbox appears when hidden artifacts exist; toggling it repopulates the list."""
+    Hidden artifacts (a dot-prefixed name, or one nested under a dot-directory) are filtered out
+    by default; a "Show hidden" checkbox appears when there are any, and toggling it repopulates
+    the list. Subclasses fix the box id/CSS, the ``HINT`` line, and any mode of their own (the
+    repo modal adds `f`, open the folder)."""
 
-    CSS = """
-    ArtifactScreen { align: center middle; }
-    #artifact-box { width: 56; height: auto; max-height: 80%; padding: 1 2; border: round $accent; background: $surface; }
-    #artifact-hint { color: $text-muted; }
-    """
-    BOX_ID = "artifact-box"
-    BINDINGS = [
-        ("escape", "cancel", "Cancel"),
-        ("e", "open_local", "Open local"),
-        ("ctrl+a", "attach", "Attach files"),
-    ]
+    HINT = ""
 
     def __init__(self, title: str, all_names: list[str]) -> None:
         self._all_names = all_names
@@ -1764,9 +1791,7 @@ class ArtifactScreen(_OptionListModal[tuple[str, str]]):
         super().__init__(title, visible)
 
     def _extra_widgets(self) -> Iterable[Widget]:
-        yield Label(
-            "enter: open · e: open local file · ctrl+a: attach · esc: cancel", id="artifact-hint"
-        )
+        yield Label(self.HINT, id="artifact-hint")
         if any(is_hidden(n) for n in self._all_names):
             yield SpaceCheckbox("Show hidden", id="show-hidden")
 
@@ -1780,17 +1805,71 @@ class ArtifactScreen(_OptionListModal[tuple[str, str]]):
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         self.dismiss((str(event.option.prompt), "rest"))
 
-    def action_open_local(self) -> None:
+    def _dismiss_highlighted(self, mode: str) -> None:
+        """Dismiss ``(the highlighted name, mode)``; do nothing when the list is empty."""
         option_list = self.query_one(OptionList)
         index = option_list.highlighted
         if index is None:
             return
-        self.dismiss((str(option_list.get_option_at_index(index).prompt), "local"))
+        self.dismiss((str(option_list.get_option_at_index(index).prompt), mode))
+
+    def action_open_local(self) -> None:
+        self._dismiss_highlighted("local")
 
     def action_attach(self) -> None:
-        # The list may be empty (a task with no artifacts yet); attach doesn't depend on a
-        # selection. The Dashboard opens the file-picker (:class:`ArtifactsScreen`) and uploads.
+        # The list may be empty (nothing attached yet); attach doesn't depend on a selection. The
+        # Dashboard opens the file-picker (:class:`ArtifactsScreen`) and uploads.
         self.dismiss(("", "attach"))
+
+
+class ArtifactScreen(_ArtifactListScreen):
+    """A modal list of a **task's** artifacts: Enter opens the highlighted one over REST, `e` opens
+    its local on-disk file in place, `ctrl+a` attaches new files; Escape cancels."""
+
+    CSS = """
+    ArtifactScreen { align: center middle; }
+    #artifact-box { width: 56; height: auto; max-height: 80%; padding: 1 2; border: round $accent; background: $surface; }
+    #artifact-hint { color: $text-muted; }
+    """
+    BOX_ID = "artifact-box"
+    HINT = "enter: open · e: open local file · ctrl+a: attach · esc: cancel"
+    BINDINGS = [
+        ("escape", "cancel", "Cancel"),
+        ("e", "open_local", "Open local"),
+        ("ctrl+a", "attach", "Attach files"),
+    ]
+
+
+class RepoArtifactScreen(_ArtifactListScreen):
+    """A modal list of a **repo's** artifacts — the documents every task in that repo shares.
+
+    Its own modal rather than a mode of :class:`ArtifactScreen`: the entries belong to a repo, not
+    a task, their names may be nested paths (``notes/api.md``), and it carries a key the task
+    modal has no equivalent of — `f` opens the **repo's artifact folder** in the host's file
+    manager (the Dashboard resolves it, and says so when the folder isn't on this machine).
+
+    Beyond `f`, the keys read the same as the task modal's: Enter opens the highlighted artifact
+    over REST, `e` opens its on-disk file in place, `ctrl+a` attaches local files to the repo,
+    Escape cancels."""
+
+    CSS = """
+    RepoArtifactScreen { align: center middle; }
+    #repo-artifact-box { width: 64; height: auto; max-height: 80%; padding: 1 2; border: round $accent; background: $surface; }
+    #artifact-hint { color: $text-muted; }
+    """
+    BOX_ID = "repo-artifact-box"
+    HINT = "enter: open · e: open local file · f: open folder · ctrl+a: attach · esc: cancel"
+    BINDINGS = [
+        ("escape", "cancel", "Cancel"),
+        ("e", "open_local", "Open local"),
+        ("f", "open_folder", "Open folder"),
+        ("ctrl+a", "attach", "Attach files"),
+    ]
+
+    def action_open_folder(self) -> None:
+        # The folder is the repo's, not an entry's, so this needs no selection — and works on an
+        # empty list, which is exactly when an operator wants to drop files in by hand.
+        self.dismiss(("", "folder"))
 
 
 # The full keymap, single source of truth for **both** the footer legend and the help screen
@@ -1836,6 +1915,13 @@ HOTKEYS: tuple[Hotkey, ...] = (
     ),
     Hotkey("g", "repos", "Repos", "Repo config (list / create / edit repos)", show=False),
     Hotkey("a", "artifacts", "Artifacts", "List the task's artifacts", show=False),
+    Hotkey(
+        "A",
+        "repo_artifacts",
+        "Repo artifacts",
+        "List the task's repo's artifacts (shared by every task in it)",
+        show=False,
+    ),
     Hotkey("s", "service", "Service", "Switch to the task-service session", show=False),
     Hotkey("u", "runner", "Runner", "Switch to the session-service (runner) session", show=False),
     Hotkey("y", "copy_slug", "Copy slug", "Copy the task's slug to the clipboard", show=False),
@@ -2508,7 +2594,9 @@ class Dashboard(App[None]):
             self._load_repo_names()  # pick up any renames/additions before the table rebuilds
             self.action_refresh()
 
-        self.push_screen(ReposScreen(self._client), _on_repos_dismissed)
+        self.push_screen(
+            ReposScreen(self._client, on_artifacts=self._repo_artifacts), _on_repos_dismissed
+        )
 
     def action_artifacts(self) -> None:
         """`a`: open a modal listing the highlighted task's artifacts. Enter opens the selection
@@ -2574,6 +2662,95 @@ class Dashboard(App[None]):
             if count:
                 self.notify(f"attached {count} file{'s' if count != 1 else ''}")
             self.action_artifacts()  # reopen the list, now showing the additions
+
+        self.push_screen(ArtifactsScreen({}), uploaded)
+
+    def action_repo_artifacts(self) -> None:
+        """`A`: open the highlighted task's **repo** artifacts — the documents shared by every
+        task in that repo, as opposed to `a`'s task-scoped ones. The same modal the repo screen's
+        `a` opens, reachable without leaving the task you're looking at."""
+        if self._current is None:
+            return
+        repo_id = str((self._tasks.get(self._current) or {}).get("repo_id") or "")
+        if not repo_id:
+            return
+        self._repo_artifacts(repo_id, self._repo_names.get(repo_id, repo_id))
+
+    def _repo_artifacts(self, repo_id: str, label: str) -> None:
+        """Open :class:`RepoArtifactScreen` for ``repo_id`` and act on what it dismisses.
+
+        The repo twin of :meth:`action_artifacts`, with one mode it has no equivalent for:
+        ``"folder"`` (`f`) opens the repo's artifact **directory** in the host's file manager.
+        Like `e`'s open-in-place, that's only possible when the dashboard shares the artifact
+        store's filesystem, so an absent folder notifies rather than failing.
+
+        Lives on the Dashboard because both entry points — `A` here and `a` in the repos screen —
+        need it, and because this is where the artifact-store root and the REST-open scratch dir
+        live."""
+        try:
+            names = self._client.list_repo_artifacts(repo_id)
+        except httpx.HTTPStatusError as exc:
+            self.notify(f"Can't list {label} artifacts: {exc}", severity="error")
+            return
+
+        def open_selected(choice: tuple[str, str] | None) -> None:
+            if choice is None:  # cancelled
+                return
+            name, mode = choice
+            store = FilesystemArtifactStore(self._artifacts_root)
+            try:
+                if mode == "attach":  # open the file-picker, upload the queue, reopen the list
+                    self._attach_repo_artifacts(repo_id, label)
+                    return
+                if mode == "folder":  # open the repo's artifact directory (co-located store)
+                    folder = store.repo_artifact_dir(repo_id)
+                    if folder is None:
+                        self.notify(
+                            f"{label}'s artifact folder isn't on this machine.", severity="warning"
+                        )
+                        return
+                    _open_path(str(folder))
+                    self.notify(f"opened {folder}")
+                elif mode == "local":  # open the on-disk file in place (co-located store)
+                    path = store.repo_artifact_path(repo_id, name)
+                    if path is None:
+                        self.notify(f"{name} isn't available locally.", severity="warning")
+                        return
+                    _open_path(str(path))
+                    self.notify(f"opened {path} locally")
+                else:  # "rest": fetch over REST to the scratch dir, then open
+                    _open_repo_artifact_via_rest(
+                        self._client, repo_id, name, self._artifact_tmpdir()
+                    )
+                    self.notify(f"opened {name}")
+            except FileNotFoundError:  # no opener binary on this host — notify, don't crash the TUI
+                self.notify(
+                    f"No '{_open_command()}' on this host to open files.", severity="warning"
+                )
+            except httpx.HTTPStatusError as exc:
+                self.notify(f"Can't open {name}: {exc}", severity="error")
+
+        self.push_screen(RepoArtifactScreen(f"{label} artifacts", names), open_selected)
+
+    def _attach_repo_artifacts(self, repo_id: str, label: str) -> None:
+        """:meth:`_attach_artifacts` for a repo: queue local files, upload each to ``repo_id``,
+        then reopen the repo-artifact list so the additions show.
+
+        Attached files land at the repo's top level (the picker keys its queue by basename);
+        subdirectories are for the agents writing over MCP with a nested name."""
+
+        def uploaded(queue: dict[str, tuple[str, bytes]] | None) -> None:
+            count = 0
+            for name, (_path, content) in (queue or {}).items():
+                try:
+                    self._client.put_repo_artifact(repo_id, name, content)
+                except httpx.HTTPStatusError as exc:
+                    self.notify(f"Can't attach {name}: {exc}", severity="error")
+                    continue
+                count += 1
+            if count:
+                self.notify(f"attached {count} file{'s' if count != 1 else ''}")
+            self._repo_artifacts(repo_id, label)  # reopen the list, now showing the additions
 
         self.push_screen(ArtifactsScreen({}), uploaded)
 

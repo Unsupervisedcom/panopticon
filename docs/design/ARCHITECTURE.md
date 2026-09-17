@@ -231,6 +231,13 @@ references. The same bytes are reachable three ways: MCP resources (agent), the 
 (text editor), and the dashboard. A **single shared resolver** maps `task-id → directory →
 MCP URI` for all three (the ADR 0003 deferred item — now keyed off the internal task id).
 
+Artifacts also have a **repo scope**: `…/repos/<repo-id>/<name…>`, the documents every task in a
+repo shares (conventions, notes, screenshots). Same store, same resolver shape
+(`repo-id → directory → MCP URI`), two differences — a repo artifact's name may be a nested
+relative path, and the agent-facing tools take the *acting task's* id and resolve its repo, so a
+task writes only to its own repo's artifacts. The dashboard gives them their own modal, with a
+key that opens the repo's artifact folder on the host.
+
 ### 8.3 Identity vs. slug (refines cloude-cade)
 
 Unlike cloude-cade (slug chosen host-side at promote), **the slug is decided in the

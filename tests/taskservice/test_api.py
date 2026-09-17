@@ -479,6 +479,58 @@ def test_artifact_download_content_type_from_extension(client: TestClient) -> No
     )
 
 
+# -- repo artifacts -----------------------------------------------------------------
+
+
+def test_repo_artifact_put_get_list(client: TestClient) -> None:
+    put = client.put("/repos/r1/artifacts/conventions.md", content=b"# How we work")
+    assert put.status_code == 204
+    assert client.get("/repos/r1/artifacts/conventions.md").content == b"# How we work"
+    assert client.get("/repos/r1/artifacts").json() == ["conventions.md"]
+
+
+def test_repo_artifact_name_may_be_nested(client: TestClient) -> None:
+    # The route takes the name as a ``:path`` parameter, so a subdirectory is addressable — a
+    # plain parameter would stop at the first separator and leave nested names unreachable.
+    assert client.put("/repos/r1/artifacts/notes/api.md", content=b"beware").status_code == 204
+    assert client.get("/repos/r1/artifacts/notes/api.md").content == b"beware"
+    assert client.get("/repos/r1/artifacts").json() == ["notes/api.md"]
+
+
+def test_repo_artifact_missing_404(client: TestClient) -> None:
+    assert client.get("/repos/r1/artifacts/notes.md").status_code == 404
+
+
+def test_repo_artifact_unknown_repo_404(client: TestClient) -> None:
+    assert client.get("/repos/nope/artifacts").status_code == 404
+    assert client.put("/repos/nope/artifacts/x.md", content=b"x").status_code == 404
+
+
+def test_repo_artifact_traversal_name_400(client: TestClient) -> None:
+    # A literal ``../..`` never reaches the server (an HTTP client normalizes it out of the path),
+    # so the traversal a caller *can* express is the percent-encoded one — which arrives decoded
+    # as the name, is refused by the store, and surfaces as a 400 through the ArtifactError handler.
+    assert (
+        client.put("/repos/r1/artifacts/%2e%2e%2f%2e%2e%2fevil.md", content=b"x").status_code == 400
+    )
+
+
+def test_repo_artifact_download_content_type_from_extension(client: TestClient) -> None:
+    png = b"\x89PNG\r\n\x1a\n\x00binary"
+    client.put("/repos/r1/artifacts/shots/login.png", content=png)
+    shot = client.get("/repos/r1/artifacts/shots/login.png")
+    assert shot.content == png
+    assert shot.headers["content-type"] == "image/png"
+
+
+def test_repo_artifacts_are_separate_from_task_artifacts(client: TestClient) -> None:
+    task_id = _new_task(client)
+    client.put(f"/tasks/{task_id}/artifacts/plan.md", content=b"task")
+    client.put("/repos/r1/artifacts/plan.md", content=b"repo")
+    assert client.get(f"/tasks/{task_id}/artifacts/plan.md").content == b"task"
+    assert client.get("/repos/r1/artifacts/plan.md").content == b"repo"
+
+
 def test_create_task_seeds_binary_artifacts_from_base64(client: TestClient) -> None:
     png = b"\x89PNG\r\n\x1a\n\x00\xff\xfe\x01binary"
     resp = client.post(
