@@ -42,6 +42,20 @@ class FilesystemArtifactStore(ArtifactStore):
         path = self._task_dir(task_id) / name
         return path if path.is_file() else None
 
+    def task_artifact_dir(self, task_id: str) -> Path | None:
+        """The task's artifact **directory**, or ``None`` when it doesn't exist here.
+
+        :meth:`path`'s directory twin — the same local-callers-only contract, answering about the
+        whole folder rather than one file, for the dashboard's "open the folder" key. ``None``
+        covers both reasons there's nothing to open: the caller doesn't share this store's
+        filesystem, or the task has no artifacts yet (the directory is created on first write).
+        It is the **id**-named directory, not the ``<root>/tasks/<slug>`` alias symlink: that one
+        is a convenience for humans browsing by label, while this is the canonical location and
+        exists whether or not the task is slugged.
+        """
+        task_dir = self._task_dir(task_id)
+        return task_dir if task_dir.is_dir() else None
+
     async def put(self, task_id: str, name: str, content: bytes) -> None:
         validate_segment(name)
         task_dir = self._task_dir(task_id)

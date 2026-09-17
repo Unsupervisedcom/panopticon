@@ -23,9 +23,10 @@ repos, `a` for a repo's artifacts — and it **opens automatically on start when
 configured**, the first-run nudge to add one), `s` switches to the task-service session, and `a`
 opens a modal listing the task's artifacts — Enter opens the selected one with the host's default
 handler (`xdg-open`/`open`) by fetching it over REST to a temp file, `e` opens the on-disk file in
-place when the dashboard shares the artifact store. `A` opens the task's **repo** artifacts — the
-documents every task in that repo shares, in their own modal, where `f` additionally opens the
-repo's artifact **folder** on this machine. `y` **copies the
+place when the dashboard shares the artifact store, and `f` opens the task's artifact **folder**
+in the host's file manager. `A` opens the task's **repo** artifacts — the documents every task in
+that repo shares, in their own modal, with the same keys scoped to the repo (its `f` opens the
+repo's artifact folder). `y` **copies the
 task's slug** and `Y` its **id** to the clipboard (OSC 52 + the host's `pbcopy`/`xclip`/`wl-copy`,
 so it works on Linux and macOS). Drop is the only state
 *transition* the dashboard drives: every other transition starts a new agentic turn, so it's
@@ -1772,16 +1773,17 @@ class _ArtifactListScreen(_OptionListModal[tuple[str, str]]):
 
     Both dismiss ``(name, mode)``, telling the Dashboard *how* to act on the highlighted entry:
     ``"rest"`` (Enter — fetch over REST and open with the host's handler), ``"local"`` (`e` —
-    open the on-disk file in place), ``"attach"`` (`ctrl+a`, ``name`` unused — the Dashboard then
-    opens the file-picker), or ``None`` on cancel. Local-open is bound to `e` (as in "edit in
-    place"), **not** Shift+Enter: many terminals can't deliver Shift+Enter distinctly from Enter,
-    so the local mode would be silently unreachable. Attach is `ctrl+a`, mirroring the
+    open the on-disk file in place), ``"folder"`` (`f`, ``name`` unused — open the scope's whole
+    artifact directory in the host's file manager), ``"attach"`` (`ctrl+a`, ``name`` unused — the
+    Dashboard then opens the file-picker), or ``None`` on cancel. Local-open is bound to `e` (as
+    in "edit in place"), **not** Shift+Enter: many terminals can't deliver Shift+Enter distinctly
+    from Enter, so the local mode would be silently unreachable. Attach is `ctrl+a`, mirroring the
     task-creation memo's attach key.
 
     Hidden artifacts (a dot-prefixed name, or one nested under a dot-directory) are filtered out
     by default; a "Show hidden" checkbox appears when there are any, and toggling it repopulates
-    the list. Subclasses fix the box id/CSS, the ``HINT`` line, and any mode of their own (the
-    repo modal adds `f`, open the folder)."""
+    the list. Subclasses fix the box id/CSS, the ``HINT`` line, and which scope's directory `f`
+    resolves to — the Dashboard decides that from *which* modal it opened."""
 
     HINT = ""
 
@@ -1816,6 +1818,12 @@ class _ArtifactListScreen(_OptionListModal[tuple[str, str]]):
     def action_open_local(self) -> None:
         self._dismiss_highlighted("local")
 
+    def action_open_folder(self) -> None:
+        # The folder belongs to the scope (the task or the repo), not an entry — so this needs no
+        # selection, and works on an empty list, which is exactly when an operator wants to drop
+        # files in by hand.
+        self.dismiss(("", "folder"))
+
     def action_attach(self) -> None:
         # The list may be empty (nothing attached yet); attach doesn't depend on a selection. The
         # Dashboard opens the file-picker (:class:`ArtifactsScreen`) and uploads.
@@ -1824,7 +1832,9 @@ class _ArtifactListScreen(_OptionListModal[tuple[str, str]]):
 
 class ArtifactScreen(_ArtifactListScreen):
     """A modal list of a **task's** artifacts: Enter opens the highlighted one over REST, `e` opens
-    its local on-disk file in place, `ctrl+a` attaches new files; Escape cancels."""
+    its local on-disk file in place, `f` opens the task's artifact **folder** in the host's file
+    manager (the Dashboard resolves it, and says so when there's no folder here), `ctrl+a` attaches
+    new files; Escape cancels."""
 
     CSS = """
     ArtifactScreen { align: center middle; }
@@ -1832,10 +1842,11 @@ class ArtifactScreen(_ArtifactListScreen):
     #artifact-hint { color: $text-muted; }
     """
     BOX_ID = "artifact-box"
-    HINT = "enter: open · e: open local file · ctrl+a: attach · esc: cancel"
+    HINT = "enter: open · e: open local file · f: open folder · ctrl+a: attach · esc: cancel"
     BINDINGS = [
         ("escape", "cancel", "Cancel"),
         ("e", "open_local", "Open local"),
+        ("f", "open_folder", "Open folder"),
         ("ctrl+a", "attach", "Attach files"),
     ]
 
@@ -1844,13 +1855,12 @@ class RepoArtifactScreen(_ArtifactListScreen):
     """A modal list of a **repo's** artifacts — the documents every task in that repo shares.
 
     Its own modal rather than a mode of :class:`ArtifactScreen`: the entries belong to a repo, not
-    a task, their names may be nested paths (``notes/api.md``), and it carries a key the task
-    modal has no equivalent of — `f` opens the **repo's artifact folder** in the host's file
-    manager (the Dashboard resolves it, and says so when the folder isn't on this machine).
+    a task, and their names may be nested paths (``notes/api.md``).
 
-    Beyond `f`, the keys read the same as the task modal's: Enter opens the highlighted artifact
-    over REST, `e` opens its on-disk file in place, `ctrl+a` attaches local files to the repo,
-    Escape cancels."""
+    The keys read the same as the task modal's, each acting on the repo instead: Enter opens the
+    highlighted artifact over REST, `e` opens its on-disk file in place, `f` opens the **repo's
+    artifact folder** in the host's file manager (the Dashboard resolves it, and says so when the
+    folder isn't on this machine), `ctrl+a` attaches local files to the repo, Escape cancels."""
 
     CSS = """
     RepoArtifactScreen { align: center middle; }
@@ -1865,11 +1875,6 @@ class RepoArtifactScreen(_ArtifactListScreen):
         ("f", "open_folder", "Open folder"),
         ("ctrl+a", "attach", "Attach files"),
     ]
-
-    def action_open_folder(self) -> None:
-        # The folder is the repo's, not an entry's, so this needs no selection — and works on an
-        # empty list, which is exactly when an operator wants to drop files in by hand.
-        self.dismiss(("", "folder"))
 
 
 # The full keymap, single source of truth for **both** the footer legend and the help screen
@@ -2639,8 +2644,10 @@ class Dashboard(App[None]):
     def action_artifacts(self) -> None:
         """`a`: open a modal listing the highlighted task's artifacts. Enter opens the selection
         with the host's default handler by fetching it over REST to a temp file; `e` opens the
-        on-disk file in place when the dashboard shares the artifact store (else warns); `ctrl+a`
-        attaches new local files as artifacts (reusing the task-creation file-picker).
+        on-disk file in place when the dashboard shares the artifact store (else warns); `f` opens
+        the task's artifact **folder** in the host's file manager (the repo modal's `f`, scoped to
+        this task); `ctrl+a` attaches new local files as artifacts (reusing the task-creation
+        file-picker).
 
         Opens on the machine running the dashboard, like `p`. The modal opens even when the task
         has no artifacts yet, so attach is always reachable."""
@@ -2661,6 +2668,16 @@ class Dashboard(App[None]):
                 if mode == "attach":  # open the file-picker, upload the queue, reopen the list
                     self._attach_artifacts(task_id)
                     return
+                if mode == "folder":  # open the task's artifact directory (co-located store)
+                    folder = FilesystemArtifactStore(self._artifacts_root).task_artifact_dir(
+                        task_id
+                    )
+                    if folder is None:
+                        self.notify(self._no_artifact_folder(), severity="warning")
+                        return
+                    _open_path(str(folder))
+                    self.notify(f"opened {folder}")
+                    return
                 if mode == "local":  # open the on-disk file in place (co-located store)
                     path = FilesystemArtifactStore(self._artifacts_root).path(task_id, name)
                     if path is None:
@@ -2679,6 +2696,18 @@ class Dashboard(App[None]):
                 self.notify(f"Can't open {name}: {exc}", severity="error")
 
         self.push_screen(ArtifactScreen("artifacts", names), open_selected)
+
+    def _no_artifact_folder(self) -> str:
+        """Why `f` found no task artifact folder to open — the reason that actually applies.
+
+        Unlike a repo's (written the moment anyone drops a shared document in), a task's directory
+        is created on its **first** artifact, so "nothing written yet" is the ordinary case and
+        deserves to be said plainly rather than folded into the repo modal's single "isn't on this
+        machine". The artifacts root standing in for the store's whole filesystem is the same
+        local-ness test `e` makes per file: no root here, no artifacts here."""
+        if not Path(self._artifacts_root).is_dir():
+            return "The artifact store isn't on this machine."
+        return "No artifact folder yet — nothing has been written for this task."
 
     def _attach_artifacts(self, task_id: str) -> None:
         """Open the task-creation file-picker (:class:`ArtifactsScreen`) to queue local files, then

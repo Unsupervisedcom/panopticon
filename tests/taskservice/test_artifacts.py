@@ -43,6 +43,30 @@ def test_path_returns_on_disk_path_or_none(tmp_path: Path) -> None:
     assert path is not None and path.read_bytes() == b"# Plan\n"  # the real file, openable in place
 
 
+def test_task_artifact_dir_returns_the_folder_or_none(tmp_path: Path) -> None:
+    # path()'s directory twin — what the dashboard's `f` (open the folder) hands to the file
+    # manager. The folder only exists once something has been written to the task.
+    store = FilesystemArtifactStore(tmp_path)
+    assert store.task_artifact_dir("t1") is None  # nothing written yet → nothing to open
+    asyncio.run(store.put("t1", "plan.md", b"# Plan\n"))
+    assert store.task_artifact_dir("t1") == tmp_path / "tasks" / "t1"
+
+
+def test_task_artifact_dir_is_none_when_a_file_sits_at_the_path(tmp_path: Path) -> None:
+    # Only a directory is openable as a folder: something else at that path is not the store's.
+    store = FilesystemArtifactStore(tmp_path)
+    (tmp_path / "tasks").mkdir()
+    (tmp_path / "tasks" / "t1").write_text("not a directory")
+    assert store.task_artifact_dir("t1") is None
+
+
+def test_task_artifact_dir_rejects_traversal(tmp_path: Path) -> None:
+    # The id is a single path segment, like every other accessor's.
+    store = FilesystemArtifactStore(tmp_path)
+    with pytest.raises(InvalidArtifactName):
+        store.task_artifact_dir("../escape")
+
+
 def test_put_overwrites(tmp_path: Path) -> None:
     store = FilesystemArtifactStore(tmp_path)
     asyncio.run(store.put("t1", "plan.md", b"v1"))
