@@ -59,6 +59,34 @@ def worktree_path(worktrees_root: str, repo_id: str, branch: str) -> str:
     return f"{worktrees_root.rstrip('/')}/{repo_id}/{branch}"
 
 
+#: ``git submodule status`` state characters — the first column of each line.
+SUBMODULE_UNINITIALIZED = "-"  # not checked out (no objects, an empty directory)
+SUBMODULE_MODIFIED = "+"  # checked out at a commit other than the gitlink's
+SUBMODULE_CONFLICTED = "U"  # has merge conflicts
+SUBMODULE_CURRENT = " "  # checked out at the recorded commit
+
+
+def parse_submodule_status(output: str) -> dict[str, str]:
+    """Parse ``git submodule status`` output into ``{submodule path: state character}``.
+
+    Each line is ``<state><sha> <path>``, plus a `` (<describe>)`` suffix on an initialized
+    submodule. The path is taken as everything between the sha and that suffix rather than by
+    field index, so a submodule path containing spaces survives. A line that doesn't match the
+    shape is skipped — a parse this thin should ignore what it doesn't recognize, not guess.
+    """
+    states: dict[str, str] = {}
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        state, entry = line[0], line[1:]
+        _sha, _, path = entry.partition(" ")
+        if path.endswith(")"):
+            path = path.rpartition(" (")[0] or path
+        if path:
+            states[path] = state
+    return states
+
+
 @dataclass(frozen=True)
 class Worktree:
     """A created worktree: its branch and on-disk path."""
@@ -122,6 +150,48 @@ class GitClones:
     def set_origin(self, *, repo_path: str, url: str) -> None:
         """``git -C <repo> remote set-url origin <url>`` — point at the forge, not the cache."""
         self._run(["git", "-C", repo_path, "remote", "set-url", "origin", url])
+
+    def submodule_status(self, *, repo_path: str) -> dict[str, str]:
+        """The repo's submodules and their states — ``{path: state}``, empty when there are none.
+
+        Reads ``git -C <repo> submodule status --recursive`` (no network, nothing written) and parses
+        it, so callers ask about a submodule instead of slicing git's columns. ``--recursive``
+        descends into the submodules that *are* initialized, so a nested one that isn't shows up too.
+        The state is one of the :data:`SUBMODULE_UNINITIALIZED`/:data:`SUBMODULE_MODIFIED`/
+        :data:`SUBMODULE_CONFLICTED`/:data:`SUBMODULE_CURRENT` characters git puts in the first
+        column.
+        """
+        out = self._run(["git", "-C", repo_path, "submodule", "status", "--recursive"])
+        return parse_submodule_status(out)
+
+    def update_submodules(self, *, repo_path: str) -> None:
+        """``git -C <repo> submodule update --init --recursive`` — fill in the submodule checkouts.
+
+        ``protocol.file.allow=always`` is **required**, not cosmetic: since git 2.38 a submodule
+        whose resolved URL is a local path is refused (``transport 'file' not allowed``,
+        CVE-2022-39253), and a local-git repo's ``git_url`` *is* a host path — so relative
+        ``.gitmodules`` URLs resolve to local paths and every such task would fail to provision.
+        It is set for this one command only (never for the container's git), and stays inside the
+        existing trust boundary: the repo is operator-registered and the session service already
+        clones it from that same local path.
+
+        Submodule URLs are resolved against the superproject's ``remote.origin.url`` *here*, so the
+        caller must point ``origin`` at the forge first (:meth:`set_origin`) — resolving a relative
+        URL against the cache path would look for the submodule next to the cache clone.
+        """
+        self._run(
+            [
+                "git",
+                "-C",
+                repo_path,
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "update",
+                "--init",
+                "--recursive",
+            ]
+        )
 
     def push(self, *, repo_path: str, remote: str, branch: str) -> None:
         """``git -C <repo> push <remote> <branch>`` — send one branch, as-is (never forced).

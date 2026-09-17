@@ -42,9 +42,11 @@ src/panopticon/
                    # (base→workflow→repo); provisioner.py = host-side provisioning
                    # (ADR 0011: branch the per-task clone on slug, record it back); clones.py =
                    # per-repo clone cache; spawn.py = spawn-prep (clone --local the per-task
-                   # checkout, mounted rw at /workspace); spawner.py = the spawn loop (claim an
-                   # unclaimed task → spawn its container; prefills claude's input box with the
-                   # task memo on a first spawn); prefill.py = the detached input-box prefill
+                   # checkout, mounted rw at /workspace; point origin at the forge, then init any
+                   # submodules — in that order, since relative .gitmodules URLs resolve against
+                   # origin); spawner.py = the spawn loop (claim an unclaimed task → spawn its
+                   # container; prefills claude's input box with the task memo on a first spawn);
+                   # prefill.py = the detached input-box prefill
                    # poller (mirrors cloude-cade: pipe-pane watch for ESC[?2004h → paste-buffer the
                    # description, unsent); daemon.py = the provision-only pull loop;
                    # host.py = the unified per-host daemon (spawn + provision each pass;
@@ -214,7 +216,11 @@ on every PR (the same commands the Makefile wraps).
   `docker ps` probe + `has_session`'s `tmux list-sessions` probe for self-heal) and the container
   entrypoint loop (fakes; no Docker/LLM), plus a `skipif` docker integration test.
 - `tests/test_spawn.py` — spawn-prep (ADR 0011): unit tests pin the `clone --local` of the
-  per-task checkout and the idempotency gate (skips when the checkout already exists).
+  per-task checkout and the idempotency gate (skips when the checkout already exists), plus the
+  **submodule** init — emitted after the `origin` repoint, gated on `submodule status` reporting an
+  uninitialized (`-`) submodule so it retries but never touches an initialized one; a `skipif`
+  integration test fills in a real submodule and then **moves** the checkout, pinning that the
+  recorded links stay relative (the ADR 0011 mounts-anywhere property).
 - `tests/test_prefill.py` — the input-box prefill poller: unit tests drive `prefill_pane` with a
   fake tmux runner + injected `sleep`/raw-log — pin the `pipe-pane`/`load-buffer`/`paste-buffer -p`
   commands when the box becomes ready, and every best-effort give-up (empty prompt, timeout,
