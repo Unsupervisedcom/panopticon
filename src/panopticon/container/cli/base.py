@@ -48,6 +48,48 @@ def resolve_tier(tier: str, tiers: Mapping[str, str]) -> str:
     return tier
 
 
+#: The quote characters an operator might wrap an env-file value in (dotenv habit).
+_QUOTES = ('"', "'")
+
+
+def unquote_secret(value: str) -> str:
+    """An env-file value as the operator *meant* it: whitespace- and quote-stripped.
+
+    The two runners disagree about dotenv quoting, on the very same file. :class:`ShellRunner`
+    **sources** the repo's ``env_file`` (``set -a; . <file>; set +a``), so the shell strips quoting
+    for it. :class:`LocalRunner` hands the file to ``docker run --env-file``, which does **no**
+    dotenv parsing at all: everything after the first ``=`` becomes the value, quotes included, with
+    no trimming — so ``KEY="v"`` reaches the container as the five characters ``"v"``, and a
+    CRLF-terminated file leaves a trailing ``\\r``. Neither claude nor codex strips either, so the
+    credential is silently malformed and every API call fails with an opaque 401.
+
+    This is the one place that reconciles them: strip surrounding whitespace, remove **one** matching
+    leading/trailing quote pair, strip again. Deliberately conservative —
+
+    - both ends must carry the *same* quote character, so an unbalanced ``"v`` (or a value that
+      merely contains quotes) is left alone: an unbalanced quote isn't a recognizable mistake;
+    - only one pair is removed, so ``'"v"'`` yields ``"v"`` rather than guessing at intent.
+
+    No real credential begins and ends with the same quote character, so this cannot corrupt a
+    valid one.
+    """
+    stripped = value.strip()
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in _QUOTES:
+        stripped = stripped[1:-1].strip()
+    return stripped
+
+
+def secret_from_env(env: Mapping[str, str], name: str) -> str | None:
+    """``env[name]`` normalized by :func:`unquote_secret`, or ``None`` when unset or empty.
+
+    The empty case matters: ``KEY=""`` in the env-file reaches the container as the two-character
+    string ``""``, which is *truthy* — so a presence check on the raw value reads a deliberately
+    blank credential as present-but-broken. Normalizing first reads it as absent, which is what the
+    operator wrote.
+    """
+    return unquote_secret(env.get(name) or "") or None
+
+
 class _Client(Protocol):
     """The slice of the task-service client the bootstrap needs (kept structural so tests fake it)."""
 
@@ -72,6 +114,10 @@ class AgentCLI(ABC):
     #: 0014 §3a). Subclasses set the mapping; :meth:`resolve_model` reads it. Unknown tiers pass
     #: through unchanged so a raw model id set directly still reaches ``--model`` verbatim.
     MODEL_TIERS: ClassVar[Mapping[str, str]]
+    #: Credential env vars (injected from the repo's ``env_file``) whose values are normalized by
+    #: :func:`unquote_secret` before the CLI — and everything it shells out to — sees them.
+    #: Subclasses list their own; the default is empty, so an adapter opts in explicitly.
+    SECRET_ENV_VARS: ClassVar[tuple[str, ...]] = ()
 
     @abstractmethod
     def render_skills(self, client: _Client, task_id: str, home: Path) -> list[Path]:
@@ -94,8 +140,13 @@ class AgentCLI(ABC):
         """Deliver the whole-workflow map into the agent's context (system prompt). ``None`` if empty."""
 
     @abstractmethod
-    def trust_workspace(self, config_dir: Path, cwd: Path) -> Path:
-        """Pre-accept the CLI's first-run/trust dialogs for ``cwd`` (no operator in the container)."""
+    def trust_workspace(self, config_dir: Path, cwd: Path, env: Mapping[str, str]) -> Path:
+        """Pre-accept the CLI's first-run/trust dialogs for ``cwd`` (no operator in the container).
+
+        Takes ``env`` because not every first-run gate is keyed to the workspace: claude gates a
+        ``ANTHROPIC_API_KEY`` injected from the repo's ``env_file`` behind an approval dialog keyed
+        to the key's own *value*, so pre-accepting it needs the credential, not just the path.
+        """
 
     @abstractmethod
     def auth_missing_detail(self, env: Mapping[str, str], config_dir: Path) -> str | None:
@@ -113,6 +164,29 @@ class AgentCLI(ABC):
         Returns the written path, or ``None`` when the CLI reads its credentials straight from the
         env (claude) or a credential file is already present. Never clobbers an existing one.
         """
+
+    def launch_env(self, env: Mapping[str, str]) -> dict[str, str]:
+        """The overlay of normalized credential values to launch the CLI with (changed keys only).
+
+        Each of this adapter's :attr:`SECRET_ENV_VARS` that is set and not already normalized maps
+        to its :func:`unquote_secret` form; everything else is omitted, so merging this over the
+        process env is a no-op for a correctly written env-file. :meth:`launch` merges it, which also
+        covers every tool the CLI shells out to (``gh`` in the forge skills, say) — they inherit the
+        corrected env from their parent.
+
+        Concrete and non-abstract: the default :attr:`SECRET_ENV_VARS` is empty, so an adapter that
+        needs nothing normalized inherits correct behaviour, and this stays unit-testable without
+        widening the abstract surface.
+        """
+        overlay: dict[str, str] = {}
+        for var in self.SECRET_ENV_VARS:
+            raw = env.get(var)
+            if raw is None:
+                continue
+            normalized = unquote_secret(raw)
+            if normalized != raw:
+                overlay[var] = normalized
+        return overlay
 
     def resolve_model(self, tier: str) -> str:
         """Map the control plane's abstract model **tier** to this CLI's concrete model id (§3a).

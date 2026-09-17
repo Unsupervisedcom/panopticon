@@ -195,7 +195,7 @@ def test_write_workflow_overview_writes_the_map_else_skips(tmp_path: Path) -> No
 
 def test_trust_workspace_seeds_acceptance_for_a_fresh_config(tmp_path: Path) -> None:
     config_dir = tmp_path / ".claude"
-    ClaudeAgentCLI().trust_workspace(config_dir, Path("/workspace"))
+    ClaudeAgentCLI().trust_workspace(config_dir, Path("/workspace"), {})
     data = json.loads((config_dir / ClaudeAgentCLI.CONFIG_FILE).read_text())
     assert data["projects"]["/workspace"]["hasTrustDialogAccepted"] is True
     assert data["hasCompletedOnboarding"] is True
@@ -208,7 +208,7 @@ def test_trust_workspace_keeps_a_theme_the_container_already_chose(tmp_path: Pat
     config_dir = tmp_path / ".claude"
     config_dir.mkdir()
     (config_dir / ClaudeAgentCLI.CONFIG_FILE).write_text(json.dumps({"theme": "light"}))
-    ClaudeAgentCLI().trust_workspace(config_dir, Path("/workspace"))
+    ClaudeAgentCLI().trust_workspace(config_dir, Path("/workspace"), {})
     data = json.loads((config_dir / ClaudeAgentCLI.CONFIG_FILE).read_text())
     assert data["theme"] == "light"
     assert data["hasCompletedOnboarding"] is True  # the pre-accepts are still applied
@@ -222,12 +222,123 @@ def test_trust_workspace_merges_and_is_idempotent(tmp_path: Path) -> None:
         json.dumps({"userID": "u", "projects": {"/other": {"history": []}}})
     )
     cli = ClaudeAgentCLI()
-    cli.trust_workspace(config_dir, Path("/workspace"))
-    cli.trust_workspace(config_dir, Path("/workspace"))  # idempotent
+    cli.trust_workspace(config_dir, Path("/workspace"), {})
+    cli.trust_workspace(config_dir, Path("/workspace"), {})  # idempotent
     data = json.loads((config_dir / ClaudeAgentCLI.CONFIG_FILE).read_text())
     assert data["userID"] == "u"  # preserved
     assert data["projects"]["/other"] == {"history": []}  # preserved
     assert data["projects"]["/workspace"]["hasTrustDialogAccepted"] is True
+
+
+# -- API-key approval pre-accept -----------------------------------------------------------------
+#
+# claude gates a bare ANTHROPIC_API_KEY behind "Detected a custom API key in your environment / Do
+# you want to use this API key?" — default No, and the same `customApiKeyResponses.approved` list
+# also decides whether the key is *usable* at all. Unattended, nobody can answer it. The approval
+# token is claude's own `$ve(key) = key.trim().slice(-20)`.
+
+_KEY = "sk-ant-api03-0123456789abcdefghijklmnop"
+_TRUNCATED = _KEY[-20:]
+
+
+def _responses(config_dir: Path) -> dict[str, list[str]]:
+    data = json.loads((config_dir / ClaudeAgentCLI.CONFIG_FILE).read_text())
+    responses: dict[str, list[str]] = data.get(ClaudeAgentCLI.API_KEY_RESPONSES, {})
+    return responses
+
+
+def test_trust_workspace_pre_approves_the_env_api_key(tmp_path: Path) -> None:
+    config_dir = tmp_path / ".claude"
+    ClaudeAgentCLI().trust_workspace(config_dir, Path("/workspace"), {"ANTHROPIC_API_KEY": _KEY})
+    assert _responses(config_dir)["approved"] == [_TRUNCATED]
+    # Only the 20-char suffix is persisted — exactly what claude stores when a human answers Yes.
+    assert _KEY not in (config_dir / ClaudeAgentCLI.CONFIG_FILE).read_text()
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        f'"{_KEY}"',  # ANTHROPIC_API_KEY="sk-ant-…" in the env-file
+        f"'{_KEY}'",
+        f"  {_KEY}  ",
+        f"{_KEY}\r",  # CRLF-terminated env-file
+        f'"{_KEY}"\r\n',
+    ],
+)
+def test_trust_workspace_approves_the_normalized_key(tmp_path: Path, raw: str) -> None:
+    # The regression that matters: docker's --env-file keeps the quotes, and `launch` hands claude
+    # the *normalized* value — so the seed must be the normalized truncation, or claude computes a
+    # different token at startup and the dialog comes back.
+    config_dir = tmp_path / ".claude"
+    ClaudeAgentCLI().trust_workspace(config_dir, Path("/workspace"), {"ANTHROPIC_API_KEY": raw})
+    assert _responses(config_dir)["approved"] == [_TRUNCATED]
+
+
+def test_trust_workspace_approval_is_idempotent(tmp_path: Path) -> None:
+    config_dir = tmp_path / ".claude"
+    cli = ClaudeAgentCLI()
+    env = {"ANTHROPIC_API_KEY": _KEY}
+    cli.trust_workspace(config_dir, Path("/workspace"), env)
+    cli.trust_workspace(config_dir, Path("/workspace"), env)  # a respawn re-runs the bootstrap
+    assert _responses(config_dir)["approved"] == [_TRUNCATED]  # not duplicated
+
+
+def test_trust_workspace_unwedges_a_previously_rejected_key(tmp_path: Path) -> None:
+    # An operator attach that answered No (or a dialog that timed out) would otherwise persist a
+    # rejection that survives every respawn, leaving the task permanently unauthenticated.
+    config_dir = tmp_path / ".claude"
+    config_dir.mkdir()
+    (config_dir / ClaudeAgentCLI.CONFIG_FILE).write_text(
+        json.dumps({ClaudeAgentCLI.API_KEY_RESPONSES: {"approved": [], "rejected": [_TRUNCATED]}})
+    )
+    ClaudeAgentCLI().trust_workspace(config_dir, Path("/workspace"), {"ANTHROPIC_API_KEY": _KEY})
+    assert _responses(config_dir) == {"approved": [_TRUNCATED], "rejected": []}
+
+
+def test_trust_workspace_preserves_unrelated_key_responses(tmp_path: Path) -> None:
+    config_dir = tmp_path / ".claude"
+    config_dir.mkdir()
+    (config_dir / ClaudeAgentCLI.CONFIG_FILE).write_text(
+        json.dumps(
+            {ClaudeAgentCLI.API_KEY_RESPONSES: {"approved": ["other-a"], "rejected": ["other-r"]}}
+        )
+    )
+    ClaudeAgentCLI().trust_workspace(config_dir, Path("/workspace"), {"ANTHROPIC_API_KEY": _KEY})
+    assert _responses(config_dir) == {
+        "approved": ["other-a", _TRUNCATED],
+        "rejected": ["other-r"],  # another key's rejection is none of our business
+    }
+
+
+def test_trust_workspace_approves_a_short_key_whole(tmp_path: Path) -> None:
+    config_dir = tmp_path / ".claude"
+    ClaudeAgentCLI().trust_workspace(config_dir, Path("/workspace"), {"ANTHROPIC_API_KEY": "short"})
+    assert _responses(config_dir)["approved"] == ["short"]  # slice(-20) of a shorter key is itself
+
+
+@pytest.mark.parametrize("env", [{}, {"ANTHROPIC_API_KEY": ""}, {"ANTHROPIC_API_KEY": '""'}])
+def test_trust_workspace_seeds_no_approval_without_a_key(
+    tmp_path: Path, env: dict[str, str]
+) -> None:
+    # The OAuth-token path: no dialog fires, so the config stays exactly as it was before.
+    config_dir = tmp_path / ".claude"
+    ClaudeAgentCLI().trust_workspace(config_dir, Path("/workspace"), env)
+    data = json.loads((config_dir / ClaudeAgentCLI.CONFIG_FILE).read_text())
+    assert ClaudeAgentCLI.API_KEY_RESPONSES not in data
+    assert data["hasCompletedOnboarding"] is True  # the other pre-accepts still applied
+
+
+def test_trust_workspace_leaves_an_existing_approval_list_alone_without_a_key(
+    tmp_path: Path,
+) -> None:
+    config_dir = tmp_path / ".claude"
+    config_dir.mkdir()
+    existing = {"approved": ["other-a"], "rejected": ["other-r"]}
+    (config_dir / ClaudeAgentCLI.CONFIG_FILE).write_text(
+        json.dumps({ClaudeAgentCLI.API_KEY_RESPONSES: existing})
+    )
+    ClaudeAgentCLI().trust_workspace(config_dir, Path("/workspace"), {})
+    assert _responses(config_dir) == existing
 
 
 # -- auth env check -----------------------------------------------------------------------------
@@ -239,6 +350,24 @@ def test_auth_missing_detail_flags_the_absent_token(tmp_path: Path) -> None:
     assert "CLAUDE_CODE_OAUTH_TOKEN" in (cli.auth_missing_detail({}, tmp_path) or "")
     assert cli.auth_missing_detail({"CLAUDE_CODE_OAUTH_TOKEN": "sk"}, tmp_path) is None
     assert cli.auth_missing_detail({"ANTHROPIC_API_KEY": "sk"}, tmp_path) is None  # either suffices
+
+
+def test_auth_missing_detail_reads_through_env_file_quoting(tmp_path: Path) -> None:
+    cli = ClaudeAgentCLI()
+    assert cli.auth_missing_detail({"CLAUDE_CODE_OAUTH_TOKEN": '"sk"'}, tmp_path) is None
+    assert cli.auth_missing_detail({"ANTHROPIC_API_KEY": "'sk'"}, tmp_path) is None
+    # `KEY=""` is a truthy two-character string, but the operator wrote "no credential".
+    assert cli.auth_missing_detail({"CLAUDE_CODE_OAUTH_TOKEN": '""'}, tmp_path) is not None
+    assert cli.auth_missing_detail({"ANTHROPIC_API_KEY": "  "}, tmp_path) is not None
+
+
+def test_launch_env_normalizes_claudes_credentials() -> None:
+    # What `launch` merges over the process env — so claude, and the `gh` the forge skills shell
+    # out to, see the value the operator meant.
+    assert ClaudeAgentCLI().launch_env({"ANTHROPIC_API_KEY": f'"{_KEY}"'}) == {
+        "ANTHROPIC_API_KEY": _KEY
+    }
+    assert ClaudeAgentCLI().launch_env({"GH_TOKEN": '"ghp_x"'}) == {"GH_TOKEN": "ghp_x"}
 
 
 def test_write_credentials_is_a_no_op_for_claude(tmp_path: Path) -> None:

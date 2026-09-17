@@ -41,6 +41,13 @@ workflow* below). There is no `login` command.
    CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-…
    ```
 
+   Write the value **bare — no surrounding quotes**. `docker run --env-file`, which injects this
+   file into task containers, does no dotenv parsing: everything after the first `=` becomes the
+   value, so `KEY="v"` reaches the agent as `"v"`, quotes and all. (The `setup-repo` workflow's
+   shell runner *sources* the same file, where the shell strips them — which is exactly why the
+   mistake is easy to make and hard to spot.) Task containers strip one surrounding quote pair and
+   any stray whitespace as a safety net, but bare is the correct spelling.
+
    Keep the file `0600` and out of version control. If the repo has no `env_file` yet, create one
    under the secrets dir (e.g. `~/.config/panopticon/secrets/<repo>.env`) and set the repo's
    `env_file` to its **name** (`<repo>.env`) — in the dashboard's repo form (which accepts an
@@ -155,7 +162,11 @@ with a container-local regular file.
   (M5), place a same-named env-file under each runner host's secrets dir.
 - **`ANTHROPIC_API_KEY` overrides `CLAUDE_CODE_OAUTH_TOKEN` (claude).** If a repo needs to burst past
   the subscription rate limit, put an `ANTHROPIC_API_KEY` in the same env-file — but don't set both
-  unintentionally, since the API key wins.
+  unintentionally, since the API key wins. Interactively, claude gates a custom API key behind a
+  *"Detected a custom API key in your environment — do you want to use this API key?"* dialog whose
+  default is **No**, and it won't use an unapproved key at all. There's no operator in a task
+  container to answer it, so the container pre-approves the injected key at bootstrap (the same step
+  that pre-accepts onboarding and the folder-trust dialog) and the agent comes up ready for input.
 - **Already-running tasks** keep their old credentials until they respawn. After editing the
   env-file, respawn a live task from the dashboard (`R`) to pick up the new value (for codex, mind
   the `auth.json` caching noted above).

@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 
-from panopticon.container.cli.base import AgentCLI, _Client
+from panopticon.container.cli.base import AgentCLI, _Client, secret_from_env
 from panopticon.container.config import update_json_config
 from panopticon.container.hooks import THEME, write_settings
 from panopticon.container.skills import write_commands, write_operation_commands
@@ -31,6 +31,10 @@ _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "canceled", 
 #: Sent to claude as the first message when a container restarts mid-task on the agent's turn.
 INTERRUPT_PROMPT = "You were interrupted. Continue."
 
+#: How many trailing characters of an API key claude stores as its approval token — its own
+#: ``$ve(e) = e.trim().slice(-20)``. Mirrored exactly so our seed matches what claude computes.
+_API_KEY_TRUNCATION = 20
+
 
 class ClaudeAgentCLI(AgentCLI):
     """The `claude` adapter — every ``container/`` seam claude satisfies today, unchanged in effect."""
@@ -38,6 +42,15 @@ class ClaudeAgentCLI(AgentCLI):
     name = "claude"
     config_dirname = ".claude"
     MODEL_TIERS: ClassVar[Mapping[str, str]] = {"primary": "opus"}
+    #: claude's own auth vars, plus ``GH_TOKEN`` — the forge skills' ``gh`` runs as a child of
+    #: claude, so normalizing it here is what reaches it (see :meth:`~AgentCLI.launch_env`).
+    SECRET_ENV_VARS: ClassVar[tuple[str, ...]] = (
+        "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "GH_TOKEN",
+    )
+    #: The global-config key claude records API-key approvals under (``approved``/``rejected``).
+    API_KEY_RESPONSES: ClassVar[str] = "customApiKeyResponses"
 
     #: claude's main config file. Holds (besides per-container state) per-project trust acceptance.
     CONFIG_FILE: ClassVar[str] = ".claude.json"
@@ -85,10 +98,10 @@ class ClaudeAgentCLI(AgentCLI):
         path.write_text(overview)
         return path
 
-    def trust_workspace(self, config_dir: Path, cwd: Path) -> Path:
+    def trust_workspace(self, config_dir: Path, cwd: Path, env: Mapping[str, str]) -> Path:
         """Pre-accept claude's first-run dialogs for ``cwd``.
 
-        Three blockers fire on a fresh container and must be pre-seeded — there is no operator in the
+        Four blockers fire on a fresh container and must be pre-seeded — there is no operator in the
         container to dismiss them interactively:
 
         - ``hasCompletedOnboarding`` — the general onboarding screen.
@@ -96,6 +109,23 @@ class ClaudeAgentCLI(AgentCLI):
           (cf. claude issue #45298; separate from ``--dangerously-skip-permissions``).
         - ``hasAcknowledgedCostThreshold`` — cost-acknowledgment dialog shown when authenticating
           via ``ANTHROPIC_API_KEY`` (not shown for OAuth tokens).
+        - ``customApiKeyResponses.approved`` — "Detected a custom API key in your environment / Do
+          you want to use this API key?", shown whenever ``ANTHROPIC_API_KEY`` is set and unanswered.
+          Its default choice is **No**, so an unattended container doesn't merely stall on it: claude
+          declines the only credential it has. Worse, the same list gates whether the key is *usable*
+          at all — the interactive resolver returns the key only if
+          ``customApiKeyResponses.approved.includes($ve(key))``, so an unapproved key is ignored even
+          if the dialog is dismissed. (The ``-p``/non-interactive resolver skips the check, which is
+          why this never showed up there.) Seeding the approval leaves exactly the state answering
+          *Yes* once would.
+
+        The approval token is claude's ``$ve(key) = key.trim().slice(-20)`` — the last
+        :data:`_API_KEY_TRUNCATION` characters, never the key itself, which is precisely what claude
+        persists. It's computed from :func:`~panopticon.container.cli.base.secret_from_env`, i.e. the
+        *normalized* value, because :meth:`launch` hands claude that same normalized value — the two
+        must agree or the dialog reappears. Any stale ``rejected`` entry for the key is dropped, so a
+        key once declined (an operator attach, a dialog that timed out) can't stay wedged across
+        respawns.
 
         It also seeds :data:`~panopticon.container.hooks.THEME` here, claude's *legacy* home for the
         setting — the settings file :meth:`write_settings` renders is the modern one, and seeding
@@ -103,16 +133,26 @@ class ClaudeAgentCLI(AgentCLI):
         reason: an operator's ``/theme`` inside the container must survive a respawn.
 
         Merge-in-place so we don't clobber config claude writes itself, and idempotent. The path
-        encoding is undocumented internals — a safe degradation if it ever drifts is that the dialog
-        reappears, which only matters in an (already attended) interactive re-attach.
+        encoding and the approval-token shape are undocumented internals — a safe degradation if
+        either drifts is that the dialog reappears, which is today's behaviour, not a crash.
         """
         config = config_dir / self.CONFIG_FILE
+        key = secret_from_env(env, "ANTHROPIC_API_KEY")
         with update_json_config(config) as data:
             data["hasCompletedOnboarding"] = True
             data["hasAcknowledgedCostThreshold"] = True
             data.setdefault("theme", THEME)
             projects = data.setdefault("projects", {})
             projects.setdefault(str(cwd), {})["hasTrustDialogAccepted"] = True
+            if key is not None:  # no key → no dialog, and the config stays as it was
+                truncated = key[-_API_KEY_TRUNCATION:]
+                responses = data.setdefault(self.API_KEY_RESPONSES, {})
+                approved = responses.setdefault("approved", [])
+                if truncated not in approved:
+                    approved.append(truncated)
+                responses["rejected"] = [
+                    entry for entry in responses.get("rejected", []) if entry != truncated
+                ]
         return config
 
     def auth_missing_detail(self, env: Mapping[str, str], config_dir: Path) -> str | None:
@@ -121,8 +161,15 @@ class ClaudeAgentCLI(AgentCLI):
         Auth is the ``CLAUDE_CODE_OAUTH_TOKEN`` env var the runner injects from the repo's
         ``env_file`` (an ``ANTHROPIC_API_KEY`` is also sufficient); claude reads it straight from the
         env, so there's no persisted credential file to fall back on — ``config_dir`` is unused.
+
+        Read through :func:`~panopticon.container.cli.base.secret_from_env` so a deliberately blank
+        ``KEY=""`` — which ``docker run --env-file`` delivers as the two *literal* characters ``""``,
+        a truthy string — is reported as the missing credential it is, rather than launching claude
+        with a credential that cannot work.
         """
-        if env.get("CLAUDE_CODE_OAUTH_TOKEN") or env.get("ANTHROPIC_API_KEY"):
+        if secret_from_env(env, "CLAUDE_CODE_OAUTH_TOKEN") or secret_from_env(
+            env, "ANTHROPIC_API_KEY"
+        ):
             return None
         return (
             "No auth token — set CLAUDE_CODE_OAUTH_TOKEN in the repo's env_file (see docs/auth.md)"
@@ -211,6 +258,11 @@ class ClaudeAgentCLI(AgentCLI):
         Unlike an ``exec``, this returns control to the launcher when claude exits, so it can stop
         the container (the task → down → respawn). claude inherits this pane's TTY (the interactive
         surface ``tmux attach`` reaches).
+
+        The env is overlaid with :meth:`~AgentCLI.launch_env` so claude — and everything it shells
+        out to — sees normalized credentials (see
+        :func:`~panopticon.container.cli.base.unquote_secret`); for a correctly written env-file the
+        overlay is empty and nothing changes.
         """
         initial_prompt = os.environ.get("PANOPTICON_INITIAL_PROMPT") or None
         turn = os.environ.get("PANOPTICON_TASK_TURN") or None
@@ -222,4 +274,11 @@ class ClaudeAgentCLI(AgentCLI):
             turn=turn,
             starting_model=starting_model,
         )
-        subprocess.run(argv, env={**os.environ, "CLAUDE_CONFIG_DIR": str(config_dir)})
+        subprocess.run(
+            argv,
+            env={
+                **os.environ,
+                **self.launch_env(os.environ),
+                "CLAUDE_CONFIG_DIR": str(config_dir),
+            },
+        )
