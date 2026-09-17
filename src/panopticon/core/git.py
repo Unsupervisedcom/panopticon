@@ -123,6 +123,46 @@ class GitClones:
         """``git -C <repo> remote set-url origin <url>`` — point at the forge, not the cache."""
         self._run(["git", "-C", repo_path, "remote", "set-url", "origin", url])
 
+    def submodule_status(self, *, repo_path: str) -> str:
+        """``git -C <repo> submodule status --recursive`` — a line per submodule, empty when none.
+
+        The leading character of each line is the state: ``-`` uninitialized, ``+`` checked out at a
+        different commit than the gitlink, ``U`` conflicted, a space in sync. The caller reads it to
+        decide whether :meth:`update_submodules` is needed (no network, nothing written).
+        ``--recursive`` descends into the submodules that *are* initialized, so a nested one that
+        isn't shows up too.
+        """
+        return self._run(["git", "-C", repo_path, "submodule", "status", "--recursive"])
+
+    def update_submodules(self, *, repo_path: str) -> None:
+        """``git -C <repo> submodule update --init --recursive`` — fill in the submodule checkouts.
+
+        ``protocol.file.allow=always`` is **required**, not cosmetic: since git 2.38 a submodule
+        whose resolved URL is a local path is refused (``transport 'file' not allowed``,
+        CVE-2022-39253), and a local-git repo's ``git_url`` *is* a host path — so relative
+        ``.gitmodules`` URLs resolve to local paths and every such task would fail to provision.
+        It is set for this one command only (never for the container's git), and stays inside the
+        existing trust boundary: the repo is operator-registered and the session service already
+        clones it from that same local path.
+
+        Submodule URLs are resolved against the superproject's ``remote.origin.url`` *here*, so the
+        caller must point ``origin`` at the forge first (:meth:`set_origin`) — resolving a relative
+        URL against the cache path would look for the submodule next to the cache clone.
+        """
+        self._run(
+            [
+                "git",
+                "-C",
+                repo_path,
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "update",
+                "--init",
+                "--recursive",
+            ]
+        )
+
     def push(self, *, repo_path: str, remote: str, branch: str) -> None:
         """``git -C <repo> push <remote> <branch>`` — send one branch, as-is (never forced).
 

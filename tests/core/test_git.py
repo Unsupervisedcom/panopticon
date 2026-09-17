@@ -105,6 +105,32 @@ def test_create_branch_and_set_origin() -> None:
     ]
 
 
+def test_submodule_status_is_a_read_and_returns_its_output() -> None:
+    def _status(args: Sequence[str], *, check: bool = True) -> str:
+        assert args == ["git", "-C", "/tasks/t1", "submodule", "status", "--recursive"]
+        return "-abc123 vendor/lib\n"
+
+    assert GitClones(run=_status).submodule_status(repo_path="/tasks/t1") == "-abc123 vendor/lib\n"
+
+
+def test_update_submodules_is_recursive_and_allows_local_transports() -> None:
+    rec = _Recorder()
+    GitClones(run=rec).update_submodules(repo_path="/tasks/t1")
+    # `protocol.file.allow=always` is load-bearing: git ≥2.38 refuses a submodule whose resolved URL
+    # is a local path (CVE-2022-39253), which is exactly the local-git flow's `git_url`.
+    assert rec.calls[0][0] == [
+        "git",
+        "-C",
+        "/tasks/t1",
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "update",
+        "--init",
+        "--recursive",
+    ]
+
+
 def test_push_emits_a_plain_push() -> None:
     rec = _Recorder()
     GitClones(run=rec).push(repo_path="/tasks/t1", remote="origin", branch="main")
