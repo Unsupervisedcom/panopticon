@@ -1336,6 +1336,68 @@ async def test_task_counter_shows_agent_versus_active_counts() -> None:
         assert "agent" in text
 
 
+async def test_task_counter_excludes_snoozed_tasks_from_both_halves() -> None:
+    # A snoozed task is muted, so it leaves the numerator *and* the denominator — governed
+    # children included (muting is per-task, unlike the sort's ensemble-preserving exemption).
+    tasks = [
+        {**_TASK, "id": "t-agent", "slug": "a1", "state": "WORKING", "turn": "agent"},
+        {
+            **_TASK,
+            "id": "t-snoozed-agent",
+            "slug": "s1",
+            "state": "WORKING",
+            "turn": "agent",
+            "snoozed_until": _at(4),
+        },
+        {
+            **_TASK,
+            "id": "t-snoozed-user",
+            "slug": "s2",
+            "state": "PLANNING",
+            "turn": "user",
+            "snoozed_until": _INDEFINITE_SNOOZE_UNTIL,
+        },
+        {
+            **_TASK,
+            "id": "t-snoozed-child",
+            "slug": "s3",
+            "state": "WORKING",
+            "turn": "agent",
+            "snoozed_until": _at(2),
+            "governor_task_id": "t-agent",
+        },
+    ]
+    app = Dashboard(_FakeClient(tasks), now=lambda: _NOW)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_refresh()  # Footer is now ready; refresh to populate the counter
+        await pilot.pause()
+        text = str(app.query_one("#task-counter", Static).render())
+        assert "1/1" in text  # only the unsnoozed agent-turn task counts
+
+
+async def test_task_counter_still_counts_an_expired_snooze() -> None:
+    # The exclusion is clock-driven, not "the field is set": an elapsed deadline counts again.
+    tasks = [
+        {
+            **_TASK,
+            "id": "t-expired",
+            "slug": "e1",
+            "state": "WORKING",
+            "turn": "agent",
+            "snoozed_until": _at(-1),
+        },
+        {**_TASK, "id": "t-user", "slug": "u1", "state": "PLANNING", "turn": "user"},
+    ]
+    app = Dashboard(_FakeClient(tasks), now=lambda: _NOW)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_refresh()
+        await pilot.pause()
+        text = str(app.query_one("#task-counter", Static).render())
+        assert "1/2" in text
+
+
 async def test_status_cell_is_used_without_per_task_registration_calls() -> None:
     # Building the table must not fan out a registrations request per row (the old N+1) — the status
     # rides on each task dict from the single list_tasks. A registrations call here would raise.
