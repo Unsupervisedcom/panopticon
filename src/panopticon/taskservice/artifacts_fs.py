@@ -9,9 +9,15 @@ reach a task's artifacts by its readable label as well as its opaque id.
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
-from panopticon.core.artifacts import ArtifactStore, InvalidArtifactName, validate_segment
+from panopticon.core.artifacts import (
+    ArtifactStore,
+    InvalidArtifactName,
+    is_hidden,
+    validate_segment,
+)
 
 
 class FilesystemArtifactStore(ArtifactStore):
@@ -52,6 +58,36 @@ class FilesystemArtifactStore(ArtifactStore):
         return await asyncio.to_thread(
             lambda: sorted(p.name for p in task_dir.iterdir() if p.is_file())
         )
+
+    def _has_artifacts_sync(self, task_id: str) -> bool:
+        """Whether the task's directory holds at least one unhidden file.
+
+        Synchronous because it is blocking filesystem I/O: every public method here keeps that
+        work off the event loop by handing it to a worker thread, and this is the body
+        :meth:`has_unhidden_artifacts` hands over. It's a named method rather than the inline
+        ``lambda`` the other methods use because it needs ``with`` and ``try``, which a lambda
+        can't hold — the same reason :meth:`_link_slug_sync` is split out from its caller.
+
+        ``os.scandir`` rather than ``Path.iterdir``: it stops at the first hit (the caller wants
+        a boolean, not a listing), its entries answer ``is_file()`` from the data the scan already
+        returned instead of a ``stat`` apiece, and it raises for a missing directory *here* rather
+        than lazily on iteration — ``Path.iterdir`` is a generator before 3.13, so the error would
+        escape this ``try`` on the Python versions we still support.
+        """
+        try:
+            with os.scandir(self._task_dir(task_id)) as entries:
+                return any(not is_hidden(entry.name) and entry.is_file() for entry in entries)
+        except (FileNotFoundError, NotADirectoryError):
+            return False
+
+    async def has_unhidden_artifacts(self, task_id: str) -> bool:
+        """Scan the task's directory directly rather than going through :meth:`list`.
+
+        The inherited default builds and sorts the full name list to answer a question the first
+        unhidden entry settles. The task list asks this for every visible task on every refresh,
+        so the shortcut is worth the override.
+        """
+        return await asyncio.to_thread(self._has_artifacts_sync, task_id)
 
     def _link_slug_sync(self, task_id: str, slug: str) -> None:
         validate_segment(task_id)

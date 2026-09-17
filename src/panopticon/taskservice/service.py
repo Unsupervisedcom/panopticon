@@ -739,6 +739,11 @@ class TaskService:
     async def put_artifact(self, task_id: str, name: str, content: bytes) -> None:
         await self.get_task(task_id)  # ensure the task exists
         await self._artifacts.put(task_id, name, content)
+        # Artifacts live outside the store, so writing one bumps no version of its own — but the
+        # task list reports whether a task *has* one, so a parked long-poll has to wake or the
+        # first plan.md would go unnoticed until some unrelated mutation. Same treatment as the
+        # other ephemeral (non-stored) changes.
+        self._notify_change()
         _log.debug("task %s: artifact %s written", task_id, name)
 
     async def get_artifact(self, task_id: str, name: str) -> bytes | None:
@@ -748,6 +753,15 @@ class TaskService:
     async def list_artifacts(self, task_id: str) -> list[str]:
         await self.get_task(task_id)
         return await self._artifacts.list(task_id)
+
+    async def has_unhidden_artifacts(self, task_id: str) -> bool:
+        """Whether the task has an artifact worth marking in the task list.
+
+        No ``get_task`` guard (unlike the readers above): this is a display predicate asked of
+        tasks the caller has already read, once per row, and a task with no artifacts and a task
+        that doesn't exist both answer ``False``. Paying for a store read per row to tell those
+        apart would buy nothing."""
+        return await self._artifacts.has_unhidden_artifacts(task_id)
 
     # -- liveness -----------------------------------------------------------------
     #

@@ -46,6 +46,16 @@ def validate_segment(segment: str) -> None:
         raise InvalidArtifactName(f"invalid artifact segment: {segment!r}")
 
 
+def is_hidden(name: str) -> bool:
+    """Whether an artifact is hidden from the operator's default view.
+
+    Dotfile artifacts are agent bookkeeping — cross-turn state like ``.babysit-ci-state.json`` —
+    rather than documents a human asked for. The dashboard hides them behind a "Show hidden"
+    toggle and the task list's artifact mark ignores them, so the rule lives here rather than
+    being spelled out at each surface."""
+    return name.startswith(".")
+
+
 def mcp_uri(task_id: str, name: str) -> str:
     """The canonical MCP resource URI for an artifact (the shared resolver).
 
@@ -78,6 +88,16 @@ class ArtifactStore(ABC):
     @abstractmethod
     async def list(self, task_id: str) -> list[str]:
         """Return the names of a task's artifacts (empty if none)."""
+
+    async def has_unhidden_artifacts(self, task_id: str) -> bool:
+        """Whether the task has at least one artifact the operator would want to open.
+
+        The task list renders a mark per row from this, so it answers the question without
+        materialising names. Concrete, not abstract: the default is written in terms of
+        :meth:`list`, which every adapter must provide, so one that has no cheaper way to tell
+        still inherits a correct implementation (the filesystem store overrides it with a
+        directory scan that stops at the first hit)."""
+        return any(not is_hidden(name) for name in await self.list(task_id))
 
     async def link_slug(self, task_id: str, slug: str) -> None:
         """Expose a task's artifacts under a readable ``slug`` alias (best-effort).

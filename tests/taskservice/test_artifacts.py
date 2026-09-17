@@ -7,7 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from panopticon.core.artifacts import InvalidArtifactName, decode_segment, mcp_uri
+from panopticon.core.artifacts import (
+    ArtifactStore,
+    InvalidArtifactName,
+    decode_segment,
+    is_hidden,
+    mcp_uri,
+)
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
 
 
@@ -152,3 +158,47 @@ def test_decode_segment_reverses_mcp_uri_encoding() -> None:
     for name in ("plan.md", "my notes.md", "a+b&c.md", ".hidden"):
         encoded = mcp_uri("t1", name).rsplit("/", 1)[1]
         assert decode_segment(encoded) == name
+
+
+def test_is_hidden_is_the_dotfile_rule() -> None:
+    # One definition, shared by the dashboard's "show hidden" toggle and the task list's mark.
+    assert is_hidden(".babysit-ci-state.json")
+    assert not is_hidden("plan.md")
+    assert not is_hidden("notes.tar.gz")
+
+
+def test_has_unhidden_artifacts_ignores_hidden_and_missing(tmp_path: Path) -> None:
+    store = FilesystemArtifactStore(tmp_path)
+    asyncio.run(store.put("visible", "plan.md", b"# Plan"))
+    asyncio.run(store.put("mixed", ".babysit-ci-state.json", b"{}"))
+    asyncio.run(store.put("mixed", "notes.md", b"notes"))
+    asyncio.run(store.put("hidden-only", ".babysit-ci-state.json", b"{}"))
+    assert asyncio.run(store.has_unhidden_artifacts("visible"))
+    assert asyncio.run(store.has_unhidden_artifacts("mixed"))  # hidden siblings don't mask it
+    assert not asyncio.run(store.has_unhidden_artifacts("hidden-only"))
+    # "absent" was never written at all — no directory on disk, and that's not an error.
+    assert not asyncio.run(store.has_unhidden_artifacts("absent"))
+
+
+def test_has_unhidden_artifacts_default_works_without_the_override() -> None:
+    # An adapter with no cheaper way to answer inherits a correct implementation from the ABC:
+    # the default is written in terms of list(), which every store must provide.
+    class InMemoryStore(ArtifactStore):
+        def __init__(self) -> None:
+            self.files: dict[str, dict[str, bytes]] = {}
+
+        async def put(self, task_id: str, name: str, content: bytes) -> None:
+            self.files.setdefault(task_id, {})[name] = content
+
+        async def get(self, task_id: str, name: str) -> bytes | None:
+            return self.files.get(task_id, {}).get(name)
+
+        async def list(self, task_id: str) -> list[str]:
+            return sorted(self.files.get(task_id, {}))
+
+    store = InMemoryStore()
+    asyncio.run(store.put("visible", "plan.md", b"# Plan"))
+    asyncio.run(store.put("hidden-only", ".state.json", b"{}"))
+    assert asyncio.run(store.has_unhidden_artifacts("visible"))
+    assert not asyncio.run(store.has_unhidden_artifacts("hidden-only"))
+    assert not asyncio.run(store.has_unhidden_artifacts("absent"))
