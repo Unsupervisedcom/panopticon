@@ -1222,6 +1222,72 @@ async def test_pressing_p_with_no_url_does_nothing(monkeypatch: Any) -> None:
         assert app.is_running
 
 
+async def test_pressing_w_opens_the_tasks_workdir(monkeypatch: Any, tmp_path: Path) -> None:
+    # `w` hands the task's recorded per-task clone — the checkout mounted at /workspace in its
+    # container — to the host's file manager, the same opener `f` uses for an artifact folder.
+    calls = _record_popen(monkeypatch)
+    workdir = tmp_path / "tasks" / str(_TASK["id"])
+    workdir.mkdir(parents=True)
+    task = {**_TASK, "clone": str(workdir)}
+    app = Dashboard(_FakeClient([task]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("w")
+        await pilot.pause()
+        assert calls == [[dashboard._open_command(), str(workdir)]]
+
+
+async def test_pressing_w_on_an_unprovisioned_task_warns(monkeypatch: Any) -> None:
+    # No slug yet → no branch → no clone recorded: there's no workdir to open, so warn rather
+    # than opening whatever an empty path resolves to.
+    calls = _record_popen(monkeypatch)
+    task = {**_TASK, "clone": None, "provisioned": False}
+    app = Dashboard(_FakeClient([task]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("w")
+        await pilot.pause()
+        assert calls == []
+        assert app.is_running
+
+
+async def test_pressing_w_warns_when_the_workdir_is_not_on_this_machine(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # The clone lives on the *runner's* host, which may be remote (or the checkout may simply be
+    # gone): the path isn't here, so open nothing and say so.
+    calls = _record_popen(monkeypatch)
+    task = {**_TASK, "clone": str(tmp_path / "elsewhere"), "runner_host": "gpu-box"}
+    app = Dashboard(_FakeClient([task]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("w")
+        await pilot.pause()
+        assert calls == []
+        assert app.is_running
+
+
+async def test_pressing_w_survives_a_host_with_no_opener(monkeypatch: Any, tmp_path: Path) -> None:
+    # A headless host without `xdg-open` must notify, not take the TUI down with it.
+    def boom(*args: Any, **kwargs: Any) -> None:
+        raise FileNotFoundError("xdg-open")
+
+    monkeypatch.setattr(dashboard.subprocess, "Popen", boom)
+    workdir = tmp_path / "tasks" / str(_TASK["id"])
+    workdir.mkdir(parents=True)
+    task = {**_TASK, "clone": str(workdir)}
+    app = Dashboard(_FakeClient([task]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("w")
+        await pilot.pause()
+        assert app.is_running
+
+
+def test_workdir_key_is_bound_exactly_once() -> None:
+    assert [hk.key for hk in dashboard.HOTKEYS].count("w") == 1
+
+
 def test_clipboard_command_is_platform_appropriate(monkeypatch: Any) -> None:
     # The result is cached (the installed tool can't change at runtime); clear it before each
     # probe so the monkeypatched platform/PATH takes effect, and once more at the end so the
@@ -2803,6 +2869,7 @@ def test_footer_shows_only_the_essential_keys() -> None:
         "u",
         "y",
         "Y",
+        "w",
         "escape",
     }
 

@@ -1905,6 +1905,13 @@ HOTKEYS: tuple[Hotkey, ...] = (
     Hotkey("r", "refresh", "Refresh", "Refresh from the task service now", show=False),
     Hotkey("R", "respawn", "Respawn", "Respawn a down task (release its claim)", show=False),
     Hotkey("p", "open_url", "Open URL", "Open the task's URL in the browser", show=False),
+    Hotkey(
+        "w",
+        "open_workdir",
+        "Workdir",
+        "Open the task's workdir (its per-task clone) in the host's file manager",
+        show=False,
+    ),
     Hotkey("e", "snooze", "Snooze", "Snooze the highlighted task for 12 hours", show=False),
     Hotkey(
         "E",
@@ -2535,6 +2542,37 @@ class Dashboard(App[None]):
             return
         webbrowser.open(url)
         self.notify(f"opened {url}")
+
+    def action_open_workdir(self) -> None:
+        """`w`: open the highlighted task's **workdir** — the per-task ``git clone --local``
+        checkout recorded on ``Task.clone`` at provisioning (ADR 0011), the very directory mounted
+        at ``/workspace`` inside its container — in the host's file manager.
+
+        The same open-with-the-default-handler path the repo-artifact modal's `f` uses
+        (:func:`_open_path`), and it warns in the same two cases rather than opening something that
+        isn't there: an **unprovisioned** task has no clone recorded yet (no slug → no branch → no
+        path), and a clone that lives on a **remote runner's** host isn't on this machine at all.
+        The local-ness test is the path itself (``is_dir``) rather than comparing hostnames, so a
+        clone that's simply gone reads the same as a remote one — either way there's nothing here
+        to open."""
+        if self._current is None:
+            return
+        task = self._tasks.get(self._current) or {}
+        clone = task.get("clone")
+        if not clone:
+            self.notify("No workdir yet — this task isn't provisioned.", severity="warning")
+            return
+        if not Path(clone).is_dir():
+            runner_host = task.get("runner_host")
+            where = f" (runner {runner_host})" if runner_host else ""
+            self.notify(f"{clone} isn't on this machine{where}.", severity="warning")
+            return
+        try:
+            _open_path(str(clone))
+        except FileNotFoundError:  # no opener binary on this host — notify, don't crash the TUI
+            self.notify(f"No '{_open_command()}' on this host to open files.", severity="warning")
+            return
+        self.notify(f"opened {clone}")
 
     def _copy_to_clipboard(self, text: str) -> None:
         """Copy ``text`` to the clipboard two ways, best-effort: an OSC 52 emit (Textual's
