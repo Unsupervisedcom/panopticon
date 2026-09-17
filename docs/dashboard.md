@@ -17,6 +17,7 @@ kept in sync with the `HOTKEYS` keymap and the modal `BINDINGS` in
 | `r` | Refresh from the task service now |
 | `R` | Respawn a down task (releases its claim so the runner re-spawns it) |
 | `p` | Open the task's URL in the browser |
+| `w` | Open the task's workdir (its per-task clone) in the host's file manager |
 | `e` | Snooze the highlighted task for 12 hours |
 | `E` | Snooze the highlighted task indefinitely |
 | `a` | List the task's artifacts |
