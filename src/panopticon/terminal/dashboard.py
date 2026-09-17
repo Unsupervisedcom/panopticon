@@ -1340,7 +1340,10 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
 
     Two tabs: **general** (git URL, id, name, base branch, env file, image layer, hook file,
     privileged docker) and **workflows** (a per-workflow opt-in/opt-out checklist). Both tabs'
-    values are collected on save — submitting from either tab captures everything.
+    values are collected on save — submitting from either tab captures everything. Both panes
+    **scroll** when the terminal is too short to show every field (the general tab needs ~40
+    rows): the scrollbar is the affordance that the fields below the fold exist, and Tab/Shift-Tab
+    scrolls the focused field into view.
 
     **Space toggles checkboxes; Enter saves the form** from any field. The :class:`SpaceCheckbox`
     subclass drops the default ``enter`` binding so Enter always bubbles up to the screen's save
@@ -1353,10 +1356,15 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
 
     CSS = """
     RepoFormScreen { align: center middle; }
-    #repo-form { width: 72; height: 80%; padding: 1 2; border: round $accent; background: $surface; }
+    #repo-form { width: 72; max-width: 100%; height: 80%; padding: 1 2; border: round $accent; background: $surface; }
     #repo-form Input { margin-bottom: 1; }
     #repo-form Checkbox { margin-bottom: 1; }
     #form-tabs { height: 1fr; }
+    /* TabbedContent's ContentSwitcher and TabPane both default to height:auto, so a pane taller
+       than the modal is silently clipped with no scrollbar. Pin both to the tab area's height and
+       let the general pane scroll, so every field stays reachable on a short terminal. */
+    #form-tabs ContentSwitcher { height: 1fr; }
+    #pane-general { height: 1fr; overflow-y: auto; }
     #pane-workflows { height: 1fr; }
     #wf-scroll { height: 1fr; }
     #wf-scroll SpaceCheckbox { margin-bottom: 0; }
@@ -1459,7 +1467,7 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
                     else:
                         yield Label("no workflows available")
             yield Static("", id="form-error")
-            yield Static("enter: save   esc: cancel", id="form-hint")
+            yield Static("enter: save   esc: cancel   ↑/↓: scroll", id="form-hint")
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()

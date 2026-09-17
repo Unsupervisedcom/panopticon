@@ -2019,6 +2019,61 @@ async def test_repo_form_space_toggles_the_checkbox_without_saving() -> None:
         assert isinstance(app.screen, dashboard.RepoFormScreen)  # form still open
 
 
+async def test_repo_form_general_tab_scrolls_on_a_short_terminal() -> None:
+    # The general tab needs ~40 rows; on a short terminal it must scroll (and say so with a
+    # scrollbar) rather than clipping the fields below the fold with no indication they exist.
+    fake = _FakeClient([], repos=[])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test(size=(100, 24)) as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        pane = app.screen.query_one("#pane-general")
+        assert pane.virtual_size.height > pane.size.height  # taller than its viewport
+        assert pane.max_scroll_y > 0  # …and the overflow is reachable
+        assert pane.show_vertical_scrollbar  # …with the scrollbar as the affordance
+
+
+async def test_repo_form_tab_reaches_the_last_field_on_a_short_terminal() -> None:
+    # Tabbing scrolls a below-the-fold field into view — the regression guard for the fields
+    # being unreachable when the modal is shorter than its content.
+    fake = _FakeClient([], repos=[])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test(size=(100, 24)) as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        pane = app.screen.query_one("#pane-general")
+        checkbox = app.screen.query_one("#field-docker_in_docker", Checkbox)
+        assert not pane.content_region.contains_region(checkbox.region)  # below the fold
+        for _ in range(30):
+            await pilot.press("tab")
+            await pilot.pause()
+            if app.screen.focused is checkbox:
+                break
+        assert app.screen.focused is checkbox  # reachable by keyboard
+        assert pane.content_region.contains_region(checkbox.region)  # scrolled into view
+
+
+async def test_repo_form_fits_a_narrow_terminal() -> None:
+    # The modal is 72 columns wide by preference, but never wider than the screen.
+    fake = _FakeClient([], repos=[])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test(size=(60, 24)) as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        form = app.screen.query_one("#repo-form")
+        assert form.region.width <= app.screen.size.width
+        assert form.region.right <= app.screen.size.width  # nothing falls off the right edge
+
+
 @pytest.mark.asyncio
 async def test_env_file_field_blank_when_no_known_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
