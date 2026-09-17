@@ -31,7 +31,8 @@ src/panopticon/
                    # discovery.py = scan the package + an optional path for Workflow subclasses
                    # (the registry build_app runs on; drop a module in → registered, ADR 0004)
   taskservice/     # control plane: TaskService, FastAPI REST API, the SQLAlchemy store
-                   # adapter (in-memory or on-disk SQLite), filesystem artifact store, MCP
+                   # adapter (in-memory or on-disk SQLite), filesystem artifact store
+                   # (per-task + per-repo artifacts, the latter with nested names), MCP
                    # server (mcp.py: operations=tools, artifacts=resources; FastMCP) mounted at /mcp
   sessionservice/  # the runner: Runner ABC + StubRunner (in-process) + LocalRunner
                    # (real Docker+tmux via the CLIs) + ShellRunner (shell_runner.py = a workflow's
@@ -179,6 +180,10 @@ on every PR (the same commands the Makefile wraps).
   branch + clone path are recorded and a second pass is a no-op (idempotent).
 - `tests/test_clones.py` — the per-repo clone cache: unit tests pin the clone-on-first-use vs
   fetch-when-present decision (fakes); a `skipif` integration test clones a real local repo.
+- `tests/taskservice/test_artifacts.py` — the artifact store, **both scopes**: the task layout +
+  slug alias, and the repo namespace (nested names, recursive listing, traversal/symlink refusal,
+  the folder + file accessors the dashboard opens with, and that a repo and a task sharing an id
+  keep separate documents).
 - `tests/test_models.py` — the pure **container-status composition** (`compose_container_status`):
   the truth table folding the session service's reported `LifecyclePhase` with registration
   presence + runner liveness into the displayed `ContainerStatus` (queued/…/live/down/failed/
@@ -249,6 +254,8 @@ on every PR (the same commands the Makefile wraps).
   `capabilities`, a JSON opt-in map for elevated container privileges (`docker_in_docker` → the
   runner spawns `--privileged` and the entrypoint starts a nested Docker daemon; a trust escalation,
   off by default).
+  A repo also owns **artifacts** of its own (see **Artifact**): the documents every task in it
+  shares, under `<artifacts>/repos/<repo-id>/`, written by any of its tasks over MCP.
 - **Workflow** — a `Workflow` subclass whose **states are nested `State` classes**
   (declarative). It declares `initial`; states are discovered and their transitions
   (class refs or label strings) resolved + validated when the workflow is instantiated.
@@ -329,7 +336,13 @@ on every PR (the same commands the Makefile wraps).
 - **Task service** — the deterministic control plane (sole DB authority).
 - **Session service / runner** — spawns task containers (stubbed for now).
 - **Terminal controller** — the user-facing CLI/dashboard (Slice 3).
-- **Artifact** — a file-backed per-task document (plan, notes), reachable via REST/FS/MCP.
+- **Artifact** — a file-backed document, reachable via REST/FS/MCP. **Task-scoped** (plan,
+  notes; `<artifacts>/tasks/<task-id>/<name>`, a single-segment name) or **repo-scoped**
+  (`<artifacts>/repos/<repo-id>/<name…>`) — the documents every task in a repo shares, whose
+  names may be nested. The agent writes the latter with `put_repo_artifact`/`list_repo_artifacts`,
+  naming its own task (the service resolves its repo, so it can only write to its own); the
+  dashboard gives them their own modal (`A`, or `a` in the repos screen) where `f` opens the
+  repo's artifact folder on the host.
 - **Lifecycle hook** — a deterministic `Workflow` method the task service runs at a defined
   moment (currently `on_transition`, after a transition, before persistence). It may write
   artifacts or mutate the task's own record — no LLM, no clock. The seam; the built-in workflows

@@ -311,6 +311,23 @@ class TaskServiceClient:
         resp.raise_for_status()
         return resp.content
 
+    # -- repo artifacts -----------------------------------------------------------
+    #
+    # The repo-scoped twins: documents shared by every task in a repo. A ``name`` here may be a
+    # nested relative path (``notes/api.md``) — its separators stay separators in the URL, which
+    # is what the API's ``:path`` parameter matches.
+
+    def list_repo_artifacts(self, repo_id: str) -> list[str]:
+        return cast(list[str], self._json(self._http.get(f"/repos/{repo_id}/artifacts")))
+
+    def put_repo_artifact(self, repo_id: str, name: str, content: bytes) -> None:
+        self._http.put(f"/repos/{repo_id}/artifacts/{name}", content=content).raise_for_status()
+
+    def get_repo_artifact(self, repo_id: str, name: str) -> bytes:
+        resp = self._http.get(f"/repos/{repo_id}/artifacts/{name}")
+        resp.raise_for_status()
+        return resp.content
+
     # -- liveness -----------------------------------------------------------------
 
     def register(self, task_id: str, container_id: str, runner_id: str | None = None) -> JsonObj:

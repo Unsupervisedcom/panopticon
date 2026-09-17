@@ -16,7 +16,12 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from panopticon.core.artifacts import decode_b64_artifact, decode_segment, mcp_uri
+from panopticon.core.artifacts import (
+    decode_b64_artifact,
+    decode_segment,
+    mcp_uri,
+    repo_mcp_uri,
+)
 from panopticon.core.models import Actor, Status
 from panopticon.taskservice.api import TaskOut
 from panopticon.taskservice.service import TaskService
@@ -25,6 +30,11 @@ _log = logging.getLogger(__name__)
 
 #: The artifact resource URI template (the shared id→URI resolver, ADR 0003).
 ARTIFACT_URI = "panopticon://tasks/{task_id}/artifacts/{name}"
+
+#: The **repo** artifact resource URI template — the repo-scoped twin of :data:`ARTIFACT_URI`.
+#: A nested name (``notes/api.md``) arrives percent-encoded (``notes%2Fapi.md``) from
+#: :func:`repo_mcp_uri`, so it still occupies the single segment the template matches.
+REPO_ARTIFACT_URI = "panopticon://repos/{repo_id}/artifacts/{name}"
 
 
 def _task(task: object) -> dict[str, Any]:
@@ -207,6 +217,61 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
     async def list_artifacts(task_id: str) -> list[dict[str, str]]:
         names = await service.list_artifacts(task_id)
         return [{"name": name, "uri": mcp_uri(task_id, name)} for name in names]
+
+    @mcp.tool(
+        description=(
+            "Write (create or overwrite) an artifact on **your repo** rather than your task, and "
+            "return its URI. Repo artifacts are shared by every task in this repo and outlive "
+            "yours, so this is where durable, repo-wide material belongs: conventions and gotchas "
+            "worth passing on, accumulated notes, reference screenshots. Task artifacts (the plan) "
+            "stay on the task. The repo is your own — it is resolved from `task_id`, so pass your "
+            "own task id. `name` may name subdirectories ('notes/api.md'); pass text in `content` "
+            "or base64 in `content_base64` (exactly one). For a large binary the more efficient "
+            "path is the REST endpoint (PUT /repos/{repo_id}/artifacts/{name} with the raw bytes), "
+            "which keeps the base64 out of your context."
+        )
+    )
+    async def put_repo_artifact(
+        task_id: str, name: str, content: str | None = None, content_base64: str | None = None
+    ) -> str:
+        if content is not None and content_base64 is None:
+            data = content.encode()
+        elif content is None and content_base64 is not None:
+            data = decode_b64_artifact(name, content_base64)
+        else:
+            raise ValueError("provide exactly one of `content` or `content_base64`")
+        repo_id = await service.put_repo_artifact_for_task(task_id, name, data)
+        return repo_mcp_uri(repo_id, name)
+
+    @mcp.tool(
+        description=(
+            "List your repo's artifacts — the documents shared across every task in this repo — "
+            "each name and its canonical MCP URI (read the URI as a resource to fetch the "
+            "contents). Pass your own task id; the repo is resolved from it. Names may include "
+            "subdirectories. Read this before writing repo material, so you extend what is there "
+            "rather than duplicating it."
+        )
+    )
+    async def list_repo_artifacts(task_id: str) -> list[dict[str, str]]:
+        repo_id, names = await service.list_repo_artifacts_for_task(task_id)
+        return [{"name": name, "uri": repo_mcp_uri(repo_id, name)} for name in names]
+
+    @mcp.resource(
+        REPO_ARTIFACT_URI,
+        description="A repo's file-backed artifact, shared by every task in that repo.",
+    )
+    async def repo_artifact(repo_id: str, name: str) -> str | bytes:
+        # Same encoding contract as the task resource: the captured segments arrive
+        # percent-encoded, and for a repo artifact that includes a nested name's separators
+        # (``notes%2Fapi.md`` → ``notes/api.md``).
+        repo_id, name = decode_segment(repo_id), decode_segment(name)
+        data = await service.get_repo_artifact(repo_id, name)
+        if data is None:
+            raise FileNotFoundError(f"no artifact {name!r} for repo {repo_id!r}")
+        try:
+            return data.decode()
+        except UnicodeDecodeError:
+            return data
 
     @mcp.resource(ARTIFACT_URI, description="A task's file-backed artifact (plan, notes).")
     async def artifact(task_id: str, name: str) -> str | bytes:

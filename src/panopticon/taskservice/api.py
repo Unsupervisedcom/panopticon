@@ -752,6 +752,30 @@ def create_app(service: TaskService) -> FastAPI:
         media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
         return Response(content=content, media_type=media_type)
 
+    # -- repo artifacts -----------------------------------------------------------
+    #
+    # The repo-scoped twins of the task routes above. The name is a ``:path`` parameter rather
+    # than a plain one because a repo artifact's name may be nested (``notes/api.md``) — a plain
+    # parameter matches a single segment, which would leave a subdirectory unaddressable. An
+    # invalid name still lands as a 400 through the registered ``ArtifactError`` handler.
+
+    @app.put("/repos/{repo_id}/artifacts/{name:path}", status_code=204)
+    async def put_repo_artifact(repo_id: str, name: str, request: Request) -> Response:
+        await service.put_repo_artifact(repo_id, name, await request.body())
+        return Response(status_code=204)
+
+    @app.get("/repos/{repo_id}/artifacts")
+    async def list_repo_artifacts(repo_id: str) -> list[str]:
+        return await service.list_repo_artifacts(repo_id)
+
+    @app.get("/repos/{repo_id}/artifacts/{name:path}")
+    async def get_repo_artifact(repo_id: str, name: str) -> Response:
+        content = await service.get_repo_artifact(repo_id, name)
+        if content is None:
+            raise HTTPException(status_code=404, detail=f"repo artifact {name!r} not found")
+        media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        return Response(content=content, media_type=media_type)
+
     # -- liveness -----------------------------------------------------------------
 
     @app.get("/tasks/{task_id}/live")

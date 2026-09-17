@@ -90,6 +90,43 @@ stripping host-only config files). Like `env_file`, it is a **name relative to t
 task-creation picker, on top of each workflow's own opt-in flag. `GET /repos/{id}/workflows`
 returns the filtered list.
 
+## Repo artifacts
+
+A repo carries **artifacts** of its own — file-backed documents shared by every task that runs
+against it, and outliving each of them. Task artifacts (`plan.md`) answer "what is *this* task
+doing"; repo artifacts answer "what does everyone working in this repo need to know": conventions
+and gotchas worth passing on, accumulated notes, reference screenshots.
+
+They live in the same artifact store as task artifacts, in their own namespace, and **names may
+be nested** so a repo's material can be organised:
+
+```
+~/.local/share/panopticon/artifacts/
+  tasks/<task-id>/plan.md            # a task's own artifacts (flat names)
+  repos/<repo-id>/conventions.md     # the repo's — shared, and nestable
+  repos/<repo-id>/notes/api.md
+  repos/<repo-id>/shots/login.png
+```
+
+**An in-container agent writes them over MCP**, naming its own task — the repo is resolved from
+it, so a task can only contribute to the repo it belongs to:
+
+- `list_repo_artifacts(task_id)` — what the repo already holds (each name plus its resource URI).
+- `put_repo_artifact(task_id, name, content | content_base64)` — create or overwrite one; `name`
+  may include subdirectories.
+- Read one back as the MCP resource `panopticon://repos/<repo-id>/artifacts/<name>` (a nested
+  name travels percent-encoded, as the tools' returned URIs show).
+
+**You reach them from the dashboard** in their own modal: `A` on a task opens its repo's
+artifacts, and `a` in the repos modal (`g`) opens the highlighted repo's. `Enter` opens an
+artifact with your default handler, `e` opens the on-disk file in place, `Ctrl-a` attaches local
+files, and **`f` opens the repo's artifact folder** in your file manager — the whole tree, when
+the dashboard is on the same machine as the artifact store. See
+[`dashboard.md`](dashboard.md#repo-artifacts-modal-a).
+
+Over REST they are `GET /repos/{id}/artifacts`, `GET|PUT /repos/{id}/artifacts/{name}` (the name
+may contain `/`).
+
 ## How a task uses its repo
 
 When the session service spawns a task, it uses the repo's fields in order:
@@ -119,6 +156,8 @@ Repos are managed over the task service's REST API:
 - `PATCH /repos/{id}` — partial update; fields you don't send are preserved.
 - `GET /repos/{id}/workflows` — the workflows this repo offers.
 - `GET /repos/{id}/image-layer` — the repo's composed Dockerfile layer.
+- `GET /repos/{id}/artifacts`, `GET|PUT /repos/{id}/artifacts/{name}` — the repo's
+  [artifacts](#repo-artifacts).
 
 ## Related
 

@@ -178,3 +178,13 @@ def test_update_repo_rejects_id_change(client: TaskServiceClient) -> None:
     with pytest.raises(httpx.HTTPStatusError) as exc:
         client.update_repo("r1", id="r1-renamed")
     assert exc.value.response.status_code == 400
+
+
+def test_repo_artifacts_round_trip(client: TaskServiceClient) -> None:
+    # The repo-scoped trio the dashboard's repo-artifact modal reads and writes through, including
+    # a nested name (its separators have to survive the URL as separators).
+    assert client.list_repo_artifacts("r1") == []
+    client.put_repo_artifact("r1", "conventions.md", b"# How we work")
+    client.put_repo_artifact("r1", "notes/api.md", b"beware")
+    assert client.list_repo_artifacts("r1") == ["conventions.md", "notes/api.md"]
+    assert client.get_repo_artifact("r1", "notes/api.md") == b"beware"
