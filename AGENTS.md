@@ -213,9 +213,14 @@ on every PR (the same commands the Makefile wraps).
 - `tests/test_spawn.py` — spawn-prep (ADR 0011): unit tests pin the `clone --local` of the
   per-task checkout and the idempotency gate (skips when the checkout already exists), plus the
   **submodule** init — emitted after the `origin` repoint, gated on `submodule status` reporting an
-  uninitialized (`-`) submodule so it retries but never touches an initialized one; a `skipif`
-  integration test fills in a real submodule and then **moves** the checkout, pinning that the
-  recorded links stay relative (the ADR 0011 mounts-anywhere property).
+  uninitialized (`-`) submodule so it retries but never touches an initialized one — and the
+  **donor hydration** (ADR 0011 §1c): the per-level init/url-override/update/sync when the repo has
+  a checkout on this host, and every fallback to the plain fetch (no donor, donor gone, hydration
+  raised, a submodule still uninitialized). A `skipif` integration test fills in a real submodule
+  and then **moves** the checkout, pinning that the recorded links stay relative (the ADR 0011
+  mounts-anywhere property); another hydrates a nested submodule from a source repo whose
+  submodules' own repos have been moved away, pinning that the objects are hardlinked from it and
+  that `sync` leaves no donor path behind.
 - `tests/test_prefill.py` — the input-box prefill poller: unit tests drive `prefill_pane` with a
   fake tmux runner + injected `sleep`/raw-log — pin the `pipe-pane`/`load-buffer`/`paste-buffer -p`
   commands when the box becomes ready, and every best-effort give-up (empty prompt, timeout,

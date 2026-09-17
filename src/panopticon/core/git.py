@@ -18,10 +18,47 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 #: Feature-branch namespace (PARITY §8/§14, renamed from cloude-cade's ``cloude/``).
 BRANCH_PREFIX = "panopticon"
+
+#: URL schemes that mean a networked (hosted-forge) remote rather than a local path.
+_FORGE_SCHEMES = ("https://", "http://", "ssh://", "git://", "ftp://", "ftps://")
+
+
+def is_forge_url(git_url: str) -> bool:
+    """True when ``git_url`` names a hosted-forge remote (network push/PR/CI), not a local path.
+
+    Recognizes URL-scheme remotes (``https://…``, ``ssh://…``, …) and scp-like ``user@host:path``
+    remotes; treats a bare filesystem path or a ``file://`` URL as local-only.
+    """
+    url = git_url.strip()
+    if url.lower().startswith("file://"):
+        return False
+    if url.lower().startswith(_FORGE_SCHEMES):
+        return True
+    # scp-like syntax: user@host:path — an '@' and a ':' before any '/'. A Windows drive path
+    # (``C:\…``) has the ':' but no '@', so it stays local.
+    at, colon, slash = url.find("@"), url.find(":"), url.find("/")
+    return at != -1 and colon > at and (slash == -1 or colon < slash)
+
+
+def local_repo_path(git_url: str) -> str | None:
+    """The filesystem path ``git_url`` names, or ``None`` when it names a networked remote.
+
+    The counterpart of :func:`is_forge_url`: a bare path or a ``file://`` URL is somewhere on this
+    host — which is what makes panopticon's host-side push, and cloning a task's submodules from
+    the repo's own checkout (:func:`panopticon.sessionservice.spawn.hydrate_submodules`), possible
+    at all.
+    """
+    if is_forge_url(git_url):
+        return None
+    url = git_url.strip()
+    if url.lower().startswith("file://"):
+        url = url[len("file://") :]
+    return str(Path(url).expanduser()) if url else None
 
 
 class GitError(RuntimeError):
@@ -85,6 +122,27 @@ def parse_submodule_status(output: str) -> dict[str, str]:
         if path:
             states[path] = state
     return states
+
+
+def parse_submodule_paths(output: str) -> dict[str, str]:
+    """Parse ``git config --get-regexp`` output into ``{submodule name: path}``.
+
+    Each line is ``submodule.<name>.path <path>`` — read from ``.gitmodules`` rather than from
+    ``git submodule status`` because it answers *before* ``submodule init`` has run and for
+    submodules that aren't checked out. The name is whatever sits between the ``submodule.``
+    prefix and the ``.path`` suffix (it usually **is** the path, dots and slashes included), and
+    the value is the rest of the line, so a path containing spaces survives. Lines that don't
+    match the shape are skipped.
+    """
+    paths: dict[str, str] = {}
+    for line in output.splitlines():
+        key, _, value = line.partition(" ")
+        if not value or not key.startswith("submodule.") or not key.endswith(".path"):
+            continue
+        name = key[len("submodule.") : -len(".path")]
+        if name:
+            paths[name] = value
+    return paths
 
 
 @dataclass(frozen=True)
@@ -164,8 +222,59 @@ class GitClones:
         out = self._run(["git", "-C", repo_path, "submodule", "status", "--recursive"])
         return parse_submodule_status(out)
 
-    def update_submodules(self, *, repo_path: str) -> None:
-        """``git -C <repo> submodule update --init --recursive`` — fill in the submodule checkouts.
+    def submodule_paths(self, *, repo_path: str) -> dict[str, str]:
+        """The submodules this repo *declares* — ``{name: path}``, empty when there are none.
+
+        Reads ``.gitmodules`` (``git config --file``), not ``git submodule status``: the caller
+        overriding a submodule's URL (:meth:`set_submodule_url`) needs the **name** git keys that
+        config on, and needs it for a submodule that isn't checked out yet. Only this level's
+        submodules — a nested one is declared in its own superproject's ``.gitmodules``, so the
+        caller recurses. ``check=False`` because ``git config`` exits non-zero when the file (or a
+        match) is absent, which is just "no submodules".
+        """
+        out = self._run(
+            [
+                "git",
+                "-C",
+                repo_path,
+                "config",
+                "--file",
+                ".gitmodules",
+                "--get-regexp",
+                "^submodule\\..*\\.path$",
+            ],
+            check=False,
+        )
+        return parse_submodule_paths(out)
+
+    def init_submodules(self, *, repo_path: str) -> None:
+        """``git -C <repo> submodule init`` — resolve each declared URL into ``submodule.<n>.url``.
+
+        Separated from ``update`` so a caller can *override* the resolved URL in between (the
+        donor hydration in ``sessionservice.spawn``); ``update --init`` would clone before the
+        override could land.
+        """
+        self._run(["git", "-C", repo_path, "submodule", "init"])
+
+    def set_submodule_url(self, *, repo_path: str, name: str, url: str) -> None:
+        """``git -C <repo> config submodule.<name>.url <url>`` — where ``update`` clones from.
+
+        The config value wins over ``.gitmodules`` until :meth:`sync_submodules` restores it.
+        """
+        self._run(["git", "-C", repo_path, "config", f"submodule.{name}.url", url])
+
+    def sync_submodules(self, *, repo_path: str) -> None:
+        """``git -C <repo> submodule sync --recursive`` — restore the canonical submodule URLs.
+
+        Rewrites every ``submodule.<name>.url`` from ``.gitmodules`` (resolved against the
+        superproject's ``origin``) **and** repoints each checked-out submodule's own
+        ``remote.origin.url`` at it — so a temporary local-donor override leaves nothing of the
+        host's paths behind in the checkout the container gets.
+        """
+        self._run(["git", "-C", repo_path, "submodule", "sync", "--recursive"])
+
+    def update_submodules(self, *, repo_path: str, recursive: bool = True) -> None:
+        """``git -C <repo> submodule update --init [--recursive]`` — fill in the submodule checkouts.
 
         ``protocol.file.allow=always`` is **required**, not cosmetic: since git 2.38 a submodule
         whose resolved URL is a local path is refused (``transport 'file' not allowed``,
@@ -178,20 +287,24 @@ class GitClones:
         Submodule URLs are resolved against the superproject's ``remote.origin.url`` *here*, so the
         caller must point ``origin`` at the forge first (:meth:`set_origin`) — resolving a relative
         URL against the cache path would look for the submodule next to the cache clone.
+
+        ``recursive=False`` updates **this level only**: a nested submodule's URL can't be resolved
+        (or overridden) before its parent exists, so the donor hydration walks the tree a level at
+        a time instead.
         """
-        self._run(
-            [
-                "git",
-                "-C",
-                repo_path,
-                "-c",
-                "protocol.file.allow=always",
-                "submodule",
-                "update",
-                "--init",
-                "--recursive",
-            ]
-        )
+        args = [
+            "git",
+            "-C",
+            repo_path,
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "update",
+            "--init",
+        ]
+        if recursive:
+            args.append("--recursive")
+        self._run(args)
 
     def push(self, *, repo_path: str, remote: str, branch: str) -> None:
         """``git -C <repo> push <remote> <branch>`` — send one branch, as-is (never forced).
