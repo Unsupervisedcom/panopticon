@@ -81,6 +81,14 @@ in the ADRs; this file is for the smaller stuff that doesn't have a home there y
   `docker buildx bake` (target inheritance, which maps cleanly onto base→workflow→repo). Not
   needed now; the fragment approach is the minimal thing that works. _(Slice 6, P3)_
 
+- [ ] **Share submodule objects with the cache clone** — spawn-prep initializes a task's
+  submodules from their forge-resolved URLs (ADR 0011 §1b), so every task pays a full submodule
+  fetch. Sharing the repo cache's object store would avoid it, but the obvious lever
+  (`submodule.alternateLocation=superproject`) derives the alternate from the superproject's
+  `origin`, which spawn deliberately repoints at the forge before initializing — so it needs the
+  per-submodule alternate paths (`<cache>/.git/modules/<name>`) passed explicitly, and the cache
+  clone made submodule-aware. Only worth it for repos with large submodules. _(P3)_
+
 ## Tracked elsewhere (pointers, do not duplicate)
 
 - Artifact concurrency / drift detection → ADR 0003 / ROADMAP open-questions.

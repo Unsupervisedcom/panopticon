@@ -4,7 +4,8 @@ Before the runner spawns a task's container, the session service gives it a writ
 it makes the repo's cache clone current (`CloneCache`) and `git clone --local`s it to the per-task
 path that gets bind-mounted at ``/workspace``. A ``--local`` clone is self-contained (hardlinked
 objects), so it mounts at any container path; the agent works there the whole task and the slug
-later just branches it (`Provisioner`).
+later just branches it (`Provisioner`). Submodules are initialized too — recursively, and *after*
+``origin`` is repointed, since that's what relative ``.gitmodules`` URLs resolve against.
 
 Idempotent: skips the clone (and the cache fetch) when the per-task checkout already exists — e.g.
 a re-created container re-mounts the same dir. LLM-free.
@@ -15,11 +16,11 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from panopticon.client import JsonObj
-from panopticon.core.git import GitClones
+from panopticon.core.git import SUBMODULE_UNINITIALIZED, GitClones
 from panopticon.sessionservice.clones import CloneCache
 
 _log = logging.getLogger(__name__)
@@ -52,6 +53,14 @@ def prepare_workspace(
     the container should use as its remote — HTTPS for token auth, SSH for key auth — so no rewriting
     happens here. Done at spawn, not deferred to slug-time provisioning, so the agent has a correct
     ``origin`` from its first action; ``set-url`` is idempotent, so it also repoints an existing clone.
+
+    Finally fills in the repo's **submodules** if any are still uninitialized (see
+    :func:`_needs_submodules`): a ``--local`` clone carries the gitlinks and ``.gitmodules`` but no
+    submodule objects, so without this the agent gets empty submodule directories. It runs *after*
+    the ``set-url`` because relative submodule URLs (``../lib.git``) are resolved against the
+    superproject's ``origin``, which must therefore already be the forge. A repo with no submodules
+    pays one ``submodule status`` (empty output, no network); ``git`` records the submodule gitdir
+    and worktree links **relatively**, so the checkout still mounts at any container path.
     """
     git = git or GitClones()
     clone = f"{tasks_root.rstrip('/')}/{task_id}"
@@ -60,7 +69,22 @@ def prepare_workspace(
         cache_path = cache.ensure(repo["id"], repo["git_url"])
         git.clone_local(cache_path=cache_path, dest=clone)
     git.set_origin(repo_path=clone, url=repo["git_url"])
+    if _needs_submodules(git.submodule_status(repo_path=clone)):
+        git.update_submodules(repo_path=clone)
     return clone
+
+
+def _needs_submodules(states: Mapping[str, str]) -> bool:
+    """Whether any of the repo's submodules isn't checked out yet.
+
+    Gated on *uninitialized* rather than on *freshly cloned* for two reasons. A submodule fetch that
+    fails transiently leaves the checkout in place, so the clone gate above would skip it forever
+    after — here the next spawn pass retries. And on a container re-creation the checkout is the one
+    the agent has been working in: an initialized submodule reports modified/conflicted/current even
+    when its commit or working tree has moved, so we never run an update that would try to check the
+    recorded commit out over the agent's changes.
+    """
+    return any(state == SUBMODULE_UNINITIALIZED for state in states.values())
 
 
 def cleanup_workspace(
