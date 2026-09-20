@@ -235,8 +235,8 @@ Artifacts also have a **repo scope**: `…/repos/<repo-id>/<name…>`, the docum
 repo shares (conventions, notes, screenshots). Same store, same resolver shape
 (`repo-id → directory → MCP URI`), two differences — a repo artifact's name may be a nested
 relative path, and the agent-facing tools take the *acting task's* id and resolve its repo, so a
-task writes only to its own repo's artifacts. The dashboard gives them their own modal, with a
-key that opens the repo's artifact folder on the host.
+task writes only to its own repo's artifacts. The dashboard gives them their own modal; either
+scope's modal opens that scope's artifact folder on the host with a key of its own.
 
 ### 8.3 Identity vs. slug (refines cloude-cade)
 
