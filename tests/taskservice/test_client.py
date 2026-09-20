@@ -122,8 +122,11 @@ def test_update_repo_patches_only_sent_fields(client: TaskServiceClient) -> None
     assert client.get_repo("r4")["name"] == "renamed"  # persisted
 
 
-def test_repo_agent_cli_defaults_and_round_trips_over_rest(client: TaskServiceClient) -> None:
-    # The default repo CLI is "claude"; an explicit one round-trips (ADR 0014 §3).
+def test_repo_agent_cli_defaults_and_round_trips_over_rest(
+    client: TaskServiceClient, enable_codex: None
+) -> None:
+    # The default repo CLI is "claude"; an explicit one round-trips (ADR 0014 §3). Selecting codex
+    # needs its feature flag on (ADR 0014 §7) — see test_api.py for the gate itself.
     default = client.create_repo("r8", "svc", "https://x/r8.git")
     assert default["agent_cli"] == "claude"
     codex = client.create_repo("r9", "svc", "https://x/r9.git", agent_cli="codex")
@@ -134,7 +137,9 @@ def test_repo_agent_cli_defaults_and_round_trips_over_rest(client: TaskServiceCl
     assert client.get_repo("r9")["agent_cli"] == "claude"  # ...and the update is persisted
 
 
-def test_create_task_carries_agent_cli_over_rest(client: TaskServiceClient) -> None:
+def test_create_task_carries_agent_cli_over_rest(
+    client: TaskServiceClient, enable_codex: None
+) -> None:
     task = client.create_task("r1", "spike", "memo", agent_cli="codex")
     assert task["agent_cli"] == "codex"
 

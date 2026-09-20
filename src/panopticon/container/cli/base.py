@@ -21,6 +21,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, ClassVar, Protocol, TextIO
 
+from panopticon.core.features import (
+    CODEX_AGENT_CLI,
+    agent_cli_unavailable_detail,
+    codex_enabled,
+)
 from panopticon.core.models import MODEL_TIERS
 
 
@@ -237,19 +242,38 @@ def register_agent_cli(cls: type[AgentCLI]) -> type[AgentCLI]:
 
 
 def get_agent_cli(name: str | None = None) -> AgentCLI:
-    """Resolve the adapter for ``name`` (defaulting to :data:`DEFAULT_AGENT_CLI` when unset)."""
+    """Resolve the adapter for ``name`` (defaulting to :data:`DEFAULT_AGENT_CLI` when unset).
+
+    A name that isn't registered raises :class:`KeyError`; when it names a CLI that exists but is
+    **feature-flagged off** (codex, ADR 0014 §7) the error says so and names the flag, since
+    "unknown agent CLI 'codex'" alone would send the operator hunting for a typo.
+
+    The flag is checked **here**, not only at registration: the registry is process-global, so a
+    codex adapter registered while the flag was on (a long-lived process, a test) must not keep
+    resolving after it goes off. Only codex is gated — a third-party adapter registered via
+    :func:`register_agent_cli` resolves as before (ADR 0014 §2).
+    """
     _load_builtin_adapters()
     key = name or DEFAULT_AGENT_CLI
+    if key == CODEX_AGENT_CLI and not codex_enabled():
+        raise KeyError(agent_cli_unavailable_detail(key))
     try:
         return _REGISTRY[key]()
     except KeyError:
-        raise KeyError(f"unknown agent CLI {key!r}; registered: {sorted(_REGISTRY)}") from None
+        detail = agent_cli_unavailable_detail(key) or f"unknown agent CLI {key!r}"
+        raise KeyError(f"{detail}; registered: {sorted(_REGISTRY)}") from None
 
 
 def _load_builtin_adapters() -> None:
-    """Register the built-in adapters (imported lazily so this module holds only the contract)."""
+    """Register the built-in adapters (imported lazily so this module holds only the contract).
+
+    Codex is registered **only when its feature flag is on** (``PANOPTICON_ENABLE_CODEX``, ADR 0014
+    §8) — the runner carries the host's flag into the container, so the registry here agrees with
+    what the control plane will let a task select."""
     from panopticon.container.cli.claude import ClaudeAgentCLI
-    from panopticon.container.cli.codex import CodexAgentCLI
 
     register_agent_cli(ClaudeAgentCLI)
-    register_agent_cli(CodexAgentCLI)
+    if codex_enabled():
+        from panopticon.container.cli.codex import CodexAgentCLI
+
+        register_agent_cli(CodexAgentCLI)

@@ -19,6 +19,7 @@ from panopticon.container.cli import (
 from panopticon.container.cli.base import secret_from_env, unquote_secret
 from panopticon.container.cli.claude import ClaudeAgentCLI
 from panopticon.container.cli.codex import CodexAgentCLI
+from panopticon.core.features import CODEX_FLAG
 
 
 def test_default_resolves_to_claude() -> None:
@@ -27,9 +28,29 @@ def test_default_resolves_to_claude() -> None:
     assert isinstance(get_agent_cli("claude"), ClaudeAgentCLI)
 
 
-def test_codex_is_a_registered_built_in_adapter() -> None:
+def test_codex_is_a_registered_built_in_adapter(enable_codex: None) -> None:
     # The second built-in CLI: registering it makes it resolvable with no launcher edit (ADR 0014 §2).
+    # Behind its feature flag (ADR 0014 §7), so the fixture turns it on.
     assert isinstance(get_agent_cli("codex"), CodexAgentCLI)
+
+
+def test_codex_is_unavailable_while_its_feature_flag_is_off() -> None:
+    # The shipped default: the adapter isn't registered and resolving it says why, naming the flag
+    # rather than reading as a typo (ADR 0014 §7).
+    with pytest.raises(KeyError, match="PANOPTICON_ENABLE_CODEX"):
+        get_agent_cli("codex")
+
+
+def test_codex_stops_resolving_when_the_flag_goes_off_after_registration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The registry is process-global, so registration alone can't be the gate: an adapter registered
+    # while the flag was on must stop resolving once it's off.
+    monkeypatch.setenv(CODEX_FLAG, "1")
+    assert isinstance(get_agent_cli("codex"), CodexAgentCLI)
+    monkeypatch.delenv(CODEX_FLAG)
+    with pytest.raises(KeyError, match="PANOPTICON_ENABLE_CODEX"):
+        get_agent_cli("codex")
 
 
 def test_unknown_cli_name_is_a_clear_error() -> None:

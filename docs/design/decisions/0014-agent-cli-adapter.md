@@ -245,6 +245,31 @@ CLI-agnostic text, and branches on neither. No control-plane code path forks on 
 name only selects an adapter, host-side, at spawn. That is what keeps the determinism invariant
 intact while the system genuinely supports more than one CLI.
 
+### 7. Codex ships feature-flagged, off by default
+
+Codex is the newest adapter and far less proven than claude, which every task runs today. It ships
+behind one host-side env flag, **`PANOPTICON_ENABLE_CODEX`**, **off by default**; `core/features.py`
+is the single place that reads it (`codex_enabled` / `available_agent_clis` /
+`require_available_agent_cli`), and every surface asks that one question:
+
+| Surface | With the flag off |
+| --- | --- |
+| Task service (`create_repo` / `update_repo` / `create_task`) | `agent_cli="codex"` is refused — HTTP 400 naming the flag. The store is the single writer (ADR 0006), so a codex repo or task can't exist. |
+| Spawner | A record already on codex **fails the spawn** — `LifecyclePhase.FAILED` with the reason — rather than silently running claude in its place. |
+| Runner → container | `PANOPTICON_ENABLE_CODEX` is passed into the container only when on, so the default `docker run` argv is unchanged. |
+| Adapter registry (`get_agent_cli`) | `CodexAgentCLI` isn't registered, and resolving `"codex"` raises an error naming the flag. Checked at *resolution*, not just registration: the registry is process-global. |
+| `make build` | `AGENT_CLIS ?= claude` — no codex base image is built. |
+| Dashboard | The repo form omits the `agent_cli` field (one CLI = no choice to make), carrying a stored value through untouched so an edit never rewrites it. |
+
+Two properties are deliberate. It is a **gate, not a revert**: every line of codex support stays,
+and `PANOPTICON_ENABLE_CODEX=1` (plus `make restart`) restores §1–§6 behaviour exactly. And it
+**fails closed and loud**: an unrecognized flag value reads as off, and a disabled CLI is refused
+with the remedy rather than falling back to claude — a task quietly running a different agent than
+its repo asks for is the one outcome worse than a failed spawn.
+
+Only codex is gated. A third-party adapter registered via `register_agent_cli` (§2) resolves as
+before — the flag is about this CLI's maturity, not about closing the seam.
+
 ## Consequences
 
 - **Enables M3.** A reviewer can implement the refactor and the Codex adapter from this ADR without
@@ -255,7 +280,9 @@ intact while the system genuinely supports more than one CLI.
   abstract model **tier** pass-through (§3a). `taskservice` and the dashboard are untouched. No
   control-plane code path forks on the CLI (§6).
 - **Cost:** one base image per CLI to build and keep current (the `Makefile`/`make build` grows a
-  per-CLI target), and a second CLI's quirks (auth, sandbox, resume semantics) to track.
+  per-CLI target), and a second CLI's quirks (auth, sandbox, resume semantics) to track. Codex's
+  share of that cost is opt-in: it's feature-flagged off (§7), so a host that never enables it
+  neither builds its image nor can select it.
 
 ## References
 

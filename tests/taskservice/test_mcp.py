@@ -392,7 +392,7 @@ async def test_create_task_seeds_sort_weight(tmp_path: Path) -> None:
     assert (await svc.get_task(child_id)).sort_weight == 9  # persisted
 
 
-async def test_create_task_carries_agent_cli_override(tmp_path: Path) -> None:
+async def test_create_task_carries_agent_cli_override(tmp_path: Path, enable_codex: None) -> None:
     svc = await _service(tmp_path)
     boss = await svc.create_task("r1", "orchestrator")
     async with connect(build_mcp_server(svc)) as s:
