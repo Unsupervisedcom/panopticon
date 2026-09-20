@@ -19,7 +19,9 @@ If you add a package that orchestrates or renders, keep it LLM-free.
 src/panopticon/
   core/            # domain models, state classes, the Workflow interface (the state
                    # machine: resolution, queries, start_task/apply_transition),
-                   # store & artifact interfaces — pure, no I/O EXCEPT git.py (local
+                   # store & artifact interfaces, features.py = the host-side feature
+                   # flags (PANOPTICON_ENABLE_CODEX gates the codex CLI, off by default —
+                   # ADR 0014 §7) — pure, no I/O EXCEPT git.py (local
                    # branch/worktree ops; LLM-free, behind an injectable command-runner)
   workflows/       # built-in Workflow subclasses (Spike seed; GithubPeerReviewed [formerly Parity]
                    # = cloude-cade lifecycle; GithubSelfReviewed = same, sans the peer-review state,
@@ -59,7 +61,8 @@ src/panopticon/
                    # overview to the agent's context → launch the CLI); cli/ = the agent-CLI adapter
                    # package (ADR 0014): cli/base.py = the AgentCLI seam (ABC) + registry,
                    # cli/claude.py = ClaudeAgentCLI + cli/codex.py = CodexAgentCLI (config, skills,
-                   # MCP, AGENTS.md overview, launch/resume, auth, turn-flip hooks — full seam)
+                   # MCP, AGENTS.md overview, launch/resume, auth, turn-flip hooks — full seam;
+                   # codex is registered only behind PANOPTICON_ENABLE_CODEX, ADR 0014 §7)
                    # — the ONLY LLM pkg
 docker/Dockerfile  # base task-container image (ADR 0005 base layer): python + git + bash +
                    # the panopticon package + the `claude` CLI the agent execs; runs as the

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from panopticon.core.features import CODEX_FLAG
 from panopticon.core.models import Repo, Responsibility
 from panopticon.core.state import Complete, InitialState
 from panopticon.core.workflow import Workflow
@@ -195,6 +196,76 @@ def test_create_repo_with_an_existing_env_file_is_201(
         },
     )
     assert resp.status_code == 201, resp.text
+
+
+def test_create_repo_on_a_disabled_agent_cli_is_400(client: TestClient) -> None:
+    # Codex is feature-flagged off by default (ADR 0014 §7), and the task service is the single
+    # writer — so a codex repo can't be stored at all, and the 400 names the flag.
+    resp = client.post(
+        "/repos",
+        json={
+            "id": "r2",
+            "name": "acme/other",
+            "git_url": "https://x/r2.git",
+            "agent_cli": "codex",
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    assert "PANOPTICON_ENABLE_CODEX" in resp.json()["detail"]
+
+
+def test_create_repo_on_codex_is_201_when_the_flag_is_on(
+    client: TestClient, enable_codex: None
+) -> None:
+    resp = client.post(
+        "/repos",
+        json={
+            "id": "r2",
+            "name": "acme/other",
+            "git_url": "https://x/r2.git",
+            "agent_cli": "codex",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["agent_cli"] == "codex"
+
+
+def test_patching_a_repo_onto_a_disabled_agent_cli_is_400(client: TestClient) -> None:
+    resp = client.patch("/repos/r1", json={"agent_cli": "codex"})
+    assert resp.status_code == 400, resp.text
+    assert "PANOPTICON_ENABLE_CODEX" in resp.json()["detail"]
+
+
+def test_patching_other_fields_of_a_repo_left_on_a_disabled_cli_still_works(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A repo stored while codex was enabled must stay editable after the flag goes off: only a PATCH
+    # that actually sets agent_cli is validated (the same rule env_file/credential_dir follow).
+    monkeypatch.setenv(CODEX_FLAG, "1")
+    assert (
+        client.post(
+            "/repos",
+            json={
+                "id": "r2",
+                "name": "acme/other",
+                "git_url": "https://x/r2.git",
+                "agent_cli": "codex",
+            },
+        ).status_code
+        == 201
+    )
+    monkeypatch.delenv(CODEX_FLAG)
+    resp = client.patch("/repos/r2", json={"name": "renamed"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["name"] == "renamed"
+    assert resp.json()["agent_cli"] == "codex"  # untouched, not rewritten to claude
+
+
+def test_create_task_on_a_disabled_agent_cli_is_400(client: TestClient) -> None:
+    # The per-task override goes through the same gate — as a 400, not an uncaught 500.
+    resp = client.post("/tasks", json={"repo_id": "r1", "workflow": "spike", "agent_cli": "codex"})
+    assert resp.status_code == 400, resp.text
+    assert "PANOPTICON_ENABLE_CODEX" in resp.json()["detail"]
 
 
 def test_mcp_is_mounted(client: TestClient) -> None:

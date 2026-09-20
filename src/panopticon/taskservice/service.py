@@ -21,6 +21,7 @@ from typing import Any
 
 from panopticon.core.artifacts import ArtifactStore, decode_b64_artifact
 from panopticon.core.dirs import credential_dir_path, secrets_file_path
+from panopticon.core.features import require_available_agent_cli
 from panopticon.core.layers import LayerStore
 from panopticon.core.models import (
     Actor,
@@ -150,6 +151,7 @@ class TaskService:
     async def create_repo(self, repo: Repo) -> Repo:
         await self._validate_env_file(repo.env_file)
         await self._validate_credential_dir(repo.credential_dir)
+        require_available_agent_cli(repo.agent_cli)  # codex is behind a feature flag (ADR 0014 §7)
         await self._store.create_repo(repo)
         return repo
 
@@ -222,6 +224,8 @@ class TaskService:
             )  # so an unrelated patch never fails on it
         if "credential_dir" in changes:
             await self._validate_credential_dir(updated.credential_dir)
+        if "agent_cli" in changes:  # same rule: a patch that doesn't touch the CLI still applies
+            require_available_agent_cli(updated.agent_cli)  # to a repo left on a disabled one
         await self._store.update_repo(updated)
         return updated
 
@@ -346,6 +350,7 @@ class TaskService:
         agent_cli: str | None = None,
     ) -> Task:
         repo = await self.get_repo(repo_id)  # ensure exists (raises NotFound)
+        require_available_agent_cli(agent_cli)  # the per-task override; None = the repo default
         if governor_task_id is not None:
             await self.get_task(governor_task_id)  # ensure governor exists (raises NotFound)
         wf = self._workflow(workflow_name)

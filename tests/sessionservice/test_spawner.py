@@ -234,7 +234,9 @@ def test_spawn_one_passes_starting_model_to_runner() -> None:
     assert runner.spawned[0]["starting_model"] == "primary"
 
 
-def test_spawn_one_resolves_the_repo_default_cli_and_drives_the_image_variant() -> None:
+def test_spawn_one_resolves_the_repo_default_cli_and_drives_the_image_variant(
+    enable_codex: None,
+) -> None:
     # No task override → the repo's default CLI is resolved host-side (ADR 0014 §3) and drives the
     # base-image variant (§4), the base probe, and the env var the launcher reads.
     client, runner, images = (
@@ -248,6 +250,26 @@ def test_spawn_one_resolves_the_repo_default_cli_and_drives_the_image_variant() 
     assert runner.spawned[0]["agent_cli"] == "codex"
     assert runner.spawned[0]["image"] == "panopticon-base-codex"  # spike has no layers → the base
     assert images.base_checks == ["codex"]
+
+
+def test_spawn_one_refuses_a_disabled_cli_and_reports_the_reason() -> None:
+    # A repo left on codex while the flag is off (a record written before it was gated, or by a host
+    # that has it on): refuse loudly — no container, and FAILED carries the remedy — rather than
+    # silently running claude in its place (ADR 0014 §7).
+    client, runner = _FakeClient(repo={**_REPO, "agent_cli": "codex"}), _FakeRunner()
+    with pytest.raises(ValueError, match="PANOPTICON_ENABLE_CODEX"):
+        _spawner(client, runner).spawn_one(
+            {
+                "id": "t1",
+                "repo_id": "r1",
+                "workflow": "spike",
+                "state": "ITERATING",
+                "claimed_by": None,
+            }
+        )
+    assert runner.spawned == []
+    failures = [detail for _, phase, detail in client.phases if phase == "failed"]
+    assert failures and "PANOPTICON_ENABLE_CODEX" in (failures[-1] or "")
 
 
 def test_spawn_one_task_agent_cli_overrides_the_repo_default() -> None:

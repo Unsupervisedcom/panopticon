@@ -206,7 +206,9 @@ exact case tmux-outside-the-agent-container was designed for (ADR 0008). Touches
 Add **agent-runner adapters** beyond `claude` and **base-image variants** (ADR 0005). The
 `login`/secrets model already generalizes (Slice 5). The seam is decided in **ADR 0014** (the
 `AgentCLI` adapter interface, an adapter registry, task→repo→default CLI selection, per-CLI base
-images) and built in slices. **Codex** is the first additional target.
+images) and built in slices. **Codex** is the first additional target — and ships **feature-flagged
+off** (`PANOPTICON_ENABLE_CODEX`, ADR 0014 §7): the adapter is complete but unproven next to claude,
+so nothing selects, spawns or builds it until a host opts in.
 
 - **M3.1 — ADR: the agent-CLI adapter seam.** Settle the contract (ADR 0014): every
   claude-specific decision in `container/` as one adapter seam, the registry, the selection model,

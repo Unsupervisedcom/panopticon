@@ -15,8 +15,10 @@ from typing import Any
 import httpx
 import pytest
 from textual.app import App
+from textual.css.query import NoMatches
 from textual.widgets import Checkbox, DataTable, Input, OptionList, Select, Static
 
+from panopticon.core.features import CODEX_FLAG
 from panopticon.terminal import dashboard
 from panopticon.terminal.dashboard import (
     _ARTIFACT_MARK,
@@ -2025,6 +2027,61 @@ async def test_repos_screen_edits_a_repo_via_patch() -> None:
                 },
             )
         ]
+
+
+async def test_repo_form_offers_the_agent_cli_field_only_when_codex_is_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # With codex feature-flagged off (ADR 0014 §7) claude is the only selectable CLI, so the field
+    # is noise; with the flag on it's a real choice and the form offers it.
+    fake = _FakeClient([], repos=[])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        with pytest.raises(NoMatches):
+            app.screen.query_one("#field-agent_cli", Input)
+
+    monkeypatch.setenv(CODEX_FLAG, "1")
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        assert app.screen.query_one("#field-agent_cli", Input).value == "claude"
+
+
+async def test_editing_a_repo_left_on_a_disabled_cli_keeps_its_agent_cli() -> None:
+    # The field isn't offered while codex is off, so the form carries the stored value through:
+    # editing an unrelated field must never silently rewrite the repo's CLI to claude.
+    fake = _FakeClient(
+        [],
+        repos=[
+            {
+                "id": "r1",
+                "name": "old",
+                "git_url": "https://x/r1.git",
+                "default_base": "main",
+                "agent_cli": "codex",
+            }
+        ],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        app.screen.query_one("#field-name", Input).value = "new"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert fake.updated_repos[0][1]["agent_cli"] == "codex"
 
 
 async def test_repo_form_workflows_tab_pre_populates_from_repo() -> None:

@@ -23,6 +23,7 @@ import httpx
 
 from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.dirs import hook_file_path
+from panopticon.core.features import require_available_agent_cli
 from panopticon.core.models import ContainerStatus, LifecyclePhase, resolve_agent_cli
 from panopticon.core.state import TERMINAL_LABELS
 from panopticon.sessionservice.clones import CloneCache
@@ -212,6 +213,10 @@ class Spawner:
         # Resolve the task's CLI host-side (ADR 0014 §3, task → repo → "claude"): it drives the
         # base-image variant, the env var the launcher reads, and the config-volume mount path.
         agent_cli = resolve_agent_cli(task.get("agent_cli"), repo.get("agent_cli"))
+        # A record written before the CLI was flagged off (or by a host with the flag on) must not
+        # quietly run a different agent than it asks for: refuse, and let the spawn report FAILED
+        # with the reason (ADR 0014 §7) rather than falling back to claude.
+        require_available_agent_cli(agent_cli)
         workspace = self._prepare_task_dir(
             task, repo, clone=True
         )  # a container always mounts a checkout

@@ -112,6 +112,7 @@ from textual.worker import get_current_worker
 from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.artifacts import InvalidArtifactName, is_hidden, validate_segment
 from panopticon.core.dirs import ARTIFACTS_DIR
+from panopticon.core.features import codex_enabled
 from panopticon.core.models import resolve_agent_cli
 from panopticon.core.state import TERMINAL_LABELS
 from panopticon.sessionservice.local_runner import session_name
@@ -1434,8 +1435,9 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
 
     # git_url leads (the auto-fill source); the rest follow. ``id`` is rendered between git_url
     # and these, separately, since it's editable only in create mode. ``env_file`` is rendered
-    # as an EnvFileField (dropdown + custom-path input) rather than a plain Input.
-    FIELDS = ("git_url", "name", "default_base", "agent_cli")
+    # as an EnvFileField (dropdown + custom-path input) rather than a plain Input. ``agent_cli``
+    # is conditional — see ``_fields`` — so the form's fields are instance state, not a ClassVar.
+    BASE_FIELDS = ("git_url", "name", "default_base")
     # Fields auto-derived from git_url → how to derive each (create mode only; see
     # _autofill_from_git_url). id and name are the bare repo name.
     _DERIVED: dict[str, Callable[[str], str]] = {
@@ -1455,6 +1457,10 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
         self._repo = repo or {}
         self._editing = repo is not None
         self._workflows = workflows or []
+        # Offer the agent-CLI field only when there's a choice to make: codex is feature-flagged
+        # (ADR 0014 §7) and with it off claude is the only selectable CLI, so the field is noise.
+        # One tuple drives both compose() and action_submit(), so they can't drift.
+        self._fields = (*self.BASE_FIELDS, "agent_cli") if codex_enabled() else self.BASE_FIELDS
         self._wf_enabled: set[str] = set(self._repo.get("enabled_workflows") or [])
         self._wf_disabled: set[str] = set(self._repo.get("disabled_workflows") or [])
         # The parent supplies this: it attempts the submission (validation + REST) and returns an
@@ -1490,7 +1496,7 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
                         yield Label(f"id: {self._repo['id']}")
                     else:
                         yield Input(placeholder="id", id="field-id")
-                    for name in self.FIELDS[1:]:  # git_url already rendered above
+                    for name in self._fields[1:]:  # git_url already rendered above
                         yield Input(value=self._initial(name), placeholder=name, id=f"field-{name}")
                     yield EnvFileField(initial=self._initial("env_file"), id="field-env_file")
                     yield CredentialDirField(
@@ -1556,8 +1562,12 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
         values: dict[str, Any] = {}
         if not self._editing:
             values["id"] = self.query_one("#field-id", Input).value.strip()
-        for name in self.FIELDS:
+        for name in self._fields:
             values[name] = self.query_one(f"#field-{name}", Input).value.strip()
+        if "agent_cli" not in values:
+            # The field wasn't offered (codex off): carry the repo's stored CLI through untouched,
+            # so editing a repo left on a disabled CLI never silently rewrites it to claude.
+            values["agent_cli"] = str(self._repo.get("agent_cli") or "claude")
         values["env_file"] = self.query_one("#field-env_file", EnvFileField).env_file_value or None
         values["credential_dir"] = (
             self.query_one("#field-credential_dir", CredentialDirField).credential_dir_value or None

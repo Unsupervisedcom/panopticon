@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Protocol
 
 from panopticon.core.dirs import credential_dir_path, secrets_file_path
+from panopticon.core.features import CODEX_FLAG, codex_enabled
 from panopticon.core.models import DEFAULT_AGENT_CLI, LifecyclePhase
 from panopticon.sessionservice.runner import Runner
 
@@ -215,6 +216,11 @@ class LocalRunner(Runner):
             "PANOPTICON_AGENT_CLI": agent_cli,
             **self._extra_env,
         }
+        if codex_enabled():
+            # Carry the host's codex feature flag into the container so its adapter registry agrees
+            # with the control plane (ADR 0014 §7). Only when **on**, so the default `docker run`
+            # argv is unchanged — the flag's absence is what disables codex in there.
+            env[CODEX_FLAG] = "1"
         if initial_prompt:
             # The agent launcher reads this and passes it as a positional arg to the resolved agent
             # CLI on the first run (no prior session), so the agent's first action is to process the prompt.

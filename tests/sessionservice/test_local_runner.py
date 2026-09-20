@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from panopticon.core.features import CODEX_FLAG
 from panopticon.core.models import LifecyclePhase
 from panopticon.sessionservice.local_runner import (
     CLI_CONFIG_DIRNAME,
@@ -265,6 +266,21 @@ def test_spawn_derives_the_config_mount_and_env_var_from_the_resolved_cli() -> N
     assert "PANOPTICON_AGENT_CLI=codex" in docker_run
 
 
+def test_spawn_carries_the_codex_feature_flag_into_the_container_only_when_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The container's adapter registry reads the same flag as the host (ADR 0014 §7), so the runner
+    # passes it through — but only when it's on, leaving the default `docker run` argv unchanged.
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).spawn("t1")
+    assert not [arg for arg in rec.calls[2][0] if arg.startswith(CODEX_FLAG)]
+
+    monkeypatch.setenv(CODEX_FLAG, "1")
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).spawn("t1")
+    assert f"{CODEX_FLAG}=1" in rec.calls[2][0]
+
+
 def test_base_image_and_config_mount_name_by_cli() -> None:
     assert base_image("claude") == "panopticon-base-claude"
     assert base_image("codex") == "panopticon-base-codex"
@@ -272,11 +288,11 @@ def test_base_image_and_config_mount_name_by_cli() -> None:
     assert config_mount("codex") == "/home/panopticon/.codex"
 
 
-def test_host_config_dir_map_matches_the_in_container_adapters() -> None:
+def test_host_config_dir_map_matches_the_in_container_adapters(enable_codex: None) -> None:
     # The host mounts the config volume at CLI_CONFIG_DIRNAME[cli]; the in-container adapter reads it
     # from its own config_dirname. If the two drift, resume silently breaks (ADR 0014 §4a) — so pin
-    # them equal for every *registered* adapter (codex's map entry is forward-looking; its adapter
-    # lands in a later slice, so skip CLIs with no adapter yet).
+    # them equal for every *registered* adapter. Codex is behind its feature flag (ADR 0014 §7);
+    # enable it here so the cross-check covers it rather than skipping it.
     from panopticon.container.cli import get_agent_cli
 
     checked = 0
@@ -284,10 +300,10 @@ def test_host_config_dir_map_matches_the_in_container_adapters() -> None:
         try:
             adapter = get_agent_cli(cli)
         except KeyError:
-            continue  # adapter not registered yet (e.g. codex) — nothing to cross-check
+            continue  # a mapped CLI with no adapter registered — nothing to cross-check
         assert adapter.config_dirname == dirname, cli
         checked += 1
-    assert checked >= 1  # claude at least is registered and cross-checked
+    assert checked == len(CLI_CONFIG_DIRNAME)  # every mapped CLI was cross-checked
 
 
 def test_spawn_passes_initial_prompt_as_env_var() -> None:

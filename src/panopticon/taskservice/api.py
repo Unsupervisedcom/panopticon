@@ -545,8 +545,8 @@ def create_app(service: TaskService) -> FastAPI:
 
     @app.post("/tasks", status_code=201)
     async def create_task(body: CreateTaskIn) -> TaskOut:
-        return _task_out(
-            await service.create_task(
+        try:
+            task = await service.create_task(
                 body.repo_id,
                 body.workflow,
                 memo=body.memo,
@@ -558,7 +558,9 @@ def create_app(service: TaskService) -> FastAPI:
                 sort_weight=body.sort_weight,
                 agent_cli=body.agent_cli,
             )
-        )
+        except ValueError as exc:  # e.g. a disabled agent_cli (codex behind its feature flag)
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _task_out(task)
 
     @app.get("/tasks")
     async def list_tasks(
