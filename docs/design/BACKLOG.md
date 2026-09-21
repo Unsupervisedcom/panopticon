@@ -81,6 +81,29 @@ in the ADRs; this file is for the smaller stuff that doesn't have a home there y
   `docker buildx bake` (target inheritance, which maps cleanly onto base→workflow→repo). Not
   needed now; the fragment approach is the minimal thing that works. _(Slice 6, P3)_
 
+- [ ] **`tmux pipe-pane` forensic logging for stalled tasks** — the stall monitor (ADR 0014)
+  classifies error text from `tmux capture-pane`'s current scrollback, but tmux doesn't persist
+  that once a session's gone: the reference incident that grounded the design had transcript
+  *timestamps* but no recoverable *pane content*, so `classify_pane_text`'s fixtures had to be
+  seeded from known claude CLI message shapes rather than a real capture. Piping each task's pane
+  to a small ring-buffer file (`tmux pipe-pane`) would make a *future* incident's exact pane text
+  available for post-mortem/fixture-refinement. Separate concern from detection/recovery itself
+  (observability/forensics), so left out of that task's scope. _(ADR 0014, P2)_
+- [ ] **The profiler mis-attributes stall time as `llm` time** — `profiler/parse.py` bills every
+  user→assistant transcript gap to `llm` category (`profiler/categories.py`'s `DISPLAY_ORDER`).
+  A detected stall (ADR 0014) is exactly this shape when it's mid-turn after a tool result (see
+  the reference incident: last record a `tool_result`, next an `assistant` record hours later) —
+  the profiler currently has no way to know that gap was a hung API call being auto-retried
+  rather than genuine model latency, so a stalled task's profile reads as an implausibly long
+  `llm` span instead of being flagged or excluded. Two candidate fixes, not built here since
+  neither has a design yet: (a) the stall monitor logs every detection/recovery with its
+  classified cause but nothing persists it queryably (a stall's log lines are gone once
+  overwritten by the next `report_lifecycle`/`clear_lifecycle`) — a durable per-task stall-event
+  record would let the profiler cross-reference gap timestamps against it; (b) simpler,
+  transcript-only: the profiler could itself flag an implausibly long user→assistant gap (e.g.
+  minutes, not the seconds/low-minutes a real generation takes) as `unattributed`/a new
+  `stalled` category, no cross-referencing needed. _(ADR 0014 / profiler, P2)_
+
 ## Tracked elsewhere (pointers, do not duplicate)
 
 - Artifact concurrency / drift detection → ADR 0003 / ROADMAP open-questions.

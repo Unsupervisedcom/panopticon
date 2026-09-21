@@ -470,6 +470,7 @@ _STATUS_COLORS = {
     "down": "red",
     "failed": "red",
     "disconnected": "red",
+    "stalled": "red",
 }
 
 #: Container statuses whose tmux session exists and can be attached (`t`). ``live`` = an open
@@ -477,8 +478,11 @@ _STATUS_COLORS = {
 #: — a docker task mid-boot, or a **shell** task, which runs no agent so never registers and sits at
 #: ``awaiting`` for its whole run (its session *is* its liveness). Both name the session the same way
 #: (``panopticon-<task_id>``, see :func:`session_name`), so attach keys off the status, not a
-#: registration lookup — which is what lets `t` reach a shell task at all.
-_ATTACHABLE_STATUSES = {"live", "awaiting"}
+#: registration lookup — which is what lets `t` reach a shell task at all. ``stalled`` is a
+#: *registered* container whose agent has gone quiet (it masks ``live``, see
+#: :data:`~panopticon.core.models._OVERRIDES_LIVE`) — its session is up and attaching is exactly
+#: what the operator wants to do about it, so it attaches like any other live task.
+_ATTACHABLE_STATUSES = {"live", "awaiting", "stalled"}
 
 
 def _status_cell(task: JsonObj) -> Text:

@@ -16,6 +16,7 @@ import os
 import subprocess
 import time
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -62,6 +63,15 @@ CONTAINER_USER = "panopticon"
 #: spawn, but the volume persists. Per-task (not per-repo) so concurrent tasks don't share state.
 CONFIG_MOUNT = "/home/panopticon/.claude"
 
+#: Where claude's transcripts live inside the config volume. The project directory is always this
+#: fixed path: `container/agent.py`'s `_claude_argv` keys it off `Path.cwd()`, which is always
+#: `/workspace` (ADR 0011's `WORKSPACE_MOUNT`), encoded as `-workspace` (the same convention
+#: `_claude_argv`'s own `str(cwd).replace("/", "-")` uses). No host filesystem path reaches this —
+#: CONFIG_MOUNT is a named Docker volume, not a bind mount — so this is read via `docker exec`
+#: (:meth:`LocalRunner.transcript_mtime`, ADR 0014) or a throwaway reader container
+#: (:mod:`panopticon.sessionservice.transcripts`, which imports this same constant).
+TRANSCRIPT_DIR = f"{CONFIG_MOUNT}/projects/-workspace"
+
 #: Sentinel the entrypoint writes once the uid/gid remap **and** both recursive chowns are done
 #: (docker/entrypoint.sh). The readiness probe waits on this rather than inferring completion from
 #: the config mount's ownership: `chown --recursive` sets the root before it finishes descending, so
@@ -75,6 +85,75 @@ def config_volume_name(task_id: str) -> str:
     respawn/recreate so the agent resumes via ``--continue``; when it's reaped an ask can't be
     delivered (see :meth:`LocalRunner.config_volume_exists`)."""
     return f"panopticon-config-{task_id}"
+
+
+@dataclass(frozen=True)
+class ProcessSnapshot:
+    """A task container's process tree, reduced to what the stall monitor needs (ADR 0014): is
+    the ``claude`` process even present (the shape A/B classifier — absent means the agent
+    itself is gone, not just quiet), and has it spawned a still-running child (a tool
+    subprocess whose result hasn't landed yet — the false-positive guard for an in-flight
+    ``pytest``/build/etc.). Built by :func:`parse_process_snapshot` from a raw ``ps`` listing.
+
+    ``probe_ok`` separates "``ps`` ran and told us the truth" from "we learned nothing" (the
+    ``docker exec`` failed, or the image has no ``ps`` — every container built before ``procps``
+    joined the base image). Without it an unreadable probe is indistinguishable from "claude is
+    gone", and the caller's response to *that* is a respawn — killing a live agent over a failed
+    probe. A running container always has at least its own PID 1, so zero parsable rows means the
+    probe failed, never an empty container."""
+
+    claude_present: bool
+    tool_active: bool
+    probe_ok: bool = True
+
+
+def parse_process_snapshot(ps_output: str) -> ProcessSnapshot:
+    """Pure parser for a container's ``ps -eo pid,ppid,state,comm --no-headers`` output — no I/O,
+    so it's unit-tested directly against captured text (see :meth:`LocalRunner.process_snapshot`).
+
+    Finds the ``claude`` process by command name (substring match — the CLI may show as
+    ``claude`` or a wrapping ``node``/interpreter name), then walks the tree for any live
+    descendant: a tool subprocess it (or something it spawned) is currently running. Tolerant of
+    unparsable lines (blank, header, truncated) — each is skipped rather than raising, since a
+    ``docker exec`` blip should degrade to "nothing found," not crash the probe.
+
+    **Zombies are not processes that are doing anything.** A reaped-but-unwaited child still
+    appears in ``ps`` (state ``Z``) indefinitely, so counting one as a live descendant would pin
+    ``tool_active`` true for the life of the container and silently disable stall detection for
+    that task. The ``state`` column exists solely to drop them.
+
+    Zero parsable rows is reported as ``probe_ok=False`` rather than "claude is absent": a
+    running container always shows at least PID 1, so an empty listing means the probe itself
+    failed (exec error, or no ``ps`` in the image).
+    """
+    rows: list[tuple[int, int, str, str]] = []
+    for line in ps_output.splitlines():
+        parts = line.split(maxsplit=3)
+        if len(parts) != 4:
+            continue
+        pid_s, ppid_s, state, comm = parts
+        try:
+            rows.append((int(pid_s), int(ppid_s), state, comm))
+        except ValueError:
+            continue
+    if not rows:
+        return ProcessSnapshot(claude_present=False, tool_active=False, probe_ok=False)
+    live = [(pid, ppid, comm) for pid, ppid, state, comm in rows if not state.startswith("Z")]
+    claude_pids = {pid for pid, _, comm in live if "claude" in comm.lower()}
+    if not claude_pids:
+        return ProcessSnapshot(claude_present=False, tool_active=False, probe_ok=True)
+    children: dict[int, list[int]] = {}
+    for pid, ppid, _ in live:
+        children.setdefault(ppid, []).append(pid)
+    descendants: set[int] = set()
+    frontier = list(claude_pids)
+    while frontier:
+        pid = frontier.pop()
+        for child in children.get(pid, []):
+            if child not in descendants:
+                descendants.add(child)
+                frontier.append(child)
+    return ProcessSnapshot(claude_present=True, tool_active=bool(descendants), probe_ok=True)
 
 
 class CommandRunner(Protocol):
@@ -355,6 +434,84 @@ class LocalRunner(Runner):
         session = session_name(task_id)
         sessions = self._run(self._tmux("list-sessions", "-F", "#{session_name}"), check=False)
         return session in sessions.splitlines()
+
+    def transcript_mtime(self, task_id: str) -> float | None:
+        """The newest claude transcript's mtime for this task (a Unix timestamp), or ``None`` if
+        none exists yet or the container's gone. The stall monitor's primary signal (ADR 0014):
+        the transcript only grows on a completed turn, so its age is how long the agent has been
+        silent — it carries no error text of its own (see :mod:`panopticon.sessionservice.stall`),
+        only *whether* progress is happening. Reads via ``docker exec`` since
+        :data:`TRANSCRIPT_DIR` lives in a named volume, not a host bind mount."""
+        container = session_name(task_id)
+        output = self._run(
+            [
+                "docker",
+                "exec",
+                "--user",
+                CONTAINER_USER,
+                container,
+                "find",
+                TRANSCRIPT_DIR,
+                "-maxdepth",
+                "1",
+                "-name",
+                "*.jsonl",
+                "-printf",
+                "%T@\n",
+            ],
+            check=False,
+        )
+        mtimes = []
+        for line in output.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                mtimes.append(float(line))
+            except ValueError:
+                continue
+        return max(mtimes) if mtimes else None
+
+    def process_snapshot(self, task_id: str) -> ProcessSnapshot:
+        """The task's container process tree (see :func:`parse_process_snapshot`) — the stall
+        monitor's shape A/B classifier (is ``claude`` present at all) and tool-active guard (has
+        it spawned a still-running child).
+
+        ``check=False``: a probe failure must not take down the host daemon's pass. The empty
+        output that produces is reported as ``probe_ok=False``, not as an absent agent."""
+        container = session_name(task_id)
+        output = self._run(
+            [
+                "docker",
+                "exec",
+                "--user",
+                CONTAINER_USER,
+                container,
+                "ps",
+                "-eo",
+                "pid,ppid,state,comm",
+                "--no-headers",
+            ],
+            check=False,
+        )
+        return parse_process_snapshot(output)
+
+    def pane_text(self, task_id: str, *, lines: int = 200) -> str:
+        """The task's tmux pane's visible content (the last ``lines`` of scrollback). The **only**
+        place claude's error text exists — it's never written to the transcript (confirmed
+        empirically; see ADR 0014) — so this is what the stall monitor's classifier reads. Short
+        tmux flags only (single-letter options), per the AGENTS.md convention."""
+        session = session_name(task_id)
+        return self._run(
+            self._tmux("capture-pane", "-p", "-t", session, "-S", f"-{lines}"), check=False
+        )
+
+    def send_keys(self, task_id: str, text: str) -> None:
+        """Type ``text`` into the task's live tmux pane, followed by Enter — the automation of the
+        operator's manual "try again" bump (stall recovery, shape A: claude's process is alive and
+        idle, so nudging its existing input is far less disruptive than a full respawn)."""
+        session = session_name(task_id)
+        self._run(self._tmux("send-keys", "-t", session, text, "Enter"), check=False)
 
     def config_volume_exists(self, task_id: str) -> bool:
         """Whether the task's per-task config volume (its claude session) still exists on this host.

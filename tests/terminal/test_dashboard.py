@@ -897,6 +897,21 @@ async def test_pressing_t_attaches_a_shell_task_with_no_registration() -> None:
         assert app.is_running
 
 
+async def test_pressing_t_attaches_a_stalled_task() -> None:
+    # `stalled` is a registered, running container whose agent has gone quiet — it masks `live`
+    # in the composed status. Attaching is exactly what the operator wants to do about it (bump
+    # the agent by hand), so `t` must reach it like any other live task.
+    picked: list[tuple[str, str | None]] = []
+    task = {**_TASK, "container_status": "stalled"}
+    app = Dashboard(_FakeClient([task]), on_switch=lambda s, h=None: picked.append((s, h)))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("t")
+        await pilot.pause()
+        assert picked == [("panopticon-task-abcdef0123", None)]
+        assert app.is_running
+
+
 async def test_pressing_t_with_no_running_session_does_not_signal() -> None:
     # No attachable session (here: no `container_status` at all → not in _ATTACHABLE_STATUSES):
     # report and stay on the dashboard rather than attach to nothing.

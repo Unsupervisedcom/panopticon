@@ -47,6 +47,17 @@ def test_open_registration_is_live_regardless_of_phase_or_runner() -> None:
     assert _compose(registered=True, phase=LifecyclePhase.AWAITING) == "live"
 
 
+def test_stalled_phase_overrides_a_live_registration() -> None:
+    # Unlike every other phase, STALLED must show through even though the container is
+    # registered — that's the whole point (a stalled agent's container/registration look
+    # identical to a healthy one otherwise).
+    assert _compose(registered=True, phase=LifecyclePhase.STALLED) == "stalled"
+
+
+def test_stalled_phase_shows_through_without_a_registration_too() -> None:
+    assert _compose(registered=False, phase=LifecyclePhase.STALLED) == "stalled"
+
+
 def test_dead_runner_is_disconnected_even_with_a_stale_phase() -> None:
     assert _compose(runner_live=False) == "disconnected"
     assert _compose(runner_live=False, phase=LifecyclePhase.BUILDING) == "disconnected"
@@ -62,6 +73,7 @@ def test_dead_runner_is_disconnected_even_with_a_stale_phase() -> None:
         (LifecyclePhase.STARTING, "starting"),
         (LifecyclePhase.AWAITING, "awaiting"),
         (LifecyclePhase.FAILED, "failed"),
+        (LifecyclePhase.STALLED, "stalled"),
     ],
 )
 def test_a_reported_phase_shows_through(phase: LifecyclePhase, expected: str) -> None:
