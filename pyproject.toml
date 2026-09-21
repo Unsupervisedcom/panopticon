@@ -32,10 +32,8 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-# Single source of truth for the version: hatchling reads `__version__` out of the package,
-# so `src/panopticon/__init__.py` is the only place a bump is hand-edited. The two used to be
-# kept in sync by hand and drifted (#363 left `__init__.py` a version behind, #365 repaired it)
-# — and `__version__` is the value the base-image freshness check reads, so drift went unseen.
+# The version has one source: hatchling reads `__version__` out of the package, so
+# `src/panopticon/__init__.py` is the only place a bump is hand-edited.
 [tool.hatch.version]
 path = "src/panopticon/__init__.py"
 

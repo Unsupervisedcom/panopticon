@@ -1,10 +1,10 @@
 """The version has one source of truth: `__version__` in the package.
 
 `pyproject.toml` declares `dynamic = ["version"]` and hatchling reads it out of
-`src/panopticon/__init__.py`, so the distribution metadata is *derived* rather than hand-synced.
-These tests hold that line — the two values drifted once before (#363 bumped `pyproject.toml` and
-left `__init__.py` behind, #365 repaired it), and `__version__` is the value the runner compares
-against a base image's `org.panopticon.version` label, so drift there means a silently stale image.
+`src/panopticon/__init__.py`, so the distribution metadata is derived rather than hand-synced.
+These guard that: the two drifted once before (#363 bumped `pyproject.toml` and left `__init__.py`
+behind), and `__version__` is what the runner compares against a base image's version label, so
+drift there means a silently stale image.
 """
 
 from __future__ import annotations
