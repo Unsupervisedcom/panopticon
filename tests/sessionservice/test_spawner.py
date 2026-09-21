@@ -1350,3 +1350,24 @@ def test_spawnable_tasks_excludes_paused() -> None:
     # `legacy` has no `paused` key at all: a task service that predates this field must still be
     # spawnable, so the gate reads it with `.get`, never `[...]`.
     assert [t["id"] for t in spawnable_tasks(_Lister())()] == ["live", "legacy"]  # type: ignore[arg-type]
+
+
+def test_spawn_one_skips_a_paused_task() -> None:
+    # The gate that actually matters: the host daemon calls spawn_one directly on every task and
+    # never consults spawnable_tasks. Since reap_paused releases the claim, a paused task is
+    # unclaimed — so without this check spawn_one re-claims and respawns the container reap_paused
+    # just stopped, on a ~17s loop. Observed on a live fleet before this gate existed.
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner()
+    cid = _spawner(client, runner).spawn_one(
+        {
+            "id": "t1",
+            "repo_id": "r1",
+            "workflow": "spike",
+            "state": "ITERATING",
+            "claimed_by": None,  # released on pause — the condition that made this reachable
+            "paused": True,
+        }
+    )
+    assert cid is None
+    assert client.claims == []  # never re-claimed
+    assert runner.spawned == []  # and never respawned
