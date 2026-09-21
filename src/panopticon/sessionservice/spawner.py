@@ -146,8 +146,14 @@ class Spawner:
         Reports each spawn phase to the task service as it goes (``CLAIMING`` → ``PREPARING`` →
         ``BUILDING`` → ``STARTING`` → ``AWAITING``) so the dashboard can surface the steps to becoming
         live; a step raising is reported as ``FAILED`` (with the error) before re-raising, so the
-        host daemon's per-task isolation still applies but the failure is visible, not silent."""
-        if task["state"] in TERMINAL_LABELS or task.get("claimed_by"):
+        host daemon's per-task isolation still applies but the failure is visible, not silent.
+
+        A **paused** task is never spawned. This gate is the load-bearing one, not the matching
+        filter in :func:`spawnable_tasks`: the host daemon calls this directly on every task in its
+        snapshot and never consults that filter. Since :meth:`reap_paused` releases the claim, a
+        paused task is *unclaimed* — which without this check makes it a prime spawn candidate on
+        the very next pass, so the two halves respawn and re-reap it in a ~17s loop."""
+        if task["state"] in TERMINAL_LABELS or task.get("claimed_by") or task.get("paused"):
             return None
         try:
             self._client.claim(task["id"], self._runner_id)
