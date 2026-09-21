@@ -91,6 +91,7 @@ READY_MARKER = "/run/panopticon-ready"
 #: far beyond any remap, so the fallback only fires for images that predate the marker).
 READY_WAIT_POLLS = 150
 
+
 class CommandRunner(Protocol):
     """Runs an external command and returns its stdout; ``check`` raises on non-zero exit.
 

@@ -8,6 +8,13 @@
 # user via gosu. LLM-free — no agent runs here.
 set -euo pipefail
 
+# Clear any marker left by a previous run of *this* container before we start remapping. `/run` is
+# the container's writable layer (not a tmpfs for a plain image), so a restart in place
+# (`docker start`/`restart`, a restart policy, an operator recovering a stopped container) re-runs
+# the remap below with the old marker still present — and a pane exec'ing against that stale marker
+# races the remap exactly as it would with no marker at all.
+rm --force /run/panopticon-ready
+
 puid="${PANOPTICON_PUID:-1000}"
 pgid="${PANOPTICON_PGID:-1000}"
 
