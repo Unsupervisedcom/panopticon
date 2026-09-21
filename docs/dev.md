@@ -84,6 +84,21 @@ Commit the generated file under `src/panopticon/migrations/versions/`.
 `tests/test_migrations.py` guards the migrations against drift from the ORM schema. See the
 Dev-commands section of [`AGENTS.md`](../AGENTS.md) for the details.
 
+## The version
+
+The package version lives in one place — `__version__` in
+[`src/panopticon/__init__.py`](../src/panopticon/__init__.py). `pyproject.toml` declares
+`dynamic = ["version"]` and hatchling reads it from there, so there is nothing to keep in sync.
+
+The version also drives base-image freshness. `make build` stamps the image with an
+`org.panopticon.version` label, and the runner's `ImageBuilder.build_base_if_missing` rebuilds only
+when that label differs from the installed `__version__` — an image whose stamp matches is never
+rebuilt. So a change that ships *inside* the image (`src/panopticon/docker/`) only reaches hosts
+once the version moves; bump it in the same PR, or hosts have to run `make build` by hand.
+
+On a pip-installed host that automatic rebuild does `pip install panopticon-app==<version>`, so the
+release has to be on PyPI first. `make build` from a checkout uses the locally built wheel instead.
+
 ## CI
 
 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on every push to `main` and
