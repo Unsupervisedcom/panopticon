@@ -1,6 +1,6 @@
 [project]
 name = "panopticon-app"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Self-hosted control plane for running a fleet of coding agents in isolated containers, governed by configurable workflows."
 requires-python = ">=3.11"
 license = "MIT"
@@ -31,6 +31,13 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# Single source of truth for the version: hatchling reads `__version__` out of the package,
+# so `src/panopticon/__init__.py` is the only place a bump is hand-edited. The two used to be
+# kept in sync by hand and drifted (#363 left `__init__.py` a version behind, #365 repaired it)
+# — and `__version__` is the value the base-image freshness check reads, so drift went unseen.
+[tool.hatch.version]
+path = "src/panopticon/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/panopticon"]
