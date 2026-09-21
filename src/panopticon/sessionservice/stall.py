@@ -185,6 +185,7 @@ class _TaskState:
     next_action_at: float = 0.0
     usage_limit_scheduled: bool = False
     reported: bool = False
+    probe_warned: bool = False
 
 
 class StallMonitor:
@@ -252,7 +253,15 @@ class StallMonitor:
         return immediately without touching docker/tmux."""
         task_id = task["id"]
         if not self._is_candidate(task):
-            self._states.pop(task_id, None)
+            # Clear before dropping the bookkeeping: the *usual* exit from a stall is the nudge
+            # working — the agent finishes its turn and the stop hook flips `turn` to `user`, so
+            # the task stops being a candidate before any later probe could run `_resolve`. The
+            # reported phase is ours to retract; the service only clears it on claim
+            # release/reclaim, and until someone does the dashboard shows a healthy, registered
+            # task as `stalled` (and, per `_OVERRIDES_LIVE`, not as `live`) indefinitely.
+            state = self._states.pop(task_id, None)
+            if state is not None:
+                self._clear(task_id, state)
             return
         state = self._states.setdefault(task_id, _TaskState())
         now = self._now()
@@ -272,6 +281,21 @@ class StallMonitor:
             return
 
         snapshot = self._runner.process_snapshot(task_id)
+        if not snapshot.probe_ok:
+            # `ps` told us nothing (exec failure, or an image predating `procps` in the base
+            # layer). Treating that as "claude is absent" would take the shape-B path and respawn
+            # a container whose agent may be perfectly alive, destroying in-flight work over a
+            # failed probe. Skip instead: an undetected stall costs a manual bump, a wrong
+            # respawn costs the turn.
+            if not state.probe_warned:
+                state.probe_warned = True
+                _log.warning(
+                    "task %s: process probe returned nothing (no `ps` in the image, or the exec "
+                    "failed) — skipping stall recovery for this task",
+                    task_id,
+                )
+            return
+        state.probe_warned = False
         if snapshot.tool_active:
             # a tool call is genuinely in flight — the transcript gap is explained, not a stall
             self._resolve(task_id, state)
@@ -387,3 +411,4 @@ class StallMonitor:
         state.next_action_at = 0.0
         state.usage_limit_scheduled = False
         state.reported = False
+        state.probe_warned = False

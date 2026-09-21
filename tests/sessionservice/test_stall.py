@@ -6,7 +6,7 @@ LocalRunner/Spawner/the task-service client, driving `tick()` across a fake cloc
 from __future__ import annotations
 
 from panopticon.client import JsonObj
-from panopticon.sessionservice.local_runner import ProcessSnapshot
+from panopticon.sessionservice.local_runner import ProcessSnapshot, parse_process_snapshot
 from panopticon.sessionservice.stall import (
     StallCause,
     StallMonitor,
@@ -585,3 +585,88 @@ def test_tick_schedules_a_usage_limit_retry_instead_of_acting_immediately() -> N
     monitor.tick(task)
     assert runner.sent_keys == []
     assert len(client.phases) == 1
+
+
+# -- a recovered task must not keep the STALLED badge ------------------------------------------
+
+
+def test_tick_clears_the_reported_phase_when_the_nudge_lands_and_the_turn_flips() -> None:
+    """The usual way a stall ends: the nudge works, the agent finishes its turn, and its stop
+    hook flips `turn` to `user`. The task stops being a candidate *before* any later probe could
+    observe a fresh transcript, so the clear has to happen on the drop path — otherwise the
+    service (which only clears on claim release/reclaim) leaves the task reading `stalled`, and
+    `_OVERRIDES_LIVE` keeps that masking `live`, for as long as it stays claimed."""
+    clock = {"t": _BASE}
+    client, runner, spawner = _FakeClient(), _FakeRunner(), _FakeSpawner()
+    runner.transcript_mtime_value = clock["t"] - 600.0
+    runner.pane_text_value = "stuck\n$ "
+    monitor = _monitor(
+        client, runner, spawner, clock=clock, idle_seconds=480.0, probe_interval=60.0
+    )
+    task = _task()
+    monitor.tick(task)  # baseline
+    clock["t"] += 61.0
+    monitor.tick(task)  # acts → reports stalled
+    assert client.phases[-1][1] == "stalled"
+    assert client.cleared == []
+
+    monitor.tick(_task(turn="user"))  # the agent handed the turn back
+    assert client.cleared == ["t1"]
+
+
+def test_tick_does_not_clear_a_phase_it_never_reported() -> None:
+    clock = {"t": _BASE}
+    client, runner, spawner = _FakeClient(), _FakeRunner(), _FakeSpawner()
+    runner.transcript_mtime_value = clock["t"]  # healthy all along
+    monitor = _monitor(
+        client, runner, spawner, clock=clock, idle_seconds=480.0, probe_interval=60.0
+    )
+    monitor.tick(_task())
+    monitor.tick(_task(turn="user"))
+    assert client.cleared == []  # nothing of ours to retract → no needless write
+
+
+# -- an unreadable process probe must not be read as "claude is gone" --------------------------
+
+
+def test_tick_skips_recovery_when_the_process_probe_returns_nothing() -> None:
+    """`ps` missing from the image (every container built before procps joined the base layer) or
+    a failed exec yields an empty listing. Reading that as shape B would respawn a container whose
+    agent may be perfectly alive — destroying in-flight work over a failed probe."""
+    clock = {"t": _BASE}
+    client, runner, spawner = _FakeClient(), _FakeRunner(), _FakeSpawner()
+    runner.transcript_mtime_value = clock["t"] - 600.0
+    runner.pane_text_value = "$ \n"
+    runner.process_snapshot_value = parse_process_snapshot("")
+    monitor = _monitor(
+        client, runner, spawner, clock=clock, idle_seconds=480.0, probe_interval=60.0
+    )
+    task = _task()
+    monitor.tick(task)
+    clock["t"] += 61.0
+    monitor.tick(task)
+    clock["t"] += 61.0
+    monitor.tick(task)
+    assert spawner.respawned == []  # no destructive respawn on a probe we can't read
+    assert runner.sent_keys == []
+    assert client.phases == []  # and nothing reported either — we know nothing
+    assert runner.pane_calls == 0  # skipped before the pane capture, too
+
+
+def test_tick_resumes_recovery_once_the_process_probe_works_again() -> None:
+    clock = {"t": _BASE}
+    client, runner, spawner = _FakeClient(), _FakeRunner(), _FakeSpawner()
+    runner.transcript_mtime_value = clock["t"] - 600.0
+    runner.pane_text_value = "stuck\n$ "
+    runner.process_snapshot_value = parse_process_snapshot("")
+    monitor = _monitor(
+        client, runner, spawner, clock=clock, idle_seconds=480.0, probe_interval=60.0
+    )
+    task = _task()
+    monitor.tick(task)
+    clock["t"] += 61.0
+    runner.process_snapshot_value = ProcessSnapshot(claude_present=True, tool_active=False)
+    monitor.tick(task)  # baseline (first pane capture)
+    clock["t"] += 61.0
+    monitor.tick(task)  # acts
+    assert runner.sent_keys == [("t1", "try again")]

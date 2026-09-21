@@ -56,11 +56,18 @@ that) while `turn == "agent"`, the task becomes a stall *candidate* — not yet 
 A transcript gap is not evidence of a stall by itself — it's also what a still-running tool call
 or a long single generation look like from the host. Before a candidate is acted on:
 
-- **`LocalRunner.process_snapshot`** (`docker exec ps -eo pid,ppid,comm --no-headers`, parsed by
-  the pure `parse_process_snapshot`): if `claude` has a live descendant (a tool subprocess), the
-  gap is explained — reset the candidate. This is shaped directly against the reference incident:
-  its stall began the moment a tool result *landed*, so a naive "was a tool recently active" check
-  must not treat the already-finished call as ongoing.
+- **`LocalRunner.process_snapshot`** (`docker exec ps -eo pid,ppid,state,comm --no-headers`,
+  parsed by the pure `parse_process_snapshot`): if `claude` has a live descendant (a tool
+  subprocess), the gap is explained — reset the candidate. This is shaped directly against the
+  reference incident: its stall began the moment a tool result *landed*, so a naive "was a tool
+  recently active" check must not treat the already-finished call as ongoing. The `state` column
+  is read only to drop zombies: a reaped-but-unwaited child lingers in `ps` indefinitely, and
+  counting one as a live descendant would pin the guard on and disable detection for that task
+  for the life of the container. An empty listing is reported as `probe_ok=False` (the probe
+  failed, or the image predates §7's `procps`) rather than as an absent agent — the response to
+  *that* is a respawn, so a failed probe would otherwise kill a live agent. A task whose probe
+  can't be read is skipped, not recovered: an undetected stall costs a manual bump, a wrong
+  respawn costs the turn.
 - **`LocalRunner.pane_text`** (`tmux capture-pane`): if the pane's content changed since the last
   probe, real work is visible (a still-streaming generation) even though the transcript hasn't
   appended yet — reset the candidate.

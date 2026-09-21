@@ -180,7 +180,7 @@ def test_transcript_mtime_ignores_blank_and_unparsable_lines() -> None:
 
 
 def test_process_snapshot_queries_ps_and_parses_the_result() -> None:
-    rec = _ReturningRecorder("1 0 python3\n2 1 claude\n3 2 bash\n")
+    rec = _ReturningRecorder("1 0 S python3\n2 1 S claude\n3 2 S bash\n")
     runner = LocalRunner("http://svc:8000", run=rec)
     snapshot = runner.process_snapshot("t1")
     assert snapshot.claude_present is True
@@ -194,7 +194,7 @@ def test_process_snapshot_queries_ps_and_parses_the_result() -> None:
         "panopticon-t1",
         "ps",
         "-eo",
-        "pid,ppid,comm",
+        "pid,ppid,state,comm",
         "--no-headers",
     ]
     assert check is False
@@ -243,34 +243,63 @@ def test_send_keys_types_text_then_enter_into_the_live_pane() -> None:
 
 
 def test_parse_process_snapshot_finds_claude_with_no_children_as_idle() -> None:
-    snapshot = parse_process_snapshot("1 0 python3\n2 1 claude\n")
+    snapshot = parse_process_snapshot("1 0 S python3\n2 1 S claude\n")
     assert snapshot.claude_present is True
     assert snapshot.tool_active is False
+    assert snapshot.probe_ok is True
 
 
 def test_parse_process_snapshot_finds_a_transitive_tool_child_as_active() -> None:
     # claude (pid 2) spawned bash (pid 3), which spawned pytest (pid 4) — a shape a tool call
     # (e.g. the Bash tool running a test suite) commonly produces.
-    snapshot = parse_process_snapshot("1 0 python3\n2 1 claude\n3 2 bash\n4 3 pytest\n")
+    snapshot = parse_process_snapshot("1 0 S python3\n2 1 S claude\n3 2 S bash\n4 3 R pytest\n")
     assert snapshot.claude_present is True
     assert snapshot.tool_active is True
 
 
-def test_parse_process_snapshot_is_false_present_when_claude_is_gone() -> None:
-    snapshot = parse_process_snapshot("1 0 python3\n")
-    assert snapshot.claude_present is False
-    assert snapshot.tool_active is False
-
-
-def test_parse_process_snapshot_tolerates_blank_and_malformed_lines() -> None:
-    snapshot = parse_process_snapshot("\n1 0 python3\ngarbage line here\n2 1 claude\n")
+def test_parse_process_snapshot_ignores_zombie_children() -> None:
+    # A reaped-but-unwaited child keeps showing in `ps` forever. Counting it as a live descendant
+    # would pin `tool_active` true for the life of the container — silently disabling stall
+    # detection for that task.
+    snapshot = parse_process_snapshot("1 0 S python3\n2 1 S claude\n3 2 Z git\n")
     assert snapshot.claude_present is True
     assert snapshot.tool_active is False
 
 
+def test_parse_process_snapshot_ignores_a_zombie_claude() -> None:
+    snapshot = parse_process_snapshot("1 0 S python3\n2 1 Z claude\n")
+    assert snapshot.claude_present is False
+    assert snapshot.probe_ok is True  # ps ran — it just has no live claude to report
+
+
+def test_parse_process_snapshot_is_false_present_when_claude_is_gone() -> None:
+    snapshot = parse_process_snapshot("1 0 S python3\n")
+    assert snapshot.claude_present is False
+    assert snapshot.tool_active is False
+    assert snapshot.probe_ok is True
+
+
+def test_parse_process_snapshot_reports_an_unreadable_probe_as_not_ok() -> None:
+    # No `ps` in the image (every container built before procps joined the base layer) or a failed
+    # exec: `check=False` hands us "". A running container always has at least PID 1, so this is a
+    # failed probe — not an absent agent, whose caller-side response would be a respawn.
+    for output in ("", "\n", "ps: command not found"):
+        snapshot = parse_process_snapshot(output)
+        assert snapshot.probe_ok is False
+        assert snapshot.claude_present is False
+        assert snapshot.tool_active is False
+
+
+def test_parse_process_snapshot_tolerates_blank_and_malformed_lines() -> None:
+    snapshot = parse_process_snapshot("\n1 0 S python3\ngarbage\n2 1 S claude\n")
+    assert snapshot.claude_present is True
+    assert snapshot.tool_active is False
+    assert snapshot.probe_ok is True
+
+
 def test_parse_process_snapshot_matches_claude_by_substring() -> None:
     # the CLI may show under a wrapping interpreter name rather than literally "claude"
-    snapshot = parse_process_snapshot("1 0 node\n2 1 claude-cli\n")
+    snapshot = parse_process_snapshot("1 0 S node\n2 1 S claude-cli\n")
     assert snapshot.claude_present is True
 
 

@@ -93,37 +93,57 @@ class ProcessSnapshot:
     the ``claude`` process even present (the shape A/B classifier — absent means the agent
     itself is gone, not just quiet), and has it spawned a still-running child (a tool
     subprocess whose result hasn't landed yet — the false-positive guard for an in-flight
-    ``pytest``/build/etc.). Built by :func:`parse_process_snapshot` from a raw ``ps`` listing."""
+    ``pytest``/build/etc.). Built by :func:`parse_process_snapshot` from a raw ``ps`` listing.
+
+    ``probe_ok`` separates "``ps`` ran and told us the truth" from "we learned nothing" (the
+    ``docker exec`` failed, or the image has no ``ps`` — every container built before ``procps``
+    joined the base image). Without it an unreadable probe is indistinguishable from "claude is
+    gone", and the caller's response to *that* is a respawn — killing a live agent over a failed
+    probe. A running container always has at least its own PID 1, so zero parsable rows means the
+    probe failed, never an empty container."""
 
     claude_present: bool
     tool_active: bool
+    probe_ok: bool = True
 
 
 def parse_process_snapshot(ps_output: str) -> ProcessSnapshot:
-    """Pure parser for a container's ``ps -eo pid,ppid,comm --no-headers`` output — no I/O, so
-    it's unit-tested directly against captured text (see :meth:`LocalRunner.process_snapshot`).
+    """Pure parser for a container's ``ps -eo pid,ppid,state,comm --no-headers`` output — no I/O,
+    so it's unit-tested directly against captured text (see :meth:`LocalRunner.process_snapshot`).
 
     Finds the ``claude`` process by command name (substring match — the CLI may show as
     ``claude`` or a wrapping ``node``/interpreter name), then walks the tree for any live
     descendant: a tool subprocess it (or something it spawned) is currently running. Tolerant of
     unparsable lines (blank, header, truncated) — each is skipped rather than raising, since a
     ``docker exec`` blip should degrade to "nothing found," not crash the probe.
+
+    **Zombies are not processes that are doing anything.** A reaped-but-unwaited child still
+    appears in ``ps`` (state ``Z``) indefinitely, so counting one as a live descendant would pin
+    ``tool_active`` true for the life of the container and silently disable stall detection for
+    that task. The ``state`` column exists solely to drop them.
+
+    Zero parsable rows is reported as ``probe_ok=False`` rather than "claude is absent": a
+    running container always shows at least PID 1, so an empty listing means the probe itself
+    failed (exec error, or no ``ps`` in the image).
     """
-    rows: list[tuple[int, int, str]] = []
+    rows: list[tuple[int, int, str, str]] = []
     for line in ps_output.splitlines():
-        parts = line.split(maxsplit=2)
-        if len(parts) != 3:
+        parts = line.split(maxsplit=3)
+        if len(parts) != 4:
             continue
-        pid_s, ppid_s, comm = parts
+        pid_s, ppid_s, state, comm = parts
         try:
-            rows.append((int(pid_s), int(ppid_s), comm))
+            rows.append((int(pid_s), int(ppid_s), state, comm))
         except ValueError:
             continue
-    claude_pids = {pid for pid, _, comm in rows if "claude" in comm.lower()}
+    if not rows:
+        return ProcessSnapshot(claude_present=False, tool_active=False, probe_ok=False)
+    live = [(pid, ppid, comm) for pid, ppid, state, comm in rows if not state.startswith("Z")]
+    claude_pids = {pid for pid, _, comm in live if "claude" in comm.lower()}
     if not claude_pids:
-        return ProcessSnapshot(claude_present=False, tool_active=False)
+        return ProcessSnapshot(claude_present=False, tool_active=False, probe_ok=True)
     children: dict[int, list[int]] = {}
-    for pid, ppid, _ in rows:
+    for pid, ppid, _ in live:
         children.setdefault(ppid, []).append(pid)
     descendants: set[int] = set()
     frontier = list(claude_pids)
@@ -133,7 +153,7 @@ def parse_process_snapshot(ps_output: str) -> ProcessSnapshot:
             if child not in descendants:
                 descendants.add(child)
                 frontier.append(child)
-    return ProcessSnapshot(claude_present=True, tool_active=bool(descendants))
+    return ProcessSnapshot(claude_present=True, tool_active=bool(descendants), probe_ok=True)
 
 
 class CommandRunner(Protocol):
@@ -455,7 +475,10 @@ class LocalRunner(Runner):
     def process_snapshot(self, task_id: str) -> ProcessSnapshot:
         """The task's container process tree (see :func:`parse_process_snapshot`) — the stall
         monitor's shape A/B classifier (is ``claude`` present at all) and tool-active guard (has
-        it spawned a still-running child)."""
+        it spawned a still-running child).
+
+        ``check=False``: a probe failure must not take down the host daemon's pass. The empty
+        output that produces is reported as ``probe_ok=False``, not as an absent agent."""
         container = session_name(task_id)
         output = self._run(
             [
@@ -466,7 +489,7 @@ class LocalRunner(Runner):
                 container,
                 "ps",
                 "-eo",
-                "pid,ppid,comm",
+                "pid,ppid,state,comm",
                 "--no-headers",
             ],
             check=False,
