@@ -123,6 +123,7 @@ class _FakeClient:
         self.applied: list[tuple[str, str]] = []
         self.released: list[str] = []
         self.snoozed: list[tuple[str, str | None]] = []
+        self.paused: list[tuple[str, bool]] = []
         self.sort_weights: list[tuple[str, int]] = []  # (task_id, weight) writes from `*`
         # When set, set_sort_weight raises a 400 carrying this detail (the star error path).
         self.sort_weight_error: str | None = None
@@ -262,6 +263,13 @@ class _FakeClient:
             if t["id"] == task_id:
                 t["snoozed_until"] = until
         return {"id": task_id, "snoozed_until": until}
+
+    def set_paused(self, task_id: str, paused: bool) -> dict[str, Any]:
+        self.paused.append((task_id, paused))
+        for t in self._tasks:  # reflect the write in list_tasks (as the real service does)
+            if t["id"] == task_id:
+                t["paused"] = paused
+        return {"id": task_id, "paused": paused}
 
     def set_sort_weight(self, task_id: str, sort_weight: int) -> dict[str, Any]:
         if self.sort_weight_error is not None:
@@ -604,6 +612,23 @@ def test_snooze_label_inactive_for_past_missing_or_invalid() -> None:
     assert _snooze_label({}, _NOW) is None  # no fact
     assert _snooze_label({"snoozed_until": None}, _NOW) is None
     assert _snooze_label({"snoozed_until": "not-a-date"}, _NOW) is None
+
+
+def test_pause_key_is_bound_exactly_once() -> None:
+    keys = [hk.key for hk in dashboard.HOTKEYS]
+    assert keys.count("z") == 1
+
+
+async def test_pressing_z_pauses_then_resumes() -> None:
+    client = _FakeClient([dict(_TASK)])  # copy: set_paused mutates the task dict in place
+    app = Dashboard(client, now=lambda: _NOW)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("z")
+        await pilot.pause()
+        await pilot.press("z")  # toggles back off the reflected write
+        await pilot.pause()
+    assert client.paused == [("task-abcdef0123", True), ("task-abcdef0123", False)]
 
 
 def test_snooze_keys_are_bound_exactly_once() -> None:
@@ -2948,6 +2973,7 @@ def test_footer_shows_only_the_essential_keys() -> None:
     assert shown == {"t", "n", "x", "/", "d", "question_mark", "q"}
     assert hidden == {
         "o",
+        "z",
         "r",
         "R",
         "p",

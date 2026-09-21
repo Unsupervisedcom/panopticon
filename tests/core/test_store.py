@@ -509,6 +509,7 @@ def _fully_populated_task() -> Task:
         slug="fix-the-widget",
         url="https://github.com/acme/widgets/pull/7",
         snoozed_until="2026-08-06T03:00:00+00:00",
+        paused=True,
         branch="panopticon/fix-the-widget",
         clone="/clones/t-full",
         claimed_by="local",

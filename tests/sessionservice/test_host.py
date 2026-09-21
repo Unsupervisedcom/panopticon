@@ -216,6 +216,9 @@ class _NoOpSpawner:
     def cleanup(self, task: JsonObj) -> None:
         return None
 
+    def reap_paused(self, task: JsonObj) -> None:
+        pass
+
 
 class _NoOpProvisioner:
     def provision(self, task: JsonObj) -> None:

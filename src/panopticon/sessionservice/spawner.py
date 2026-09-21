@@ -347,10 +347,14 @@ class Spawner:
         session probe is last so the cheap claim/terminal checks short-circuit it.
 
         Shell tasks are never orphans: their script exiting is natural completion (or an
-        operator cancelling), not a crash to respawn — so re-running it would be wrong."""
+        operator cancelling), not a crash to respawn — so re-running it would be wrong.
+
+        A **paused** task is never an orphan either: its missing session is the operator's doing,
+        not a crash. Without this the two halves would fight — :meth:`reap_paused` stops the
+        container and heal would respawn it on the very next pass."""
         if task.get("claimed_by") != self._runner_id or task["state"] in TERMINAL_LABELS:
             return False
-        if self._executions.is_shell(task.get("workflow")):
+        if task.get("paused") or self._executions.is_shell(task.get("workflow")):
             return False
         return not self._runner.has_session(task["id"])
 
@@ -501,6 +505,33 @@ class Spawner:
             docker_cleanup=self._docker_cleanup,
         )
 
+    def reap_paused(self, task: JsonObj) -> None:
+        """Give a paused task's memory back: stop its container and release our claim.
+
+        The container half of :meth:`~panopticon.taskservice.service.TaskService.set_paused`. The
+        control plane only records the flag (it is docker-free); this observes it over the work-pull
+        loop, exactly like provisioning and ask delivery. Self-gating on ``paused`` + a running
+        container, so calling it on every task each pass is safe and idempotent.
+
+        Deliberately **not** :meth:`cleanup`: that also deletes the per-task workspace, which is the
+        difference between "parked" and "dropped". Here the tmux session and container go (``stop``
+        is idempotent), while the workspace and the per-task **config volume** — where claude's
+        session history lives — are untouched. Unpausing therefore respawns through the ordinary
+        spawn path and the agent resumes mid-conversation via ``claude --continue``.
+
+        The claim is released so the task reads as unowned while parked and the ordinary
+        unclaimed-gated spawn path can pick it up on unpause — no special resume path needed.
+        Terminal tasks are left to :meth:`cleanup`; pausing something already finished is moot."""
+        if not task.get("paused") or task["state"] in TERMINAL_LABELS:
+            return
+        runner = self._runner_for(task)
+        if runner.is_running(task["id"]):
+            _log.info("task %s: paused — stopping its container", task["id"])
+            runner.stop(session_name(task["id"]))
+        if task.get("claimed_by") == self._runner_id:
+            with contextlib.suppress(httpx.HTTPError):
+                self._client.release(task["id"])
+
     def _compose_image(self, workflow: str, repo: JsonObj) -> str | None:
         """Compose the task's image (base → workflow → repo layers, ADR 0005) and return its tag;
         ``None`` when neither tier contributes a layer (the runner falls back to the base image).
@@ -523,5 +554,7 @@ def spawnable_tasks(client: TaskServiceClient) -> Callable[[], list[JsonObj]]:
     assignments is an M5 refinement.
     """
     return lambda: [
-        t for t in client.list_tasks() if not t["claimed_by"] and t["state"] not in TERMINAL_LABELS
+        t
+        for t in client.list_tasks()
+        if not t["claimed_by"] and t["state"] not in TERMINAL_LABELS and not t.get("paused")
     ]

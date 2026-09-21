@@ -232,6 +232,13 @@ class TaskServiceClient:
             self._json(self._http.put(f"/tasks/{task_id}/snooze", json={"until": until})),
         )
 
+    def set_paused(self, task_id: str, paused: bool) -> JsonObj:
+        """Park the task (reaping its container, keeping its session) or bring it back."""
+        return cast(
+            JsonObj,
+            self._json(self._http.put(f"/tasks/{task_id}/pause", json={"paused": paused})),
+        )
+
     def set_sort_weight(self, task_id: str, sort_weight: int) -> JsonObj:
         """Set the task's dashboard sort weight (default 0; higher sorts first)."""
         return cast(

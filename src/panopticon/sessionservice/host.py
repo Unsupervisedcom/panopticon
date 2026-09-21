@@ -110,6 +110,9 @@ class HostDaemon:
                 self._spawner.reconcile(task)
                 self._spawner.heal(task)
                 self._spawner.cleanup(task)
+                # After heal: both self-gate, but reaping first would stop a container that heal
+                # then sees sessionless. It skips paused tasks, so the order is belt-and-braces.
+                self._spawner.reap_paused(task)
                 if self._stall_monitor is not None:
                     self._stall_monitor.tick(task)
             except Exception:  # a transient git/REST/FS error on one task must not stall the others
