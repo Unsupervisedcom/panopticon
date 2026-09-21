@@ -5,11 +5,16 @@ config, workflow overview, trust, model tier, and hook-payload parsing. No LLM �
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 
-from panopticon.container.cli.claude import INTERRUPT_PROMPT, ClaudeAgentCLI
+from panopticon.container.cli.claude import (
+    INTERRUPT_PROMPT,
+    ClaudeAgentCLI,
+    is_sdk_transcript,
+)
 from panopticon.container.hooks import THEME
 
 
@@ -393,3 +398,125 @@ def test_write_credentials_is_a_no_op_for_claude(tmp_path: Path) -> None:
 )
 def test_has_live_background_task(payload: dict[str, object], live: bool) -> None:
     assert ClaudeAgentCLI().has_live_background_task(payload) is live
+
+
+# -- unresumable transcripts ---------------------------------------------------------------------
+#
+# The two record shapes below are the ones captured off real tasks whose tmux session died the
+# instant the runner created it: ``claude --continue`` refused the transcript and exited before
+# drawing anything, which exited the pane's command.
+
+#: A transcript claude wrote interactively — resumable. Healthy ones open with a ``mode`` record.
+_INTERACTIVE = '{"type":"mode","mode":"default"}\n{"type":"user","message":{"role":"user"}}\n'
+
+#: What the broken tasks' transcripts opened with (SDK-written, and so unresumable).
+_SDK_QUEUE = '{"type":"queue-operation","operation":"enqueue"}\n'
+_SDK_ENTRYPOINT = (
+    '{"type":"user","promptSource":"sdk","turnOrigin":"sdk","entrypoint":"sdk-cli",'
+    '"cwd":"/workspace"}\n'
+)
+
+
+def _write(path: Path, body: str, *, mtime_ns: int | None = None) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body)
+    if mtime_ns is not None:
+        os.utime(path, ns=(mtime_ns, mtime_ns))
+    return path
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (_SDK_QUEUE, True),  # the first record's type gives it away
+        (_SDK_ENTRYPOINT, True),  # …as does an sdk marker on any record
+        ('{"type":"user","promptSource":"sdk"}\n', True),
+        ('{"type":"user","turnOrigin":"sdk"}\n', True),
+        ('{"type":"user","entrypoint":"sdk-cli"}\n', True),
+        (_INTERACTIVE, False),
+        ("", False),  # nothing to judge
+        ("not json\n\n{bad\n", False),  # unreadable ≠ known-bad; the launch fallback covers it
+        ('["not an object"]\n' + _INTERACTIVE, False),
+        ('{"type":"user"}\n' * 50 + '{"promptSource":"sdk"}\n', False),  # past the scan window
+    ],
+)
+def test_is_sdk_transcript(tmp_path: Path, body: str, expected: bool) -> None:
+    assert is_sdk_transcript(_write(tmp_path / "t.jsonl", body)) is expected
+
+
+def test_is_sdk_transcript_of_a_missing_file_is_false(tmp_path: Path) -> None:
+    assert is_sdk_transcript(tmp_path / "gone.jsonl") is False
+
+
+# -- resume selection ----------------------------------------------------------------------------
+
+
+def test_resume_target_is_none_without_a_project_dir(tmp_path: Path) -> None:
+    assert ClaudeAgentCLI().resume_target(tmp_path, Path("/work/repo")) is None
+
+
+def test_resume_target_picks_the_newest_transcript(tmp_path: Path) -> None:
+    # What ``--continue`` itself picks; nanosecond mtime because transcripts land moments apart.
+    cli = ClaudeAgentCLI()
+    project = cli.project_dir(tmp_path, Path("/work/repo"))
+    _write(project / "old.jsonl", _INTERACTIVE, mtime_ns=1_000)
+    newest = _write(project / "new.jsonl", _INTERACTIVE, mtime_ns=1_001)
+    assert cli.resume_target(tmp_path, Path("/work/repo")) == newest
+
+
+def test_project_dir_encodes_the_cwd_the_way_claude_does(tmp_path: Path) -> None:
+    assert ClaudeAgentCLI().project_dir(tmp_path, Path("/work/repo")).name == "-work-repo"
+
+
+# -- prune_unresumable ---------------------------------------------------------------------------
+
+
+def test_prune_unresumable_quarantines_an_sdk_transcript(tmp_path: Path) -> None:
+    cli = ClaudeAgentCLI()
+    project = cli.project_dir(tmp_path, Path("/work/repo"))
+    broken = _write(project / "sdk.jsonl", _SDK_QUEUE)
+    assert cli.prune_unresumable(tmp_path, Path("/work/repo")) == [broken]
+    assert not broken.exists() and (project / "sdk.jsonl.broken").exists()
+
+
+def test_prune_unresumable_leaves_a_healthy_transcript_alone(tmp_path: Path) -> None:
+    cli = ClaudeAgentCLI()
+    project = cli.project_dir(tmp_path, Path("/work/repo"))
+    healthy = _write(project / "ok.jsonl", _INTERACTIVE)
+    assert cli.prune_unresumable(tmp_path, Path("/work/repo")) == []
+    assert healthy.exists()
+
+
+def test_prune_unresumable_uncovers_the_newest_healthy_transcript(tmp_path: Path) -> None:
+    # The point of pruning: ``--continue`` only ever takes the newest, and there's no way to say
+    # "the one before that" — so clearing the refused ones recovers real history.
+    cli = ClaudeAgentCLI()
+    project = cli.project_dir(tmp_path, Path("/work/repo"))
+    healthy = _write(project / "ok.jsonl", _INTERACTIVE, mtime_ns=1_000)
+    _write(project / "sdk-a.jsonl", _SDK_QUEUE, mtime_ns=2_000)
+    _write(project / "sdk-b.jsonl", _SDK_ENTRYPOINT, mtime_ns=3_000)
+    assert len(cli.prune_unresumable(tmp_path, Path("/work/repo"))) == 2
+    assert cli.resume_target(tmp_path, Path("/work/repo")) == healthy
+
+
+def test_prune_unresumable_is_idempotent(tmp_path: Path) -> None:
+    cli = ClaudeAgentCLI()
+    _write(cli.project_dir(tmp_path, Path("/work/repo")) / "sdk.jsonl", _SDK_QUEUE)
+    assert len(cli.prune_unresumable(tmp_path, Path("/work/repo"))) == 1
+    assert cli.prune_unresumable(tmp_path, Path("/work/repo")) == []
+
+
+def test_prune_unresumable_without_a_project_dir_is_a_no_op(tmp_path: Path) -> None:
+    assert ClaudeAgentCLI().prune_unresumable(tmp_path, Path("/work/repo")) == []
+
+
+def test_bootstrap_then_argv_starts_fresh_for_an_sdk_only_project(tmp_path: Path) -> None:
+    # The regression, end to end: this exact transcript shape used to produce ``--continue``, which
+    # claude refused, which killed the pane and left the task unstartable.
+    cli = ClaudeAgentCLI()
+    _write(cli.project_dir(tmp_path, Path("/work/repo")) / "sdk.jsonl", _SDK_ENTRYPOINT)
+    cli.prune_unresumable(tmp_path, Path("/work/repo"))
+    assert cli.launch_argv(tmp_path, Path("/work/repo")) == [
+        "claude",
+        "--dangerously-skip-permissions",
+    ]

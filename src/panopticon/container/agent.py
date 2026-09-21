@@ -82,6 +82,9 @@ def main(
     cli.write_credentials(
         config_dir, env
     )  # materialize on-disk creds (codex auth.json; claude no-op)
+    cli.prune_unresumable(
+        config_dir, Path.cwd()
+    )  # move aside session history the CLI is known to refuse to resume
     (launch or cli.launch)(config_dir)  # the agent runs until it exits...
     on_exit()  # ...then stop the container (task → down → respawn)
 

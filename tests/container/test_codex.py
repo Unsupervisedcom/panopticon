@@ -619,3 +619,29 @@ def test_hooks_coexist_with_mcp_and_trust_in_one_config_toml(tmp_path: Path) -> 
     assert _hook_command(data["hooks"]["Stop"]).endswith("user stop")  # preserved
     assert data["mcp_servers"]["panopticon"]["url"] == "http://svc:8000/mcp"
     assert data["projects"]["/workspace"]["trust_level"] == "trusted"
+
+
+# -- resume_target (the file behind the session id) ----------------------------------------------
+
+
+def test_resume_target_is_none_without_a_sessions_dir(tmp_path: Path) -> None:
+    assert CodexAgentCLI().resume_target(tmp_path, Path("/workspace")) is None
+
+
+def test_resume_target_is_the_file_behind_the_resumed_session_id(tmp_path: Path) -> None:
+    # What the shared launch fallback quarantines when codex refuses to resume it.
+    sessions = tmp_path / CodexAgentCLI.SESSIONS_DIRNAME
+    sessions.mkdir()
+    (sessions / "exec.jsonl").write_text(_session_meta("exec-sess", originator="codex_exec"))
+    time.sleep(0.01)
+    interactive = sessions / "tui.jsonl"
+    interactive.write_text(_session_meta("tui-sess"))
+    assert CodexAgentCLI().resume_target(tmp_path, Path("/workspace")) == interactive
+    assert _find_resume_target(sessions) == "tui-sess"  # same session, both views agree
+
+
+def test_resume_target_is_none_when_only_ineligible_sessions_exist(tmp_path: Path) -> None:
+    sessions = tmp_path / CodexAgentCLI.SESSIONS_DIRNAME
+    sessions.mkdir()
+    (sessions / "exec.jsonl").write_text(_session_meta("exec-sess", originator="codex_exec"))
+    assert CodexAgentCLI().resume_target(tmp_path, Path("/workspace")) is None

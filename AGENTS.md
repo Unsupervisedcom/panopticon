@@ -59,7 +59,9 @@ src/panopticon/
                    # pane's CLI-agnostic launcher: resolve the AgentCLI adapter from PANOPTICON_AGENT_CLI
                    # → render skills + operations, point it at the /mcp server, deliver the workflow
                    # overview to the agent's context → launch the CLI); cli/ = the agent-CLI adapter
-                   # package (ADR 0014): cli/base.py = the AgentCLI seam (ABC) + registry,
+                   # package (ADR 0014): cli/base.py = the AgentCLI seam (ABC) + registry + the
+                   # shared launch (resume, then quarantine-and-relaunch when the CLI refuses the
+                   # session it was handed — ADR 0014 §4b: resume is advisory, a dead pane is not),
                    # cli/claude.py = ClaudeAgentCLI + cli/codex.py = CodexAgentCLI (config, skills,
                    # MCP, AGENTS.md overview, launch/resume, auth, turn-flip hooks — full seam;
                    # codex is registered only behind PANOPTICON_ENABLE_CODEX, ADR 0014 §7)
@@ -240,6 +242,15 @@ on every PR (the same commands the Makefile wraps).
   uninitialized (`-`) submodule so it retries but never touches an initialized one; a `skipif`
   integration test fills in a real submodule and then **moves** the checkout, pinning that the
   recorded links stay relative (the ADR 0011 mounts-anywhere property).
+- `tests/container/test_cli_base.py` — the agent-CLI seam, including the **resume fallback** (ADR
+  0014 §4b): with the process runner and clock injected (no CLI is ever started), a resumed launch
+  that exits non-zero fast quarantines the session and relaunches — recovering an older healthy
+  session when there is one — while a signal death, a clean exit and a slow failure each leave the
+  history alone, and the retry loop is capped so its last pass is necessarily a first run.
+- `tests/container/test_claude.py` — the claude adapter's rendered surface *and* its
+  unresumable-transcript recognizer: the SDK marker shapes captured off the two tasks this broke,
+  the newest-first resume order, and the regression that an SDK-only project now yields a
+  first-run argv instead of the `--continue` that killed the pane.
 - `tests/test_prefill.py` — the input-box prefill poller: unit tests drive `prefill_pane` with a
   fake tmux runner + injected `sleep`/raw-log — pin the `pipe-pane`/`load-buffer`/`paste-buffer -p`
   commands when the box becomes ready, and every best-effort give-up (empty prompt, timeout,
