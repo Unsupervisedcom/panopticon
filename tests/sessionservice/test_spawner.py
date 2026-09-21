@@ -1251,3 +1251,102 @@ def test_spawner_against_the_real_service(tmp_path: Path) -> None:
         assert spawner.spawn_one(task) == f"panopticon-{task_id}"
         assert client.get_task(task_id)["claimed_by"] == "host-1"  # claim recorded on the service
         assert spawnable_tasks(client)() == []  # now claimed → no longer spawnable
+
+
+def _paused_spawner(client: _FakeClient, runner: _FakeRunner, removed: list[str]) -> Spawner:
+    """A Spawner wired to fakes, for the pause tests (mirrors the cleanup tests' wiring)."""
+    cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
+    return Spawner(
+        client,
+        runner,
+        runner_id="host-1",
+        cache=cache,
+        tasks_root="/tasks",  # type: ignore[arg-type]
+        git=GitClones(run=_no_op_run),
+        images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        makedirs=lambda _p: None,
+        exists=lambda _p: True,
+        rmtree=removed.append,
+    )
+
+
+def test_reap_paused_stops_container_and_releases_claim_but_keeps_workspace() -> None:
+    # The whole point of pause vs drop: the container goes, the workspace (and with it the agent's
+    # resumable session) stays. If this ever starts removing the workspace, pause has become drop.
+    removed: list[str] = []
+    runner = _FakeRunner(running=True)
+    client = _FakeClient(repo=_REPO)
+    spawner = _paused_spawner(client, runner, removed)
+    spawner.reap_paused({"id": "t1", "state": "ITERATING", "paused": True, "claimed_by": "host-1"})
+    assert runner.stopped == [session_name("t1")]
+    assert client.releases == [
+        "t1"
+    ]  # unowned while parked, so unpause re-spawns via the normal path
+    assert removed == []  # workspace untouched — this is what makes it resumable
+
+
+def test_reap_paused_is_a_no_op_for_an_unpaused_task() -> None:
+    removed: list[str] = []
+    runner = _FakeRunner(running=True)
+    client = _FakeClient(repo=_REPO)
+    spawner = _paused_spawner(client, runner, removed)
+    spawner.reap_paused({"id": "t1", "state": "ITERATING", "paused": False, "claimed_by": "host-1"})
+    assert runner.stopped == []
+    assert client.releases == []
+    assert removed == []
+
+
+def test_reap_paused_skips_a_terminal_task() -> None:
+    # Terminal tasks belong to cleanup (which also reaps the workspace); pausing one is moot.
+    removed: list[str] = []
+    runner = _FakeRunner(running=True)
+    client = _FakeClient(repo=_REPO)
+    spawner = _paused_spawner(client, runner, removed)
+    spawner.reap_paused({"id": "t1", "state": "COMPLETE", "paused": True, "claimed_by": "host-1"})
+    assert runner.stopped == []
+    assert removed == []
+
+
+def test_reap_paused_is_idempotent_when_the_container_is_already_gone() -> None:
+    # Every pass calls this on every task, so a second pass must not re-stop or re-release.
+    removed: list[str] = []
+    runner = _FakeRunner(running=False)
+    client = _FakeClient(repo=_REPO)
+    spawner = _paused_spawner(client, runner, removed)
+    spawner.reap_paused({"id": "t1", "state": "ITERATING", "paused": True, "claimed_by": None})
+    assert runner.stopped == []
+    assert client.releases == []
+
+
+def test_heal_leaves_a_paused_task_parked() -> None:
+    # The regression that would make pause useless: heal sees a sessionless claimed task and
+    # respawns the container reap_paused just stopped, fighting it every pass.
+    removed: list[str] = []
+    runner = _FakeRunner(running=False, session=False)
+    client = _FakeClient(repo=_REPO)
+    spawner = _paused_spawner(client, runner, removed)
+    task = {
+        "id": "t1",
+        "state": "ITERATING",
+        "paused": True,
+        "claimed_by": "host-1",
+        "workflow": "github-peer-reviewed",
+    }
+    assert spawner.heal(task) is None
+    assert runner.spawned == []
+
+
+def test_spawnable_tasks_excludes_paused() -> None:
+    # The other half of the gate: released-on-pause makes the task unclaimed, which would otherwise
+    # make it a prime spawn candidate on the very next pass.
+    class _Lister:
+        def list_tasks(self) -> list[JsonObj]:
+            return [
+                {"id": "live", "state": "ITERATING", "claimed_by": None, "paused": False},
+                {"id": "parked", "state": "ITERATING", "claimed_by": None, "paused": True},
+                {"id": "legacy", "state": "ITERATING", "claimed_by": None},  # pre-pause payload
+            ]
+
+    # `legacy` has no `paused` key at all: a task service that predates this field must still be
+    # spawnable, so the gate reads it with `.get`, never `[...]`.
+    assert [t["id"] for t in spawnable_tasks(_Lister())()] == ["live", "legacy"]  # type: ignore[arg-type]

@@ -791,6 +791,24 @@ class TaskService:
         _log.debug("task %s: snoozed_until → %s", task_id, until)
         return task
 
+    async def set_paused(self, task_id: str, paused: bool) -> Task:
+        """Park a task (or bring it back) so an operator can reclaim its container's memory.
+
+        A plain recorded fact, like the url or the snooze: ``state``/``turn``/``blocked`` are left
+        untouched and no container is touched **here** — the control plane is docker-free. The
+        session service observes the flag over its work-pull loop and does the reaping
+        (:meth:`~panopticon.sessionservice.spawner.Spawner.reap_paused`), the same
+        observed-not-pushed shape as provisioning and ask delivery.
+
+        Unpausing is just the inverse fact: the task becomes spawnable again and the next pass
+        re-claims and respawns it, resuming the agent's session from the untouched config volume.
+        """
+        task = await self.get_task(task_id)
+        task.paused = paused
+        await self._save_task(task)
+        _log.info("task %s: paused → %s", task_id, paused)
+        return task
+
     async def set_sort_weight(self, task_id: str, sort_weight: int) -> Task:
         """Set the task's dashboard sort weight (default 0; higher sorts first).
 

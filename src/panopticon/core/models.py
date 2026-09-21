@@ -285,6 +285,15 @@ class Task:
     #: ``None`` means not snoozed; display code alone decides whether a finite deadline is active
     #: (the control plane never compares it to a clock). Set via :meth:`TaskService.set_snooze`.
     snoozed_until: str | None = None
+    #: Operator-owned **pause**: park the task and give its memory back, without discarding it.
+    #: While paused the session service reaps the container (and releases the claim) but leaves the
+    #: per-task **config volume and workspace intact**, so resuming respawns and the agent picks up
+    #: where it left off via ``claude --continue``. That is the whole difference from ``DROPPED``,
+    #: whose cleanup also deletes the workspace. Distinct from ``snoozed_until``, which only mutes
+    #: the dashboard and costs nothing back. Gates both spawn paths (``spawnable_tasks`` skips a
+    #: paused task; ``heal`` doesn't treat its missing session as an orphan), so it survives the
+    #: runner rather than being undone by the next pass. Set via :meth:`TaskService.set_paused`.
+    paused: bool = False
     #: The git refs the session service provisions for this task once the slug is set (ADR
     #: 0010/0011): the slug-named branch and the path of the per-task ``clone`` it works in **on
     #: the host where the container runs**. The task service only records these — it does no git

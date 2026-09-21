@@ -1801,6 +1801,7 @@ HOTKEYS: tuple[Hotkey, ...] = (
         display="*",
     ),
     Hotkey("e", "snooze", "Snooze", "Snooze the highlighted task for 12 hours", show=False),
+    Hotkey("z", "pause", "Pause", "Pause/resume: reap the container, keep the session", show=False),
     Hotkey(
         "E",
         "snooze_indefinitely",
@@ -2398,6 +2399,33 @@ class Dashboard(App[None]):
         except httpx.HTTPStatusError as exc:
             self.notify(f"Can't snooze: {_detail(exc)}", severity="error")
             return False
+
+    def action_pause(self) -> None:
+        """`z`: toggle **pause** on the highlighted task — park it and get its memory back.
+
+        Unlike `e` (snooze), which only mutes the row and costs nothing back, pausing reaps the
+        container: the session service stops it on its next pass and releases the claim. The
+        per-task config volume and workspace survive, so a second `z` respawns it and the agent
+        resumes mid-conversation. Unlike `x` (drop) nothing is discarded — the task keeps its
+        state, history and turn throughout."""
+        task_id = self._current
+        if task_id is None:
+            return
+        task = self._tasks.get(task_id)
+        if task is None:
+            return
+        paused = not bool(task.get("paused"))
+        try:
+            self._client.set_paused(task_id, paused)
+        except httpx.HTTPStatusError as exc:
+            self.notify(f"Can't pause: {_detail(exc)}", severity="error")
+            return
+        self.notify(
+            "Pausing: the runner will stop its container (session kept — `z` again to resume)."
+            if paused
+            else "Resuming: the runner will respawn it and the agent continues where it left off."
+        )
+        self.action_refresh()
 
     def action_respawn(self) -> None:
         """`R`: kill any running container/session for this task and respawn it.

@@ -345,6 +345,36 @@ def test_set_turn_and_blocked(client: TestClient) -> None:
     assert blocked.json()["turn"] == "user"  # flip-independent: the block left the turn alone
 
 
+def test_set_paused_toggles_the_flag_without_touching_lifecycle(client: TestClient) -> None:
+    task_id = _new_task(client)
+    before = client.get(f"/tasks/{task_id}").json()
+    assert before["paused"] is False  # tasks start unparked
+
+    paused = client.put(f"/tasks/{task_id}/pause", json={"paused": True})
+    assert paused.status_code == 200
+    body = paused.json()
+    assert body["paused"] is True
+    # A plain recorded fact, like snooze: the control plane is docker-free, so pausing must not
+    # move the task's lifecycle. The session service reaps the container off this flag.
+    assert body["state"] == before["state"]
+    assert body["turn"] == before["turn"]
+    assert body["blocked"] == before["blocked"]
+
+    resumed = client.put(f"/tasks/{task_id}/pause", json={"paused": False})
+    assert resumed.status_code == 200
+    assert resumed.json()["paused"] is False
+
+
+def test_paused_survives_a_read_back(client: TestClient) -> None:
+    # The runner reads `paused` off the list payload it pulls each pass, so it has to round-trip
+    # through the store rather than only appearing on the write's response.
+    task_id = _new_task(client)
+    client.put(f"/tasks/{task_id}/pause", json={"paused": True})
+    assert client.get(f"/tasks/{task_id}").json()["paused"] is True
+    listed = [t for t in client.get("/tasks").json() if t["id"] == task_id]
+    assert listed and listed[0]["paused"] is True
+
+
 def test_set_snooze_records_deadline_verbatim(client: TestClient) -> None:
     task_id = _new_task(client)  # turn=agent, blocked=false, snoozed_until=None
     before = client.get(f"/tasks/{task_id}").json()

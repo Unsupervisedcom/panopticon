@@ -89,6 +89,7 @@ class TaskSummaryOut(BaseModel):
     slug: str | None
     url: str | None
     snoozed_until: str | None = None
+    paused: bool = False  # operator parked it: container reaped, session + workspace kept
     branch: str | None
     clone: str | None
     claimed_by: str | None
@@ -129,6 +130,7 @@ class TaskOut(BaseModel):
     snoozed_until: str | None = (
         None  # operator-owned attention mute deadline (ISO-8601); None = not snoozed
     )
+    paused: bool = False  # operator parked it: container reaped, session + workspace kept
     branch: str | None
     clone: str | None
     claimed_by: str | None  # the runner that owns this task (the spawn gate), or None
@@ -341,6 +343,10 @@ class BlockedIn(BaseModel):
 
 class SnoozeIn(BaseModel):
     until: str | None
+
+
+class PauseIn(BaseModel):
+    paused: bool
 
 
 class SortWeightIn(BaseModel):
@@ -735,6 +741,12 @@ def create_app(service: TaskService) -> FastAPI:
     @app.put("/tasks/{task_id}/blocked")
     async def set_blocked(task_id: str, body: BlockedIn) -> TaskOut:
         return _task_out(await service.set_blocked(task_id, body.blocked))
+
+    @app.put("/tasks/{task_id}/pause")
+    async def set_paused(task_id: str, body: PauseIn) -> TaskOut:
+        """Park (or restore) a task. Records the fact only — the session service reaps the
+        container on its next pass and respawns on unpause; the config volume is never touched."""
+        return _task_out(await service.set_paused(task_id, body.paused))
 
     @app.put("/tasks/{task_id}/snooze")
     async def set_snooze(task_id: str, body: SnoozeIn) -> TaskOut:
