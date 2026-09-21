@@ -19,13 +19,16 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
-from panopticon.core.artifacts import ArtifactStore
-from panopticon.core.dirs import secrets_file_path
+from panopticon.core.artifacts import ArtifactStore, decode_b64_artifact
+from panopticon.core.dirs import credential_dir_path, secrets_file_path
+from panopticon.core.features import require_available_agent_cli
 from panopticon.core.layers import LayerStore
 from panopticon.core.models import (
     Actor,
     ContainerStatus,
     LifecyclePhase,
+    Push,
+    PushStatus,
     Repo,
     Skill,
     Status,
@@ -147,6 +150,8 @@ class TaskService:
 
     async def create_repo(self, repo: Repo) -> Repo:
         await self._validate_env_file(repo.env_file)
+        await self._validate_credential_dir(repo.credential_dir)
+        require_available_agent_cli(repo.agent_cli)  # codex is behind a feature flag (ADR 0014 §7)
         await self._store.create_repo(repo)
         return repo
 
@@ -172,6 +177,27 @@ class TaskService:
         if not await asyncio.to_thread(os.path.isfile, path):
             raise ValueError(f"env_file {env_file!r} does not exist under the secrets dir")
 
+    async def _validate_credential_dir(self, credential_dir: str | None) -> None:
+        """Reject a repo whose credential-dir reference points at a missing directory.
+
+        ``credential_dir`` is a *name* relative to the secrets dir — the same root as
+        ``env_file`` (ADR 0007). Validated on create/update so a bad reference surfaces at
+        registration rather than as an obscure ``--volume`` failure at spawn. ``None`` (no
+        credential dir) is valid. Raises :class:`ValueError` for a name that escapes the secrets
+        dir or one that resolves to a missing or non-directory path.
+
+        NOTE(M5): resolved against *this host's* secrets dir (same caveat as
+        :meth:`_validate_env_file`).
+        """
+        path = credential_dir_path(credential_dir)  # None for no reference; raises on escape
+        if path is None:
+            return
+        if not await asyncio.to_thread(os.path.isdir, path):
+            raise ValueError(
+                f"credential_dir {credential_dir!r} does not exist or is not a directory"
+                " under the secrets dir"
+            )
+
     async def get_repo(self, repo_id: str) -> Repo:
         repo = await self._store.get_repo(repo_id)
         if repo is None:
@@ -196,6 +222,10 @@ class TaskService:
             await self._validate_env_file(
                 updated.env_file
             )  # so an unrelated patch never fails on it
+        if "credential_dir" in changes:
+            await self._validate_credential_dir(updated.credential_dir)
+        if "agent_cli" in changes:  # same rule: a patch that doesn't touch the CLI still applies
+            require_available_agent_cli(updated.agent_cli)  # to a repo left on a disabled one
         await self._store.update_repo(updated)
         return updated
 
@@ -314,9 +344,13 @@ class TaskService:
         governor_task_id: str | None = None,
         initial_prompt: str | None = None,
         artifacts: dict[str, str] | None = None,
+        artifacts_b64: dict[str, str] | None = None,
         depends_on_task_ids: list[str] | None = None,
+        sort_weight: int = 0,
+        agent_cli: str | None = None,
     ) -> Task:
         repo = await self.get_repo(repo_id)  # ensure exists (raises NotFound)
+        require_available_agent_cli(agent_cli)  # the per-task override; None = the repo default
         if governor_task_id is not None:
             await self.get_task(governor_task_id)  # ensure governor exists (raises NotFound)
         wf = self._workflow(workflow_name)
@@ -325,12 +359,16 @@ class TaskService:
         now = self._clock()
         task = wf.start_task(self._id(), repo_id, at=now, memo=memo, initial_prompt=initial_prompt)
         task.governor_task_id = governor_task_id
+        task.sort_weight = sort_weight
+        task.agent_cli = agent_cli  # a per-task CLI override; None = the repo default (ADR 0014 §3)
         task.created_at = now
         task.updated_at = now  # creation time = first mutation
         await self._store.create_task(task)
         _log.info("task %s: created (workflow=%s, repo=%s)", task.id, workflow_name, repo_id)
         for name, content in (artifacts or {}).items():
             await self.put_artifact(task.id, name, content.encode())
+        for name, encoded in (artifacts_b64 or {}).items():  # binary artifacts arrive base64
+            await self.put_artifact(task.id, name, decode_b64_artifact(name, encoded))
         if depends_on_task_ids:
             task = await self.set_dependencies(task.id, depends_on_task_ids)
         return task
@@ -358,7 +396,10 @@ class TaskService:
         memo: str | None = None,
         initial_prompt: str | None = None,
         artifacts: dict[str, str] | None = None,
+        artifacts_b64: dict[str, str] | None = None,
         depends_on_task_ids: list[str] | None = None,
+        sort_weight: int = 0,
+        agent_cli: str | None = None,
     ) -> Task:
         """Create a task **on behalf of an orchestrator task** — gated to orchestration workflows.
 
@@ -376,7 +417,10 @@ class TaskService:
             governor_task_id=actor_task_id,
             initial_prompt=initial_prompt,
             artifacts=artifacts,
+            artifacts_b64=artifacts_b64,
             depends_on_task_ids=depends_on_task_ids,
+            sort_weight=sort_weight,
+            agent_cli=agent_cli,
         )
 
     async def workflow_names_as(self, actor_task_id: str) -> list[str]:
@@ -568,22 +612,6 @@ class TaskService:
         _log.debug("task %s: url → %s", task_id, url)
         return task
 
-    async def set_tokens_used(self, task_id: str, tokens_used: int) -> Task:
-        """Record the cumulative tokens the container's claude has used (its Stop hook reports the
-        recomputed session total). A plain recorded fact, like the slug — no transition, no git."""
-        task = await self.get_task(task_id)
-        task.tokens_used = tokens_used
-        await self._save_task(task)
-        return task
-
-    async def set_token_estimate(self, task_id: str, token_estimate: int) -> Task:
-        """Record the agent's forecast of the total tokens this task will consume (set once during
-        planning). A plain recorded fact, like the slug — no transition, no git."""
-        task = await self.get_task(task_id)
-        task.token_estimate = token_estimate
-        await self._save_task(task)
-        return task
-
     async def set_turn(self, task_id: str, turn: Actor) -> Task:
         """Flip who holds the turn within a state (the in-container hooks' callback).
 
@@ -601,6 +629,31 @@ class TaskService:
         task.blocked = blocked
         await self._save_task(task)
         _log.debug("task %s: blocked=%s", task_id, blocked)
+        return task
+
+    async def set_snooze(self, task_id: str, until: str | None) -> Task:
+        """Record or clear an operator snooze deadline without interpreting the clock.
+
+        The value is stored verbatim (any ISO-8601 string, or ``None`` to clear); whether a finite
+        deadline is active is decided by the dashboard alone. Leaves ``state``/``turn``/``blocked``
+        untouched — a plain recorded fact, like the url.
+        """
+        task = await self.get_task(task_id)
+        task.snoozed_until = until
+        await self._save_task(task)
+        _log.debug("task %s: snoozed_until → %s", task_id, until)
+        return task
+
+    async def set_sort_weight(self, task_id: str, sort_weight: int) -> Task:
+        """Set the task's dashboard sort weight (default 0; higher sorts first).
+
+        A plain recorded fact, like the url: ranks above the ``updated_at`` timestamp but below
+        state/turn in the dashboard ordering. Leaves ``state``/``turn``/``blocked`` untouched.
+        """
+        task = await self.get_task(task_id)
+        task.sort_weight = sort_weight
+        await self._save_task(task)
+        _log.debug("task %s: sort_weight → %s", task_id, sort_weight)
         return task
 
     async def set_governor(self, task_id: str, governor_task_id: str | None) -> Task:
@@ -688,11 +741,54 @@ class TaskService:
         _log.info("task %s: provisioned (branch=%s)", task_id, branch)
         return task
 
+    # -- pushing the merge back to origin (again: the session service does the git) -------
+
+    async def request_push(self, task_id: str, *, branch: str, at: str | None = None) -> Task:
+        """Record the agent's request to push ``branch`` (and the task branch) to ``origin``.
+
+        The container can't do this itself when ``origin`` is a local filesystem path — that path
+        exists on the *host*, not in the container — so the agent asks and the session service's
+        publisher performs it, reporting back through :meth:`record_push`. Writing the request
+        bumps the change feed, so the host daemon wakes on it within a pass.
+
+        Refused on a terminal task: nothing would ever service the request, and the workspace the
+        push reads from is cleaned up once a task is terminal.
+        """
+        task = await self.get_task(task_id)
+        if self._workflow(task.workflow).is_terminal(task.state):
+            raise ValueError(f"cannot request a push on a terminal task (state {task.state!r})")
+        task.push = Push(
+            branch=branch, status=PushStatus.REQUESTED, requested_at=at or self._clock()
+        )
+        await self._save_task(task)
+        _log.info("task %s: push requested (branch=%s)", task_id, branch)
+        return task
+
+    async def record_push(self, task_id: str, *, status: PushStatus, detail: str | None) -> Task:
+        """Record how the session service's push turned out — a pure recorded fact, like
+        :meth:`record_provisioning`.
+
+        Keeps the requested ``branch`` and ``requested_at`` (the host reports only an outcome) and
+        refuses to record against a task that never asked, so a stray report can't invent one.
+        """
+        task = await self.get_task(task_id)
+        if task.push is None:
+            raise ValueError("cannot record a push that was never requested")
+        task.push = replace(task.push, status=status, detail=detail)
+        await self._save_task(task)
+        _log.info("task %s: push %s (%s)", task_id, status.value, detail or "")
+        return task
+
     # -- artifacts ----------------------------------------------------------------
 
     async def put_artifact(self, task_id: str, name: str, content: bytes) -> None:
         await self.get_task(task_id)  # ensure the task exists
         await self._artifacts.put(task_id, name, content)
+        # Artifacts live outside the store, so writing one bumps no version of its own — but the
+        # task list reports whether a task *has* one, so a parked long-poll has to wake or the
+        # first plan.md would go unnoticed until some unrelated mutation. Same treatment as the
+        # other ephemeral (non-stored) changes.
+        self._notify_change()
         _log.debug("task %s: artifact %s written", task_id, name)
 
     async def get_artifact(self, task_id: str, name: str) -> bytes | None:
@@ -702,6 +798,54 @@ class TaskService:
     async def list_artifacts(self, task_id: str) -> list[str]:
         await self.get_task(task_id)
         return await self._artifacts.list(task_id)
+
+    async def has_unhidden_artifacts(self, task_id: str) -> bool:
+        """Whether the task has an artifact worth marking in the task list.
+
+        No ``get_task`` guard (unlike the readers above): this is a display predicate asked of
+        tasks the caller has already read, once per row, and a task with no artifacts and a task
+        that doesn't exist both answer ``False``. Paying for a store read per row to tell those
+        apart would buy nothing."""
+        return await self._artifacts.has_unhidden_artifacts(task_id)
+
+    # -- repo artifacts -----------------------------------------------------------
+    #
+    # The same artifact store, owned by a repo rather than a task: documents shared by every task
+    # in the repo and outliving each of them (conventions, accumulated notes, screenshots). Names
+    # may be nested (``notes/api.md``). Each reader/writer guards on the repo existing, mirroring
+    # the ``get_task`` guard on the task methods above. No change-feed notification, unlike
+    # :meth:`put_artifact`: nothing the task list renders depends on a repo's artifacts.
+
+    async def put_repo_artifact(self, repo_id: str, name: str, content: bytes) -> None:
+        await self.get_repo(repo_id)  # ensure the repo exists (raises NotFound)
+        await self._artifacts.put_repo_artifact(repo_id, name, content)
+        _log.debug("repo %s: artifact %s written", repo_id, name)
+
+    async def get_repo_artifact(self, repo_id: str, name: str) -> bytes | None:
+        await self.get_repo(repo_id)
+        return await self._artifacts.get_repo_artifact(repo_id, name)
+
+    async def list_repo_artifacts(self, repo_id: str) -> list[str]:
+        await self.get_repo(repo_id)
+        return await self._artifacts.list_repo_artifacts(repo_id)
+
+    async def put_repo_artifact_for_task(self, task_id: str, name: str, content: bytes) -> str:
+        """Write into the **acting task's own** repo, returning that repo's id.
+
+        The task-scoped entry point the in-container agent uses: it names itself, not a repo, so
+        it can't write into another repo's artifacts by passing a different id — and it doesn't
+        have to know its repo id to contribute to it. The returned id is what the caller needs to
+        build the artifact's URI.
+        """
+        task = await self.get_task(task_id)
+        await self.put_repo_artifact(task.repo_id, name, content)
+        return task.repo_id
+
+    async def list_repo_artifacts_for_task(self, task_id: str) -> tuple[str, list[str]]:
+        """The acting task's repo id and its repo artifacts — :meth:`put_repo_artifact_for_task`'s
+        read side (discovery of what the repo already holds)."""
+        task = await self.get_task(task_id)
+        return task.repo_id, await self.list_repo_artifacts(task.repo_id)
 
     # -- liveness -----------------------------------------------------------------
     #

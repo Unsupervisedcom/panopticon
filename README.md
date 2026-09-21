@@ -22,6 +22,13 @@ prototype.
 New here? [`docs/overview.md`](docs/overview.md) explains how the pieces fit together: the
 mental model behind the dashboard.
 
+## Working on panopticon
+
+Set up a dev environment and bring the stack up with `make sync`, then `make start`
+(`make stop` tears it down). The full development loop — checks, base-image build,
+migrations — is in [`docs/dev.md`](docs/dev.md); to *use* panopticon, see
+[Install](#install) below.
+
 ## The dashboard
 
 See the whole fleet in one terminal view, with every task's `state`, whose `turn` it is (agent or you),
@@ -31,14 +38,14 @@ its `container` status, and its repo and slug:
 ══════════════════════════════════════════════════════════════════════════
   panopticon                                                6 tasks
 ──────────────────────────────────────────────────────────────────────────
-  state          turn       container   repo       slug[memo]
-  ITERATING      agent      live        web-api    add-oauth[Add OAuth login]
-  PLANNING       user       live        web-api    fix-upload[Flaky S3 upload]
-  MERGING        agent      starting    dashboard  dark-mode[Dark-mode theme]
-  ITERATING      user ⚠     down        web-api    migrate-db[Move to Postgres]
-  ORCHESTRATING  agent      live        infra      q3-cleanup[Q3 tech-debt]
-  PLANNING       agent      live        infra      └─ drop-py38[Drop Python 3.8]
-  COMPLETE       agent      –           web-api    ship-readme[README refresh]
+  state          turn       container   repo       ❏ ➚  slug[memo]
+  ITERATING      agent      live        web-api    ❏ ➚  add-oauth[Add OAuth login]
+  PLANNING       user       live        web-api    ❏    fix-upload[Flaky S3 upload]
+  MERGING        agent      starting    dashboard    ➚  dark-mode[Dark-mode theme]
+  ITERATING      user ⚠     down        web-api    ❏ ➚  migrate-db[Move to Postgres]
+  ORCHESTRATING  agent      live        infra      ❏    q3-cleanup[Q3 tech-debt]
+  PLANNING       agent      live        infra           └─ drop-py38[Drop Python 3.8]
+  COMPLETE       agent      –           web-api    ❏ ➚  ship-readme[README refresh]
 ──────────────────────────────────────────────────────────────────────────
   t attach   n new task   x drop   / search   d detail   ? help   q quit
 ══════════════════════════════════════════════════════════════════════════
@@ -48,7 +55,9 @@ The `turn` column is color-coded live: green when the agent is working, yellow w
 move, and red (`⚠`) when a task is blocked waiting on you, so you can tell at a glance which agents
 need you. The `container` column tracks each agent's sandbox as it spawns (`queued → … → live`,
 or `down` when one needs a respawn), and governed sub-tasks nest under their governor (`└─`).
-Press `t` to drop into any task's session, `?` for the full key list.
+The `❏ ➚` column marks what a task carries — `❏` an artifact to read (`a` lists them), `➚` a link
+such as its PR (`p` opens it). Press `t` to drop into any task's session, `?` for the full key
+list — or see [the keybinding reference](docs/dashboard.md).
 
 ## Requirements
 
@@ -96,7 +105,9 @@ panopticon quickstart  # first-time setup, then open the dashboard
 ```
 
 `panopticon quickstart` checks your prerequisites, brings the stack up, registers the repo
-you're in, and drops you into a `setup-repo` task; it will walk you through minting a
+you're in, and drops you into a `setup-repo` task; for a local repo it also configures it to
+accept panopticon's merges (`receive.denyCurrentBranch=updateInstead`, see
+[the workflow's docs](docs/workflows/local-git-self-reviewed.md#pushing-back-to-your-repo)); it will walk you through minting a
 repo-specific Claude token (saved to the repo's env-file). Then you create tasks and watch your
 fleet from the dashboard.
 
@@ -106,7 +117,7 @@ On the dashboard:
 
 1. **Create it.** Press `n`, then pick the repo and a workflow. `quickstart` already enabled the
    coding workflow that matches your repo: `github-peer-reviewed` for a GitHub repo (opens a PR), or
-   `local-git-self-reviewed` for a local-only one (keeps commits local). `spike` (open-ended, no
+   `local-git-self-reviewed` for a local-only one (merges into your repo, no PR). `spike` (open-ended, no
    gates) is always available too. To use a different workflow, enable it for your repo in the
    repos form (press `g`, edit the repo, and check the workflows you want). GitHub workflows need a
    `GH_TOKEN` in the repo's env-file so the container's `gh` can open PRs (see
@@ -122,7 +133,8 @@ On the dashboard:
    your own `tmux` prefix + `d`) to return to the dashboard.
 4. **Review what ships.** For `github-peer-reviewed` the agent opens a PR (press `p` on the
    dashboard to open it in your browser); for `local-git-self-reviewed` it commits to the task
-   branch for you to diff locally. Either way nothing lands until you `/advance` it: you own what
+   branch for you to diff locally, then merges it into your base branch and pushes it back into
+   your repo. Either way nothing lands until you `/advance` it: you own what
    ships.
 
 ## Configuration

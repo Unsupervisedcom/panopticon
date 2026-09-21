@@ -82,8 +82,10 @@ def test_start_task_seeds_starting_model_from_default_model() -> None:
     assert task.starting_model == WF.default_model
 
 
-def test_workflow_default_model_is_opus() -> None:
-    assert WF.default_model == "opus"
+def test_workflow_default_model_is_an_abstract_tier() -> None:
+    # The control plane names a CLI-agnostic tier, never a provider's model (ADR 0014 §3a); the
+    # in-container adapter resolves it. Guard against a concrete model name leaking back into core.
+    assert WF.default_model == "primary"
 
 
 # -- resolution: string + class refs, inherited DROPPED -----------------------------

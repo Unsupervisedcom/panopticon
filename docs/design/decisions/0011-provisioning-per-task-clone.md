@@ -42,6 +42,36 @@ agent works here for the **whole** task — planning *and* coding. There is **no
 copy and no second path**: the checkout exists from the moment the container starts, so there's no
 "before the worktree exists" gap to fill.
 
+### 1b. Submodules are filled in at spawn-prep
+
+A `clone --local` carries the **gitlinks and `.gitmodules`** but no submodule objects, so spawn-prep
+finishes by running `git submodule update --init --recursive` in the per-task clone. Three details
+make it work:
+
+- **After the `origin` repoint, not before.** Relative `.gitmodules` URLs (`../lib.git`, the common
+  case) are resolved against the superproject's `remote.origin.url` *when the submodule is
+  initialized* — against the cache path they'd point next to the cache clone. Hence the repoint moved
+  ahead of it (spawn already sets `origin` to the forge; §2's slug-time repoint is idempotent).
+- **Gated on an uninitialized submodule** (`git submodule status` reporting a leading `-`), not on
+  "we just cloned". A submodule fetch that fails transiently leaves the checkout behind, and the
+  clone gate would then skip it forever; the status gate retries on the next spawn pass. It also
+  means a re-created container's checkout — the one the agent has been working in — is never updated
+  over the agent's own submodule changes (an initialized submodule reports `+`/`U`/space, never `-`).
+- **`protocol.file.allow=always`, for that one command.** Since git 2.38 a submodule whose resolved
+  URL is a local path is refused (CVE-2022-39253), and a local-git repo's `git_url` *is* a host path,
+  so without it every such task fails to provision. It stays inside the existing trust boundary: the
+  repo is operator-registered and the session service already clones it from that same path.
+
+The "mounts at any container path" property survives, because `submodule update` records the
+submodule's gitdir pointer (`gitdir: ../../.git/modules/<name>`) and its `core.worktree`
+**relatively** — nothing absolute to mirror, same as the superproject.
+
+The repo's **cache** clone stays submodule-free: the per-task clone fetches submodules from their
+forge-resolved URLs, so cache-side submodule checkouts would be disk and time for nothing. The cost
+is one submodule fetch per task; sharing the cache's object store instead
+(`submodule.alternateLocation=superproject`) computes the alternate from the superproject's *origin*,
+which is exactly what we repoint at the forge — so it needs more than a flag. Backlogged.
+
 ### 2. Provisioning = branch whatever's there
 
 The agent plans against `/workspace`, decides a slug, and sets it (`PUT …/slug`). The session

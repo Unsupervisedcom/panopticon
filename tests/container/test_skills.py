@@ -33,3 +33,12 @@ def test_write_commands_writes_one_file_per_skill(tmp_path: Path) -> None:
     body = (tmp_path / ".claude" / "commands" / "babysit-ci.md").read_text()
     assert body.startswith("---\ndescription: Watch CI.\n---\n") and "watch loop" in body
     assert 'task_id="t-1"' in body
+
+
+def test_write_commands_targets_a_given_subdir(tmp_path: Path) -> None:
+    # The body is CLI-agnostic; only the destination differs — codex passes its prompts dir.
+    paths = write_commands(
+        [Skill("babysit-ci", "Watch CI.", "watch loop")], tmp_path, "t-1", (".codex", "prompts")
+    )
+    assert paths == [tmp_path / ".codex" / "prompts" / "babysit-ci.md"]
+    assert paths[0].read_text().startswith("---\ndescription: Watch CI.\n---\n")

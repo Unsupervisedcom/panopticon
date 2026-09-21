@@ -5,9 +5,13 @@ from __future__ import annotations
 import pytest
 
 from panopticon.core.models import (
+    Actor,
     ContainerStatus,
     LifecyclePhase,
+    Repo,
+    Task,
     compose_container_status,
+    resolve_agent_cli,
 )
 
 
@@ -72,3 +76,27 @@ def test_a_reported_phase_shows_through(phase: LifecyclePhase, expected: str) ->
 def test_claimed_live_runner_no_phase_no_registration_is_down() -> None:
     # Came up and vanished (reconcile cleared the phase), or never reported one.
     assert _compose(phase=None) == "down"
+
+
+# -- agent-CLI selection (ADR 0014 §3) --------------------------------------------------
+
+
+def test_repo_defaults_to_claude_and_task_override_is_null() -> None:
+    repo = Repo(id="r1", name="r", git_url="https://x/r.git")
+    assert repo.agent_cli == "claude"
+    task = Task(id="t1", repo_id="r1", workflow="spike", state="PLANNING", turn=Actor.AGENT)
+    assert task.agent_cli is None  # None = "use the repo default"
+
+
+@pytest.mark.parametrize(
+    ("task_cli", "repo_cli", "expected"),
+    [
+        (None, "claude", "claude"),  # no override → repo default
+        (None, "codex", "codex"),  # repo default flows through
+        ("codex", "claude", "codex"),  # task override wins over the repo default
+        ("claude", "codex", "claude"),  # override wins even when it re-selects the base default
+        (None, None, "claude"),  # neither set → the "claude" fallback
+    ],
+)
+def test_resolve_agent_cli_order(task_cli: str | None, repo_cli: str | None, expected: str) -> None:
+    assert resolve_agent_cli(task_cli, repo_cli) == expected

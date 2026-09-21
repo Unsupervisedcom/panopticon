@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from panopticon.terminal.__main__ import main
 
 
@@ -54,7 +56,7 @@ def test_doctor_dispatches_to_the_checker_and_returns_its_code() -> None:
 def test_host_runs_migrate_then_sessions() -> None:
     with (
         patch("panopticon.terminal.__main__._run_migrate") as mock_migrate,
-        patch("panopticon.terminal.__main__._start_sessions") as mock_sessions,
+        patch("panopticon.terminal.__main__.start_sessions") as mock_sessions,
     ):
         assert main(["host"]) == 0
     mock_migrate.assert_called_once_with()
@@ -64,7 +66,7 @@ def test_host_runs_migrate_then_sessions() -> None:
 def test_no_arg_aliases_start() -> None:
     with (
         patch("panopticon.terminal.__main__._run_migrate") as mock_migrate,
-        patch("panopticon.terminal.__main__._start_sessions") as mock_sessions,
+        patch("panopticon.terminal.__main__.start_sessions") as mock_sessions,
         patch("panopticon.terminal.console.run_console_local") as mock_console,
     ):
         assert main([]) == 0
@@ -76,7 +78,7 @@ def test_no_arg_aliases_start() -> None:
 def test_start_runs_migrate_sessions_then_console() -> None:
     with (
         patch("panopticon.terminal.__main__._run_migrate") as mock_migrate,
-        patch("panopticon.terminal.__main__._start_sessions") as mock_sessions,
+        patch("panopticon.terminal.__main__.start_sessions") as mock_sessions,
         patch("panopticon.terminal.console.run_console_local") as mock_console,
     ):
         assert main(["start"]) == 0
@@ -90,8 +92,29 @@ def test_start_with_a_task_arg_joins_it() -> None:
     # `panopticon start <task>` threads the task ref through to the console as `join=`.
     with (
         patch("panopticon.terminal.__main__._run_migrate"),
-        patch("panopticon.terminal.__main__._start_sessions"),
+        patch("panopticon.terminal.__main__.start_sessions"),
         patch("panopticon.terminal.console.run_console_local") as mock_console,
     ):
         assert main(["start", "fix-login"]) == 0
     assert mock_console.call_args.kwargs["join"] == "fix-login"
+
+
+def test_restart_dispatches_the_default_targets() -> None:
+    # No target → the command decides (service + runner); `_run_migrate` is threaded in so a
+    # restart after a code pull applies any new migration before the service comes back.
+    with patch("panopticon.terminal.__main__.restart_sessions", return_value=0) as mock_restart:
+        assert main(["restart"]) == 0
+    assert mock_restart.call_args.args[0] == []
+    assert mock_restart.call_args.kwargs["service_url"]
+    assert mock_restart.call_args.kwargs["migrate"] is not None
+
+
+def test_restart_passes_named_targets_through_and_returns_its_code() -> None:
+    with patch("panopticon.terminal.__main__.restart_sessions", return_value=1) as mock_restart:
+        assert main(["restart", "runner", "dashboard"]) == 1
+    assert mock_restart.call_args.args[0] == ["runner", "dashboard"]
+
+
+def test_restart_rejects_an_unknown_target() -> None:
+    with pytest.raises(SystemExit):  # argparse rejects it before anything is bounced
+        main(["restart", "containers"])

@@ -90,3 +90,23 @@ async def test_quiet_wait_times_out_without_changing_the_version(tmp_path: Path)
         resp = await http.get("/tasks", params={"wait": 0.1, "since": version})
         assert resp.status_code == 200
         assert int(resp.headers[TASKS_VERSION_HEADER]) == version
+
+
+async def test_writing_an_artifact_wakes_a_parked_long_poll(tmp_path: Path) -> None:
+    # Artifacts are files, not store rows, so writing one bumps no stored version of its own —
+    # but the listing reports has_artifacts, so the write has to wake the feed or the mark
+    # wouldn't appear until some unrelated mutation happened to come along.
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    async with _client(svc) as http:
+        version = int((await http.get("/tasks")).headers[TASKS_VERSION_HEADER])
+
+        waiter = asyncio.ensure_future(http.get("/tasks", params={"wait": 5, "since": version}))
+        await asyncio.sleep(0.05)
+        assert not waiter.done()
+
+        await svc.put_artifact(task.id, "plan.md", b"# Plan")
+
+        resp = await asyncio.wait_for(waiter, timeout=1)
+        assert int(resp.headers[TASKS_VERSION_HEADER]) > version
+        assert resp.json()[0]["has_artifacts"] is True

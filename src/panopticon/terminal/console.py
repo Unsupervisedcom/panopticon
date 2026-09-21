@@ -159,7 +159,25 @@ def make_runner_switch(
     )
 
 
-def _service_ready(service_url: str) -> bool:
+def dashboard_command(service_url: str, switch_file: Path) -> list[str]:
+    """The argv the `dashboard` tmux session runs.
+
+    Shared by the supervisor (which starts it) and
+    :func:`~panopticon.terminal.sessions.restart_sessions` (which relaunches it), so a restarted
+    dashboard is launched byte-identically to a started one."""
+    return [
+        sys.executable,
+        "-m",
+        "panopticon.terminal",
+        "--service-url",
+        service_url,
+        "dashboard",
+        "--switch-file",
+        str(switch_file),
+    ]
+
+
+def service_ready(service_url: str) -> bool:
     """Whether the task service answers its health check (gates the dashboard on startup)."""
     try:
         return httpx.get(f"{service_url.rstrip('/')}/healthz", timeout=1.0).status_code == 200
@@ -170,7 +188,7 @@ def _service_ready(service_url: str) -> bool:
 def wait_for_service(
     service_url: str,
     *,
-    ready: Callable[[str], bool] = _service_ready,
+    ready: Callable[[str], bool] = service_ready,
     sleep: Callable[[float], None] = time.sleep,
     attempts: int = 150,
     interval: float = 0.2,
@@ -265,16 +283,7 @@ def run_console_local(
             print(f"no running container for task '{join}'; opening the dashboard", file=sys.stderr)
     switch_file = switch_file_path(socket)
     switch_file.parent.mkdir(parents=True, exist_ok=True)
-    dashboard = [
-        sys.executable,
-        "-m",
-        "panopticon.terminal",
-        "--service-url",
-        service_url,
-        "dashboard",
-        "--switch-file",
-        str(switch_file),
-    ]
+    dashboard = dashboard_command(service_url, switch_file)
 
     def _tmux(*args: str) -> subprocess.CompletedProcess[bytes]:
         return subprocess.run(["tmux", "-L", socket, *args], check=False)

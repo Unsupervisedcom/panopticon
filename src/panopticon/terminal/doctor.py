@@ -8,7 +8,7 @@ code when a required prerequisite is missing, so a fresh install can self-diagno
 
 Deliberately scoped to *required binaries* — it does not inspect credential/config readiness
 (the secrets env-file, ``CLAUDE_CODE_OAUTH_TOKEN``, ``GH_TOKEN``), the task-service port, or the
-``panopticon-base`` image (the spawn path auto-builds it). Dev tooling (``uv``/``make``) is not a
+``panopticon-base-<cli>`` image (the spawn path auto-builds it). Dev tooling (``uv``/``make``) is not a
 prerequisite for a pip install.
 
 Pure and injectable (the binary probe, the command runner and the interpreter version are all

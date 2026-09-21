@@ -11,18 +11,22 @@ The task table, the repo table (`g`), and the `OptionList` pickers (`n`'s repo/w
 `a`'s artifact list) all accept vim-style `h`/`j`/`k`/`l` as well as the arrow keys.
 
 The footer legend shows only the essential, most-used keys — `t` hands off to the task's
-container tmux, `n` creates a task (pick repo → workflow → describe the work), `x` **drops** it,
-`/` searches, `d` **toggles the detail pane** (hidden by default so the table gets the full
-width, press to reveal it), `q` quits, and `?` opens the **help screen** (a modal listing every key). The
+container tmux, `n` creates a task (pick repo → workflow → describe the work — `ctrl+a` on the
+memo prompt attaches local files as the new task's artifacts), `x` **drops** it,
+`/` searches, `d` opens the **task detail** as a modal (identity, state/turn, history — Escape to
+close), `q` quits, and `?` opens the **help screen** (a modal listing every key). The
 rest still work but are hidden from the legend (both the footer bindings and `HelpScreen` derive
 from the single ``HOTKEYS`` keymap): `r` refreshes from the task service over REST, `R` **respawns**
 a down task (releases its claim so the host runner re-spawns it), `p` opens the task's `url` in the
 browser (cloude-cade's `p` "open PR"), `g` opens the **repo config screen** (list / create / edit
-repos — and it **opens automatically on start when no repos are configured**, the first-run
-nudge to add one), `s` switches to the task-service session, and `a` opens a modal listing the task's
-artifacts — Enter opens the selected
-one with the host's default handler (`xdg-open`/`open`) by fetching it over REST to a temp file, `e`
-opens the on-disk file in place when the dashboard shares the artifact store, `y` **copies the
+repos, `a` for a repo's artifacts — and it **opens automatically on start when no repos are
+configured**, the first-run nudge to add one), `s` switches to the task-service session, and `a`
+opens a modal listing the task's artifacts — Enter opens the selected one with the host's default
+handler (`xdg-open`/`open`) by fetching it over REST to a temp file, `e` opens the on-disk file in
+place when the dashboard shares the artifact store, and `f` opens the task's artifact **folder**
+in the host's file manager. `A` opens the task's **repo** artifacts — the documents every task in
+that repo shares, in their own modal, with the same keys scoped to the repo (its `f` opens the
+repo's artifact folder). `y` **copies the
 task's slug** and `Y` its **id** to the clipboard (OSC 52 + the host's `pbcopy`/`xclip`/`wl-copy`,
 so it works on Linux and macOS). Drop is the only state
 *transition* the dashboard drives: every other transition starts a new agentic turn, so it's
@@ -40,6 +44,11 @@ single dim placeholder row (its slug cell renders ``...``); pressing `Enter` aga
 Arrow keys skip the ensemble row (it is not a real task). Expanding or collapsing does not affect the task service — it is pure
 display state local to the dashboard.
 
+The `❏ ➚` **marks column** (left of `slug[memo]`, its header doubling as the legend) flags what a
+task carries: `❏` when it has at least one unhidden artifact (`a` lists them — dotfile artifacts
+are agent bookkeeping and don't count) and `➚` when it has a `url` (`p` opens it). Each mark keeps
+its own slot, so they read as two vertical rails rather than shifting per row.
+
 The `container` column shows each task's container status: `live` (an active registration), `down`
 (was up, container gone — respawn with `R`), `starting` (claimed, no registration yet — its
 container is still coming up), `healing` (the runner is self-healing an orphan), or `–` (unclaimed
@@ -55,6 +64,7 @@ to Textual workers is a refinement (docs/design/BACKLOG.md).
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import functools
 import os
@@ -68,7 +78,8 @@ import time
 import webbrowser
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
+from math import ceil
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -77,9 +88,10 @@ from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult, SuspendNotSupported
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
+from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import (
     Checkbox,
@@ -99,7 +111,10 @@ from textual.widgets._select import NoSelection as _SelectNoSelection
 from textual.worker import get_current_worker
 
 from panopticon.client import JsonObj, TaskServiceClient
+from panopticon.core.artifacts import InvalidArtifactName, is_hidden, validate_segment
 from panopticon.core.dirs import ARTIFACTS_DIR
+from panopticon.core.features import codex_enabled
+from panopticon.core.models import resolve_agent_cli
 from panopticon.core.state import TERMINAL_LABELS
 from panopticon.sessionservice.local_runner import session_name
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
@@ -108,22 +123,39 @@ from panopticon.terminal.setup_repo_task import create_setup_repo_task
 
 def _make_sort_key(
     by_updated: bool = False,
-) -> Callable[[JsonObj], tuple[bool, bool, float, str]]:
+    now: datetime | None = None,
+) -> Callable[[JsonObj], tuple[int, bool, int, float, str]]:
     """Return a sort key function for the task table.
 
-    1. non-terminal before terminal — COMPLETE/DROPPED sink to the bottom.
+    1. section: active (0) before snoozed-active roots (1) before terminal (2). An actively
+       snoozed, ungoverned task is not demanding attention, so it sinks to the end of the active
+       section — after ordinary non-terminal tasks but still above COMPLETE/DROPPED. Requires
+       ``now`` (the display clock); with ``now=None`` no task is treated as snoozed, so the section
+       collapses to the original active-before-terminal split. Governed children are exempt so an
+       ensemble is never split by a child's snooze — they stay adjacent to their governor via the
+       later grouping step.
     2. turn priority: for active tasks the user's turn comes first (operator action needed);
        for terminal tasks the agent's turn comes first (task just finished).
-    3. timestamp:
+    3. sort_weight: an operator-set priority (default 0) descending — a higher weight rises first.
+       Ranks below state/turn but above the timestamp, so it reorders within a section+turn group
+       without pulling a task out of it. Ties fall back to the timestamp.
+    4. timestamp:
        - Active, ``by_updated=False`` (default): ``created_at`` descending — newest first
          (stable: ``created_at`` never changes, so rows don't reorder when a task updates).
        - Active, ``by_updated=True``: ``updated_at`` descending — most recently updated rises first.
        - Terminal (always): ``updated_at`` descending — most recently completed rises first.
-    4. id as a stable tiebreaker.
+    5. id as a stable tiebreaker.
     """
 
-    def key(task: JsonObj) -> tuple[bool, bool, float, str]:
+    def key(task: JsonObj) -> tuple[int, bool, int, float, str]:
         is_terminal = task["state"] in TERMINAL_LABELS
+        is_snoozed_root = (
+            not is_terminal
+            and now is not None
+            and not task.get("governor_task_id")
+            and _snooze_label(task, now) is not None
+        )
+        section = 2 if is_terminal else int(is_snoozed_root)  # 0 active, 1 snoozed root, 2 terminal
         turn_first = "agent" if is_terminal else "user"
         turn_after_priority = task["turn"] != turn_first  # False (priority) sorts before True
         if is_terminal or by_updated:
@@ -140,26 +172,14 @@ def _make_sort_key(
             except ValueError:
                 ts = 0.0
         return (
-            is_terminal,  # False (active) before True (terminal)
+            section,  # 0 active, 1 snoozed-active root, 2 terminal
             turn_after_priority,  # priority turn sorts first within each section
+            -int(task.get("sort_weight") or 0),  # higher weight sorts first (below turn, above ts)
             ts,
             task["id"],  # stable tiebreaker
         )
 
     return key
-
-
-def _short_tokens(n: int | None) -> str:
-    """A token count in short human form for the table: ``None``/0 (not yet reported) → ``-``,
-    under 1000 shown as-is (``300``), otherwise scaled to ``K``/``M``/``B`` to one decimal
-    (``1.2K``, ``1.1M``). Plain ``str`` — the output has no markup-special chars (unlike the
-    slug cell), so Textual renders it verbatim."""
-    if not n:
-        return "-"
-    for limit, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")):
-        if n >= limit:
-            return f"{n / limit:.1f}{suffix}"
-    return str(n)
 
 
 # Row-key prefix for ensemble placeholder rows. When the operator collapses a governing task
@@ -174,6 +194,32 @@ def _dim(cell: Text | str) -> Text:
     t = Text(cell if isinstance(cell, str) else cell.plain)
     t.stylize("dim")
     return t
+
+
+# The task-list marks column: one glyph per slot, separated by a space, so each mark reads down
+# its own vertical line (slot 1 artifact, slot 2 link) and a row missing one doesn't shift the
+# other.
+#
+# Both glyphs are East_Asian_Width=Neutral with no emoji presentation form, i.e. exactly one cell
+# in every terminal. That is the whole reason for these two rather than 📁/🔗: emoji are
+# Width=Wide (two cells, and fonts disagree on the details), which would make the column's width
+# depend on the viewer. Keep any replacement in the same class — `⚠`/`✓` elsewhere in this file
+# are the other examples.
+_ARTIFACT_MARK = "❏"  # U+274F, has at least one unhidden artifact (`a` lists them)
+_LINK_MARK = "➚"  # U+279A, has a url (`p` opens it)
+_MARKS_LABEL = f"{_ARTIFACT_MARK} {_LINK_MARK}"  # the header doubles as the legend
+_MARKS_HEADER = Text(_MARKS_LABEL)
+
+
+def _marks_cell(task: JsonObj) -> Text:
+    """The marks column: ``❏`` when the task has an unhidden artifact, ``➚`` when it has a url.
+
+    Always three cells wide (mark, gap, mark) — an absent mark renders as a space rather than
+    collapsing — so the two marks stay in their own columns and the cell width can't vary by
+    row."""
+    artifact = _ARTIFACT_MARK if task.get("has_artifacts") else " "
+    link = _LINK_MARK if task.get("url") else " "
+    return Text(f"{artifact} {link}", style="dim")
 
 
 def _slug_cell(task: JsonObj, prefix: str = "") -> Text:
@@ -314,7 +360,64 @@ def _matches(task: JsonObj, query: str) -> bool:
 # Turn-column colors, matching cloude-cade's dashboard ball tags: agent=green,
 # user=yellow, blocked=red. Blocked takes precedence (cloude-cade draws it as its own
 # red tag); here it keeps the turn value but appends ⚠ and colors the whole cell red.
-def _turn_cell(task: JsonObj) -> Text:
+# Fixed operator snooze controls: `e` means "not today"; `E` records the reserved sticky value.
+# A snooze always mutes until it expires — there is no attention/piercing here (that field was
+# deliberately dropped from this fork), so the turn-column precedence is just: snoozed > normal.
+_SNOOZE_DURATION = timedelta(hours=12)
+_INDEFINITE_SNOOZE_UNTIL = "9999-12-31T23:59:59+00:00"
+
+
+def _snooze_remaining(task: JsonObj, now: datetime) -> float | None:
+    """Active seconds remaining; +inf for the reserved sticky deadline; None if inactive."""
+    raw = task.get("snoozed_until")
+    if not isinstance(raw, str):
+        return None
+    if raw == _INDEFINITE_SNOOZE_UNTIL:
+        return float("inf")
+    try:
+        deadline = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    seconds = (deadline - now).total_seconds()
+    if seconds <= 0:
+        return None
+    return seconds
+
+
+def _snooze_label(task: JsonObj, now: datetime) -> str | None:
+    """The active snooze label at ``now``; expired or invalid facts are inactive (None)."""
+    seconds = _snooze_remaining(task, now)
+    if seconds is None:
+        return None
+    if seconds == float("inf"):
+        return "snoozed"
+    if seconds < 60:
+        remaining = "<1m"
+    elif seconds < 3600:
+        remaining = f"{ceil(seconds / 60)}m"
+    else:
+        remaining = f"{ceil(seconds / 3600)}h"
+    return f"snoozed · {remaining} left"
+
+
+def _snooze_refresh_delay(task: JsonObj, now: datetime) -> float | None:
+    """Seconds until a finite snooze's displayed duration changes or expires (None if none)."""
+    seconds = _snooze_remaining(task, now)
+    if seconds is None or seconds == float("inf"):
+        return None
+    if seconds < 60:
+        return seconds
+    unit = 60 if seconds < 3600 else 3600
+    return max(0.05, seconds - (ceil(seconds / unit) - 1) * unit)
+
+
+def _turn_cell(task: JsonObj, now: datetime | None = None) -> Text:
+    if now is not None and (label := _snooze_label(task, now)) is not None:
+        return Text(label, style="dim")
     if task.get("blocked"):
         return Text(f"{task['turn']} ⚠", style="red")
     color = "green" if task["turn"] == "agent" else "yellow"
@@ -376,6 +479,8 @@ def render_detail(task: JsonObj) -> str:
         f"id: {task['id']}",
         f"state: {task['state']}    turn: {turn}    workflow: {task['workflow']}{claim}",
     ]
+    if cli := task.get("agent_cli_resolved"):
+        lines.append(f"cli: {cli}")
     status = task.get("container_status")
     if status:
         detail = task.get("lifecycle_detail")
@@ -384,10 +489,6 @@ def render_detail(task: JsonObj) -> str:
         lines += ["", task["memo"]]
     if task.get("url"):
         lines += ["", f"url: {task['url']}"]
-    if task.get("tokens_used") or task.get("token_estimate"):
-        used = _short_tokens(task.get("tokens_used"))
-        est = _short_tokens(task.get("token_estimate"))
-        lines += ["", f"tokens (wt): {used} used / {est} est"]
     lines += ["", "history:"]
     for entry in task.get("history") or []:
         line = f"  {entry['from_state'] or '∅'} → {entry['to_state']}"
@@ -404,6 +505,47 @@ def _open_command() -> str:
     """The host's "open this file with its default handler" command: `open` on macOS,
     `xdg-open` elsewhere (Linux + other freedesktop desktops)."""
     return "open" if sys.platform == "darwin" else "xdg-open"
+
+
+def _artifact_path_candidates(raw: str) -> list[str]:
+    """Ordered, de-duplicated interpretations of an artifact-path field value, most-literal first.
+
+    Terminals hand paths over shell-quoted — dragging a file in, or tab-completing a name with a
+    space, yields ``'my notes.md'`` / ``"my notes.md"`` / ``my\\ notes.md`` rather than the bare
+    path. A literal ``Path("'my notes.md'")`` never matches the real file, so the caller tries each
+    candidate in turn and takes the first that names a file that actually exists. Candidates, in
+    priority order:
+
+    1. ``raw`` verbatim — the ordinary unquoted path, including one with legitimate interior spaces,
+       so a path that already exists as typed is never mangled by the interpretations below.
+    2. ``raw.strip()`` — stray whitespace from a paste.
+    3. When the stripped value is wrapped in a **matching** single- or double-quote pair, its inner
+       content and that content stripped (the "quoted ... spaces stripped" case).
+    4. ``shlex.split`` when it yields exactly one token — handles both quote styles *and*
+       backslash-escaped spaces; a multi-token split (an unquoted ``a b.md``) is ignored so we never
+       silently pick just ``a``, and an unbalanced quote (``ValueError``) is skipped.
+    """
+    candidates: list[str] = [raw]
+    stripped = raw.strip()
+    candidates.append(stripped)
+    for quote in ("'", '"'):
+        if len(stripped) >= 2 and stripped[0] == quote and stripped[-1] == quote:
+            inner = stripped[1:-1]
+            candidates.append(inner)
+            candidates.append(inner.strip())
+    try:
+        tokens = shlex.split(stripped)
+    except ValueError:
+        tokens = []
+    if len(tokens) == 1:
+        candidates.append(tokens[0])
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for c in candidates:
+        if c.strip() and c not in seen:
+            seen.add(c)
+            ordered.append(c)
+    return ordered
 
 
 def _open_path(path: str) -> None:
@@ -488,6 +630,22 @@ def _open_via_rest(client: TaskServiceClient, task_id: str, name: str, tmpdir: s
     (cleaned on exit), so opens don't leak a directory each."""
     content = client.get_artifact(task_id, name)
     path = Path(tmpdir) / task_id / Path(name).name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    _open_path(str(path))
+
+
+def _open_repo_artifact_via_rest(
+    client: TaskServiceClient, repo_id: str, name: str, tmpdir: str
+) -> None:
+    """:func:`_open_via_rest` for a **repo** artifact: fetch it over REST, write it under
+    ``tmpdir``, then open that — so it works when the dashboard is remote from the artifact store.
+
+    The scratch copy keeps the artifact's **whole relative name** rather than just its basename:
+    repo artifact names may be nested, and two subdirectories can legitimately hold the same file
+    name (``api/notes.md`` and ``ui/notes.md``), which flattening would collide."""
+    content = client.get_repo_artifact(repo_id, name)
+    path = Path(tmpdir) / "repos" / repo_id / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
     _open_path(str(path))
@@ -598,6 +756,10 @@ class MemoTextArea(TextArea):
             event.prevent_default()
             event.stop()  # set the memo without submitting it as an initial prompt
             self.screen.action_set_only()  # type: ignore[attr-defined]
+        elif event.key == "ctrl+a":
+            event.prevent_default()
+            event.stop()  # open the attach-files modal rather than the TextArea's own ctrl+a
+            self.screen.action_attach_files()  # type: ignore[attr-defined]
         else:
             await super()._on_key(event)
 
@@ -606,12 +768,15 @@ class MemoTextArea(TextArea):
         self.styles.height = min(lines, self.MAX_LINES)
 
 
-class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
+class MemoScreen(ModalScreen["tuple[str, bool, dict[str, str]] | None"]):
     """Memo prompt for task creation.
 
-    Dismisses ``(text, submit)`` where ``submit`` says whether to deliver the memo as the
-    agent's initial prompt, or ``None`` on cancel (Escape). **Enter always submits** the memo
-    as an initial prompt; **ctrl+s sets the memo without submitting** it (an unsent paste).
+    Dismisses ``(text, submit, artifacts_b64)`` where ``submit`` says whether to deliver the memo as
+    the agent's initial prompt and ``artifacts_b64`` is a ``name → base64`` map of files attached via
+    ``ctrl+a`` (base64 so binary files like screenshots seed intact), or ``None`` on cancel
+    (Escape). **Enter always submits** the memo as an initial
+    prompt; **ctrl+s sets the memo without submitting** it (an unsent paste); **ctrl+a** opens the
+    attach-files modal (:class:`ArtifactsScreen`).
 
     Uses :class:`MemoTextArea` so Enter submits rather than inserting a newline — same UX
     as the original single-line ``Input``, but the field can display multi-line content
@@ -622,32 +787,67 @@ class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
     #memo-box { width: 64; height: auto; padding: 1 2; border: round $accent; background: $surface; }
     #memo-box MemoTextArea { height: 1; margin-bottom: 1; }
     #memo-box .memo-hint { color: $text-muted; }
+    #memo-attached { color: $text-muted; }
     """
     BINDINGS = [
         ("escape", "cancel", "Cancel"),
         ("ctrl+g", "edit_in_editor", "Edit"),
         ("ctrl+s", "set_only", "Set"),
+        ("ctrl+a", "attach_files", "Attach files"),
         ("enter", "submit", "Create"),
     ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        # name → (source path, raw bytes) for the files the operator attaches via ctrl+a. Keyed by
+        # the artifact name (the path's basename) so a re-attach of the same name overwrites. Bytes,
+        # not text, so binary files (screenshots, PDFs) attach intact.
+        self._artifacts: dict[str, tuple[str, bytes]] = {}
 
     def compose(self) -> ComposeResult:
         with Vertical(id="memo-box"):
             yield MemoTextArea(compact=True)
+            yield Label("", id="memo-attached")
             yield Label("enter: submit", classes="memo-hint")
             yield Label("ctrl+s: set without submitting", classes="memo-hint")
             yield Label("ctrl+g: edit in $EDITOR", classes="memo-hint")
+            yield Label("ctrl+a: attach files as artifacts", classes="memo-hint")
 
     def on_mount(self) -> None:
         self.query_one(MemoTextArea).focus()
+        self._refresh_attached()
+
+    def _refresh_attached(self) -> None:
+        """Update the "attached" line summarising the files the operator has queued."""
+        label = self.query_one("#memo-attached", Label)
+        n = len(self._artifacts)
+        label.update("" if n == 0 else f"attached: {', '.join(sorted(self._artifacts))}")
+        label.display = n > 0
+
+    def _artifacts_b64(self) -> dict[str, str]:
+        # base64 the raw bytes for the create wire — JSON can't carry raw bytes (a binary artifact).
+        return {
+            name: base64.b64encode(content).decode()
+            for name, (_path, content) in self._artifacts.items()
+        }
 
     def action_submit(self) -> None:
-        self.dismiss((self.query_one(MemoTextArea).text, True))
+        self.dismiss((self.query_one(MemoTextArea).text, True, self._artifacts_b64()))
 
     def action_set_only(self) -> None:
-        self.dismiss((self.query_one(MemoTextArea).text, False))
+        self.dismiss((self.query_one(MemoTextArea).text, False, self._artifacts_b64()))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+    def action_attach_files(self) -> None:
+        def done(artifacts: dict[str, tuple[str, bytes]] | None) -> None:
+            if artifacts is not None:
+                self._artifacts = artifacts
+                self._refresh_attached()
+            self.query_one(MemoTextArea).focus()
+
+        self.app.push_screen(ArtifactsScreen(dict(self._artifacts)), done)
 
     def action_edit_in_editor(self) -> None:
         ta = self.query_one(MemoTextArea)
@@ -659,6 +859,103 @@ class MemoScreen(ModalScreen["tuple[str, bool] | None"]):
             return
         ta.load_text(result)
         ta.focus()
+
+
+class ArtifactsScreen(ModalScreen["dict[str, tuple[str, bytes]] | None"]):
+    """Attach-files modal reached from :class:`MemoScreen` with ``ctrl+a``.
+
+    Lets the operator queue local files to seed as the new task's artifacts: type a path + Enter
+    to add one (read now, from the dashboard host), select a queued file + Enter to remove it.
+    Files are read as raw bytes, so binary files (screenshots, PDFs) attach intact.
+    Escape dismisses the ``name → (path, bytes)`` map back to the memo screen (which reopens with
+    the queue preserved); the map is keyed by the artifact **name** (the path's basename), so
+    attaching two paths with the same basename keeps the latter.
+
+    Works on a copy of the memo screen's queue, so cancelling (there is no cancel — Escape commits
+    the edits) is moot; the queue only ever grows or shrinks explicitly."""
+
+    CSS = """
+    ArtifactsScreen { align: center middle; }
+    #artifacts-box { width: 72; height: auto; max-height: 80%; padding: 1 2; border: round $accent; background: $surface; }
+    #artifacts-box Input { margin-bottom: 1; }
+    #artifacts-list { height: auto; max-height: 12; margin-bottom: 1; }
+    #artifacts-error { color: $error; }
+    #artifacts-box .artifacts-hint { color: $text-muted; }
+    """
+    BINDINGS = [("escape", "done", "Done")]
+
+    def __init__(self, artifacts: dict[str, tuple[str, bytes]]) -> None:
+        super().__init__()
+        self._artifacts = artifacts
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="artifacts-box"):
+            yield Label("attach files")
+            yield Input(
+                placeholder="path to a file (quotes ok) — enter to add", id="artifacts-path"
+            )
+            yield _VimOptionList(id="artifacts-list")
+            yield Static("", id="artifacts-error")
+            yield Label(
+                "path + enter: add · select + enter: remove · esc: done", classes="artifacts-hint"
+            )
+
+    def on_mount(self) -> None:
+        self._rebuild_list()
+        self.query_one("#artifacts-path", Input).focus()
+
+    def _rebuild_list(self) -> None:
+        option_list = self.query_one("#artifacts-list", OptionList)
+        option_list.clear_options()
+        for name in sorted(self._artifacts):
+            path, _content = self._artifacts[name]
+            option_list.add_option(f"{name}  ←  {path}")
+
+    def _set_error(self, message: str) -> None:
+        self.query_one("#artifacts-error", Static).update(message)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        raw = event.value.strip()
+        if not raw:
+            return
+        # Try each interpretation of the (possibly shell-quoted) input and take the first that
+        # names a file that actually exists; a candidate whose resolution raises is just skipped.
+        resolved: Path | None = None
+        for candidate in _artifact_path_candidates(event.value):
+            try:
+                path = Path(candidate).expanduser().resolve()
+            except OSError:
+                continue
+            if path.is_file():
+                resolved = path
+                break
+        if resolved is None:
+            self._set_error(f"not a file: {raw}")
+            return
+        name = resolved.name
+        try:
+            validate_segment(name)
+        except InvalidArtifactName:
+            self._set_error(f"invalid artifact name: {name!r}")
+            return
+        try:
+            content = resolved.read_bytes()
+        except OSError as exc:
+            self._set_error(f"can't read {raw}: {exc}")
+            return
+        self._artifacts[name] = (str(resolved), content)
+        self._set_error("")
+        self.query_one("#artifacts-path", Input).value = ""
+        self._rebuild_list()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        name = str(event.option.prompt).split("  ←  ", 1)[0]
+        self._artifacts.pop(name, None)
+        self._set_error("")
+        self._rebuild_list()
+
+    def action_done(self) -> None:
+        self.dismiss(self._artifacts)
 
 
 def _repo_name_from_git_url(url: str) -> str:
@@ -827,6 +1124,94 @@ class EnvFileField(Widget):
         if event.select.id != "env-file-select":
             return
         inp = self.query_one("#env-file-input", Input)
+        if event.value == self._CUSTOM:
+            inp.display = True
+            inp.focus()
+        else:
+            inp.display = False
+
+
+def _list_secrets_dirs() -> list[str]:
+    """Return the sorted **names** (relative to the secrets dir) of directories in the secrets dir.
+
+    A ``credential_dir`` is stored relative to the secrets dir so it resolves on whichever host
+    runs the task (mirrors :func:`_list_secrets_files` but filters for directories)."""
+    from panopticon.core.dirs import _secrets_dir
+
+    secrets_dir = _secrets_dir()
+    if not secrets_dir.is_dir():
+        return []
+    return sorted(p.name for p in secrets_dir.iterdir() if p.is_dir())
+
+
+class CredentialDirField(Widget):
+    """Credential-dir picker for the repo form (ChatGPT-subscription / rotating-token auth).
+
+    Mirrors :class:`EnvFileField` but lists **directory names** found in the config secrets dir
+    (``~/.config/panopticon/secrets/``). The stored value is always a **name relative to the
+    secrets dir** (so it resolves on whichever host runs the task, ADR 0007); the custom input
+    accepts an absolute or relative path and normalizes it to that relative name on read (see
+    :func:`~panopticon.core.dirs.relativize_credential_dir`).
+    """
+
+    DEFAULT_CSS = """
+    CredentialDirField { margin-bottom: 1; height: auto; }
+    CredentialDirField #credential-dir-input { margin-top: 1; }
+    """
+
+    _CUSTOM = "__custom__"
+
+    def __init__(self, initial: str = "", id: str | None = None) -> None:
+        super().__init__(id=id)
+        self._initial = initial
+        self._known = _list_secrets_dirs()
+
+    def compose(self) -> ComposeResult:
+        known_set = set(self._known)
+        options: list[tuple[str, str]] = [(p, p) for p in self._known]
+        options.append(("enter custom path…", self._CUSTOM))
+        is_custom = bool(self._initial and self._initial not in known_set)
+        yield Select(
+            options,
+            prompt="credential_dir (directory name in secrets dir or custom path)",
+            allow_blank=True,
+            value=self._initial if (self._initial and not is_custom) else Select.NULL,
+            id="credential-dir-select",
+        )
+        inp = Input(
+            value=self._initial if is_custom else "",
+            placeholder="openai.d (or a path — normalized to a secrets-dir name)",
+            id="credential-dir-input",
+        )
+        inp.display = is_custom
+        yield inp
+
+    @property
+    def credential_dir_value(self) -> str:
+        """The stored ``credential_dir`` **name** (relative to the secrets dir), or ``""`` unset.
+
+        A dropdown pick is already a bare name; a custom entry is normalized via
+        :func:`~panopticon.core.dirs.relativize_credential_dir`."""
+        from panopticon.core.dirs import relativize_credential_dir
+
+        try:
+            sel = self.query_one("#credential-dir-select", Select)
+        except NoMatches:
+            return ""
+        v = sel.value
+        if isinstance(v, _SelectNoSelection) or v == self._CUSTOM:
+            try:
+                return relativize_credential_dir(
+                    self.query_one("#credential-dir-input", Input).value
+                )
+            except NoMatches:
+                return ""
+        return str(v)
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id != "credential-dir-select":
+            return
+        inp = self.query_one("#credential-dir-input", Input)
         if event.value == self._CUSTOM:
             inp.display = True
             inp.focus()
@@ -1006,7 +1391,10 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
 
     Two tabs: **general** (git URL, id, name, base branch, env file, image layer, hook file,
     privileged docker) and **workflows** (a per-workflow opt-in/opt-out checklist). Both tabs'
-    values are collected on save — submitting from either tab captures everything.
+    values are collected on save — submitting from either tab captures everything. Both panes
+    **scroll** when the terminal is too short to show every field (the general tab needs ~40
+    rows): the scrollbar is the affordance that the fields below the fold exist, and Tab/Shift-Tab
+    scrolls the focused field into view.
 
     **Space toggles checkboxes; Enter saves the form** from any field. The :class:`SpaceCheckbox`
     subclass drops the default ``enter`` binding so Enter always bubbles up to the screen's save
@@ -1019,10 +1407,15 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
 
     CSS = """
     RepoFormScreen { align: center middle; }
-    #repo-form { width: 72; height: 80%; padding: 1 2; border: round $accent; background: $surface; }
+    #repo-form { width: 72; max-width: 100%; height: 80%; padding: 1 2; border: round $accent; background: $surface; }
     #repo-form Input { margin-bottom: 1; }
     #repo-form Checkbox { margin-bottom: 1; }
     #form-tabs { height: 1fr; }
+    /* TabbedContent's ContentSwitcher and TabPane both default to height:auto, so a pane taller
+       than the modal is silently clipped with no scrollbar. Pin both to the tab area's height and
+       let the general pane scroll, so every field stays reachable on a short terminal. */
+    #form-tabs ContentSwitcher { height: 1fr; }
+    #pane-general { height: 1fr; overflow-y: auto; }
     #pane-workflows { height: 1fr; }
     #wf-scroll { height: 1fr; }
     #wf-scroll SpaceCheckbox { margin-bottom: 0; }
@@ -1043,8 +1436,9 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
 
     # git_url leads (the auto-fill source); the rest follow. ``id`` is rendered between git_url
     # and these, separately, since it's editable only in create mode. ``env_file`` is rendered
-    # as an EnvFileField (dropdown + custom-path input) rather than a plain Input.
-    FIELDS = ("git_url", "name", "default_base")
+    # as an EnvFileField (dropdown + custom-path input) rather than a plain Input. ``agent_cli``
+    # is conditional — see ``_fields`` — so the form's fields are instance state, not a ClassVar.
+    BASE_FIELDS = ("git_url", "name", "default_base")
     # Fields auto-derived from git_url → how to derive each (create mode only; see
     # _autofill_from_git_url). id and name are the bare repo name.
     _DERIVED: dict[str, Callable[[str], str]] = {
@@ -1064,6 +1458,10 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
         self._repo = repo or {}
         self._editing = repo is not None
         self._workflows = workflows or []
+        # Offer the agent-CLI field only when there's a choice to make: codex is feature-flagged
+        # (ADR 0014 §7) and with it off claude is the only selectable CLI, so the field is noise.
+        # One tuple drives both compose() and action_submit(), so they can't drift.
+        self._fields = (*self.BASE_FIELDS, "agent_cli") if codex_enabled() else self.BASE_FIELDS
         self._wf_enabled: set[str] = set(self._repo.get("enabled_workflows") or [])
         self._wf_disabled: set[str] = set(self._repo.get("disabled_workflows") or [])
         # The parent supplies this: it attempts the submission (validation + REST) and returns an
@@ -1073,11 +1471,13 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
 
     def _initial(self, name: str) -> str:
         """A field's pre-populated value: the repo's stored value, else (create mode only)
-        ``main`` for ``default_base``, else blank."""
+        ``main`` for ``default_base`` / ``claude`` for ``agent_cli``, else blank."""
         stored = self._repo.get(name)
         if stored:
             return str(stored)
-        return "main" if name == "default_base" and not self._editing else ""
+        if self._editing:
+            return ""
+        return {"default_base": "main", "agent_cli": "claude"}.get(name, "")
 
     def _wf_checked(self, wf: dict[str, Any]) -> bool:
         name = wf["name"]
@@ -1097,9 +1497,12 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
                         yield Label(f"id: {self._repo['id']}")
                     else:
                         yield Input(placeholder="id", id="field-id")
-                    for name in self.FIELDS[1:]:  # git_url already rendered above
+                    for name in self._fields[1:]:  # git_url already rendered above
                         yield Input(value=self._initial(name), placeholder=name, id=f"field-{name}")
                     yield EnvFileField(initial=self._initial("env_file"), id="field-env_file")
+                    yield CredentialDirField(
+                        initial=self._initial("credential_dir"), id="field-credential_dir"
+                    )
                     yield ImageLayerField(
                         initial=self._initial("image_layer_file"), id="field-image_layer_file"
                     )
@@ -1120,7 +1523,7 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
                     else:
                         yield Label("no workflows available")
             yield Static("", id="form-error")
-            yield Static("enter: save   esc: cancel", id="form-hint")
+            yield Static("enter: save   esc: cancel   ↑/↓: scroll", id="form-hint")
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
@@ -1160,9 +1563,16 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
         values: dict[str, Any] = {}
         if not self._editing:
             values["id"] = self.query_one("#field-id", Input).value.strip()
-        for name in self.FIELDS:
+        for name in self._fields:
             values[name] = self.query_one(f"#field-{name}", Input).value.strip()
+        if "agent_cli" not in values:
+            # The field wasn't offered (codex off): carry the repo's stored CLI through untouched,
+            # so editing a repo left on a disabled CLI never silently rewrites it to claude.
+            values["agent_cli"] = str(self._repo.get("agent_cli") or "claude")
         values["env_file"] = self.query_one("#field-env_file", EnvFileField).env_file_value or None
+        values["credential_dir"] = (
+            self.query_one("#field-credential_dir", CredentialDirField).credential_dir_value or None
+        )
         values["image_layer_file"] = (
             self.query_one("#field-image_layer_file", ImageLayerField).image_layer_value or None
         )
@@ -1199,8 +1609,9 @@ class RepoFormScreen(ModalScreen["dict[str, Any] | None"]):
 
 
 class ReposScreen(ModalScreen[None]):
-    """Repo management: list repos, create (`n`) / edit (`e`) them; Escape returns to the task
-    view. Mutations go through the task service over REST, then the table refreshes."""
+    """Repo management: list repos, create (`n`) / edit (`e`) them, open a repo's artifacts (`a`);
+    Escape returns to the task view. Mutations go through the task service over REST, then the
+    table refreshes."""
 
     CSS = """
     ReposScreen { align: center middle; }
@@ -1210,18 +1621,25 @@ class ReposScreen(ModalScreen[None]):
         ("n", "new_repo", "New repo"),
         ("e", "edit_repo", "Edit repo"),
         ("s", "setup_repo", "Setup repo"),
+        ("a", "repo_artifacts", "Artifacts"),
         ("escape", "close", "Close"),
     ]
 
-    def __init__(self, client: TaskServiceClient) -> None:
+    def __init__(
+        self, client: TaskServiceClient, *, on_artifacts: Callable[[str, str], None]
+    ) -> None:
         super().__init__()
         self._client = client
+        # `a` hands the picked repo (id, name) back to the Dashboard, which owns the
+        # artifact-store root and the REST-open scratch dir — the same callback shape
+        # ``RepoFormScreen`` uses for its values, so this screen stays presentation-only.
+        self._on_artifacts = on_artifacts
         self._repos: dict[str, JsonObj] = {}
         self._current: str | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="repos-box"):
-            yield Label("repos — n: new   e: edit   s: setup   esc: close")
+            yield Label("repos — n: new   e: edit   s: setup   a: artifacts   esc: close")
             yield _VimDataTable(id="repos")
 
     def on_mount(self) -> None:
@@ -1269,11 +1687,13 @@ class ReposScreen(ModalScreen[None]):
                     values["git_url"],
                     values["default_base"] or "main",
                     env_file=values["env_file"] or None,
+                    credential_dir=values["credential_dir"] or None,
                     image_layer_file=values["image_layer_file"] or None,
                     hook_file=values["hook_file"] or None,
                     capabilities={"docker_in_docker": values["docker_in_docker"]},
                     enabled_workflows=values["enabled_workflows"],
                     disabled_workflows=values["disabled_workflows"],
+                    agent_cli=values["agent_cli"] or "claude",
                 )
             except httpx.HTTPStatusError as exc:
                 return f"Can't create: {_detail(exc)}"
@@ -1303,11 +1723,13 @@ class ReposScreen(ModalScreen[None]):
                     git_url=values["git_url"],
                     default_base=values["default_base"] or "main",
                     env_file=values["env_file"] or None,
+                    credential_dir=values["credential_dir"] or None,
                     image_layer_file=values["image_layer_file"] or None,
                     hook_file=values["hook_file"] or None,
                     capabilities=capabilities,
                     enabled_workflows=values["enabled_workflows"],
                     disabled_workflows=values["disabled_workflows"],
+                    agent_cli=values["agent_cli"] or "claude",
                 )
             except httpx.HTTPStatusError as exc:
                 return f"Can't update: {_detail(exc)}"
@@ -1320,6 +1742,14 @@ class ReposScreen(ModalScreen[None]):
                 f"edit {repo_id}", repo=self._repos[repo_id], workflows=workflows, on_submit=save
             )
         )
+
+    def action_repo_artifacts(self) -> None:
+        """`a`: open the highlighted repo's artifact modal (the documents its tasks share)."""
+        if self._current is None:
+            self.notify("Highlight a repo first.", severity="warning")
+            return
+        repo_id = self._current
+        self._on_artifacts(repo_id, str(self._repos[repo_id].get("name", repo_id)))
 
     def action_setup_repo(self) -> None:
         """`s`: run host-side setup for the highlighted repo — create a `setup-repo` task.
@@ -1348,42 +1778,37 @@ def _detail(exc: httpx.HTTPStatusError) -> str:
         return str(exc)
 
 
-class ArtifactScreen(_OptionListModal[tuple[str, str]]):
-    """A modal list of a task's artifacts: Enter opens the highlighted one over REST, `e` opens
-    its local on-disk file in place; Escape cancels.
+class _ArtifactListScreen(_OptionListModal[tuple[str, str]]):
+    """Shared skeleton for the two artifact-list modals — a task's (`a`) and a repo's (`A`).
 
-    Dismisses ``(name, mode)`` where ``mode`` is ``"rest"`` (Enter) or ``"local"`` (`e`), or
-    ``None`` on cancel. Local-open is bound to `e` (as in "edit in place"), **not** Shift+Enter:
-    many terminals can't deliver Shift+Enter distinctly from Enter, so the local mode would be
-    silently unreachable.
+    Both dismiss ``(name, mode)``, telling the Dashboard *how* to act on the highlighted entry:
+    ``"rest"`` (Enter — fetch over REST and open with the host's handler), ``"local"`` (`e` —
+    open the on-disk file in place), ``"folder"`` (`f`, ``name`` unused — open the scope's whole
+    artifact directory in the host's file manager), ``"attach"`` (`ctrl+a`, ``name`` unused — the
+    Dashboard then opens the file-picker), or ``None`` on cancel. Local-open is bound to `e` (as
+    in "edit in place"), **not** Shift+Enter: many terminals can't deliver Shift+Enter distinctly
+    from Enter, so the local mode would be silently unreachable. Attach is `ctrl+a`, mirroring the
+    task-creation memo's attach key.
 
-    Dotfile artifacts (names starting with ``.``) are hidden by default.  A "Show hidden"
-    checkbox appears when hidden artifacts exist; toggling it repopulates the list."""
+    Hidden artifacts (a dot-prefixed name, or one nested under a dot-directory) are filtered out
+    by default; a "Show hidden" checkbox appears when there are any, and toggling it repopulates
+    the list. Subclasses fix the box id/CSS, the ``HINT`` line, and which scope's directory `f`
+    resolves to — the Dashboard decides that from *which* modal it opened."""
 
-    CSS = """
-    ArtifactScreen { align: center middle; }
-    #artifact-box { width: 56; height: auto; max-height: 80%; padding: 1 2; border: round $accent; background: $surface; }
-    #artifact-hint { color: $text-muted; }
-    """
-    BOX_ID = "artifact-box"
-    BINDINGS = [("escape", "cancel", "Cancel"), ("e", "open_local", "Open local")]
+    HINT = ""
 
     def __init__(self, title: str, all_names: list[str]) -> None:
         self._all_names = all_names
-        visible = [n for n in all_names if not n.startswith(".")]
+        visible = [n for n in all_names if not is_hidden(n)]
         super().__init__(title, visible)
 
     def _extra_widgets(self) -> Iterable[Widget]:
-        yield Label("enter: open · e: open local file · esc: cancel", id="artifact-hint")
-        if any(n.startswith(".") for n in self._all_names):
+        yield Label(self.HINT, id="artifact-hint")
+        if any(is_hidden(n) for n in self._all_names):
             yield SpaceCheckbox("Show hidden", id="show-hidden")
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
-        names = (
-            self._all_names
-            if event.value
-            else [n for n in self._all_names if not n.startswith(".")]
-        )
+        names = self._all_names if event.value else [n for n in self._all_names if not is_hidden(n)]
         option_list = self.query_one(OptionList)
         option_list.clear_options()
         for name in names:
@@ -1392,12 +1817,74 @@ class ArtifactScreen(_OptionListModal[tuple[str, str]]):
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         self.dismiss((str(event.option.prompt), "rest"))
 
-    def action_open_local(self) -> None:
+    def _dismiss_highlighted(self, mode: str) -> None:
+        """Dismiss ``(the highlighted name, mode)``; do nothing when the list is empty."""
         option_list = self.query_one(OptionList)
         index = option_list.highlighted
         if index is None:
             return
-        self.dismiss((str(option_list.get_option_at_index(index).prompt), "local"))
+        self.dismiss((str(option_list.get_option_at_index(index).prompt), mode))
+
+    def action_open_local(self) -> None:
+        self._dismiss_highlighted("local")
+
+    def action_open_folder(self) -> None:
+        # The folder belongs to the scope (the task or the repo), not an entry — so this needs no
+        # selection, and works on an empty list, which is exactly when an operator wants to drop
+        # files in by hand.
+        self.dismiss(("", "folder"))
+
+    def action_attach(self) -> None:
+        # The list may be empty (nothing attached yet); attach doesn't depend on a selection. The
+        # Dashboard opens the file-picker (:class:`ArtifactsScreen`) and uploads.
+        self.dismiss(("", "attach"))
+
+
+class ArtifactScreen(_ArtifactListScreen):
+    """A modal list of a **task's** artifacts: Enter opens the highlighted one over REST, `e` opens
+    its local on-disk file in place, `f` opens the task's artifact **folder** in the host's file
+    manager (the Dashboard resolves it, and says so when there's no folder here), `ctrl+a` attaches
+    new files; Escape cancels."""
+
+    CSS = """
+    ArtifactScreen { align: center middle; }
+    #artifact-box { width: 56; height: auto; max-height: 80%; padding: 1 2; border: round $accent; background: $surface; }
+    #artifact-hint { color: $text-muted; }
+    """
+    BOX_ID = "artifact-box"
+    HINT = "enter: open · e: open local file · f: open folder · ctrl+a: attach · esc: cancel"
+    BINDINGS = [
+        ("escape", "cancel", "Cancel"),
+        ("e", "open_local", "Open local"),
+        ("f", "open_folder", "Open folder"),
+        ("ctrl+a", "attach", "Attach files"),
+    ]
+
+
+class RepoArtifactScreen(_ArtifactListScreen):
+    """A modal list of a **repo's** artifacts — the documents every task in that repo shares.
+
+    Its own modal rather than a mode of :class:`ArtifactScreen`: the entries belong to a repo, not
+    a task, and their names may be nested paths (``notes/api.md``).
+
+    The keys read the same as the task modal's, each acting on the repo instead: Enter opens the
+    highlighted artifact over REST, `e` opens its on-disk file in place, `f` opens the **repo's
+    artifact folder** in the host's file manager (the Dashboard resolves it, and says so when the
+    folder isn't on this machine), `ctrl+a` attaches local files to the repo, Escape cancels."""
+
+    CSS = """
+    RepoArtifactScreen { align: center middle; }
+    #repo-artifact-box { width: 64; height: auto; max-height: 80%; padding: 1 2; border: round $accent; background: $surface; }
+    #artifact-hint { color: $text-muted; }
+    """
+    BOX_ID = "repo-artifact-box"
+    HINT = "enter: open · e: open local file · f: open folder · ctrl+a: attach · esc: cancel"
+    BINDINGS = [
+        ("escape", "cancel", "Cancel"),
+        ("e", "open_local", "Open local"),
+        ("f", "open_folder", "Open folder"),
+        ("ctrl+a", "attach", "Attach files"),
+    ]
 
 
 # The full keymap, single source of truth for **both** the footer legend and the help screen
@@ -1428,13 +1915,35 @@ HOTKEYS: tuple[Hotkey, ...] = (
     Hotkey("n", "new_task", "New task", "New task (pick repo → workflow → describe)"),
     Hotkey("x", "drop", "Drop", "Drop the highlighted task"),
     Hotkey("/", "search", "Search", "Search tasks as you type"),
-    Hotkey("d", "toggle_detail", "Detail", "Show/hide the detail pane"),
+    Hotkey("d", "toggle_detail", "Detail", "Show the task detail (modal)"),
     Hotkey("o", "toggle_sort", "Sort order", "Toggle sort: created ↔ updated", show=False),
     Hotkey("r", "refresh", "Refresh", "Refresh from the task service now", show=False),
     Hotkey("R", "respawn", "Respawn", "Respawn a down task (release its claim)", show=False),
     Hotkey("p", "open_url", "Open URL", "Open the task's URL in the browser", show=False),
+    Hotkey(
+        "w",
+        "open_workdir",
+        "Workdir",
+        "Open the task's workdir (its per-task clone) in the host's file manager",
+        show=False,
+    ),
+    Hotkey("e", "snooze", "Snooze", "Snooze the highlighted task for 12 hours", show=False),
+    Hotkey(
+        "E",
+        "snooze_indefinitely",
+        "Snooze sticky",
+        "Snooze the highlighted task indefinitely",
+        show=False,
+    ),
     Hotkey("g", "repos", "Repos", "Repo config (list / create / edit repos)", show=False),
     Hotkey("a", "artifacts", "Artifacts", "List the task's artifacts", show=False),
+    Hotkey(
+        "A",
+        "repo_artifacts",
+        "Repo artifacts",
+        "List the task's repo's artifacts (shared by every task in it)",
+        show=False,
+    ),
     Hotkey("s", "service", "Service", "Switch to the task-service session", show=False),
     Hotkey("u", "runner", "Runner", "Switch to the session-service (runner) session", show=False),
     Hotkey("y", "copy_slug", "Copy slug", "Copy the task's slug to the clipboard", show=False),
@@ -1507,12 +2016,49 @@ class HelpScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
+class TaskDetailScreen(ModalScreen[None]):
+    """A modal showing one task's full detail (identity, state/turn, container, memo, url,
+    history). Escape / `d` / `q` close it.
+
+    The body is wrapped in a Rich ``Text`` and rendered **literally** — never console markup: a
+    field can carry a stray ``[`` (e.g. a docker command in ``lifecycle_detail``), and markup-parsing
+    that would crash the pane (see ``render_detail``). ``VerticalScroll`` keeps a long history in
+    reach."""
+
+    CSS = """
+    TaskDetailScreen { align: center middle; }
+    #task-detail-box { width: 80%; height: auto; max-height: 90%; padding: 1 2; border: round $accent; background: $surface; }
+    """
+    BINDINGS = [
+        ("escape", "close", "Close"),
+        ("d", "close", "Close"),
+        ("q", "close", "Close"),
+    ]
+
+    def __init__(self, task: JsonObj | None) -> None:
+        super().__init__()
+        self._detail_task = task  # NB: not `_task` — that collides with MessagePump's asyncio task
+
+    def compose(self) -> ComposeResult:
+        task = self._detail_task
+        with VerticalScroll(id="task-detail-box"):
+            yield Static(Text(render_detail(task)) if task else Text("no tasks"))
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
 def _setup_task_columns(table: DataTable[Any], *, multi_runner: bool) -> None:
-    """Add the task table's columns. Includes a "runner" column when tasks span multiple hosts."""
+    """Add the task table's columns. Includes a "runner" column when tasks span multiple hosts.
+
+    The marks column sits immediately left of the name it annotates, and last among the
+    fixed-width columns so the variable-width ``slug[memo]`` stays rightmost."""
     if multi_runner:
-        table.add_columns("state", "turn", "container", "runner", "repo", Text("slug[memo]"))
+        table.add_columns(
+            "state", "turn", "container", "runner", "repo", _MARKS_HEADER, Text("slug[memo]")
+        )
     else:
-        table.add_columns("state", "turn", "container", "repo", Text("slug[memo]"))
+        table.add_columns("state", "turn", "container", "repo", _MARKS_HEADER, Text("slug[memo]"))
 
 
 class Dashboard(App[None]):
@@ -1520,11 +2066,7 @@ class Dashboard(App[None]):
     ``on_service``/``on_runner`` for the task-service / session-service runner sessions) and stays
     running; the supervisor handles the attach/detach (ADR 0009)."""
 
-    CSS = (
-        "#tasks { width: 3fr; } #detail { width: 2fr; padding: 0 1; display: none; } "
-        "#search { display: none; } "
-        "#task-counter { dock: right; width: auto; padding: 0 1; }"
-    )
+    CSS = "#search { display: none; } #task-counter { dock: right; width: auto; padding: 0 1; }"
     # The change-feed long-poll's ``wait`` ceiling: the feed worker parks each request up to this
     # many seconds before re-polling, so a quiet feed reconnects this often (no redraw) while a
     # change still returns — and redraws — immediately. It also bounds how long quitting waits on
@@ -1546,9 +2088,14 @@ class Dashboard(App[None]):
         on_runner: Callable[[], bool] | None = None,
         artifacts_root: str | Path = ARTIFACTS_DIR,
         refresh_interval: float | None = REFRESH_INTERVAL,
+        now: Callable[[], datetime] | None = None,
     ) -> None:
         super().__init__()
         self._client = client
+        self._now = now or (lambda: datetime.now(UTC))  # injectable display clock (snooze seam)
+        self._snooze_timer: Timer | None = (
+            None  # one-shot: repaint when a finite snooze ticks/expires
+        )
         self._on_switch = on_switch  # supervisor hook: record the pick + detach (None standalone)
         self._on_service = on_service  # `s` hook: switch to the service session; True if one exists
         self._on_runner = on_runner  # `u` hook: switch to the runner session; True if one exists
@@ -1559,11 +2106,11 @@ class Dashboard(App[None]):
         self._version = 0  # the change-feed cursor (X-Tasks-Version) the worker long-polls against
         self._tasks: dict[str, JsonObj] = {}
         self._repo_names: dict[str, str] = {}  # repo id → name; populated by _load_repo_names
-        self._current: str | None = None
+        self._repo_clis: dict[
+            str, str
+        ] = {}  # repo id → default agent CLI; for the resolved-CLI display
+        self._current: str | None = None  # highlighted task id; `d` opens its detail modal
         self._query: str = ""  # active search filter ("" → no filter); see action_search
-        self._detail_visible = (
-            False  # detail pane hidden by default; `d` toggles it (action_toggle_detail)
-        )
         self._collapsed: set[str] = set()  # governor IDs whose ensembles are currently collapsed
         self._first_refresh: bool = True  # seed _collapsed with all governors on first refresh
         self._governors: set[str] = set()  # governor IDs visible in the current table build
@@ -1577,9 +2124,7 @@ class Dashboard(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Horizontal():
-            yield _VimDataTable(id="tasks")
-            yield Static(id="detail")
+        yield _VimDataTable(id="tasks")  # full-width; task detail is a modal (`d`), not a side pane
         yield Input(id="search", placeholder="search tasks…")  # hidden until `/` (CSS display:none)
         yield _StatusFooter()
 
@@ -1588,6 +2133,7 @@ class Dashboard(App[None]):
         try:
             repos = self._client.list_repos()
             self._repo_names = {str(r["id"]): str(r["name"]) for r in repos}
+            self._repo_clis = {str(r["id"]): str(r.get("agent_cli") or "claude") for r in repos}
         except Exception:
             pass
 
@@ -1646,6 +2192,9 @@ class Dashboard(App[None]):
                     return
 
     def on_unmount(self) -> None:
+        if self._snooze_timer is not None:  # stop the pending snooze-display repaint
+            self._snooze_timer.stop()
+            self._snooze_timer = None
         if self._artifact_tmp is not None:  # remove the REST-open scratch dir on exit
             self._artifact_tmp.cleanup()
             self._artifact_tmp = None
@@ -1659,8 +2208,11 @@ class Dashboard(App[None]):
     def action_refresh(self) -> None:
         table = self.query_one("#tasks", DataTable)
         selected = self._current  # keep the operator's highlight across the rebuild (feed refresh)
+        display_now = self._now()  # one clock read per repaint drives every snooze label/dimming
         table.clear()
-        ordered = sorted(self._client.list_tasks(), key=_make_sort_key(self._sort_by_updated))
+        ordered = sorted(
+            self._client.list_tasks(), key=_make_sort_key(self._sort_by_updated, display_now)
+        )
         new_multi_runner = (
             len({r.get("host") for r in self._client.live_runners() if r.get("host")}) > 1
         )
@@ -1668,15 +2220,27 @@ class Dashboard(App[None]):
             table.clear(columns=True)  # rows already gone; also clears columns for rebuild
             self._multi_runner = new_multi_runner
             _setup_task_columns(table, multi_runner=self._multi_runner)
-        active = [t for t in ordered if t.get("state") not in TERMINAL_LABELS]
+        # An actively snoozed task is muted, so it leaves both halves of the counter — the
+        # operator asked for it to stop demanding attention. Governed or not: unlike the sort
+        # demotion (which exempts children so an ensemble isn't split), muting is per-task.
+        active = [
+            t
+            for t in ordered
+            if t.get("state") not in TERMINAL_LABELS and _snooze_label(t, display_now) is None
+        ]
         agent_on = sum(1 for t in active if t.get("turn") == "agent")
         sort_label = "sort: updated" if self._sort_by_updated else "sort: created"
         self.query_one(_StatusFooter).set_counter(
             f"active agents {agent_on}/{len(active)}  ·  {sort_label}"
         )
         # Inject repo_name so _matches can search on it without a separate lookup per task.
+        # Also resolve the task's effective agent CLI (task override → repo default) for the detail view.
         for task in ordered:
-            task["repo_name"] = self._repo_names.get(str(task.get("repo_id") or ""), "")
+            repo_id = str(task.get("repo_id") or "")
+            task["repo_name"] = self._repo_names.get(repo_id, "")
+            task["agent_cli_resolved"] = resolve_agent_cli(
+                task.get("agent_cli"), self._repo_clis.get(repo_id)
+            )
         # Governor IDs: the set of task IDs that have at least one governed child in the full
         # snapshot. Computed from ``ordered`` (pre-collapse, pre-filter) so collapsing a governor
         # doesn't remove it from the set and prevent a second Enter from re-expanding it.
@@ -1731,17 +2295,19 @@ class Dashboard(App[None]):
                     Text(""),
                     *runner_blank,
                     Text(""),
+                    Text(""),  # marks: a placeholder stands for hidden rows, so it carries none
                     slug_cell,
                     key=f"{_ENSEMBLE_KEY_PREFIX}{gov_id}",
                 )
             else:
                 state_cell: Text | str = task["state"]
-                turn_cell = _turn_cell(task)
+                turn_cell = _turn_cell(task, display_now)
                 status_cell = _status_cell(task)
                 runner_cell: Text | None = (
                     Text(task.get("runner_host") or "") if self._multi_runner else None
                 )
                 repo_cell: Text | str = _repo_cell(task, self._repo_names)
+                marks_cell = _marks_cell(task)
                 slug_cell_real = _slug_cell(task, prefix)
                 if task["state"] in TERMINAL_LABELS:
                     state_cell = _dim(state_cell)
@@ -1750,6 +2316,17 @@ class Dashboard(App[None]):
                     if runner_cell is not None:
                         runner_cell = _dim(runner_cell)
                     repo_cell = _dim(repo_cell)
+                    marks_cell = _dim(marks_cell)
+                    slug_cell_real = _dim(slug_cell_real)
+                elif _snooze_label(task, display_now) is not None:
+                    # An active snooze mutes the whole row (the turn cell already carries the label).
+                    state_cell = _dim(state_cell)
+                    turn_cell = _dim(turn_cell)
+                    status_cell = _dim(status_cell)
+                    if runner_cell is not None:
+                        runner_cell = _dim(runner_cell)
+                    repo_cell = _dim(repo_cell)
+                    marks_cell = _dim(marks_cell)
                     slug_cell_real = _dim(slug_cell_real)
                 runner_extra = (runner_cell,) if runner_cell is not None else ()
                 table.add_row(
@@ -1758,6 +2335,7 @@ class Dashboard(App[None]):
                     status_cell,
                     *runner_extra,
                     repo_cell,
+                    marks_cell,
                     slug_cell_real,
                     key=task["id"],
                 )
@@ -1769,16 +2347,39 @@ class Dashboard(App[None]):
         target = selected if selected in self._tasks else next(iter(self._tasks), None)
         if target is not None:
             table.move_cursor(row=table.get_row_index(target))
-        self._update_detail(target)
+        self._current = target  # `d` opens the detail modal for whatever's highlighted
+        self._schedule_snooze_refresh(display_now)
+
+    def _schedule_snooze_refresh(self, now: datetime) -> None:
+        """(Re)arm a one-shot timer for the soonest finite-snooze display change.
+
+        A snooze ticking down or expiring is a clock-only change — the task service emits no event
+        for it — so the change-feed worker won't repaint. This timer fills that gap; an indefinite
+        snooze never changes, so it contributes no delay."""
+        if self._snooze_timer is not None:
+            self._snooze_timer.stop()
+            self._snooze_timer = None
+        delays = [
+            delay
+            for task in self._tasks.values()
+            if (delay := _snooze_refresh_delay(task, now)) is not None
+        ]
+        if delays:
+            self._snooze_timer = self.set_timer(min(delays), self._refresh_snooze_display)
+
+    def _refresh_snooze_display(self) -> None:
+        """Repaint when a finite snooze's label is due to change (fired by the one-shot timer)."""
+        self._snooze_timer = None
+        self.action_refresh()
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         key = event.row_key.value
         if isinstance(key, str) and key.startswith(_ENSEMBLE_KEY_PREFIX):
             # Keyboard navigation skips ensemble sentinels (see _VimDataTable), so this only
-            # fires for a mouse hover/click onto the placeholder — leave the detail pane as-is
-            # rather than trying to render a non-task.
+            # fires for a mouse hover/click onto the placeholder — leave the highlighted task as-is
+            # rather than pointing the detail modal at a non-task.
             return
-        self._update_detail(str(key) if key is not None else None)
+        self._current = str(key) if key is not None else None
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         """`Enter` on a governing task collapses or expands its **ensemble** of governed children.
@@ -1800,24 +2401,6 @@ class Dashboard(App[None]):
             self._collapsed.add(key)
         self.action_refresh()
 
-    def _update_detail(self, task_id: str | None) -> None:
-        self._current = task_id
-        if not self._detail_visible:
-            return
-        task: JsonObj | None = None
-        if task_id:
-            try:
-                task = self._client.get_task(task_id)
-            except Exception:
-                task = self._tasks.get(
-                    task_id
-                )  # fall back to summary when the service is unreachable
-        # wrap in Text so the pane renders literally — never parse task content as console markup
-        # (a "[" in e.g. a docker-command lifecycle_detail would otherwise crash the whole dashboard)
-        self.query_one("#detail", Static).update(
-            Text(render_detail(task)) if task else Text("no tasks")
-        )
-
     def action_new_task(self) -> None:
         """`n`: create a task — pick a repo, a workflow, describe the work, then POST it."""
         repos = [str(r["id"]) for r in self._client.list_repos()]
@@ -1837,17 +2420,25 @@ class Dashboard(App[None]):
                 if workflow is None:
                     return
 
-                def create(result: tuple[str, bool] | None) -> None:
+                def create(result: tuple[str, bool, dict[str, str]] | None) -> None:
                     if result is None:  # backed out
                         return
-                    memo_text, submit = result
+                    memo_text, submit, artifacts_b64 = result
                     stripped = memo_text.strip()
                     if _apply_memo_filter(stripped):
                         return
                     if submit and stripped:
-                        self._client.create_task(repo, workflow, stripped, initial_prompt=stripped)
+                        self._client.create_task(
+                            repo,
+                            workflow,
+                            stripped,
+                            initial_prompt=stripped,
+                            artifacts_b64=artifacts_b64,
+                        )
                     else:
-                        self._client.create_task(repo, workflow, stripped or None)
+                        self._client.create_task(
+                            repo, workflow, stripped or None, artifacts_b64=artifacts_b64
+                        )
                     self.action_refresh()
 
                 self.push_screen(MemoScreen(), create)
@@ -1870,6 +2461,42 @@ class Dashboard(App[None]):
             self.notify(f"Can't drop: {detail}", severity="error")
             return
         self.action_refresh()
+
+    def action_snooze(self) -> None:
+        """`e`: toggle a fixed twelve-hour operator snooze on the highlighted task.
+
+        Snoozing a task mutes it (dims the row, shows `snoozed · Nh left`) until the deadline; a
+        second `e` while it's active clears it. The 12h window is a hard constant."""
+        task_id = self._current
+        if task_id is None:
+            return
+        task = self._tasks.get(task_id)
+        if task is None:
+            return
+        now = self._now()
+        # Active (finite or indefinite) → toggle off; otherwise record now + 12h.
+        until = (
+            None if _snooze_label(task, now) is not None else (now + _SNOOZE_DURATION).isoformat()
+        )
+        if self._set_snooze(task_id, until):
+            self.action_refresh()
+
+    def action_snooze_indefinitely(self) -> None:
+        """`E`: record the reserved sticky snooze deadline (mute until explicitly un-snoozed)."""
+        task_id = self._current
+        if task_id is None:
+            return
+        if self._set_snooze(task_id, _INDEFINITE_SNOOZE_UNTIL):
+            self.action_refresh()
+
+    def _set_snooze(self, task_id: str, until: str | None) -> bool:
+        """Persist one snooze fact; a failed REST write notifies rather than taking down the TUI."""
+        try:
+            self._client.set_snooze(task_id, until)
+            return True
+        except httpx.HTTPStatusError as exc:
+            self.notify(f"Can't snooze: {_detail(exc)}", severity="error")
+            return False
 
     def action_respawn(self) -> None:
         """`R`: kill any running container/session for this task and respawn it.
@@ -1931,6 +2558,37 @@ class Dashboard(App[None]):
         webbrowser.open(url)
         self.notify(f"opened {url}")
 
+    def action_open_workdir(self) -> None:
+        """`w`: open the highlighted task's **workdir** — the per-task ``git clone --local``
+        checkout recorded on ``Task.clone`` at provisioning (ADR 0011), the very directory mounted
+        at ``/workspace`` inside its container — in the host's file manager.
+
+        The same open-with-the-default-handler path the repo-artifact modal's `f` uses
+        (:func:`_open_path`), and it warns in the same two cases rather than opening something that
+        isn't there: an **unprovisioned** task has no clone recorded yet (no slug → no branch → no
+        path), and a clone that lives on a **remote runner's** host isn't on this machine at all.
+        The local-ness test is the path itself (``is_dir``) rather than comparing hostnames, so a
+        clone that's simply gone reads the same as a remote one — either way there's nothing here
+        to open."""
+        if self._current is None:
+            return
+        task = self._tasks.get(self._current) or {}
+        clone = task.get("clone")
+        if not clone:
+            self.notify("No workdir yet — this task isn't provisioned.", severity="warning")
+            return
+        if not Path(clone).is_dir():
+            runner_host = task.get("runner_host")
+            where = f" (runner {runner_host})" if runner_host else ""
+            self.notify(f"{clone} isn't on this machine{where}.", severity="warning")
+            return
+        try:
+            _open_path(str(clone))
+        except FileNotFoundError:  # no opener binary on this host — notify, don't crash the TUI
+            self.notify(f"No '{_open_command()}' on this host to open files.", severity="warning")
+            return
+        self.notify(f"opened {clone}")
+
     def _copy_to_clipboard(self, text: str) -> None:
         """Copy ``text`` to the clipboard two ways, best-effort: an OSC 52 emit (Textual's
         ``copy_to_clipboard`` — terminal-forwarded, so it survives tmux/ssh and needs no external
@@ -1967,15 +2625,16 @@ class Dashboard(App[None]):
         self.action_refresh()
 
     def action_toggle_detail(self) -> None:
-        """`d`: show/hide the right-hand detail pane. It starts hidden (``display: none``) so the
-        task table — the only remaining row child — takes the full width; pressing `d` reveals the
-        pane (with the current task's detail already rendered), and `d` again hides it."""
-        self._detail_visible = not self._detail_visible
-        self.query_one("#detail", Static).styles.display = (
-            "block" if self._detail_visible else "none"
-        )
-        if self._detail_visible:
-            self._update_detail(self._current)
+        """`d`: open the detail modal for the highlighted task (Escape/`d`/`q` closes it). The task
+        is refetched fresh so the modal shows current state, falling back to the cached summary when
+        the service is unreachable."""
+        task: JsonObj | None = None
+        if self._current:
+            try:
+                task = self._client.get_task(self._current)
+            except Exception:
+                task = self._tasks.get(self._current)  # fall back to summary if the service is down
+        self.push_screen(TaskDetailScreen(task))
 
     def action_help(self) -> None:
         """`?`: open the help screen — the full keymap (the footer shows only the essentials)."""
@@ -1988,14 +2647,20 @@ class Dashboard(App[None]):
             self._load_repo_names()  # pick up any renames/additions before the table rebuilds
             self.action_refresh()
 
-        self.push_screen(ReposScreen(self._client), _on_repos_dismissed)
+        self.push_screen(
+            ReposScreen(self._client, on_artifacts=self._repo_artifacts), _on_repos_dismissed
+        )
 
     def action_artifacts(self) -> None:
         """`a`: open a modal listing the highlighted task's artifacts. Enter opens the selection
         with the host's default handler by fetching it over REST to a temp file; `e` opens the
-        on-disk file in place when the dashboard shares the artifact store (else warns).
+        on-disk file in place when the dashboard shares the artifact store (else warns); `f` opens
+        the task's artifact **folder** in the host's file manager (the repo modal's `f`, scoped to
+        this task); `ctrl+a` attaches new local files as artifacts (reusing the task-creation
+        file-picker).
 
-        Opens on the machine running the dashboard, like `p`."""
+        Opens on the machine running the dashboard, like `p`. The modal opens even when the task
+        has no artifacts yet, so attach is always reachable."""
         if self._current is None:
             return
         task_id = self._current
@@ -2004,15 +2669,25 @@ class Dashboard(App[None]):
         except httpx.HTTPStatusError as exc:
             self.notify(f"Can't list artifacts: {exc}", severity="error")
             return
-        if not names:
-            self.notify("No artifacts for this task.", severity="warning")
-            return
 
         def open_selected(choice: tuple[str, str] | None) -> None:
             if choice is None:  # cancelled
                 return
             name, mode = choice
             try:
+                if mode == "attach":  # open the file-picker, upload the queue, reopen the list
+                    self._attach_artifacts(task_id)
+                    return
+                if mode == "folder":  # open the task's artifact directory (co-located store)
+                    folder = FilesystemArtifactStore(self._artifacts_root).task_artifact_dir(
+                        task_id
+                    )
+                    if folder is None:
+                        self.notify(self._no_artifact_folder(), severity="warning")
+                        return
+                    _open_path(str(folder))
+                    self.notify(f"opened {folder}")
+                    return
                 if mode == "local":  # open the on-disk file in place (co-located store)
                     path = FilesystemArtifactStore(self._artifacts_root).path(task_id, name)
                     if path is None:
@@ -2031,6 +2706,130 @@ class Dashboard(App[None]):
                 self.notify(f"Can't open {name}: {exc}", severity="error")
 
         self.push_screen(ArtifactScreen("artifacts", names), open_selected)
+
+    def _no_artifact_folder(self) -> str:
+        """Why `f` found no task artifact folder to open — the reason that actually applies.
+
+        Unlike a repo's (written the moment anyone drops a shared document in), a task's directory
+        is created on its **first** artifact, so "nothing written yet" is the ordinary case and
+        deserves to be said plainly rather than folded into the repo modal's single "isn't on this
+        machine". The artifacts root standing in for the store's whole filesystem is the same
+        local-ness test `e` makes per file: no root here, no artifacts here."""
+        if not Path(self._artifacts_root).is_dir():
+            return "The artifact store isn't on this machine."
+        return "No artifact folder yet — nothing has been written for this task."
+
+    def _attach_artifacts(self, task_id: str) -> None:
+        """Open the task-creation file-picker (:class:`ArtifactsScreen`) to queue local files, then
+        upload each to ``task_id`` over REST and reopen the artifact list so the additions show.
+
+        Reuses the same modal + shell-quoted-path parsing as the create-task attach flow (`ctrl+a`
+        in :class:`MemoScreen`); the only difference is the destination — an existing task's
+        artifacts via ``put_artifact`` rather than the create-task seed."""
+
+        def uploaded(queue: dict[str, tuple[str, bytes]] | None) -> None:
+            count = 0
+            for name, (_path, content) in (queue or {}).items():
+                try:
+                    self._client.put_artifact(task_id, name, content)
+                except httpx.HTTPStatusError as exc:
+                    self.notify(f"Can't attach {name}: {exc}", severity="error")
+                    continue
+                count += 1
+            if count:
+                self.notify(f"attached {count} file{'s' if count != 1 else ''}")
+            self.action_artifacts()  # reopen the list, now showing the additions
+
+        self.push_screen(ArtifactsScreen({}), uploaded)
+
+    def action_repo_artifacts(self) -> None:
+        """`A`: open the highlighted task's **repo** artifacts — the documents shared by every
+        task in that repo, as opposed to `a`'s task-scoped ones. The same modal the repo screen's
+        `a` opens, reachable without leaving the task you're looking at."""
+        if self._current is None:
+            return
+        repo_id = str((self._tasks.get(self._current) or {}).get("repo_id") or "")
+        if not repo_id:
+            return
+        self._repo_artifacts(repo_id, self._repo_names.get(repo_id, repo_id))
+
+    def _repo_artifacts(self, repo_id: str, label: str) -> None:
+        """Open :class:`RepoArtifactScreen` for ``repo_id`` and act on what it dismisses.
+
+        The repo twin of :meth:`action_artifacts`, with one mode it has no equivalent for:
+        ``"folder"`` (`f`) opens the repo's artifact **directory** in the host's file manager.
+        Like `e`'s open-in-place, that's only possible when the dashboard shares the artifact
+        store's filesystem, so an absent folder notifies rather than failing.
+
+        Lives on the Dashboard because both entry points — `A` here and `a` in the repos screen —
+        need it, and because this is where the artifact-store root and the REST-open scratch dir
+        live."""
+        try:
+            names = self._client.list_repo_artifacts(repo_id)
+        except httpx.HTTPStatusError as exc:
+            self.notify(f"Can't list {label} artifacts: {exc}", severity="error")
+            return
+
+        def open_selected(choice: tuple[str, str] | None) -> None:
+            if choice is None:  # cancelled
+                return
+            name, mode = choice
+            store = FilesystemArtifactStore(self._artifacts_root)
+            try:
+                if mode == "attach":  # open the file-picker, upload the queue, reopen the list
+                    self._attach_repo_artifacts(repo_id, label)
+                    return
+                if mode == "folder":  # open the repo's artifact directory (co-located store)
+                    folder = store.repo_artifact_dir(repo_id)
+                    if folder is None:
+                        self.notify(
+                            f"{label}'s artifact folder isn't on this machine.", severity="warning"
+                        )
+                        return
+                    _open_path(str(folder))
+                    self.notify(f"opened {folder}")
+                elif mode == "local":  # open the on-disk file in place (co-located store)
+                    path = store.repo_artifact_path(repo_id, name)
+                    if path is None:
+                        self.notify(f"{name} isn't available locally.", severity="warning")
+                        return
+                    _open_path(str(path))
+                    self.notify(f"opened {path} locally")
+                else:  # "rest": fetch over REST to the scratch dir, then open
+                    _open_repo_artifact_via_rest(
+                        self._client, repo_id, name, self._artifact_tmpdir()
+                    )
+                    self.notify(f"opened {name}")
+            except FileNotFoundError:  # no opener binary on this host — notify, don't crash the TUI
+                self.notify(
+                    f"No '{_open_command()}' on this host to open files.", severity="warning"
+                )
+            except httpx.HTTPStatusError as exc:
+                self.notify(f"Can't open {name}: {exc}", severity="error")
+
+        self.push_screen(RepoArtifactScreen(f"{label} artifacts", names), open_selected)
+
+    def _attach_repo_artifacts(self, repo_id: str, label: str) -> None:
+        """:meth:`_attach_artifacts` for a repo: queue local files, upload each to ``repo_id``,
+        then reopen the repo-artifact list so the additions show.
+
+        Attached files land at the repo's top level (the picker keys its queue by basename);
+        subdirectories are for the agents writing over MCP with a nested name."""
+
+        def uploaded(queue: dict[str, tuple[str, bytes]] | None) -> None:
+            count = 0
+            for name, (_path, content) in (queue or {}).items():
+                try:
+                    self._client.put_repo_artifact(repo_id, name, content)
+                except httpx.HTTPStatusError as exc:
+                    self.notify(f"Can't attach {name}: {exc}", severity="error")
+                    continue
+                count += 1
+            if count:
+                self.notify(f"attached {count} file{'s' if count != 1 else ''}")
+            self._repo_artifacts(repo_id, label)  # reopen the list, now showing the additions
+
+        self.push_screen(ArtifactsScreen({}), uploaded)
 
     def action_service(self) -> None:
         """`s`: switch to the task-service tmux session, when one is running (ADR 0009).

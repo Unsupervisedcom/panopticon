@@ -10,6 +10,7 @@ plane serves REST and MCP. ``create_app`` builds an app around an injected
 from __future__ import annotations
 
 import asyncio
+import mimetypes
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from typing import Any
@@ -18,8 +19,9 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from panopticon import __version__
 from panopticon.core.artifacts import ArtifactError
-from panopticon.core.models import Actor, LifecyclePhase, Repo, Status, Task
+from panopticon.core.models import Actor, LifecyclePhase, PushStatus, Repo, Status, Task
 from panopticon.core.store import AlreadyExists, NotFound, StoreError
 from panopticon.core.workflow import IllegalTransition, InvalidWorkflow, ResponsibilitiesNotMet
 from panopticon.taskservice.service import (
@@ -78,17 +80,26 @@ class TaskSummaryOut(BaseModel):
     initial_prompt: str | None
     slug: str | None
     url: str | None
+    snoozed_until: str | None = None
     branch: str | None
     clone: str | None
+    push: PushOut | None = (
+        None  # the requested/finished push of the merge back to origin; None if never requested
+    )
     claimed_by: str | None
-    tokens_used: int | None
-    token_estimate: int | None
     starting_model: str | None = None
+    agent_cli: str | None = None  # per-task CLI override; None = use the repo default (ADR 0014 §3)
     governor_task_id: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    sort_weight: int = 0
     depends_on_task_ids: list[str] = []
     provisioned: bool
+    #: Whether the task has at least one unhidden artifact — the dashboard's artifact mark.
+    #: Computed like ``container_status`` (artifacts are files, not a task column), attached on
+    #: serialization by ``_task_summary_out``. Summary-only: the single-task shapes don't carry
+    #: it, since ``GET /tasks/{id}/artifacts`` already answers it exactly for one task.
+    has_artifacts: bool = False
     container_status: str = "–"
     lifecycle_detail: str | None = None
     runner_host: str | None = (
@@ -108,18 +119,25 @@ class TaskOut(BaseModel):
     memo: (
         str | None
     )  # a brief one-line reminder of what the task is, collected at creation (shown in the summary)
-    initial_prompt: str | None  # optional text prefilled into Claude's input box on first spawn
+    initial_prompt: (
+        str | None
+    )  # optional text prefilled into the agent CLI's input box on first spawn
     slug: str | None
     url: str | None  # an optional external URL (PR, issue, …); the dashboard's `p` hotkey opens it
+    snoozed_until: str | None = (
+        None  # operator-owned attention mute deadline (ISO-8601); None = not snoozed
+    )
     branch: str | None
     clone: str | None
+    push: PushOut | None = (
+        None  # the requested/finished push of the merge back to origin; None if never requested
+    )
     claimed_by: str | None  # the runner that owns this task (the spawn gate), or None
-    tokens_used: int | None  # cost-weighted input-equivalent tokens used (None until reported)
-    token_estimate: (
-        int | None
-    )  # the agent's forecast of total tokens (set in planning; None until then)
     starting_model: str | None = (
         None  # the model seeded at creation from the workflow's default_model
+    )
+    agent_cli: str | None = (
+        None  # per-task CLI override; None = resolve to the repo default (ADR 0014 §3)
     )
     governor_task_id: str | None = (
         None  # the task that oversees this one, or None for ungoverned tasks
@@ -129,6 +147,9 @@ class TaskOut(BaseModel):
     )
     updated_at: str | None = (
         None  # ISO-8601 timestamp of the last mutation, stamped by the task service
+    )
+    sort_weight: int = (
+        0  # operator sort priority: ranks above updated_at but below state/turn; higher sorts first
     )
     depends_on_task_ids: list[
         str
@@ -163,6 +184,7 @@ class RepoIn(BaseModel):
     hook_file: str | None = None
     enabled_workflows: list[str] = Field(default_factory=list)
     disabled_workflows: list[str] = Field(default_factory=list)
+    agent_cli: str = "claude"  # the repo's default agent CLI (ADR 0014 §3)
 
 
 class RepoOut(BaseModel):
@@ -178,6 +200,7 @@ class RepoOut(BaseModel):
     hook_file: str | None = None
     enabled_workflows: list[str] = Field(default_factory=list)
     disabled_workflows: list[str] = Field(default_factory=list)
+    agent_cli: str = "claude"  # the repo's default agent CLI (ADR 0014 §3)
 
 
 class RepoPatchIn(BaseModel):
@@ -195,6 +218,7 @@ class RepoPatchIn(BaseModel):
     hook_file: str | None = None
     enabled_workflows: list[str] | None = None
     disabled_workflows: list[str] | None = None
+    agent_cli: str | None = None
 
 
 class WorkflowInfo(BaseModel):
@@ -210,7 +234,10 @@ class CreateTaskIn(BaseModel):
     governor_task_id: str | None = None
     initial_prompt: str | None = None
     artifacts: dict[str, str] | None = None
+    artifacts_b64: dict[str, str] | None = None  # binary artifacts, name → base64
     depends_on_task_ids: list[str] = []
+    sort_weight: int = 0
+    agent_cli: str | None = None  # per-task CLI override; None = the repo default (ADR 0014 §3)
 
 
 class DependenciesIn(BaseModel):
@@ -241,14 +268,6 @@ class UrlIn(BaseModel):
     url: str
 
 
-class TokensUsedIn(BaseModel):
-    tokens_used: int
-
-
-class TokenEstimateIn(BaseModel):
-    token_estimate: int
-
-
 class StateIn(BaseModel):
     state: str
 
@@ -256,6 +275,24 @@ class StateIn(BaseModel):
 class ProvisioningIn(BaseModel):
     branch: str
     clone: str
+
+
+class PushRequestIn(BaseModel):
+    branch: str  # the base branch to push; the task branch goes with it as the backup
+
+
+class PushResultIn(BaseModel):
+    status: PushStatus
+    detail: str | None = None
+
+
+class PushOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    branch: str
+    status: PushStatus
+    detail: str | None = None
+    requested_at: str | None = None
 
 
 class SkillOut(BaseModel):
@@ -272,6 +309,14 @@ class TurnIn(BaseModel):
 
 class BlockedIn(BaseModel):
     blocked: bool
+
+
+class SnoozeIn(BaseModel):
+    until: str | None
+
+
+class SortWeightIn(BaseModel):
+    sort_weight: int
 
 
 class ClaimIn(BaseModel):
@@ -363,7 +408,7 @@ def create_app(service: TaskService) -> FastAPI:
         async with mcp.session_manager.run():
             yield
 
-    app = FastAPI(title="panopticon task service", version="0.0.3", lifespan=lifespan)
+    app = FastAPI(title="panopticon task service", version=__version__, lifespan=lifespan)
 
     # The block-until-change feed: a store mutation bumps the version + wakes parked GET /tasks
     # long-polls (the seam the daemons/dashboard migrate onto, replacing their interval re-polls).
@@ -383,9 +428,13 @@ def create_app(service: TaskService) -> FastAPI:
             out.runner_host = service.runner_host(task.claimed_by)
         return out
 
-    def _task_summary_out(task: Task) -> TaskSummaryOut:
-        """Serialize a task to the cheap summary shape (no history), with computed status fields."""
+    def _task_summary_out(task: Task, *, has_artifacts: bool = False) -> TaskSummaryOut:
+        """Serialize a task to the cheap summary shape (no history), with computed status fields.
+
+        ``has_artifacts`` is passed in rather than read here: it lives in the artifact store,
+        not on the task, so resolving it needs an await this synchronous serializer can't do."""
         out = TaskSummaryOut.model_validate(task)
+        out.has_artifacts = has_artifacts
         out.container_status = service.container_status(task).value
         lifecycle = service.lifecycle(task.id)
         out.lifecycle_detail = lifecycle.detail if lifecycle is not None else None
@@ -497,17 +546,22 @@ def create_app(service: TaskService) -> FastAPI:
 
     @app.post("/tasks", status_code=201)
     async def create_task(body: CreateTaskIn) -> TaskOut:
-        return _task_out(
-            await service.create_task(
+        try:
+            task = await service.create_task(
                 body.repo_id,
                 body.workflow,
                 memo=body.memo,
                 governor_task_id=body.governor_task_id,
                 initial_prompt=body.initial_prompt,
                 artifacts=body.artifacts,
+                artifacts_b64=body.artifacts_b64,
                 depends_on_task_ids=body.depends_on_task_ids or None,
+                sort_weight=body.sort_weight,
+                agent_cli=body.agent_cli,
             )
-        )
+        except ValueError as exc:  # e.g. a disabled agent_cli (codex behind its feature flag)
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _task_out(task)
 
     @app.get("/tasks")
     async def list_tasks(
@@ -539,7 +593,10 @@ def create_app(service: TaskService) -> FastAPI:
             # Read version and snapshot in a single thread call so no event-loop yield can
             # interleave a mutation between them — preserving the original atomicity invariant.
             version, tasks_raw = await service._tasks_snapshot(terminal=terminal)
-        tasks = [_task_summary_out(t) for t in tasks_raw]
+        tasks = [
+            _task_summary_out(t, has_artifacts=await service.has_unhidden_artifacts(t.id))
+            for t in tasks_raw
+        ]
         response.headers[TASKS_VERSION_HEADER] = str(version)
         return tasks
 
@@ -607,16 +664,6 @@ def create_app(service: TaskService) -> FastAPI:
     async def set_url(task_id: str, body: UrlIn) -> TaskOut:
         return _task_out(await service.set_url(task_id, body.url))
 
-    @app.put("/tasks/{task_id}/tokens-used")
-    async def set_tokens_used(task_id: str, body: TokensUsedIn) -> TaskOut:
-        return _task_out(await service.set_tokens_used(task_id, body.tokens_used))
-
-    @app.put("/tasks/{task_id}/token-estimate")
-    async def set_token_estimate(task_id: str, body: TokenEstimateIn) -> TaskOut:
-        return TaskOut.model_validate(
-            await service.set_token_estimate(task_id, body.token_estimate)
-        )
-
     @app.put("/tasks/{task_id}/turn")
     async def set_turn(task_id: str, body: TurnIn) -> TaskOut:
         return _task_out(await service.set_turn(task_id, body.turn))
@@ -624,6 +671,14 @@ def create_app(service: TaskService) -> FastAPI:
     @app.put("/tasks/{task_id}/blocked")
     async def set_blocked(task_id: str, body: BlockedIn) -> TaskOut:
         return _task_out(await service.set_blocked(task_id, body.blocked))
+
+    @app.put("/tasks/{task_id}/snooze")
+    async def set_snooze(task_id: str, body: SnoozeIn) -> TaskOut:
+        return _task_out(await service.set_snooze(task_id, body.until))
+
+    @app.put("/tasks/{task_id}/sort-weight")
+    async def set_sort_weight(task_id: str, body: SortWeightIn) -> TaskOut:
+        return _task_out(await service.set_sort_weight(task_id, body.sort_weight))
 
     @app.put("/tasks/{task_id}/governor")
     async def set_governor(task_id: str, body: GovernorIn) -> TaskOut:
@@ -659,6 +714,26 @@ def create_app(service: TaskService) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return _task_out(task)
 
+    @app.post("/tasks/{task_id}/push")
+    async def request_push(task_id: str, body: PushRequestIn) -> TaskOut:
+        try:  # the agent asks; the session service's publisher performs the host git
+            task = await service.request_push(task_id, branch=body.branch)
+        except ValueError as exc:  # terminal task — nothing would service it
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except NotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return _task_out(task)
+
+    @app.put("/tasks/{task_id}/push")
+    async def record_push(task_id: str, body: PushResultIn) -> TaskOut:
+        try:  # the session service reports how the push it performed turned out
+            task = await service.record_push(task_id, status=body.status, detail=body.detail)
+        except ValueError as exc:  # no push was ever requested
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except NotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return _task_out(task)
+
     # -- artifacts ----------------------------------------------------------------
 
     @app.put("/tasks/{task_id}/artifacts/{name}", status_code=204)
@@ -675,7 +750,34 @@ def create_app(service: TaskService) -> FastAPI:
         content = await service.get_artifact(task_id, name)
         if content is None:
             raise HTTPException(status_code=404, detail=f"artifact {name!r} not found")
-        return Response(content=content, media_type="application/octet-stream")
+        # Type the download from the name's extension so a screenshot serves as image/png etc.;
+        # unknown/extensionless names fall back to octet-stream.
+        media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        return Response(content=content, media_type=media_type)
+
+    # -- repo artifacts -----------------------------------------------------------
+    #
+    # The repo-scoped twins of the task routes above. The name is a ``:path`` parameter rather
+    # than a plain one because a repo artifact's name may be nested (``notes/api.md``) — a plain
+    # parameter matches a single segment, which would leave a subdirectory unaddressable. An
+    # invalid name still lands as a 400 through the registered ``ArtifactError`` handler.
+
+    @app.put("/repos/{repo_id}/artifacts/{name:path}", status_code=204)
+    async def put_repo_artifact(repo_id: str, name: str, request: Request) -> Response:
+        await service.put_repo_artifact(repo_id, name, await request.body())
+        return Response(status_code=204)
+
+    @app.get("/repos/{repo_id}/artifacts")
+    async def list_repo_artifacts(repo_id: str) -> list[str]:
+        return await service.list_repo_artifacts(repo_id)
+
+    @app.get("/repos/{repo_id}/artifacts/{name:path}")
+    async def get_repo_artifact(repo_id: str, name: str) -> Response:
+        content = await service.get_repo_artifact(repo_id, name)
+        if content is None:
+            raise HTTPException(status_code=404, detail=f"repo artifact {name!r} not found")
+        media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        return Response(content=content, media_type=media_type)
 
     # -- liveness -----------------------------------------------------------------
 

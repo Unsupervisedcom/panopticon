@@ -67,7 +67,7 @@ def test_quickstart_invokes_all_steps(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(doctor, "run_checks", list)
     monkeypatch.setattr(doctor, "report", lambda results: (calls.append("doctor"), 0)[1])
     monkeypatch.setattr(cli, "_run_migrate", lambda: calls.append("migrate"))
-    monkeypatch.setattr(cli, "_start_sessions", lambda: calls.append("sessions"))
+    monkeypatch.setattr(cli, "start_sessions", lambda: calls.append("sessions"))
     monkeypatch.setattr(qs, "wait_for_service", lambda url, **kw: calls.append("wait"))
     monkeypatch.setattr(qs, "ensure_secrets_file", lambda: (calls.append("secrets"), "/tmp/env")[1])
     monkeypatch.setattr(qs, "detect_git_url", lambda: (calls.append("git_url"), "https://x.git")[1])
@@ -112,7 +112,7 @@ def test_quickstart_aborts_when_doctor_fails(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(doctor, "run_checks", list)
     monkeypatch.setattr(doctor, "report", lambda results: 1)
     monkeypatch.setattr(cli, "_run_migrate", lambda: calls.append("migrate"))
-    monkeypatch.setattr(cli, "_start_sessions", lambda: calls.append("sessions"))
+    monkeypatch.setattr(cli, "start_sessions", lambda: calls.append("sessions"))
     monkeypatch.setattr(console, "run_console_local", lambda url, **kw: calls.append("console"))
 
     rc = cli.main(["quickstart"])

@@ -12,8 +12,14 @@ from pathlib import Path
 
 import pytest
 
+from panopticon.core.features import CODEX_FLAG
 from panopticon.core.models import LifecyclePhase
-from panopticon.sessionservice.local_runner import LocalRunner
+from panopticon.sessionservice.local_runner import (
+    CLI_CONFIG_DIRNAME,
+    LocalRunner,
+    base_image,
+    config_mount,
+)
 from panopticon.sessionservice.runner import Runner
 
 
@@ -238,6 +244,26 @@ def test_spawn_omits_secret_flags_when_repo_has_none() -> None:
     # (the per-task config volume is always mounted — that's not a per-repo secret)
 
 
+def test_spawn_mounts_credential_dir_and_sets_env_var(tmp_path: Path) -> None:
+    cred_dir = tmp_path / "openai.d"
+    cred_dir.mkdir()
+    rec = _Recorder()
+    LocalRunner("http://svc", secrets_dir=str(tmp_path), run=rec).spawn(
+        "t1", credential_dir="openai.d"
+    )
+    docker_run = rec.calls[2][0]
+    assert f"{cred_dir}:/panopticon/credentials:rw" in docker_run
+    assert "PANOPTICON_CREDENTIALS=/panopticon/credentials" in docker_run
+
+
+def test_spawn_omits_credential_dir_flags_when_not_set() -> None:
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).spawn("t1")
+    docker_run = rec.calls[2][0]
+    assert "/panopticon/credentials" not in docker_run
+    assert "PANOPTICON_CREDENTIALS" not in docker_run
+
+
 def test_spawn_mounts_the_per_task_clone_as_the_workspace() -> None:
     rec = _Recorder()
     LocalRunner("http://svc", run=rec).spawn("t1", workspace="/tasks/t1")
@@ -252,6 +278,63 @@ def test_spawn_mounts_a_per_task_config_volume_for_claude_history() -> None:
     docker_run = rec.calls[2][0]
     # a task-scoped named volume at the config dir → claude's transcripts survive respawn/recreate
     assert "panopticon-config-t1:/home/panopticon/.claude" in docker_run
+
+
+def test_spawn_passes_the_agent_cli_as_env_var_defaulting_to_claude() -> None:
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).spawn("t1")
+    docker_run = rec.calls[2][0]
+    assert "PANOPTICON_AGENT_CLI=claude" in docker_run  # launcher resolves its adapter from this
+
+
+def test_spawn_derives_the_config_mount_and_env_var_from_the_resolved_cli() -> None:
+    # A non-default CLI must mount its own config dir (ADR 0014 §4a) or resume silently breaks, and
+    # the launcher must be told which adapter to use.
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).spawn("t1", agent_cli="codex")
+    docker_run = rec.calls[2][0]
+    assert "panopticon-config-t1:/home/panopticon/.codex" in docker_run
+    assert "PANOPTICON_AGENT_CLI=codex" in docker_run
+
+
+def test_spawn_carries_the_codex_feature_flag_into_the_container_only_when_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The container's adapter registry reads the same flag as the host (ADR 0014 §7), so the runner
+    # passes it through — but only when it's on, leaving the default `docker run` argv unchanged.
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).spawn("t1")
+    assert not [arg for arg in rec.calls[2][0] if arg.startswith(CODEX_FLAG)]
+
+    monkeypatch.setenv(CODEX_FLAG, "1")
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).spawn("t1")
+    assert f"{CODEX_FLAG}=1" in rec.calls[2][0]
+
+
+def test_base_image_and_config_mount_name_by_cli() -> None:
+    assert base_image("claude") == "panopticon-base-claude"
+    assert base_image("codex") == "panopticon-base-codex"
+    assert config_mount("claude") == "/home/panopticon/.claude"
+    assert config_mount("codex") == "/home/panopticon/.codex"
+
+
+def test_host_config_dir_map_matches_the_in_container_adapters(enable_codex: None) -> None:
+    # The host mounts the config volume at CLI_CONFIG_DIRNAME[cli]; the in-container adapter reads it
+    # from its own config_dirname. If the two drift, resume silently breaks (ADR 0014 §4a) — so pin
+    # them equal for every *registered* adapter. Codex is behind its feature flag (ADR 0014 §7);
+    # enable it here so the cross-check covers it rather than skipping it.
+    from panopticon.container.cli import get_agent_cli
+
+    checked = 0
+    for cli, dirname in CLI_CONFIG_DIRNAME.items():
+        try:
+            adapter = get_agent_cli(cli)
+        except KeyError:
+            continue  # a mapped CLI with no adapter registered — nothing to cross-check
+        assert adapter.config_dirname == dirname, cli
+        checked += 1
+    assert checked == len(CLI_CONFIG_DIRNAME)  # every mapped CLI was cross-checked
 
 
 def test_spawn_passes_initial_prompt_as_env_var() -> None:

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from panopticon.core.features import CODEX_FLAG
 from panopticon.core.models import Repo, Responsibility
 from panopticon.core.state import Complete, InitialState
 from panopticon.core.workflow import Workflow
@@ -196,6 +198,76 @@ def test_create_repo_with_an_existing_env_file_is_201(
     assert resp.status_code == 201, resp.text
 
 
+def test_create_repo_on_a_disabled_agent_cli_is_400(client: TestClient) -> None:
+    # Codex is feature-flagged off by default (ADR 0014 §7), and the task service is the single
+    # writer — so a codex repo can't be stored at all, and the 400 names the flag.
+    resp = client.post(
+        "/repos",
+        json={
+            "id": "r2",
+            "name": "acme/other",
+            "git_url": "https://x/r2.git",
+            "agent_cli": "codex",
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    assert "PANOPTICON_ENABLE_CODEX" in resp.json()["detail"]
+
+
+def test_create_repo_on_codex_is_201_when_the_flag_is_on(
+    client: TestClient, enable_codex: None
+) -> None:
+    resp = client.post(
+        "/repos",
+        json={
+            "id": "r2",
+            "name": "acme/other",
+            "git_url": "https://x/r2.git",
+            "agent_cli": "codex",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["agent_cli"] == "codex"
+
+
+def test_patching_a_repo_onto_a_disabled_agent_cli_is_400(client: TestClient) -> None:
+    resp = client.patch("/repos/r1", json={"agent_cli": "codex"})
+    assert resp.status_code == 400, resp.text
+    assert "PANOPTICON_ENABLE_CODEX" in resp.json()["detail"]
+
+
+def test_patching_other_fields_of_a_repo_left_on_a_disabled_cli_still_works(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A repo stored while codex was enabled must stay editable after the flag goes off: only a PATCH
+    # that actually sets agent_cli is validated (the same rule env_file/credential_dir follow).
+    monkeypatch.setenv(CODEX_FLAG, "1")
+    assert (
+        client.post(
+            "/repos",
+            json={
+                "id": "r2",
+                "name": "acme/other",
+                "git_url": "https://x/r2.git",
+                "agent_cli": "codex",
+            },
+        ).status_code
+        == 201
+    )
+    monkeypatch.delenv(CODEX_FLAG)
+    resp = client.patch("/repos/r2", json={"name": "renamed"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["name"] == "renamed"
+    assert resp.json()["agent_cli"] == "codex"  # untouched, not rewritten to claude
+
+
+def test_create_task_on_a_disabled_agent_cli_is_400(client: TestClient) -> None:
+    # The per-task override goes through the same gate — as a 400, not an uncaught 500.
+    resp = client.post("/tasks", json={"repo_id": "r1", "workflow": "spike", "agent_cli": "codex"})
+    assert resp.status_code == 400, resp.text
+    assert "PANOPTICON_ENABLE_CODEX" in resp.json()["detail"]
+
+
 def test_mcp_is_mounted(client: TestClient) -> None:
     # The MCP streamable-HTTP app is mounted at /mcp (in-container agents connect there); it must
     # be a mount, not a REST route, and reachable (i.e. not a REST 404).
@@ -225,6 +297,20 @@ def test_create_task_records_the_memo(client: TestClient) -> None:
     assert resp.json()["memo"] == "make it green"
     got = client.get(f"/tasks/{resp.json()['id']}")  # and it survives a reload
     assert got.json()["memo"] == "make it green"
+
+
+def test_create_task_defaults_sort_weight_to_zero(client: TestClient) -> None:
+    resp = client.post("/tasks", json={"repo_id": "r1", "workflow": "spike"})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["sort_weight"] == 0
+
+
+def test_create_task_accepts_sort_weight(client: TestClient) -> None:
+    resp = client.post("/tasks", json={"repo_id": "r1", "workflow": "spike", "sort_weight": 7})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["sort_weight"] == 7
+    got = client.get(f"/tasks/{resp.json()['id']}")  # and it survives a reload
+    assert got.json()["sort_weight"] == 7
 
 
 def test_get_missing_task_404(client: TestClient) -> None:
@@ -330,6 +416,47 @@ def test_set_turn_and_blocked(client: TestClient) -> None:
     assert blocked.json()["turn"] == "user"  # flip-independent: the block left the turn alone
 
 
+def test_set_snooze_records_deadline_verbatim(client: TestClient) -> None:
+    task_id = _new_task(client)  # turn=agent, blocked=false, snoozed_until=None
+    before = client.get(f"/tasks/{task_id}").json()
+    assert before["snoozed_until"] is None
+
+    snoozed = client.put(f"/tasks/{task_id}/snooze", json={"until": "2026-08-06T03:00:00+00:00"})
+    assert snoozed.status_code == 200
+    body = snoozed.json()
+    assert body["snoozed_until"] == "2026-08-06T03:00:00+00:00"
+    # lifecycle is untouched — snooze is a plain recorded fact
+    assert body["state"] == before["state"]
+    assert body["turn"] == before["turn"]
+    assert body["blocked"] == before["blocked"]
+
+    # the reserved indefinite value is treated as an opaque string and round-trips verbatim
+    indefinite = client.put(f"/tasks/{task_id}/snooze", json={"until": "9999-12-31T23:59:59+00:00"})
+    assert indefinite.json()["snoozed_until"] == "9999-12-31T23:59:59+00:00"
+
+    # null clears it
+    cleared = client.put(f"/tasks/{task_id}/snooze", json={"until": None})
+    assert cleared.json()["snoozed_until"] is None
+
+
+def test_set_sort_weight_over_rest(client: TestClient) -> None:
+    task_id = _new_task(client)
+    before = client.get(f"/tasks/{task_id}").json()
+    assert before["sort_weight"] == 0  # default
+
+    weighted = client.put(f"/tasks/{task_id}/sort-weight", json={"sort_weight": 10})
+    assert weighted.status_code == 200
+    body = weighted.json()
+    assert body["sort_weight"] == 10
+    # a plain recorded fact — lifecycle untouched
+    assert body["state"] == before["state"]
+    assert body["turn"] == before["turn"]
+
+    assert client.get(f"/tasks/{task_id}").json()["sort_weight"] == 10  # persisted
+    reset = client.put(f"/tasks/{task_id}/sort-weight", json={"sort_weight": 0})
+    assert reset.json()["sort_weight"] == 0
+
+
 def test_claim_release_over_rest(client: TestClient) -> None:
     task_id = _new_task(client)
     assert client.get(f"/tasks/{task_id}").json()["claimed_by"] is None
@@ -348,6 +475,42 @@ def test_claim_release_over_rest(client: TestClient) -> None:
     )
 
 
+def test_push_request_and_result_over_rest(client: TestClient) -> None:
+    task_id = _new_task(client)
+    assert client.get(f"/tasks/{task_id}").json()["push"] is None
+
+    requested = client.post(f"/tasks/{task_id}/push", json={"branch": "master"})
+    assert requested.status_code == 200
+    assert requested.json()["push"]["status"] == "requested"
+    assert requested.json()["push"]["branch"] == "master"
+
+    recorded = client.put(
+        f"/tasks/{task_id}/push", json={"status": "partial", "detail": "master is checked out"}
+    )
+    assert recorded.status_code == 200
+    push = recorded.json()["push"]
+    assert (push["status"], push["detail"]) == ("partial", "master is checked out")
+    assert push["branch"] == "master"  # the request's own facts survive the outcome report
+
+
+def test_push_endpoints_reject_unknown_tasks_and_unrequested_results(client: TestClient) -> None:
+    assert client.post("/tasks/ghost/push", json={"branch": "main"}).status_code == 404
+    task_id = _new_task(client)
+    # nothing asked for a push, so there is no outcome to record against
+    assert client.put(f"/tasks/{task_id}/push", json={"status": "pushed"}).status_code == 400
+
+
+def test_task_list_summary_carries_the_push_record(client: TestClient) -> None:
+    # The host daemon polls GET /tasks (the *summary* shape) and publishes from that snapshot, so
+    # a push request invisible here would simply never be serviced.
+    task_id = _new_task(client)
+    client.post(f"/tasks/{task_id}/push", json={"branch": "main"})
+
+    listed = {t["id"]: t for t in client.get("/tasks").json()}
+    assert listed[task_id]["push"]["status"] == "requested"
+    assert listed[task_id]["push"]["branch"] == "main"
+
+
 # -- artifacts ----------------------------------------------------------------------
 
 
@@ -362,6 +525,104 @@ def test_artifact_put_get_list(client: TestClient) -> None:
 def test_artifact_missing_404(client: TestClient) -> None:
     task_id = _new_task(client)
     assert client.get(f"/tasks/{task_id}/artifacts/plan.md").status_code == 404
+
+
+def test_artifact_download_content_type_from_extension(client: TestClient) -> None:
+    # A binary artifact downloads byte-exact with a type derived from its extension (so a browser
+    # renders a screenshot), while text keeps its own type; unknown/extensionless falls back.
+    task_id = _new_task(client)
+    png = b"\x89PNG\r\n\x1a\n\x00\xff\xfe\x01"
+    client.put(f"/tasks/{task_id}/artifacts/shot.png", content=png)
+    client.put(f"/tasks/{task_id}/artifacts/plan.md", content=b"# Plan")
+    client.put(f"/tasks/{task_id}/artifacts/blob", content=b"\x00\x01")
+
+    shot = client.get(f"/tasks/{task_id}/artifacts/shot.png")
+    assert shot.content == png
+    assert shot.headers["content-type"] == "image/png"
+    assert (
+        client.get(f"/tasks/{task_id}/artifacts/plan.md")
+        .headers["content-type"]
+        .startswith("text/markdown")
+    )
+    assert (
+        client.get(f"/tasks/{task_id}/artifacts/blob").headers["content-type"]
+        == "application/octet-stream"
+    )
+
+
+# -- repo artifacts -----------------------------------------------------------------
+
+
+def test_repo_artifact_put_get_list(client: TestClient) -> None:
+    put = client.put("/repos/r1/artifacts/conventions.md", content=b"# How we work")
+    assert put.status_code == 204
+    assert client.get("/repos/r1/artifacts/conventions.md").content == b"# How we work"
+    assert client.get("/repos/r1/artifacts").json() == ["conventions.md"]
+
+
+def test_repo_artifact_name_may_be_nested(client: TestClient) -> None:
+    # The route takes the name as a ``:path`` parameter, so a subdirectory is addressable — a
+    # plain parameter would stop at the first separator and leave nested names unreachable.
+    assert client.put("/repos/r1/artifacts/notes/api.md", content=b"beware").status_code == 204
+    assert client.get("/repos/r1/artifacts/notes/api.md").content == b"beware"
+    assert client.get("/repos/r1/artifacts").json() == ["notes/api.md"]
+
+
+def test_repo_artifact_missing_404(client: TestClient) -> None:
+    assert client.get("/repos/r1/artifacts/notes.md").status_code == 404
+
+
+def test_repo_artifact_unknown_repo_404(client: TestClient) -> None:
+    assert client.get("/repos/nope/artifacts").status_code == 404
+    assert client.put("/repos/nope/artifacts/x.md", content=b"x").status_code == 404
+
+
+def test_repo_artifact_traversal_name_400(client: TestClient) -> None:
+    # A literal ``../..`` never reaches the server (an HTTP client normalizes it out of the path),
+    # so the traversal a caller *can* express is the percent-encoded one — which arrives decoded
+    # as the name, is refused by the store, and surfaces as a 400 through the ArtifactError handler.
+    assert (
+        client.put("/repos/r1/artifacts/%2e%2e%2f%2e%2e%2fevil.md", content=b"x").status_code == 400
+    )
+
+
+def test_repo_artifact_download_content_type_from_extension(client: TestClient) -> None:
+    png = b"\x89PNG\r\n\x1a\n\x00binary"
+    client.put("/repos/r1/artifacts/shots/login.png", content=png)
+    shot = client.get("/repos/r1/artifacts/shots/login.png")
+    assert shot.content == png
+    assert shot.headers["content-type"] == "image/png"
+
+
+def test_repo_artifacts_are_separate_from_task_artifacts(client: TestClient) -> None:
+    task_id = _new_task(client)
+    client.put(f"/tasks/{task_id}/artifacts/plan.md", content=b"task")
+    client.put("/repos/r1/artifacts/plan.md", content=b"repo")
+    assert client.get(f"/tasks/{task_id}/artifacts/plan.md").content == b"task"
+    assert client.get("/repos/r1/artifacts/plan.md").content == b"repo"
+
+
+def test_create_task_seeds_binary_artifacts_from_base64(client: TestClient) -> None:
+    png = b"\x89PNG\r\n\x1a\n\x00\xff\xfe\x01binary"
+    resp = client.post(
+        "/tasks",
+        json={
+            "repo_id": "r1",
+            "workflow": "spike",
+            "artifacts_b64": {"shot.png": base64.b64encode(png).decode()},
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    task_id = resp.json()["id"]
+    assert client.get(f"/tasks/{task_id}/artifacts/shot.png").content == png
+
+
+def test_create_task_rejects_malformed_base64_artifact(client: TestClient) -> None:
+    resp = client.post(
+        "/tasks",
+        json={"repo_id": "r1", "workflow": "spike", "artifacts_b64": {"x.bin": "not base64!!"}},
+    )
+    assert resp.status_code == 400, resp.text
 
 
 # -- liveness -----------------------------------------------------------------------
@@ -448,3 +709,26 @@ def test_report_unknown_responsibility(gated_client: TestClient) -> None:
         f"/tasks/{task_id}/responsibilities", json={"key": "ghost", "status": "met"}
     )
     assert resp.status_code == 400
+
+
+def test_task_list_reports_whether_a_task_has_unhidden_artifacts(client: TestClient) -> None:
+    # The dashboard renders a mark per row, so presence has to ride along on the list response
+    # rather than costing a request per task. Dotfile artifacts are agent bookkeeping: they
+    # don't count as something the operator can open.
+    def make() -> str:
+        task_id: str = client.post("/tasks", json={"repo_id": "r1", "workflow": "spike"}).json()[
+            "id"
+        ]
+        return task_id
+
+    visible, hidden_only, bare = make(), make(), make()
+    assert client.put(f"/tasks/{visible}/artifacts/plan.md", content=b"# Plan").status_code == 204
+    assert (
+        client.put(
+            f"/tasks/{hidden_only}/artifacts/.babysit-ci-state.json", content=b"{}"
+        ).status_code
+        == 204
+    )
+
+    marks = {t["id"]: t["has_artifacts"] for t in client.get("/tasks").json()}
+    assert marks == {visible: True, hidden_only: False, bare: False}

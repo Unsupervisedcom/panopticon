@@ -3,11 +3,20 @@
 Freeform per-task files (plan, notes) are file-backed, not in the DB. The same bytes are
 reachable via the filesystem, the dashboard, and MCP; this module owns the single resolver
 that maps ``(task_id, name)`` to a path and an MCP URI so every surface agrees.
+
+Artifacts come in two scopes. A **task** artifact belongs to one task and its name is a single
+path segment. A **repo** artifact belongs to a repo — shared by every task in it, outliving any
+one of them — and its name may be a ``/``-separated relative path, so a repo's documents can be
+organised into subdirectories. Both scopes live in the same store behind the same resolver.
 """
 
 from __future__ import annotations
 
+import binascii
+import builtins
 from abc import ABC, abstractmethod
+from base64 import b64decode
+from urllib.parse import quote, unquote
 
 MCP_URI_SCHEME = "panopticon"
 
@@ -20,6 +29,20 @@ class InvalidArtifactName(ArtifactError):
     """Raised for an artifact name (or task id) that could escape its directory."""
 
 
+class InvalidArtifactContent(ArtifactError):
+    """Raised for artifact content that can't be decoded (e.g. malformed base64)."""
+
+
+def decode_b64_artifact(name: str, encoded: str) -> bytes:
+    """Decode a base64-encoded artifact value to raw bytes, raising :class:`ArtifactError` on
+    malformed input. This is how binary artifacts (screenshots, PDFs) cross the JSON surfaces
+    (REST create body, MCP tools) — JSON can't carry raw bytes, so the value is base64."""
+    try:
+        return b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise InvalidArtifactContent(f"artifact {name!r}: invalid base64: {exc}") from exc
+
+
 def validate_segment(segment: str) -> None:
     """Reject names/ids that contain path separators, are empty, or are the dot-sentinels ``.`` / ``..``.
 
@@ -29,15 +52,66 @@ def validate_segment(segment: str) -> None:
         raise InvalidArtifactName(f"invalid artifact segment: {segment!r}")
 
 
+def validate_relative_name(name: str) -> None:
+    """Reject a ``/``-separated relative artifact name that could escape its directory.
+
+    The nested form of :func:`validate_segment`, for the surfaces that allow subdirectories —
+    repo artifacts (``notes/api.md``, ``screenshots/login.png``), where a task artifact's name is
+    a single segment. Validating each segment in turn is the whole check: an empty name, an
+    absolute one (``/etc/passwd``), a trailing slash, an empty interior segment (``a//b``), a
+    backslash and ``.``/``..`` all reduce to a segment :func:`validate_segment` already refuses.
+    A dot-*prefixed* segment stays legal (it just reads as hidden — see :func:`is_hidden`)."""
+    for segment in name.split("/"):
+        validate_segment(segment)
+
+
+def is_hidden(name: str) -> bool:
+    """Whether an artifact is hidden from the operator's default view.
+
+    Dotfile artifacts are agent bookkeeping — cross-turn state like ``.babysit-ci-state.json`` —
+    rather than documents a human asked for. The dashboard hides them behind a "Show hidden"
+    toggle and the task list's artifact mark ignores them, so the rule lives here rather than
+    being spelled out at each surface.
+
+    **Any** dot-prefixed segment hides the artifact, so a nested repo artifact tucked under a
+    dot-directory (``.state/ci.json``) is hidden like a top-level dotfile is — the reason for
+    hiding it is the same, and hiding the directory but listing its contents would be incoherent."""
+    return any(part.startswith(".") for part in name.split("/"))
+
+
 def mcp_uri(task_id: str, name: str) -> str:
-    """The canonical MCP resource URI for an artifact (the shared resolver)."""
+    """The canonical MCP resource URI for an artifact (the shared resolver).
+
+    The ``task_id`` and ``name`` are **percent-encoded** into the path so a name with spaces or
+    other URI-reserved characters (``my notes.md``, ``a+b.md``) yields a valid, unambiguous URI.
+    :func:`decode_segment` reverses this in the resource handler — the two must stay paired."""
     validate_segment(task_id)
     validate_segment(name)
-    return f"{MCP_URI_SCHEME}://tasks/{task_id}/artifacts/{name}"
+    return f"{MCP_URI_SCHEME}://tasks/{quote(task_id, safe='')}/artifacts/{quote(name, safe='')}"
+
+
+def repo_mcp_uri(repo_id: str, name: str) -> str:
+    """The canonical MCP resource URI for a **repo** artifact — :func:`mcp_uri`'s repo-scoped twin.
+
+    The name is percent-encoded with **no** safe characters, so a nested name's separators become
+    ``%2F`` (``notes/api.md`` → ``notes%2Fapi.md``) and the whole name stays inside one URI
+    segment. That matters: the MCP resource layer compiles a URI template's ``{name}`` to a
+    segment-bounded pattern, so an unencoded ``/`` would make the URI unroutable.
+    :func:`decode_segment` reverses this in the resource handler — the two must stay paired."""
+    validate_segment(repo_id)
+    validate_relative_name(name)
+    return f"{MCP_URI_SCHEME}://repos/{quote(repo_id, safe='')}/artifacts/{quote(name, safe='')}"
+
+
+def decode_segment(segment: str) -> str:
+    """Percent-decode a path segment extracted from an MCP artifact URI, reversing the encoding
+    :func:`mcp_uri` applied. The MCP resource layer matches the URI template but does **not**
+    decode the captured segments, so the handler must (e.g. ``my%20notes.md`` → ``my notes.md``)."""
+    return unquote(segment)
 
 
 class ArtifactStore(ABC):
-    """Read/write per-task artifact files."""
+    """Read/write artifact files, per task and per repo."""
 
     @abstractmethod
     async def put(self, task_id: str, name: str, content: bytes) -> None:
@@ -50,6 +124,39 @@ class ArtifactStore(ABC):
     @abstractmethod
     async def list(self, task_id: str) -> list[str]:
         """Return the names of a task's artifacts (empty if none)."""
+
+    async def has_unhidden_artifacts(self, task_id: str) -> bool:
+        """Whether the task has at least one artifact the operator would want to open.
+
+        The task list renders a mark per row from this, so it answers the question without
+        materialising names. Concrete, not abstract: the default is written in terms of
+        :meth:`list`, which every adapter must provide, so one that has no cheaper way to tell
+        still inherits a correct implementation (the filesystem store overrides it with a
+        directory scan that stops at the first hit)."""
+        return any(not is_hidden(name) for name in await self.list(task_id))
+
+    # -- repo-scoped artifacts ----------------------------------------------------
+    #
+    # The same file-backed documents, owned by a **repo** rather than a task: shared by every task
+    # in that repo and outliving any one of them (conventions, accumulated notes, screenshots).
+    # Two differences from the task methods above: the owner is a repo id, and a name may be a
+    # ``/``-separated relative path (:func:`validate_relative_name`) rather than one segment, so a
+    # repo's artifacts can be organised into subdirectories.
+
+    @abstractmethod
+    async def put_repo_artifact(self, repo_id: str, name: str, content: bytes) -> None:
+        """Create or overwrite a repo artifact (``name`` may contain ``/``)."""
+
+    @abstractmethod
+    async def get_repo_artifact(self, repo_id: str, name: str) -> bytes | None:
+        """Return a repo artifact's bytes, or ``None`` if it does not exist."""
+
+    @abstractmethod
+    async def list_repo_artifacts(self, repo_id: str) -> builtins.list[str]:
+        """Return a repo's artifact names as ``/``-separated relative paths (empty if none).
+
+        (``builtins.list`` because :meth:`list` above shadows the builtin for everything declared
+        after it in this class body.)"""
 
     async def link_slug(self, task_id: str, slug: str) -> None:
         """Expose a task's artifacts under a readable ``slug`` alias (best-effort).

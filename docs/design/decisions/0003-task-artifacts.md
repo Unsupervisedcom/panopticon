@@ -1,4 +1,4 @@
-# 0003 — Task artifacts: file-backed, served via MCP, viewable everywhere
+# 0003 — Artifacts: file-backed, served via MCP, viewable everywhere
 
 - Status: Accepted
 - Date: 2026-06-11
@@ -49,6 +49,33 @@ A task is **structured record (DB) + a set of file-backed artifacts**.
    the door open to other backends later (e.g. object storage) without changing core or
    MCP logic. The MCP server and the dashboard are *consumers* of this interface, not
    bypasses around it.
+
+### Repo-scoped artifacts
+
+The same decision extends to a **repo**: artifacts owned by the repository rather than by one
+task, shared by every task that runs against it and outliving each of them (conventions and
+gotchas worth passing on, accumulated notes, reference screenshots). They are the same files,
+the same store interface, and the same three views — only the owner differs:
+
+```
+tasks/<task-id>/plan.md            # task-scoped: one segment for a name
+repos/<repo-id>/conventions.md     # repo-scoped: names may be nested
+repos/<repo-id>/notes/api.md
+```
+
+Two deliberate differences from the task scope:
+
+1. **Names may be relative paths, not just one segment.** A repo accumulates material over many
+   tasks, so it needs organising; a task's handful of documents does not. Both scopes validate
+   every segment against the same rules (no `..`, no absolute name), and the store re-checks the
+   resolved path so a symlinked subdirectory can't redirect a write out of the repo's directory.
+   Task names stay single-segment for now: nesting them would also touch the slug symlink alias,
+   the `{name}` REST route and the dashboard's open-over-REST basename, with nothing yet asking
+   for it. The shared validator is in place if that changes.
+
+2. **The writer names itself, not the repo.** The agent-facing MCP tools take the acting task's
+   id and resolve its repo, so a task can contribute to its own repo's artifacts and no other's
+   — the same shape as the rest of the per-task surface, and one less id for the agent to know.
 
 ## Consequences
 

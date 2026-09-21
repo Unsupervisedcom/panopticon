@@ -3,7 +3,10 @@
 One adapter serves every SQL backend SQLAlchemy speaks; **"in-memory" is just an in-memory
 SQLite engine**. The pure, frozen domain models (:mod:`panopticon.core.models`) never touch
 the ORM — this adapter owns mutable *row* classes and each knows how to translate itself
-``to_domain`` / ``from_domain``. Parent→child links are ORM ``relationship``\\ s (loaded
+``to_domain`` / ``from_domain``. Each row class states its domain→column mapping **once**, in
+``column_values``, which both the insert (``from_domain``) and the update (``_apply_columns``)
+go through — so a newly added column can't be carried on create and silently dropped on update.
+Parent→child links are ORM ``relationship``\\ s (loaded
 eagerly via ``selectin``), so reading a task pulls in its history and responsibilities and
 writing one cascades — no hand-written load/insert code.
 
@@ -42,7 +45,16 @@ from sqlalchemy.orm import (
 )
 from sqlalchemy.pool import StaticPool
 
-from panopticon.core.models import Actor, HistoryEntry, Repo, Responsibility, Status, Task
+from panopticon.core.models import (
+    Actor,
+    HistoryEntry,
+    Push,
+    PushStatus,
+    Repo,
+    Responsibility,
+    Status,
+    Task,
+)
 from panopticon.core.store import (
     AlreadyExists,
     IntegrityError,
@@ -72,6 +84,18 @@ class _Base(DeclarativeBase):
 metadata = _Base.metadata
 
 
+def _apply_columns(row: _Base, values: dict[str, Any]) -> None:
+    """Overwrite ``row``'s columns from a ``column_values`` mapping, leaving its ``id`` alone.
+
+    The counterpart to each row class's ``from_domain``: an update writes exactly the columns an
+    insert does, so a newly added column can't be persisted on create and then silently dropped
+    on update (which is how ``Repo.agent_cli`` was lost — see ``column_values``).
+    """
+    for key, value in values.items():
+        if key != "id":
+            setattr(row, key, value)
+
+
 class _RepoRow(_Base):
     __tablename__ = "repo"
 
@@ -80,11 +104,13 @@ class _RepoRow(_Base):
     git_url: Mapped[str]
     default_base: Mapped[str]
     env_file: Mapped[str | None] = mapped_column(default=None)
+    credential_dir: Mapped[str | None] = mapped_column(default=None)
     image_layer_file: Mapped[str | None] = mapped_column(default=None)
     capabilities: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     hook_file: Mapped[str | None] = mapped_column(default=None)
     enabled_workflows: Mapped[list[str]] = mapped_column(JSON, default=list)
     disabled_workflows: Mapped[list[str]] = mapped_column(JSON, default=list)
+    agent_cli: Mapped[str] = mapped_column(default="claude", server_default="claude")
 
     def to_domain(self) -> Repo:
         return Repo(
@@ -93,27 +119,65 @@ class _RepoRow(_Base):
             git_url=self.git_url,
             default_base=self.default_base,
             env_file=self.env_file,
+            credential_dir=self.credential_dir,
             image_layer_file=self.image_layer_file,
             capabilities=dict(self.capabilities or {}),
             hook_file=self.hook_file,
+            agent_cli=self.agent_cli,
             enabled_workflows=list(self.enabled_workflows or []),
             disabled_workflows=list(self.disabled_workflows or []),
         )
 
     @classmethod
+    def column_values(cls, repo: Repo) -> dict[str, Any]:
+        """The domain→row column mapping: the one place a new repo column gets wired up.
+
+        Both the insert (:meth:`from_domain`) and the update (:func:`_apply_columns`) read it, so
+        the two can't drift — the failure mode this replaces was ``agent_cli`` being carried on
+        create and dropped by a hand-copied update, making a repo un-switchable to another CLI.
+        """
+        return {
+            "id": repo.id,
+            "name": repo.name,
+            "git_url": repo.git_url,
+            "default_base": repo.default_base,
+            "env_file": repo.env_file,
+            "credential_dir": repo.credential_dir,
+            "image_layer_file": repo.image_layer_file,
+            "capabilities": dict(repo.capabilities),
+            "hook_file": repo.hook_file,
+            "agent_cli": repo.agent_cli,
+            "enabled_workflows": list(repo.enabled_workflows),
+            "disabled_workflows": list(repo.disabled_workflows),
+        }
+
+    @classmethod
     def from_domain(cls, repo: Repo) -> _RepoRow:
-        return cls(
-            id=repo.id,
-            name=repo.name,
-            git_url=repo.git_url,
-            default_base=repo.default_base,
-            env_file=repo.env_file,
-            image_layer_file=repo.image_layer_file,
-            capabilities=dict(repo.capabilities),
-            hook_file=repo.hook_file,
-            enabled_workflows=list(repo.enabled_workflows),
-            disabled_workflows=list(repo.disabled_workflows),
-        )
+        return cls(**cls.column_values(repo))
+
+
+def _push_to_row(push: Push | None) -> dict[str, Any] | None:
+    """A :class:`Push` as the plain JSON object the column stores (``None`` stays ``None``)."""
+    if push is None:
+        return None
+    return {
+        "branch": push.branch,
+        "status": push.status.value,
+        "detail": push.detail,
+        "requested_at": push.requested_at,
+    }
+
+
+def _push_from_row(row: dict[str, Any] | None) -> Push | None:
+    """The stored JSON object back as a :class:`Push` (``None``/empty stays ``None``)."""
+    if not row:
+        return None
+    return Push(
+        branch=str(row["branch"]),
+        status=PushStatus(row["status"]),
+        detail=row.get("detail"),
+        requested_at=row.get("requested_at"),
+    )
 
 
 class _TaskRow(_Base):
@@ -129,15 +193,20 @@ class _TaskRow(_Base):
     initial_prompt: Mapped[str | None] = mapped_column(default=None)
     slug: Mapped[str | None]
     url: Mapped[str | None] = mapped_column(default=None)
+    snoozed_until: Mapped[str | None] = mapped_column(default=None)
     branch: Mapped[str | None] = mapped_column(default=None)
     clone: Mapped[str | None] = mapped_column(default=None)
+    #: The task's push record (:class:`~panopticon.core.models.Push`) as a JSON object, or NULL
+    #: when none was ever requested. A single small record with no rows of its own to query, so a
+    #: JSON column earns its place here the way ``Repo.capabilities`` does.
+    push: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
     claimed_by: Mapped[str | None] = mapped_column(default=None)
-    tokens_used: Mapped[int | None] = mapped_column(default=None)
-    token_estimate: Mapped[int | None] = mapped_column(default=None)
     starting_model: Mapped[str | None] = mapped_column(default=None)
+    agent_cli: Mapped[str | None] = mapped_column(default=None)
     governor_task_id: Mapped[str | None] = mapped_column(ForeignKey("task.id"), default=None)
     created_at: Mapped[str | None] = mapped_column(default=None)
     updated_at: Mapped[str | None] = mapped_column(default=None)
+    sort_weight: Mapped[int] = mapped_column(default=0, server_default="0")
     depends_on_task_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
     history: Mapped[list[_HistoryRow]] = relationship(
         order_by="_HistoryRow.seq",
@@ -158,42 +227,57 @@ class _TaskRow(_Base):
             initial_prompt=self.initial_prompt,
             slug=self.slug,
             url=self.url,
+            snoozed_until=self.snoozed_until,
             branch=self.branch,
             clone=self.clone,
+            push=_push_from_row(self.push),
             claimed_by=self.claimed_by,
-            tokens_used=self.tokens_used,
-            token_estimate=self.token_estimate,
             starting_model=self.starting_model,
+            agent_cli=self.agent_cli,
             governor_task_id=self.governor_task_id,
             created_at=self.created_at,
             updated_at=self.updated_at,
+            sort_weight=self.sort_weight,
             depends_on_task_ids=list(self.depends_on_task_ids or []),
             history=[h.to_domain() for h in self.history],
         )
 
     @classmethod
+    def column_values(cls, task: Task) -> dict[str, Any]:
+        """The domain→row column mapping: the one place a new task column gets wired up.
+
+        Columns only — ``history`` is a relationship, persisted append-only by ``_update_task``
+        (see the module docstring), never through this.
+        """
+        return {
+            "id": task.id,
+            "repo_id": task.repo_id,
+            "workflow": task.workflow,
+            "state": task.state,
+            "turn": task.turn.value,
+            "blocked": task.blocked,
+            "memo": task.memo,
+            "initial_prompt": task.initial_prompt,
+            "slug": task.slug,
+            "url": task.url,
+            "snoozed_until": task.snoozed_until,
+            "branch": task.branch,
+            "clone": task.clone,
+            "push": _push_to_row(task.push),
+            "claimed_by": task.claimed_by,
+            "starting_model": task.starting_model,
+            "agent_cli": task.agent_cli,
+            "governor_task_id": task.governor_task_id,
+            "created_at": task.created_at,
+            "updated_at": task.updated_at,
+            "sort_weight": task.sort_weight,
+            "depends_on_task_ids": list(task.depends_on_task_ids),
+        }
+
+    @classmethod
     def from_domain(cls, task: Task) -> _TaskRow:
         return cls(
-            id=task.id,
-            repo_id=task.repo_id,
-            workflow=task.workflow,
-            state=task.state,
-            turn=task.turn.value,
-            blocked=task.blocked,
-            memo=task.memo,
-            initial_prompt=task.initial_prompt,
-            slug=task.slug,
-            url=task.url,
-            branch=task.branch,
-            clone=task.clone,
-            claimed_by=task.claimed_by,
-            tokens_used=task.tokens_used,
-            token_estimate=task.token_estimate,
-            starting_model=task.starting_model,
-            governor_task_id=task.governor_task_id,
-            created_at=task.created_at,
-            updated_at=task.updated_at,
-            depends_on_task_ids=list(task.depends_on_task_ids),
+            **cls.column_values(task),
             history=[_HistoryRow.from_domain(e, seq) for seq, e in enumerate(task.history)],
         )
 
@@ -339,15 +423,7 @@ class SqlAlchemyStore(Store):
             row = await s.get(_RepoRow, repo.id)
             if row is None:
                 raise NotFound(f"repo {repo.id!r} does not exist")
-            row.name = repo.name
-            row.git_url = repo.git_url
-            row.default_base = repo.default_base
-            row.env_file = repo.env_file
-            row.image_layer_file = repo.image_layer_file
-            row.capabilities = dict(repo.capabilities)
-            row.hook_file = repo.hook_file
-            row.enabled_workflows = list(repo.enabled_workflows)
-            row.disabled_workflows = list(repo.disabled_workflows)
+            _apply_columns(row, _RepoRow.column_values(repo))
 
     # -- tasks: reads + persistence primitives (the base's template methods drive these) --
 
@@ -388,19 +464,7 @@ class SqlAlchemyStore(Store):
             row = await s.get(_TaskRow, task.id)
             if row is None:  # defensive: single-writer, so it still exists after _stored_history
                 raise NotFound(f"task {task.id!r} does not exist")
-            row.state = task.state
-            row.turn = task.turn.value
-            row.blocked = task.blocked
-            row.slug = task.slug
-            row.url = task.url
-            row.branch = task.branch
-            row.clone = task.clone
-            row.claimed_by = task.claimed_by
-            row.tokens_used = task.tokens_used
-            row.token_estimate = task.token_estimate
-            row.governor_task_id = task.governor_task_id
-            row.updated_at = task.updated_at
-            row.depends_on_task_ids = list(task.depends_on_task_ids)
+            _apply_columns(row, _TaskRow.column_values(task))
             # The current (last stored) entry's promises may have been fulfilled in place.
             if stored:
                 _fulfil_current_promises(

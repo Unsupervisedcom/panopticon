@@ -67,6 +67,124 @@ def test_choose_enabled_workflow_local(git_url: str) -> None:
     assert qs.choose_enabled_workflow(git_url) == "local-git-self-reviewed"
 
 
+# -- letting panopticon's merges land in a local repo ---------------------------------
+
+
+class _GitRecorder:
+    """A fake ``subprocess.run`` capturing git argv; ``configured`` seeds an existing value."""
+
+    def __init__(self, configured: str = "", fail: bool = False) -> None:
+        self.calls: list[list[str]] = []
+        self._configured = configured
+        self._fail = fail
+
+    def __call__(self, cmd: list[str], **kw: Any) -> Any:
+        self.calls.append(list(cmd))
+        if self._fail:
+            raise subprocess.CalledProcessError(128, cmd)
+        result = MagicMock()
+        result.stdout = f"{self._configured}\n" if "--get" in cmd else ""
+        return result
+
+
+def test_allow_pushes_sets_deny_current_branch_on_a_local_repo() -> None:
+    git = _GitRecorder()
+    assert qs.allow_pushes_into_local_repo("/srv/repos/widget", run=git) is True
+    assert git.calls[-1] == [
+        "git",
+        "-C",
+        "/srv/repos/widget",
+        "config",
+        "receive.denyCurrentBranch",
+        "updateInstead",
+    ]
+
+
+def test_allow_pushes_resolves_file_urls_and_tildes() -> None:
+    git = _GitRecorder()
+    qs.allow_pushes_into_local_repo("file:///srv/repos/widget", run=git)
+    assert git.calls[-1][2] == "/srv/repos/widget"
+
+    home = _GitRecorder()
+    qs.allow_pushes_into_local_repo("~/src/widget", run=home)
+    assert home.calls[-1][2] == str(Path("~/src/widget").expanduser())
+
+
+def test_allow_pushes_is_a_no_op_for_a_networked_remote() -> None:
+    git = _GitRecorder()
+    assert qs.allow_pushes_into_local_repo("https://github.com/x/y.git", run=git) is False
+    assert git.calls == []  # nothing local to configure — and nothing to run git against
+
+
+def test_allow_pushes_leaves_an_existing_value_alone() -> None:
+    # Any value there is the operator's decision (including a deliberate `refuse`); don't override.
+    git = _GitRecorder(configured="refuse")
+    assert qs.allow_pushes_into_local_repo("/srv/repos/widget", run=git) is False
+    assert len(git.calls) == 1  # read it, then stopped
+
+
+def test_allow_pushes_warns_instead_of_failing_when_git_cannot_be_run(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Best-effort: quickstart must not die because a path isn't a repo or git is missing.
+    assert (
+        qs.allow_pushes_into_local_repo("/srv/repos/widget", run=_GitRecorder(fail=True)) is False
+    )
+    assert "receive.denyCurrentBranch updateInstead" in capsys.readouterr().out
+
+
+def test_setup_repo_configures_a_local_repo_on_create(monkeypatch: pytest.MonkeyPatch) -> None:
+    git = _GitRecorder()
+    monkeypatch.setattr(subprocess, "run", git)
+
+    class _Empty:
+        def list_repos(self) -> list[dict[str, object]]:
+            return []
+
+        def create_repo(
+            self, repo_id: str, name: str, git_url: str, **kw: Any
+        ) -> dict[str, object]:
+            return {}
+
+    qs.setup_repo(_Empty(), "/srv/repos/widget", "panopticon.env")  # type: ignore[arg-type]
+    assert any("receive.denyCurrentBranch" in " ".join(c) for c in git.calls)
+
+
+def test_setup_repo_configures_an_already_registered_local_repo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The re-run path: a repo registered before this existed still gets configured.
+    git = _GitRecorder()
+    monkeypatch.setattr(subprocess, "run", git)
+
+    class _Existing:
+        def list_repos(self) -> list[dict[str, object]]:
+            return [{"id": "widget", "git_url": "/srv/repos/widget", "enabled_workflows": []}]
+
+        def update_repo(self, repo_id: str, **kw: Any) -> dict[str, object]:
+            return {}
+
+    qs.setup_repo(_Existing(), "/srv/repos/widget", "panopticon.env")  # type: ignore[arg-type]
+    assert any("receive.denyCurrentBranch" in " ".join(c) for c in git.calls)
+
+
+def test_setup_repo_does_not_touch_git_for_a_forge_repo(monkeypatch: pytest.MonkeyPatch) -> None:
+    git = _GitRecorder()
+    monkeypatch.setattr(subprocess, "run", git)
+
+    class _Empty:
+        def list_repos(self) -> list[dict[str, object]]:
+            return []
+
+        def create_repo(
+            self, repo_id: str, name: str, git_url: str, **kw: Any
+        ) -> dict[str, object]:
+            return {}
+
+    qs.setup_repo(_Empty(), "https://github.com/x/y.git", "panopticon.env")  # type: ignore[arg-type]
+    assert git.calls == []
+
+
 def test_ensure_secrets_file_creates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import panopticon.core.dirs as dirs_mod
 

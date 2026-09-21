@@ -14,6 +14,15 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+#: The control plane's abstract model **tiers** (ADR 0014 §3a) — CLI-agnostic labels a workflow's
+#: ``default_model`` / :attr:`Task.starting_model` may hold (currently just ``"primary"``, the
+#: built-in default). These names are **reserved**: every ``AgentCLI`` adapter must map each tier to
+#: a concrete model id, so a reserved tier that reaches ``--model`` unresolved is a bug (a stale
+#: image running pre-resolution code did exactly this) and the adapters fail loud on it rather than
+#: passing it through (see ``panopticon.container.cli.base.resolve_tier``). A value *not* in this set
+#: is treated as a concrete model id and passes through unchanged.
+MODEL_TIERS: frozenset[str] = frozenset({"primary"})
+
 
 class Actor(str, Enum):
     """A party that can act on a task: the user or the agent.
@@ -161,12 +170,20 @@ class Tool:
 class Repo:
     """A repository tasks operate on.
 
-    Holds a *reference* to its per-repo secrets (ADR 0007), never the values: ``env_file`` is a
+    Holds *references* to its per-repo secrets (ADR 0007), never the values: ``env_file`` is a
     **name relative to the secrets dir** (``$PANOPTICON_CONFIG/secrets``) naming an env-file of
     API-key-style secrets, injected into the task container at launch (``--env-file``), so secrets
     stay out of the DB, artifacts, and image layers. The runner resolves it against its **own**
     host's secrets dir, so a remote runner uses its own secrets and the value stays host-agnostic;
     the file's content never crosses the wire.
+
+    ``credential_dir`` is also a **name relative to the secrets dir**, but naming a *directory*
+    that holds rotating credential files (e.g. ``openai.d/`` containing ``auth.json`` for a Codex
+    ChatGPT-subscription login). The runner mounts it **read-write** at ``/panopticon/credentials``
+    and exports ``PANOPTICON_CREDENTIALS`` so the in-container adapter can find it. The mount is
+    shared across all containers for the same repo on the same host, letting codex write refreshed
+    tokens back through a symlink (see ``docs/auth.md`` and ADR 0012 for why symlinks work for
+    codex but not Claude).
 
     ``image_layer_file`` *references* the repo's Dockerfile fragment (ADR 0005's repo tier): a file
     name resolved relative to the task service's layers directory, not inline content. The task
@@ -193,11 +210,69 @@ class Repo:
     git_url: str
     default_base: str = "main"
     env_file: str | None = None
+    credential_dir: str | None = None
     image_layer_file: str | None = None
     capabilities: dict[str, Any] = field(default_factory=dict)
     hook_file: str | None = None
     enabled_workflows: list[str] = field(default_factory=list)
     disabled_workflows: list[str] = field(default_factory=list)
+    #: The repo's default agent CLI — the one a task uses unless it overrides it (ADR 0014 §3).
+    #: Resolved host-side at spawn (see :func:`resolve_agent_cli`) and passed into the container as
+    #: ``PANOPTICON_AGENT_CLI``; it also drives the base-image variant + config-dir mount. Defaults
+    #: to ``"claude"`` so existing repos are unchanged.
+    agent_cli: str = "claude"
+
+
+#: The CLI a task falls back to when neither the task nor its repo names one (ADR 0014 §2/§3).
+DEFAULT_AGENT_CLI = "claude"
+
+
+def resolve_agent_cli(task_agent_cli: str | None, repo_agent_cli: str | None) -> str:
+    """Resolve a task's effective agent CLI: its own override → the repo default → ``"claude"``.
+
+    The CLI-selection resolution order of ADR 0014 §3, as a pure host-side helper (the session
+    service resolves it from the task + repo records at spawn; the control plane runs no CLI logic).
+    """
+    return task_agent_cli or repo_agent_cli or DEFAULT_AGENT_CLI
+
+
+class PushStatus(str, Enum):
+    """How a task's requested push to ``origin`` ended (see :class:`Push`).
+
+    The session service performs the push on the host and reports one of these back; the task
+    service only records it. ``PARTIAL`` is the interesting one: the task branch reached the
+    origin but the base branch did not, so the work is safe even though the merge didn't land.
+    """
+
+    REQUESTED = "requested"  # the agent asked; the session service hasn't acted yet
+    PUSHED = "pushed"  # both the task branch and the base branch reached origin
+    PARTIAL = "partial"  # the task branch landed; the base branch was refused
+    FAILED = "failed"  # nothing landed
+
+
+@dataclass(frozen=True)
+class Push:
+    """A request to push this task's merge back to ``origin``, and how it turned out.
+
+    The agent merges in its own clone and then *asks* for the push (``REQUESTED``); the session
+    service — which runs where the clone lives, so it can reach a local-filesystem origin the
+    container never could — performs it and records the outcome. A pure recorded fact: the task
+    service does no git (ADR 0011's split), it just carries this between the two.
+
+    ``branch`` is the base branch to push. ``detail`` carries the pushed sha on success, or an
+    operator-actionable explanation on ``PARTIAL``/``FAILED`` (the remedy for a refused push, not
+    just git's stderr). Timestamps are supplied by the caller, as everywhere in the core.
+    """
+
+    branch: str
+    status: PushStatus = PushStatus.REQUESTED
+    detail: str | None = None
+    requested_at: str | None = None
+
+    @property
+    def pending(self) -> bool:
+        """True while the session service still owes this push — the publisher's gate."""
+        return self.status is PushStatus.REQUESTED
 
 
 @dataclass(frozen=True)
@@ -244,7 +319,7 @@ class Task:
     #: lives in the task's plan artifact). Distinct from the ``slug`` (a short identifier the
     #: agent sets later); ``None`` when the creator gave none.
     memo: str | None = None
-    #: Optional text prefilled (unsent) into Claude's input box on the task's first spawn,
+    #: Optional text prefilled (unsent) into the agent CLI's input box on the task's first spawn,
     #: taking precedence over ``memo`` for that purpose. ``None`` until set at creation.
     initial_prompt: str | None = None
     slug: str | None = None
@@ -252,34 +327,39 @@ class Task:
     #: (cloude-cade's ``pr_url``). Set via :meth:`TaskService.set_url`; the dashboard's ``p``
     #: hotkey opens it. ``None`` until something records one (e.g. the ``open-pr`` skill).
     url: str | None = None
+    #: An operator-owned attention mute deadline, recorded exactly as an ISO-8601 timestamp.
+    #: ``None`` means not snoozed; display code alone decides whether a finite deadline is active
+    #: (the control plane never compares it to a clock). Set via :meth:`TaskService.set_snooze`.
+    snoozed_until: str | None = None
     #: The git refs the session service provisions for this task once the slug is set (ADR
     #: 0010/0011): the slug-named branch and the path of the per-task ``clone`` it works in **on
     #: the host where the container runs**. The task service only records these — it does no git
     #: itself — so this stays correct when the runner is remote. Both ``None`` until provisioning.
     branch: str | None = None
     clone: str | None = None
+    #: The pending-or-finished push of this task's merge back to ``origin`` (:class:`Push`), or
+    #: ``None`` when none was ever requested. The agent requests it; the session service performs
+    #: the host git and records the result here. Only the forge-free local-git flow uses it today
+    #: — the GitHub flows push from the container, which can reach their networked origin.
+    push: Push | None = None
     #: The runner that has **claimed** this task (its ``runner_id``), or ``None`` if unclaimed. A
     #: session service claims an unclaimed task before spawning its container, so exactly one host
     #: owns it; the claim is the spawn gate (ADR 0008). Released (back to ``None``) to hand it off
     #: or have it respawned. Distinct from liveness — a claimed task whose container died is
     #: "claimed but down".
     claimed_by: str | None = None
-    #: Cumulative **cost-weighted** tokens the ``claude`` agent in this task's container has used,
-    #: expressed in input-equivalent units (cache-reads ≈0.1×, output ≈5×). The container's Stop
-    #: hook reports it via :meth:`TaskService.set_tokens_used`, recomputing the session total each
-    #: turn; the dashboard shows it in short human form. ``None`` until the first report. Values
-    #: recorded before cost-weighting was introduced are raw four-tier sums and are not comparable.
-    tokens_used: int | None = None
-    #: The agent's *forecast* of the total tokens this task will consume, set once during planning
-    #: via :meth:`TaskService.set_token_estimate` (distinct from ``tokens_used``, the running
-    #: actual). The GithubForge workflows and the orchestrator record it when producing the plan.
-    #: ``None`` until estimated.
-    token_estimate: int | None = None
-    #: The model the agent should start with — e.g. ``"opus"``. Seeded from
+    #: The abstract model **tier** the agent should start with — a CLI-agnostic label like
+    #: ``"primary"``, not a provider's concrete model name (ADR 0014 §3a). Seeded from
     #: :attr:`~panopticon.core.workflow.Workflow.default_model` when the task is created;
-    #: injected as ``PANOPTICON_STARTING_MODEL`` at spawn so the agent can pass ``--model``
-    #: to ``claude`` on first launch. ``None`` means no model preference (claude picks its default).
+    #: injected as ``PANOPTICON_STARTING_MODEL`` at spawn, where the in-container ``AgentCLI``
+    #: adapter resolves the tier to that CLI's concrete ``--model`` on first launch. The control
+    #: plane never interprets it. ``None`` means no tier preference (the CLI picks its default).
     starting_model: str | None = None
+    #: A per-task **override** of the repo's default agent CLI (ADR 0014 §3); ``None`` means "use
+    #: the repo default". Resolved host-side at spawn via :func:`resolve_agent_cli`, then passed into
+    #: the container as ``PANOPTICON_AGENT_CLI`` (which also picks the base-image variant + config
+    #: mount). The control plane only records it — it runs no CLI-specific logic.
+    agent_cli: str | None = None
     #: The task that *governs* (oversees) this one — its ``id``. Set by the orchestrator on the
     #: tasks it creates so the relationship is recorded; also settable manually via
     #: :meth:`TaskService.set_governor`. ``None`` for ungoverned tasks.
@@ -290,6 +370,11 @@ class Task:
     #: ISO-8601 timestamp of the last mutation (any field change or history update), stamped by
     #: the task service. ``None`` only for tasks created before this field was introduced.
     updated_at: str | None = None
+    #: An operator-owned sort priority for the dashboard. Ranks **above** the ``updated_at``
+    #: timestamp but **below** state/turn: within a section and turn, a higher weight sorts first,
+    #: ties falling back to the timestamp. Default ``0`` leaves ordering unchanged. Set via
+    #: :meth:`TaskService.set_sort_weight`.
+    sort_weight: int = 0
     #: Task IDs that must reach a terminal state before work on this task should begin.
     #: Tracking only — the state machine does not enforce this constraint.
     depends_on_task_ids: list[str] = field(default_factory=list)

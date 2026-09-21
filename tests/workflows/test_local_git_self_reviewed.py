@@ -62,13 +62,12 @@ def test_foreground_states_are_user_advanced_merging_is_agent_driven() -> None:
 
 def test_responsibilities_are_local_git_specific() -> None:
     # PLANNING: same plan convention as the forge flows.
-    assert {r.key for r in WF.responsibilities("PLANNING")} == {"plan-written", "token-estimated"}
+    assert {r.key for r in WF.responsibilities("PLANNING")} == {"plan-written"}
     by_key = {r.key: r for r in WF.responsibilities("PLANNING")}
     assert (
         "plan.md" in by_key["plan-written"].description
         and "markdown" in by_key["plan-written"].description
     )
-    assert "set_token_estimate" in by_key["token-estimated"].description
 
     # ITERATING: no forge obligations (no committed-pushed, no ci-passing, no pr-updated).
     assert {r.key for r in WF.responsibilities("ITERATING")} == {
@@ -82,8 +81,13 @@ def test_responsibilities_are_local_git_specific() -> None:
     assert "ci-passing" not in iterating_keys
     assert "pr-updated" not in iterating_keys
 
-    # MERGING: local branch merge, not a remote PR.
+    # MERGING: a local branch merge that must also reach origin — the key stays `local-merged`
+    # (renaming it would strand tasks already in MERGING with the old key seeded), but the
+    # obligation now covers the push, so the merge can't be declared done while stranded in the
+    # per-task clone.
     assert {r.key for r in WF.responsibilities("MERGING")} == {"local-merged"}
+    merged = next(r for r in WF.responsibilities("MERGING") if r.key == "local-merged")
+    assert "pushed to origin" in merged.description
 
 
 def test_no_forge_tools() -> None:
@@ -99,6 +103,49 @@ def test_has_local_merge_skill_but_no_forge_skills() -> None:
     assert {s.name for s in skills} == {"local-merge"}
     assert all(s.description and s.instructions for s in skills)
     assert not any(s.name in {"open-pr", "babysit-ci", "babysit-merge"} for s in skills)
+
+
+def _local_merge_instructions() -> str:
+    return next(s for s in WF.skills() if s.name == "local-merge").instructions
+
+
+def test_local_merge_detects_the_base_branch_instead_of_assuming_main() -> None:
+    # The bug this replaced: `checkout main` silently targeted the wrong branch in a `master` repo.
+    instructions = _local_merge_instructions()
+    assert "symbolic-ref" in instructions and "refs/remotes/origin/HEAD" in instructions
+    assert "remote set-head" in instructions  # the fallback when origin/HEAD isn't set
+    assert "origin/master" in instructions  # …and the last-resort guess covers both conventions
+    assert "checkout main" not in instructions  # never hardcoded again
+    assert "ask the user" in instructions  # rather than guessing when nothing resolves
+
+
+def test_local_merge_pushes_through_the_host_not_from_the_container() -> None:
+    # origin is a path on the host, which doesn't exist inside the container — an in-container
+    # `git push` would fail before it started, so the skill must route through request_push.
+    instructions = _local_merge_instructions()
+    assert "request_push" in instructions
+    assert "Do not run `git push` yourself" in instructions
+    assert "get_task" in instructions  # the agent polls for the outcome
+
+
+def test_local_merge_handles_every_push_outcome() -> None:
+    instructions = _local_merge_instructions()
+    assert "`pushed`" in instructions and "`partial`" in instructions and "`failed`" in instructions
+    # A conflict and a refused push both hand the task back rather than pressing on.
+    assert instructions.count("set_state ITERATING") >= 3
+    # `partial` means the work is already safe in the user's repo — no re-implementation.
+    assert "nothing to re-implement" in instructions
+    assert "do not re-merge" in instructions
+    # And COMPLETE is gated on the push, not the merge.
+    assert "Only advance to COMPLETE on `pushed`" in instructions
+
+
+def test_workflow_metadata_no_longer_claims_the_work_stays_local() -> None:
+    # The docstring and picker blurb used to promise "no remote push"; the flow now ends with one.
+    assert "no remote push" not in WF.when_to_use
+    assert "push" in WF.when_to_use
+    assert LocalGitSelfReviewed.__doc__ is not None
+    assert "push" in LocalGitSelfReviewed.__doc__
 
 
 def test_plan_artifact_name_and_uri_inherited_from_planned_workflow() -> None:
@@ -152,7 +199,7 @@ def test_full_lifecycle_planning_to_complete() -> None:
 def test_cannot_advance_from_planning_with_unresolved_responsibilities() -> None:
     task = WF.start_task("t1", "r1", at="t0")
     with pytest.raises(ResponsibilitiesNotMet):
-        WF.apply_transition(task, "ITERATING", at="t1")  # plan-written/token-estimated PENDING
+        WF.apply_transition(task, "ITERATING", at="t1")  # plan-written PENDING
 
 
 def test_cannot_advance_from_iterating_with_unresolved_responsibilities() -> None:

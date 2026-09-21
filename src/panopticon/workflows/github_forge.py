@@ -31,7 +31,7 @@ class GithubForgeWorkflow(PlannedWorkflow):
     skills. Concrete subclasses add a ``name`` and their states; they inherit the plumbing
     below. Not a registrable workflow on its own (no ``name``, no states).
 
-    The plan convention (``PLAN_ARTIFACT_NAME``, ``PLAN_WRITTEN``, ``TOKEN_ESTIMATED``,
+    The plan convention (``PLAN_ARTIFACT_NAME``, ``PLAN_WRITTEN``,
     :meth:`plan_uri`, :meth:`_briefing_extras`) is inherited from
     :class:`~panopticon.workflows.planned_workflow.PlannedWorkflow`."""
 

@@ -10,7 +10,19 @@ from pathlib import Path
 
 import pytest
 
-from panopticon.core.git import GitClones, GitWorktrees, Worktree, branch_name, worktree_path
+from panopticon.core.git import (
+    SUBMODULE_CONFLICTED,
+    SUBMODULE_CURRENT,
+    SUBMODULE_MODIFIED,
+    SUBMODULE_UNINITIALIZED,
+    GitClones,
+    GitError,
+    GitWorktrees,
+    Worktree,
+    branch_name,
+    parse_submodule_status,
+    worktree_path,
+)
 
 
 class _Recorder:
@@ -96,6 +108,88 @@ def test_create_branch_and_set_origin() -> None:
         "origin",
         "https://forge/r1.git",
     ]
+
+
+def test_submodule_status_parses_a_state_per_submodule() -> None:
+    output = (
+        "-abc123 vendor/lib\n"  # uninitialized: no ` (describe)` suffix
+        "+def456 vendor/other (heads/main)\n"  # at a commit other than the gitlink's
+        " 789abc vendor/other/nested (v1.2.3)\n"  # --recursive descended into it
+        "Uc0ffee vendor/conflicted (heads/main)\n"
+    )
+
+    def _status(args: Sequence[str], *, check: bool = True) -> str:
+        assert args == ["git", "-C", "/tasks/t1", "submodule", "status", "--recursive"]
+        return output
+
+    assert GitClones(run=_status).submodule_status(repo_path="/tasks/t1") == {
+        "vendor/lib": SUBMODULE_UNINITIALIZED,
+        "vendor/other": SUBMODULE_MODIFIED,
+        "vendor/other/nested": SUBMODULE_CURRENT,
+        "vendor/conflicted": SUBMODULE_CONFLICTED,
+    }
+
+
+def test_submodule_status_is_empty_without_submodules() -> None:
+    assert GitClones(run=lambda *_a, **_kw: "").submodule_status(repo_path="/tasks/t1") == {}
+
+
+def test_parse_submodule_status_keeps_a_path_with_spaces() -> None:
+    # Taking the path as everything between the sha and the ` (describe)` suffix — rather than by
+    # field index — is what makes this work.
+    assert parse_submodule_status(" abc123 vendor/my lib (heads/main)\n") == {
+        "vendor/my lib": SUBMODULE_CURRENT
+    }
+
+
+def test_update_submodules_is_recursive_and_allows_local_transports() -> None:
+    rec = _Recorder()
+    GitClones(run=rec).update_submodules(repo_path="/tasks/t1")
+    # `protocol.file.allow=always` is load-bearing: git ≥2.38 refuses a submodule whose resolved URL
+    # is a local path (CVE-2022-39253), which is exactly the local-git flow's `git_url`.
+    assert rec.calls[0][0] == [
+        "git",
+        "-C",
+        "/tasks/t1",
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "update",
+        "--init",
+        "--recursive",
+    ]
+
+
+def test_push_emits_a_plain_push() -> None:
+    rec = _Recorder()
+    GitClones(run=rec).push(repo_path="/tasks/t1", remote="origin", branch="main")
+    # Never forced, never with --set-upstream: one branch, exactly as it stands.
+    assert rec.calls[0][0] == ["git", "-C", "/tasks/t1", "push", "origin", "main"]
+
+
+def test_push_raises_git_error_carrying_stderr() -> None:
+    """A rejected push must surface git's own words — the publisher classifies them into a remedy."""
+
+    def _reject(args: Sequence[str], *, check: bool = True) -> str:
+        raise subprocess.CalledProcessError(
+            1,
+            list(args),
+            stderr="! [remote rejected] main -> main (branch is currently checked out)",
+        )
+
+    with pytest.raises(GitError) as err:
+        GitClones(run=_reject).push(repo_path="/tasks/t1", remote="origin", branch="main")
+    assert "currently checked out" in err.value.stderr
+    assert "main" in str(err.value)
+
+
+def test_push_tolerates_a_failure_with_no_stderr() -> None:
+    def _reject(args: Sequence[str], *, check: bool = True) -> str:
+        raise subprocess.CalledProcessError(1, list(args))  # stderr is None
+
+    with pytest.raises(GitError) as err:
+        GitClones(run=_reject).push(repo_path="/tasks/t1", remote="origin", branch="main")
+    assert err.value.stderr == ""
 
 
 # -- integration: a real git repo ---------------------------------------------------

@@ -1,7 +1,12 @@
-# Base task-container image (ADR 0005 base layer). Workflow- and repo-specific layers stack on top
-# later. Holds enough to run the entrypoint and the agent: Python, git, bash (the tmux pane's
-# shell), the panopticon package, and the `claude` CLI the agent launcher execs. `gh` arrives via
-# the github-peer-reviewed workflow layer.
+# Base task-container image (ADR 0005 base layer, ADR 0014 §4 per-CLI variant). Workflow- and
+# repo-specific layers stack on top later. Holds enough to run the entrypoint and the agent: Python,
+# git, bash (the tmux pane's shell), the panopticon package, and the agent CLI the launcher execs.
+# `gh` arrives via the github-peer-reviewed workflow layer.
+#
+# The agent CLI is selected at build time by the `AGENT_CLI` build arg (`claude` — the default — or
+# `codex`), so `panopticon-base-claude` and `panopticon-base-codex` are genuinely different images
+# from one Dockerfile (the runner passes `--build-arg AGENT_CLI=<cli>`, ADR 0014 §4). Only the
+# selected CLI is installed.
 #
 # The task runs **unprivileged**: a baked `panopticon` user that the entrypoint remaps to the
 # invoking host user's uid/gid at start (so /workspace files are host-owned), then drops to via
@@ -20,12 +25,39 @@ RUN groupadd --gid 1000 panopticon \
 ENV HOME=/home/panopticon
 ENV PATH=/home/panopticon/.local/bin:$PATH
 
+# Which agent CLI to install (ADR 0014 §4). `claude` (default) or `codex`; only the selected one is
+# installed, so each `panopticon-base-<cli>` variant carries exactly its own runtime.
+ARG AGENT_CLI=claude
+# The pinned codex release — the single one the codex adapter's config/auth/model behavior is
+# verified against (mirrors the reference harness's CODEX_VERSION). Bump here to move the pin.
+ARG CODEX_VERSION=0.144.4
+
 # Claude Code CLI (the agent runtime). Installed AS `panopticon` so it lands under its home
 # (~/.local) — readable/executable by the unprivileged user and self-manageable (`claude /doctor`
-# and updates expect it at $HOME/.local/bin). On PATH via the ENV above.
+# and updates expect it at $HOME/.local/bin). On PATH via the ENV above. Only when AGENT_CLI=claude.
 USER panopticon
-RUN curl --fail --silent --show-error --location https://claude.ai/install.sh | bash
+RUN if [ "$AGENT_CLI" = "claude" ]; then \
+      curl --fail --silent --show-error --location https://claude.ai/install.sh | bash; \
+    fi
 USER root
+
+# Codex CLI (the agent runtime). The statically-linked musl binary straight from GitHub releases —
+# no node/npm needed. Installed as root to /usr/local/bin (0755, world-executable) so the dropped
+# `panopticon` user can exec it; on PATH by default. Only when AGENT_CLI=codex.
+RUN if [ "$AGENT_CLI" = "codex" ]; then \
+      set -eux; \
+      arch="$(uname -m)"; \
+      case "$arch" in \
+        x86_64) triple="x86_64-unknown-linux-musl" ;; \
+        aarch64) triple="aarch64-unknown-linux-musl" ;; \
+        *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
+      esac; \
+      curl --fail --silent --show-error --location \
+        "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-$triple.tar.gz" \
+        | tar --extract --gzip --directory /usr/local/bin; \
+      if [ -e "/usr/local/bin/codex-$triple" ]; then mv "/usr/local/bin/codex-$triple" /usr/local/bin/codex; fi; \
+      chmod 0755 /usr/local/bin/codex; \
+    fi
 
 ARG PANOPTICON_VERSION=""
 ARG PANOPTICON_WHEEL=""

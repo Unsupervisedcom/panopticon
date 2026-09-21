@@ -1,9 +1,14 @@
 # panopticon — dev tasks. Thin wrappers over `uv`/`docker`; see CLAUDE.md for details.
 .DEFAULT_GOAL := help
-.PHONY: help sync test typecheck lint format lint-check check serve dashboard host start stop build clean migrate migrate-revision
+.PHONY: help sync test typecheck lint format lint-check check serve dashboard host start stop restart build clean migrate migrate-revision
 
-#: The base task-container image (ADR 0005 base layer); must match DEFAULT_IMAGE.
-IMAGE ?= panopticon-base
+#: The agent CLIs whose base variants `make build` builds (ADR 0014 §4). The claude variant must
+#: match DEFAULT_IMAGE. Codex is feature-flagged off (ADR 0014 §8, PANOPTICON_ENABLE_CODEX), so it
+#: isn't built by default — add it back with `make build AGENT_CLIS="claude codex"`.
+AGENT_CLIS ?= claude
+#: The freshness stamp shared with ImageBuilder.build_base_if_missing.  Keep this overridable so
+#: callers can select an explicit package identity (and tests can dry-run without invoking Python).
+PANOPTICON_VERSION ?= $(shell uv run python -c 'import panopticon; print(panopticon.__version__)')
 
 help:  ## List available targets
 	@grep -h -E '^[a-z][a-z-]*:.*## ' $(MAKEFILE_LIST) | sort | awk -F':.*## ' '{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -51,15 +56,22 @@ start:  ## Run panopticon: task service + session-service runner (background) + 
 stop:  ## Stop everything `make start` started: the task containers + the -L panopticon tmux server
 	uv run panopticon stop
 
-build:  ## Build the base task-container image (override with IMAGE=)
+restart:  ## Restart the control plane (task service + runner) in place; task containers keep running
+	uv run panopticon restart
+
+build:  ## Build the per-CLI base task-container images (override CLIs with AGENT_CLIS=)
 	uv build --wheel --out-dir src/panopticon/docker/
-	docker build \
-	  --tag $(IMAGE) \
-	  --build-arg PANOPTICON_WHEEL=$$(ls -1 src/panopticon/docker/panopticon_app*.whl | xargs -n1 basename) \
-	  --file src/panopticon/docker/Dockerfile \
-	  src/panopticon/docker/
+	wheel=$$(ls -1 src/panopticon/docker/panopticon_app*.whl | xargs -n1 basename); \
+	for cli in $(AGENT_CLIS); do \
+	  docker build \
+	    --tag panopticon-base-$$cli \
+	    --label org.panopticon.version=$(PANOPTICON_VERSION) \
+	    --build-arg PANOPTICON_WHEEL=$$wheel \
+	    --build-arg AGENT_CLI=$$cli \
+	    --file src/panopticon/docker/Dockerfile \
+	    src/panopticon/docker/ || exit 1; \
+	done
 	rm -f src/panopticon/docker/panopticon_app*.whl
 
-clean:  ## Remove the base image and any composed panopticon-* images
-	-docker rmi --force $(IMAGE)
+clean:  ## Remove the base images and any composed panopticon-* images
 	-docker images --quiet 'panopticon-*' | sort -u | { ids=$$(cat); [ -z "$$ids" ] || docker rmi --force $$ids; }

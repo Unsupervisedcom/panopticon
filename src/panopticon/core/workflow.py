@@ -99,11 +99,14 @@ class Workflow(ABC):
     #: gate. Use it for operator utilities that shouldn't clutter the pickers but are launched
     #: some other way. Default ``False`` (shown in the menus).
     hidden: ClassVar[bool] = False
-    #: The model the agent starts with when working on tasks created by this workflow. Seeded onto
+    #: The abstract model **tier** the agent starts with (ADR 0014 §3a) — a CLI-agnostic label
+    #: like ``"primary"``, never a provider's concrete model name. Seeded onto
     #: :attr:`~panopticon.core.models.Task.starting_model` at task creation; the runner injects it
-    #: so ``claude --model`` is set on first launch. Defaults to ``"opus"`` for all built-in
-    #: workflows; override per-workflow to change the default.
-    default_model: ClassVar[str] = "opus"
+    #: and the in-container ``AgentCLI`` adapter resolves it to that CLI's concrete ``--model`` on
+    #: first launch (``resolve_model``). The control plane stores and passes the tier through
+    #: without interpreting it. Defaults to ``"primary"`` for all built-in workflows; override
+    #: per-workflow to change the default tier.
+    default_model: ClassVar[str] = "primary"
     #: How this workflow's tasks are executed by the session service. ``"docker"`` (default)
     #: spawns the base → workflow → repo container image and runs the in-container agent (the
     #: determinism invariant — LLM calls happen there). ``"shell"`` runs :meth:`shell_script`
@@ -504,7 +507,7 @@ class Workflow(ABC):
 
         The seed history entry carries the initial state's responsibilities (all ``PENDING``).
         ``memo`` is the optional brief one-line reminder of what the task is, collected at creation.
-        ``initial_prompt`` is optional text prefilled into Claude's input box on first spawn.
+        ``initial_prompt`` is optional text prefilled into the agent CLI's input box on first spawn.
         """
         state = self.initial_label
         return Task(

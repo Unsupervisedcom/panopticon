@@ -53,6 +53,20 @@ if is_github_url "$repo_url"; then
     env_file_has_var GH_TOKEN "${PANOPTICON_ENV_FILE:-}" && gh_configured=1
 fi
 
+# A local checkout is also a **push target**: the forge-free workflow merges a task branch and the
+# session service pushes the result straight back here. Git refuses a push to the branch this repo
+# has checked out unless receive.denyCurrentBranch says otherwise, so offer to set it — but only
+# when the operator hasn't already decided (any existing value is theirs to keep).
+push_target_needed=0
+push_target_path=""
+if is_local_checkout "$repo_url"; then
+    push_target_path=$(local_repo_path "$repo_url")
+    if [ -d "$push_target_path" ] \
+        && [ -z "$(git -C "$push_target_path" config --get receive.denyCurrentBranch 2>/dev/null)" ]; then
+        push_target_needed=1
+    fi
+fi
+
 # What we know about the repo, and what its setup entails — two bulleted lists up front.
 echo "This repo:"
 echo "  • Name: $repo_name"
@@ -72,6 +86,9 @@ if [ "$gh_needed" -eq 1 ]; then
     fi
 else
     echo "  • GH_TOKEN — not needed (not a GitHub repo)"
+fi
+if [ "$push_target_needed" -eq 1 ]; then
+    echo "  • Accepting panopticon's merges — needed (local repo)"
 fi
 echo
 
@@ -242,6 +259,38 @@ if [ "$gh_needed" -eq 1 ]; then
     else
         setup_gh_token
     fi
+fi
+
+# --- Accepting panopticon's merges (local checkouts only) --------------------------------------
+# Why this is asked at all: a push only moves a branch pointer, it doesn't touch files. Pushing to
+# the branch this repo has checked out would leave it reporting the arriving commits as uncommitted
+# changes reverting them, so git refuses by default. `updateInstead` accepts the push and updates
+# the files with it — and still refuses when the worktree is dirty, so it can't clobber work.
+if [ "$push_target_needed" -eq 1 ]; then
+    echo
+    echo "This repo is local, so panopticon pushes a task's merge straight back into it. Git refuses"
+    echo "a push to the branch a repo has checked out, unless you allow it: 'updateInstead' accepts"
+    echo "the push and updates your files with it (and still refuses while you have uncommitted"
+    echo "changes, so it can't clobber your work)."
+    echo
+    printf 'Allow panopticon to push merges into %s? [y/N] ' "$push_target_path"
+    read answer
+    case "$answer" in
+        [Yy]*)
+            if git -C "$push_target_path" config receive.denyCurrentBranch updateInstead 2>/dev/null; then
+                echo
+                echo "Set receive.denyCurrentBranch=updateInstead in $push_target_path."
+                add_summary "Merges: $push_target_path now accepts panopticon's pushes."
+            else
+                echo
+                echo "Couldn't set it. Run 'git config receive.denyCurrentBranch updateInstead' there yourself."
+                add_summary "Merges: couldn't configure $push_target_path — set receive.denyCurrentBranch=updateInstead there yourself."
+            fi
+            ;;
+        *)
+            add_summary "Merges: left $push_target_path as-is — panopticon will push the task branch, and you merge it yourself."
+            ;;
+    esac
 fi
 
 # Every route converges here: summarize what happened (a bullet per step), then complete the task on

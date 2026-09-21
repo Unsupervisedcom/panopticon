@@ -3,8 +3,10 @@ client (no LLM, no HTTP). The HTTP hosting is mounted on the runnable server (Sl
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
+import pytest
 from mcp.shared.memory import create_connected_server_and_client_session as connect
 
 from panopticon.core.models import Actor, Repo
@@ -60,6 +62,8 @@ async def test_tools_are_exposed_and_drive_the_task(tmp_path: Path) -> None:
             "resolve_responsibility",
             "set_turn",
             "set_blocked",
+            "set_sort_weight",
+            "request_push",
             "put_artifact",
             "list_artifacts",
         } <= names
@@ -81,6 +85,136 @@ async def test_artifacts_round_trip_via_tool_and_resource(tmp_path: Path) -> Non
         res = await s.read_resource(f"panopticon://tasks/{task.id}/artifacts/plan.md")
         assert res.contents[0].text == "# Plan"  # type: ignore[union-attr]
     assert await svc.get_artifact(task.id, "plan.md") == b"# Plan"
+
+
+async def test_binary_artifact_round_trips_via_base64_tool_and_blob_resource(
+    tmp_path: Path,
+) -> None:
+    # A screenshot's bytes aren't valid UTF-8: write via content_base64, read back as a base64 blob
+    # (JSON can't carry raw bytes, so the resource returns a BlobResourceContents, not text).
+    png = b"\x89PNG\r\n\x1a\n\x00\xff\xfe\x01binary\x00data"
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        await s.call_tool(
+            "put_artifact",
+            {
+                "task_id": task.id,
+                "name": "shot.png",
+                "content_base64": base64.b64encode(png).decode(),
+            },
+        )
+        res = await s.read_resource(f"panopticon://tasks/{task.id}/artifacts/shot.png")
+        blob = res.contents[0].blob  # type: ignore[union-attr]
+        assert base64.b64decode(blob) == png
+    assert await svc.get_artifact(task.id, "shot.png") == png
+
+
+async def test_repo_artifacts_round_trip_via_tool_and_resource(tmp_path: Path) -> None:
+    # The agent names itself, not a repo: the tool resolves its task's repo, so a task can only
+    # write to the repo it belongs to — and doesn't have to know that repo's id.
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        names = {t.name for t in (await s.list_tools()).tools}
+        assert {"put_repo_artifact", "list_repo_artifacts"} <= names
+        put = await s.call_tool(
+            "put_repo_artifact",
+            {"task_id": task.id, "name": "notes/api.md", "content": "beware the widget"},
+        )
+        assert put.isError is False
+        listed = await s.call_tool("list_repo_artifacts", {"task_id": task.id})
+        assert listed.structuredContent is not None
+        assert listed.structuredContent["result"] == [
+            {"name": "notes/api.md", "uri": "panopticon://repos/r1/artifacts/notes%2Fapi.md"}
+        ]
+        # A nested name travels percent-encoded, and reads back as a resource by that URI.
+        res = await s.read_resource("panopticon://repos/r1/artifacts/notes%2Fapi.md")
+        assert res.contents[0].text == "beware the widget"  # type: ignore[union-attr]
+    assert await svc.get_repo_artifact("r1", "notes/api.md") == b"beware the widget"
+    # The task's own artifacts are untouched — the two scopes are separate documents.
+    assert await svc.list_artifacts(task.id) == []
+
+
+async def test_repo_artifact_is_shared_by_the_repo_not_the_task(tmp_path: Path) -> None:
+    # Two tasks in the same repo see one set of documents; a task in another repo sees its own.
+    svc = await _service(tmp_path)
+    writer = await svc.create_task("r1", "spike")
+    reader = await svc.create_task("r1", "spike")
+    other = await svc.create_task("r2", "spike")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        await s.call_tool(
+            "put_repo_artifact",
+            {"task_id": writer.id, "name": "conventions.md", "content": "# How we work"},
+        )
+        seen = await s.call_tool("list_repo_artifacts", {"task_id": reader.id})
+        assert seen.structuredContent is not None
+        assert [entry["name"] for entry in seen.structuredContent["result"]] == ["conventions.md"]
+        elsewhere = await s.call_tool("list_repo_artifacts", {"task_id": other.id})
+        assert elsewhere.structuredContent is not None
+        assert elsewhere.structuredContent["result"] == []
+
+
+async def test_binary_repo_artifact_round_trips_as_a_blob(tmp_path: Path) -> None:
+    # A reference screenshot: base64 in, a base64 blob out (JSON can't carry raw bytes).
+    png = b"\x89PNG\r\n\x1a\n\x00\xff\xfe\x01binary\x00data"
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        await s.call_tool(
+            "put_repo_artifact",
+            {
+                "task_id": task.id,
+                "name": "shots/login.png",
+                "content_base64": base64.b64encode(png).decode(),
+            },
+        )
+        res = await s.read_resource("panopticon://repos/r1/artifacts/shots%2Flogin.png")
+        assert base64.b64decode(res.contents[0].blob) == png  # type: ignore[union-attr]
+    assert await svc.get_repo_artifact("r1", "shots/login.png") == png
+
+
+async def test_put_repo_artifact_requires_exactly_one_content_argument(tmp_path: Path) -> None:
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        neither = await s.call_tool("put_repo_artifact", {"task_id": task.id, "name": "x.md"})
+        assert neither.isError is True
+        both = await s.call_tool(
+            "put_repo_artifact",
+            {"task_id": task.id, "name": "x.md", "content": "a", "content_base64": "YQ=="},
+        )
+        assert both.isError is True
+        assert await svc.list_repo_artifacts("r1") == []
+
+
+async def test_missing_repo_artifact_resource_errors(tmp_path: Path) -> None:
+    svc = await _service(tmp_path)
+    await svc.create_task("r1", "spike")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        with pytest.raises(Exception):  # noqa: B017 — the SDK wraps the handler's error
+            await s.read_resource("panopticon://repos/r1/artifacts/absent.md")
+
+
+async def test_put_artifact_requires_exactly_one_content_argument(tmp_path: Path) -> None:
+    # Exactly one of content / content_base64 — neither (nor both) is a usage error.
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        neither = await s.call_tool("put_artifact", {"task_id": task.id, "name": "x"})
+        assert neither.isError is True
+        both = await s.call_tool(
+            "put_artifact",
+            {"task_id": task.id, "name": "x", "content": "hi", "content_base64": "aGk="},
+        )
+        assert both.isError is True
 
 
 async def test_list_artifacts_returns_names_and_readable_uris(tmp_path: Path) -> None:
@@ -105,6 +239,21 @@ async def test_list_artifacts_returns_names_and_readable_uris(tmp_path: Path) ->
         # the listed URI is the real, readable resource — the path that failed before this tool.
         res = await s.read_resource(by_name["plan.md"])
         assert res.contents[0].text == "# Plan"  # type: ignore[union-attr]
+
+
+async def test_artifact_with_spaces_in_name_round_trips_over_mcp(tmp_path: Path) -> None:
+    # A name with spaces/reserved chars must list with a valid (percent-encoded) URI that reads
+    # back — the resource handler decodes the segment the MCP layer captures encoded.
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike", artifacts={"my notes.md": "hello world"})
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        result = await s.call_tool("list_artifacts", {"task_id": task.id})
+        listed = result.structuredContent["result"]  # type: ignore[index]
+        uri = {entry["name"]: entry["uri"] for entry in listed}["my notes.md"]
+        assert uri == f"panopticon://tasks/{task.id}/artifacts/my%20notes.md"
+        res = await s.read_resource(uri)
+        assert res.contents[0].text == "hello world"  # type: ignore[union-attr]
 
 
 async def test_list_artifacts_is_empty_when_none(tmp_path: Path) -> None:
@@ -157,30 +306,29 @@ async def test_set_url_via_tool(tmp_path: Path) -> None:
     assert (await svc.get_task(task.id)).url == url  # the tool actually mutated the task
 
 
-async def test_set_tokens_used_via_tool(tmp_path: Path) -> None:
+async def test_request_push_via_tool(tmp_path: Path) -> None:
     svc = await _service(tmp_path)
     task = await svc.create_task("r1", "spike")
     async with connect(build_mcp_server(svc)) as s:
         await s.initialize()
-        result = await s.call_tool("set_tokens_used", {"task_id": task.id, "tokens_used": 5000})
+        result = await s.call_tool("request_push", {"task_id": task.id, "branch": "master"})
         assert result.structuredContent is not None
-        assert result.structuredContent["tokens_used"] == 5000
-    assert (await svc.get_task(task.id)).tokens_used == 5000  # the tool actually mutated the task
+        # The agent reads the outcome back off the same shape it gets from get_task.
+        assert result.structuredContent["push"]["status"] == "requested"
+        assert result.structuredContent["push"]["branch"] == "master"
+    recorded = (await svc.get_task(task.id)).push
+    assert recorded is not None and recorded.branch == "master"
 
 
-async def test_set_token_estimate_via_tool(tmp_path: Path) -> None:
+async def test_set_sort_weight_via_tool(tmp_path: Path) -> None:
     svc = await _service(tmp_path)
     task = await svc.create_task("r1", "spike")
     async with connect(build_mcp_server(svc)) as s:
         await s.initialize()
-        result = await s.call_tool(
-            "set_token_estimate", {"task_id": task.id, "token_estimate": 500000}
-        )
+        result = await s.call_tool("set_sort_weight", {"task_id": task.id, "sort_weight": 7})
         assert result.structuredContent is not None
-        assert result.structuredContent["token_estimate"] == 500000
-    assert (
-        await svc.get_task(task.id)
-    ).token_estimate == 500000  # the tool actually mutated the task
+        assert result.structuredContent["sort_weight"] == 7
+    assert (await svc.get_task(task.id)).sort_weight == 7  # the tool actually mutated the task
 
 
 # -- orchestration tools (gated to workflows whose `orchestrates` is set) --------------------
@@ -229,6 +377,36 @@ async def test_create_task_as_sets_governor_task_id(tmp_path: Path) -> None:
     assert child.governor_task_id == boss.id  # auto-wired to the orchestrator
 
 
+async def test_create_task_seeds_sort_weight(tmp_path: Path) -> None:
+    svc = await _service(tmp_path)
+    boss = await svc.create_task("r1", "orchestrator")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        result = await s.call_tool(
+            "create_task",
+            {"orchestrator_task_id": boss.id, "workflow": "spike", "sort_weight": 9},
+        )
+        assert result.isError is False
+        assert result.structuredContent["sort_weight"] == 9  # type: ignore[index]
+        child_id = result.structuredContent["id"]  # type: ignore[index]
+    assert (await svc.get_task(child_id)).sort_weight == 9  # persisted
+
+
+async def test_create_task_carries_agent_cli_override(tmp_path: Path, enable_codex: None) -> None:
+    svc = await _service(tmp_path)
+    boss = await svc.create_task("r1", "orchestrator")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        result = await s.call_tool(
+            "create_task",
+            {"orchestrator_task_id": boss.id, "workflow": "spike", "agent_cli": "codex"},
+        )
+        assert result.isError is False
+        assert result.structuredContent["agent_cli"] == "codex"  # type: ignore[index]
+        child_id = result.structuredContent["id"]  # type: ignore[index]
+    assert (await svc.get_task(child_id)).agent_cli == "codex"  # persisted as the per-task override
+
+
 async def test_create_task_rejected_for_non_orchestrator(tmp_path: Path) -> None:
     svc = await _service(tmp_path)
     task = await svc.create_task("r1", "spike")  # spike does not orchestrate
@@ -270,8 +448,7 @@ async def test_create_task_with_initial_prompt_and_artifacts(tmp_path: Path) -> 
 
 async def test_orchestrator_seeds_a_child_ready_to_approve(tmp_path: Path) -> None:
     """The motivating end-to-end: create a github-self-reviewed task with the plan inline —
-    plan.md written, a token estimate recorded, `plan-written`/`token-estimated` met, turn handed
-    to the user."""
+    plan.md written, `plan-written` met, turn handed to the user."""
     svc = await _service(tmp_path)
     boss = await svc.create_task("r1", "orchestrator")
     async with connect(build_mcp_server(svc)) as s:
@@ -288,14 +465,9 @@ async def test_orchestrator_seeds_a_child_ready_to_approve(tmp_path: Path) -> No
         )
         child_id = created.structuredContent["id"]  # type: ignore[index]
         await s.call_tool("set_slug", {"task_id": child_id, "slug": "add-healthz"})
-        await s.call_tool("set_token_estimate", {"task_id": child_id, "token_estimate": 500000})
         await s.call_tool(
             "resolve_responsibility",
             {"task_id": child_id, "key": "plan-written", "status": "met"},
-        )
-        await s.call_tool(
-            "resolve_responsibility",
-            {"task_id": child_id, "key": "token-estimated", "status": "met"},
         )
         await s.call_tool("set_turn", {"task_id": child_id, "turn": "user"})
 
@@ -303,6 +475,5 @@ async def test_orchestrator_seeds_a_child_ready_to_approve(tmp_path: Path) -> No
     assert child.state == "PLANNING"  # still in planning, awaiting the user's approval
     assert child.slug == "add-healthz"
     assert child.turn is Actor.USER  # handed to the user to review/advance
-    assert child.token_estimate == 500000  # the orchestrator recorded its forecast
     assert child.outstanding_responsibilities == []  # the gate is clear — the user can advance
     assert await svc.get_artifact(child_id, "plan.md") == b"# Plan\n..."

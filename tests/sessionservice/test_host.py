@@ -42,6 +42,7 @@ class _FakeRunner:
         task_id: str,
         *,
         env_file: str | None = None,
+        credential_dir: str | None = None,
         workspace: str | None = None,
         image: str | None = None,
         docker_in_docker: bool = False,
@@ -49,6 +50,7 @@ class _FakeRunner:
         initial_prompt: str | None = None,
         turn: str | None = None,
         starting_model: str | None = None,
+        agent_cli: str = "claude",
         progress: object = None,
     ) -> str:
         self.spawned.append(task_id)
@@ -71,11 +73,17 @@ class _FakeImageBuilder:
     """Stands in for ImageBuilder (no docker); always reports the base image as present."""
 
     def build(
-        self, workflow: str, repo_id: str, layers: list[str], *, verbose: bool = False
+        self,
+        workflow: str,
+        repo_id: str,
+        layers: list[str],
+        *,
+        agent_cli: str = "claude",
+        verbose: bool = False,
     ) -> str:
-        return f"panopticon-{workflow}-{repo_id}"
+        return f"panopticon-{agent_cli}-{workflow}-{repo_id}"
 
-    def build_base_if_missing(self, *, verbose: bool = False) -> bool:
+    def build_base_if_missing(self, *, agent_cli: str | None = None, verbose: bool = False) -> bool:
         return False
 
 
@@ -90,6 +98,13 @@ class _FakeClient:
         self, *, since: int = 0, wait: float | None = None
     ) -> tuple[list[JsonObj], int]:
         return self._tasks, since
+
+
+class _NoopPublisher:
+    """A publisher that never has anything to push — the default for daemon-shape tests."""
+
+    def publish(self, task: JsonObj) -> None:
+        return None
 
 
 def test_tick_isolates_a_failing_task_from_the_others() -> None:
@@ -117,7 +132,7 @@ def test_tick_isolates_a_failing_task_from_the_others() -> None:
         def provision(self, task: JsonObj) -> None:
             return None
 
-    daemon = HostDaemon(_FakeClient([]), _Spawner(), _Provisioner())  # type: ignore[arg-type]
+    daemon = HostDaemon(_FakeClient([]), _Spawner(), _Provisioner(), _NoopPublisher())  # type: ignore[arg-type]
     daemon.tick([{"id": "t1"}, {"id": "t2"}])
     assert seen == ["t1", "t2"]  # t1's error is logged + skipped; t2 still processed
 
@@ -146,7 +161,9 @@ def test_tick_heals_each_task_in_the_snapshot() -> None:
         def provision(self, task: JsonObj) -> None:
             return None
 
-    HostDaemon(_FakeClient([]), _Spawner(), _Provisioner()).tick([{"id": "t1"}, {"id": "t2"}])  # type: ignore[arg-type]
+    HostDaemon(_FakeClient([]), _Spawner(), _Provisioner(), _NoopPublisher()).tick(
+        [{"id": "t1"}, {"id": "t2"}]
+    )  # type: ignore[arg-type]
     assert healed == ["t1", "t2"]
 
 
@@ -176,8 +193,81 @@ def test_tick_flags_every_orphan_healing_before_any_respawn() -> None:
         def provision(self, task: JsonObj) -> None:
             return None
 
-    HostDaemon(_FakeClient([]), _Spawner(), _Provisioner()).tick([{"id": "t1"}, {"id": "t2"}])  # type: ignore[arg-type]
+    HostDaemon(_FakeClient([]), _Spawner(), _Provisioner(), _NoopPublisher()).tick(
+        [{"id": "t1"}, {"id": "t2"}]
+    )  # type: ignore[arg-type]
     assert events == ["mark:t1", "mark:t2", "heal:t1", "heal:t2"]  # all marks precede any respawn
+
+
+def test_tick_publishes_each_task_before_cleaning_it_up() -> None:
+    # Both halves matter. A task can request its push and reach a terminal state in the same
+    # breath, and `cleanup` deletes the per-task clone the push reads from — so publishing has to
+    # come first, or the merge would be deleted before it ever reached origin.
+    events: list[str] = []
+
+    class _Spawner:
+        def mark_healing(self, task: JsonObj) -> None:
+            return None
+
+        def spawn_one(self, task: JsonObj) -> None:
+            return None
+
+        def reconcile(self, task: JsonObj) -> None:
+            return None
+
+        def heal(self, task: JsonObj) -> None:
+            return None
+
+        def cleanup(self, task: JsonObj) -> None:
+            events.append(f"cleanup:{task['id']}")
+
+    class _Provisioner:
+        def provision(self, task: JsonObj) -> None:
+            return None
+
+    class _Publisher:
+        def publish(self, task: JsonObj) -> None:
+            events.append(f"publish:{task['id']}")
+
+    HostDaemon(_FakeClient([]), _Spawner(), _Provisioner(), _Publisher()).tick(
+        [{"id": "t1"}, {"id": "t2"}]
+    )  # type: ignore[arg-type]
+    assert events == ["publish:t1", "cleanup:t1", "publish:t2", "cleanup:t2"]
+
+
+def test_tick_isolates_a_failing_publish_from_the_other_tasks() -> None:
+    published: list[str] = []
+
+    class _Spawner:
+        def mark_healing(self, task: JsonObj) -> None:
+            return None
+
+        def spawn_one(self, task: JsonObj) -> None:
+            return None
+
+        def reconcile(self, task: JsonObj) -> None:
+            return None
+
+        def heal(self, task: JsonObj) -> None:
+            return None
+
+        def cleanup(self, task: JsonObj) -> None:
+            return None
+
+    class _Provisioner:
+        def provision(self, task: JsonObj) -> None:
+            return None
+
+    class _Publisher:
+        def publish(self, task: JsonObj) -> None:
+            published.append(task["id"])
+            if task["id"] == "t1":
+                raise RuntimeError("origin went away")
+
+    HostDaemon(_FakeClient([]), _Spawner(), _Provisioner(), _Publisher()).tick(
+        [{"id": "t1"}, {"id": "t2"}]
+    )  # type: ignore[arg-type]
+    assert published == ["t1", "t2"]  # a push that blows up never stalls the rest of the pass
 
 
 def test_run_calls_startup_reclaim_once_on_first_successful_tick() -> None:
@@ -218,7 +308,7 @@ def test_run_calls_startup_reclaim_once_on_first_successful_tick() -> None:
             passes.append(len(passes))
             return [{"id": f"t{len(passes)}"}], len(passes)
 
-    daemon = HostDaemon(_FeedClient(), _Spawner(), _Provisioner())  # type: ignore[arg-type]
+    daemon = HostDaemon(_FeedClient(), _Spawner(), _Provisioner(), _NoopPublisher())  # type: ignore[arg-type]
     daemon.run(until=lambda: len(passes) >= 3)
     assert len(reclaims) == 1  # exactly once — on the first successful fetch
     assert reclaims[0] == [{"id": "t1"}]  # the snapshot from that first fetch
@@ -263,7 +353,7 @@ def test_run_blocks_on_the_change_feed_and_feeds_the_version_back() -> None:
             return [{"id": f"t{len(sinces)}"}], len(sinces)  # a fresh snapshot + a bumped version
 
     spawner = _Spawner()
-    daemon = HostDaemon(_FeedClient(), spawner, _Provisioner())  # type: ignore[arg-type]
+    daemon = HostDaemon(_FeedClient(), spawner, _Provisioner(), _NoopPublisher())  # type: ignore[arg-type]
     daemon.run(until=lambda: len(sinces) >= 3)
     assert sinces == [0, 1, 2]  # starts at 0, then each returned version becomes the next `since`
     assert spawner.seen == ["t1", "t2", "t3"]  # ticked the snapshot returned by each wake
@@ -309,7 +399,9 @@ def test_run_survives_a_whole_pass_failure() -> None:
     def until() -> bool:
         return passes["n"] >= 3  # let it wake a few times after the failure
 
-    daemon = HostDaemon(_FlakyClient(), _Spawner(), _Provisioner(), sleep=lambda _s: None)  # type: ignore[arg-type]
+    daemon = HostDaemon(
+        _FlakyClient(), _Spawner(), _Provisioner(), _NoopPublisher(), sleep=lambda _s: None
+    )  # type: ignore[arg-type]
     daemon.run(until=until)
     assert passes["n"] >= 3  # did not die on the first pass's error; kept going
 
@@ -458,5 +550,7 @@ def test_tick_cleans_up_each_task() -> None:
         def provision(self, task: JsonObj) -> None:
             return None
 
-    HostDaemon(_FakeClient([]), _Spawner(), _Provisioner()).tick([{"id": "t1"}, {"id": "t2"}])  # type: ignore[arg-type]
+    HostDaemon(_FakeClient([]), _Spawner(), _Provisioner(), _NoopPublisher()).tick(
+        [{"id": "t1"}, {"id": "t2"}]
+    )  # type: ignore[arg-type]
     assert cleaned == ["t1", "t2"]

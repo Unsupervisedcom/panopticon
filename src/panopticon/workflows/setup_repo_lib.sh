@@ -69,16 +69,38 @@ is_github_url() {
     esac
 }
 
+# True when URL $1 names a repo on this host — a filesystem path or a file:// URL, or a bare ref
+# with neither a scheme nor an scp-style host. These are the repos panopticon pushes a task's merge
+# into directly (the session service does the git), so they're the ones worth configuring below.
+is_local_checkout() {
+    [ -n "$1" ] || return 1
+    is_github_url "$1" && return 1
+    printf '%s' "$1" | grep -qE '^(/|\./|\.\./|~|file://)' && return 0
+    ! printf '%s' "$1" | grep -qE '://|@'
+}
+
+# The filesystem path URL $1 names: file:// stripped and a leading ~ expanded. Only meaningful for
+# an is_local_checkout URL; prints nothing for an empty one.
+local_repo_path() {
+    _lrp_path=$1
+    case "$_lrp_path" in
+        file://*) _lrp_path=${_lrp_path#file://} ;;
+    esac
+    case "$_lrp_path" in
+        "~"/*) _lrp_path="$HOME/${_lrp_path#"~"/}" ;;
+    esac
+    printf '%s' "$_lrp_path"
+}
+
 # A human label for the repo's source, from its git URL $1 — drives the setup flow's opening summary.
-# A GitHub remote (the case that wants a GH_TOKEN); a filesystem path / file:// URL, or a bare ref
-# with neither a scheme nor an scp-style host, is a local checkout; anything else is a generic remote.
+# A GitHub remote (the case that wants a GH_TOKEN); a local checkout (see is_local_checkout); or a
+# generic remote.
 repo_source_label() {
     if [ -z "$1" ]; then
         printf 'unknown'
     elif is_github_url "$1"; then
         printf 'GitHub remote'
-    elif printf '%s' "$1" | grep -qE '^(/|\./|\.\./|~|file://)' \
-        || ! printf '%s' "$1" | grep -qE '://|@'; then
+    elif is_local_checkout "$1"; then
         printf 'local checkout'
     else
         printf 'remote'

@@ -5,29 +5,40 @@ real HTTP client is covered in test_terminal.py."""
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import threading
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
 from textual.app import App
-from textual.widgets import Checkbox, DataTable, Input, Select, Static
+from textual.css.query import NoMatches
+from textual.widgets import Checkbox, DataTable, Input, OptionList, Select, Static
 
+from panopticon.core.features import CODEX_FLAG
 from panopticon.terminal import dashboard
 from panopticon.terminal.dashboard import (
+    _ARTIFACT_MARK,
     _ENSEMBLE_KEY_PREFIX,
+    _INDEFINITE_SNOOZE_UNTIL,
+    _LINK_MARK,
+    _MARKS_LABEL,
+    _SNOOZE_DURATION,
     Dashboard,
     SpaceCheckbox,
+    TaskDetailScreen,
     _dim,
     _group_by_governor,
     _group_section,
     _make_sort_key,
+    _marks_cell,
     _matches,
     _repo_cell,
-    _short_tokens,
     _slug_cell,
+    _snooze_label,
     _status_cell,
     _turn_cell,
     render_detail,
@@ -60,6 +71,21 @@ _TASK: dict[str, Any] = {
 }
 
 
+def _col_labels(table: DataTable) -> list[str]:
+    return [str(c.label) for c in table.columns.values()]
+
+
+def _col_index(table: DataTable, label: str) -> int:
+    """A column's position, by header label. Row cells are read positionally, so resolving the
+    index here keeps a newly inserted column from renumbering assertions all over this file."""
+    return _col_labels(table).index(label)
+
+
+def _slug_of(table: DataTable, row_key: str) -> Any:
+    """The row's ``slug[memo]`` cell — the one most assertions here reach for."""
+    return table.get_row(row_key)[_col_index(table, "slug[memo]")]
+
+
 def _raise(*args: Any, **kwargs: Any) -> Any:
     """Stand in for a failing REST call (e.g. a down service)."""
     raise RuntimeError("service unavailable")
@@ -85,6 +111,7 @@ class _FakeClient:
         operations: dict[str, str] | None = None,
         artifacts: dict[str, list[str]] | None = None,
         artifact_content: bytes = b"",
+        repo_artifacts: dict[str, list[str]] | None = None,
     ) -> None:
         self._tasks = tasks
         self._registrations = registrations or {}
@@ -103,20 +130,26 @@ class _FakeClient:
         self._operations = operations or {}
         self._artifacts = artifacts or {}
         self._artifact_content = artifact_content
+        self._repo_artifacts = repo_artifacts or {}  # repo id → names (the repo-scoped scope)
         # Change-feed state for the long-poll worker: a version cursor + an event a test arms with
         # `signal_change()` to release a parked `list_tasks_versioned` (the producer "changed a task").
         self._version = 0
         self._change = threading.Event()
         self.list_tasks_calls = 0  # how many times the table was (re)built — counts feed refreshes
         self.created: list[tuple[str, str, str | None]] = []
+        self.created_artifacts_b64: list[dict[str, str] | None] = []
         self.applied: list[tuple[str, str]] = []
         self.released: list[str] = []
+        self.snoozed: list[tuple[str, str | None]] = []
         self.created_repos: list[dict[str, Any]] = []
         self.updated_repos: list[tuple[str, dict[str, Any]]] = []
         # When set, create_repo/update_repo raise a 400 carrying this detail (mimics the task
         # service rejecting e.g. a non-existent env_file), to exercise the form's error path.
         self.repo_error: str | None = None
         self.fetched: list[tuple[str, str]] = []  # (task_id, name) passed to get_artifact
+        self.put_artifacts: list[tuple[str, str, bytes]] = []  # (task_id, name, content) uploads
+        self.repo_fetched: list[tuple[str, str]] = []  # (repo_id, name) → get_repo_artifact
+        self.put_repo_artifacts: list[tuple[str, str, bytes]] = []  # repo-scoped uploads
 
     def list_tasks(self) -> list[dict[str, Any]]:
         self.list_tasks_calls += 1
@@ -157,6 +190,21 @@ class _FakeClient:
         self.fetched.append((task_id, name))
         return self._artifact_content
 
+    def put_artifact(self, task_id: str, name: str, content: bytes) -> None:
+        self.put_artifacts.append((task_id, name, content))
+        self._artifacts.setdefault(task_id, []).append(name)  # reflect the upload in list_artifacts
+
+    def list_repo_artifacts(self, repo_id: str) -> list[str]:
+        return self._repo_artifacts.get(repo_id, [])
+
+    def get_repo_artifact(self, repo_id: str, name: str) -> bytes:
+        self.repo_fetched.append((repo_id, name))
+        return self._artifact_content
+
+    def put_repo_artifact(self, repo_id: str, name: str, content: bytes) -> None:
+        self.put_repo_artifacts.append((repo_id, name, content))
+        self._repo_artifacts.setdefault(repo_id, []).append(name)  # reflect it in the listing
+
     def list_repos(self) -> list[dict[str, Any]]:
         return self._repos
 
@@ -168,11 +216,13 @@ class _FakeClient:
         default_base: str = "main",
         *,
         env_file: str | None = None,
+        credential_dir: str | None = None,
         image_layer_file: str | None = None,
         hook_file: str | None = None,
         capabilities: dict[str, Any] | None = None,
         enabled_workflows: list[str] | None = None,
         disabled_workflows: list[str] | None = None,
+        agent_cli: str = "claude",
     ) -> dict[str, Any]:
         if self.repo_error is not None:
             raise _http_400(self.repo_error)
@@ -186,6 +236,7 @@ class _FakeClient:
             "hook_file": hook_file,
             "enabled_workflows": enabled_workflows or [],
             "disabled_workflows": disabled_workflows or [],
+            "agent_cli": agent_cli,
         }
         if capabilities is not None:
             repo["capabilities"] = capabilities
@@ -219,13 +270,23 @@ class _FakeClient:
         memo: str | None = None,
         *,
         initial_prompt: str | None = None,
+        artifacts: dict[str, str] | None = None,
+        artifacts_b64: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         self.created.append((repo_id, workflow, memo, initial_prompt))
+        self.created_artifacts_b64.append(artifacts_b64)
         return {"id": "new"}
 
     def apply_operation(self, task_id: str, operation: str) -> dict[str, Any]:
         self.applied.append((task_id, operation))
         return {"id": task_id}
+
+    def set_snooze(self, task_id: str, until: str | None) -> dict[str, Any]:
+        self.snoozed.append((task_id, until))
+        for t in self._tasks:  # reflect the write in list_tasks (as the real service does)
+            if t["id"] == task_id:
+                t["snoozed_until"] = until
+        return {"id": task_id, "snoozed_until": until}
 
     def get_task(self, task_id: str) -> dict[str, Any]:
         for t in self._tasks:
@@ -292,32 +353,15 @@ async def test_dashboard_detail_survives_a_bracketed_lifecycle_detail() -> None:
     app = Dashboard(_FakeClient([task]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:  # would raise here if the detail crashed the app
         await pilot.pause()
-        await pilot.press("d")  # open the detail pane to trigger the fetch
+        await pilot.press("d")  # open the detail modal to trigger the fetch + render
         await pilot.pause()
-        assert "--add-host" in str(
-            app.query_one("#detail", Static).render()
-        )  # rendered, didn't crash
-
-
-def test_render_detail_shows_the_tokens_used() -> None:
-    assert "tokens (wt):" not in render_detail(_TASK)  # both absent → no line
-    assert "tokens (wt): 1.2K used / - est" in render_detail({**_TASK, "tokens_used": 1234})
-    # the estimate alone (no usage yet) still renders the line
-    assert "tokens (wt): - used / 500.0K est" in render_detail({**_TASK, "token_estimate": 500000})
+        assert isinstance(app.screen, TaskDetailScreen)
+        assert "--add-host" in str(app.screen.query_one(Static).render())  # rendered, didn't crash
 
 
 def test_render_detail_marks_blocked() -> None:
     assert "(blocked)" not in render_detail(_TASK)
     assert "turn: agent (blocked)" in render_detail({**_TASK, "blocked": True})
-
-
-def test_short_tokens_formats_human_short() -> None:
-    assert _short_tokens(None) == "-"  # not yet reported
-    assert _short_tokens(0) == "-"
-    assert _short_tokens(300) == "300"  # under 1000 verbatim
-    assert _short_tokens(1234) == "1.2K"
-    assert _short_tokens(1_100_000) == "1.1M"
-    assert _short_tokens(2_500_000_000) == "2.5B"
 
 
 def test_turn_cell_color_codes_like_cloude_cade() -> None:
@@ -336,35 +380,34 @@ async def test_dashboard_mounts_lists_tasks_and_shows_detail() -> None:
         await pilot.pause()
         table = app.query_one("#tasks", DataTable)
         assert table.row_count == 1
-        # detail pane is hidden by default — open it, then check content
+        # `d` opens the detail as a modal — check its content is the highlighted task's
         await pilot.press("d")
         await pilot.pause()
-        detail = app.query_one("#detail", Static)
-        assert "WORKING" in str(detail.render())
+        assert isinstance(app.screen, TaskDetailScreen)
+        assert "WORKING" in str(app.screen.query_one(Static).render())
 
 
-async def test_detail_pane_is_hidden_by_default() -> None:
-    # the detail pane starts hidden so the task table gets the full width; `d` reveals it.
+async def test_no_detail_modal_is_open_by_default() -> None:
+    # the detail is a modal, not a side pane: nothing overlays the table until `d`.
     app = Dashboard(_FakeClient([_TASK]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        detail = app.query_one("#detail", Static)
-        assert not app._detail_visible and detail.styles.display == "none"
+        assert len(app.screen_stack) == 1
+        assert not isinstance(app.screen, TaskDetailScreen)
 
 
-async def test_pressing_d_toggles_the_detail_pane() -> None:
-    # `d` reveals the (hidden-by-default) detail pane and hides it again.
+async def test_pressing_d_opens_the_detail_modal_and_escape_closes_it() -> None:
+    # `d` pushes the detail modal; Escape dismisses it, returning to the base screen.
     app = Dashboard(_FakeClient([_TASK]))  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
-        detail = app.query_one("#detail", Static)
-        assert not app._detail_visible and detail.styles.display == "none"
-        await pilot.press("d")  # show
+        await pilot.press("d")  # open
         await pilot.pause()
-        assert app._detail_visible and detail.styles.display == "block"
-        await pilot.press("d")  # hide again
+        assert isinstance(app.screen, TaskDetailScreen)
+        await pilot.press("escape")  # close
         await pilot.pause()
-        assert not app._detail_visible and detail.styles.display == "none"
+        assert len(app.screen_stack) == 1
+        assert not isinstance(app.screen, TaskDetailScreen)
 
 
 async def test_tasks_are_sorted_active_then_terminal_in_creation_order() -> None:
@@ -483,7 +526,7 @@ async def test_terminal_tasks_are_faded() -> None:
         assert keys == ["t-a", "t-b", "t-done", "t-drop"]  # active before terminal, no separator
         # Active rows: slug cell has no dim span.
         for task_id in ("t-a", "t-b"):
-            slug_cell = table.get_row(task_id)[4]
+            slug_cell = _slug_of(table, task_id)
             assert not any(s.style == "dim" for s in slug_cell._spans)
         # Terminal rows: every cell carries dim styling.
         for task_id in ("t-done", "t-drop"):
@@ -502,7 +545,7 @@ async def test_active_only_rows_not_faded() -> None:
         keys = [str(k.value) for k in table.rows]
         assert keys == ["t-a", "t-b"]
         for task_id in ("t-a", "t-b"):
-            slug_cell = table.get_row(task_id)[4]
+            slug_cell = _slug_of(table, task_id)
             assert not any(s.style == "dim" for s in slug_cell._spans)
 
 
@@ -521,6 +564,102 @@ def test_dim_helper_str_and_text() -> None:
     # original is unmodified
     assert t.plain == "world"
     assert str(t.style) == "green"
+
+
+# --- snooze: fixed 12h `e` / indefinite `E`, dim presentation, clock-driven label ---------------
+
+_NOW = datetime(2026, 8, 5, 12, 0, 0, tzinfo=UTC)
+
+
+def _at(hours: float) -> str:
+    """An ISO deadline `hours` from the fixed test clock."""
+    return (_NOW + timedelta(hours=hours)).isoformat()
+
+
+def test_snooze_label_buckets_hours_minutes_and_indefinite() -> None:
+    # A finite deadline renders "snoozed · Nh/Nm left"; the reserved value renders bare "snoozed".
+    assert _snooze_label({"snoozed_until": _at(4)}, _NOW) == "snoozed · 4h left"
+    assert _snooze_label({"snoozed_until": _at(4.5)}, _NOW) == "snoozed · 5h left"  # ceil
+    assert _snooze_label({"snoozed_until": (_NOW + timedelta(minutes=30)).isoformat()}, _NOW) == (
+        "snoozed · 30m left"
+    )
+    assert _snooze_label({"snoozed_until": (_NOW + timedelta(seconds=20)).isoformat()}, _NOW) == (
+        "snoozed · <1m left"
+    )
+    assert _snooze_label({"snoozed_until": _INDEFINITE_SNOOZE_UNTIL}, _NOW) == "snoozed"
+
+
+def test_snooze_label_inactive_for_past_missing_or_invalid() -> None:
+    assert _snooze_label({"snoozed_until": _at(-1)}, _NOW) is None  # already elapsed
+    assert _snooze_label({}, _NOW) is None  # no fact
+    assert _snooze_label({"snoozed_until": None}, _NOW) is None
+    assert _snooze_label({"snoozed_until": "not-a-date"}, _NOW) is None
+
+
+def test_snooze_keys_are_bound_exactly_once() -> None:
+    keys = [hk.key for hk in dashboard.HOTKEYS]
+    assert keys.count("e") == 1
+    assert keys.count("E") == 1
+
+
+async def test_pressing_e_records_a_twelve_hour_snooze() -> None:
+    client = _FakeClient([dict(_TASK)])  # copy: set_snooze mutates the task dict in place
+    app = Dashboard(client, now=lambda: _NOW)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+    # Exactly 12h after the injected clock — the window is a hard constant, no config surface.
+    assert client.snoozed == [("task-abcdef0123", (_NOW + _SNOOZE_DURATION).isoformat())]
+    assert timedelta(hours=12) == _SNOOZE_DURATION
+
+
+async def test_pressing_e_again_toggles_the_snooze_off() -> None:
+    client = _FakeClient([{**_TASK, "snoozed_until": _at(6)}])  # already actively snoozed
+    app = Dashboard(client, now=lambda: _NOW)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+    assert client.snoozed == [("task-abcdef0123", None)]  # cleared, not re-armed
+
+
+async def test_pressing_capital_e_records_the_indefinite_snooze() -> None:
+    client = _FakeClient([dict(_TASK)])  # copy: set_snooze mutates the task dict in place
+    app = Dashboard(client, now=lambda: _NOW)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("E")
+        await pilot.pause()
+    assert client.snoozed == [("task-abcdef0123", _INDEFINITE_SNOOZE_UNTIL)]
+
+
+async def test_active_snooze_dims_the_row_and_labels_the_turn_cell() -> None:
+    task = {**_TASK, "snoozed_until": _at(4)}
+    app = Dashboard(_FakeClient([task]), now=lambda: _NOW)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        row = table.get_row("task-abcdef0123")
+        assert row[1].plain == "snoozed · 4h left"  # turn cell carries the label
+        for cell in row:  # the whole row is muted
+            assert cell._spans and all(s.style == "dim" for s in cell._spans)
+
+
+async def test_expired_snooze_resumes_normal_presentation_without_mutating() -> None:
+    task = {**_TASK, "snoozed_until": _at(-1)}  # deadline already passed at _NOW
+    client = _FakeClient([task])
+    app = Dashboard(client, now=lambda: _NOW)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        row = table.get_row("task-abcdef0123")
+        assert row[1].plain == "agent" and row[1].style == "green"  # ordinary turn derivation
+        slug_cell = _slug_of(table, "task-abcdef0123")
+        assert not any(s.style == "dim" for s in slug_cell._spans)  # not muted
+    # Expiry is display-only: the dashboard never wrote the stored fact.
+    assert client.snoozed == []
+    assert task["snoozed_until"] == _at(-1)
 
 
 async def _settle(pilot: Any, predicate: Any, *, tries: int = 100, step: float = 0.02) -> None:
@@ -588,9 +727,10 @@ async def test_dashboard_with_no_tasks() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         assert app.query_one("#tasks", DataTable).row_count == 0
-        await pilot.press("d")  # open the detail pane
+        await pilot.press("d")  # open the detail modal with no task highlighted
         await pilot.pause()
-        assert str(app.query_one("#detail", Static).render()) == "no tasks"
+        assert isinstance(app.screen, TaskDetailScreen)
+        assert str(app.screen.query_one(Static).render()) == "no tasks"
 
 
 async def test_pressing_t_signals_the_pick_and_keeps_the_dashboard_running() -> None:
@@ -810,6 +950,243 @@ async def test_memo_textarea_expands_for_multiline_content(monkeypatch: Any) -> 
         assert fake.created == [("r1", "spike", three_lines, three_lines)]
 
 
+async def test_memo_ctrl_a_attaches_a_file_as_an_artifact(tmp_path: Path) -> None:
+    # ctrl+a opens the attach-files modal; a queued file is seeded as the task's artifact on create.
+    src = tmp_path / "notes.md"
+    src.write_text("hello world")
+    fake = _FakeClient(
+        [],
+        repos=["r1"],
+        workflows=[{"name": "spike", "when_to_use": ""}],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")  # repo
+        await pilot.pause()
+        await pilot.press("enter")  # workflow
+        await pilot.pause()
+        await pilot.press("f", "i", "x")  # type a memo
+        await pilot.press("ctrl+a")  # open the attach-files modal
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, dashboard.ArtifactsScreen)
+        screen.query_one("#artifacts-path", Input).value = str(src)
+        await pilot.press("enter")  # add the file
+        await pilot.pause()
+        assert "notes.md" in screen._artifacts
+        await pilot.press("escape")  # back to the memo screen
+        await pilot.pause()
+        await pilot.press("enter")  # submit
+        await pilot.pause()
+    assert fake.created == [("r1", "spike", "fix", "fix")]
+    assert fake.created_artifacts_b64 == [{"notes.md": _b64("hello world")}]
+
+
+def _b64(text: str) -> str:
+    return base64.b64encode(text.encode()).decode()
+
+
+async def test_memo_ctrl_a_preserves_spaces_in_the_filename(tmp_path: Path) -> None:
+    # A spaced filename keeps its name (spaces are valid artifact names); the MCP read path
+    # percent-encodes it (see tests/taskservice/test_mcp.py).
+    src = tmp_path / "my notes.md"
+    src.write_text("spaced")
+    fake = _FakeClient(
+        [],
+        repos=["r1"],
+        workflows=[{"name": "spike", "when_to_use": ""}],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")  # repo
+        await pilot.pause()
+        await pilot.press("enter")  # workflow
+        await pilot.pause()
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, dashboard.ArtifactsScreen)
+        screen.query_one("#artifacts-path", Input).value = str(src)
+        await pilot.press("enter")  # add the file
+        await pilot.pause()
+        assert "my notes.md" in screen._artifacts
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("enter")  # submit an empty memo
+        await pilot.pause()
+    assert fake.created_artifacts_b64 == [{"my notes.md": _b64("spaced")}]
+
+
+async def test_memo_ctrl_a_attaches_a_binary_file(tmp_path: Path) -> None:
+    # A non-UTF-8 file (e.g. a screenshot) queues intact and seeds via the base64 wire — the old
+    # read_text() path rejected it with a decode error.
+    png = b"\x89PNG\r\n\x1a\n\x00\xff\xfe\x01binary\x00data"
+    src = tmp_path / "shot.png"
+    src.write_bytes(png)
+    fake = _FakeClient(
+        [],
+        repos=["r1"],
+        workflows=[{"name": "spike", "when_to_use": ""}],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")  # repo
+        await pilot.pause()
+        await pilot.press("enter")  # workflow
+        await pilot.pause()
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, dashboard.ArtifactsScreen)
+        screen.query_one("#artifacts-path", Input).value = str(src)
+        await pilot.press("enter")  # add the file
+        await pilot.pause()
+        assert "shot.png" in screen._artifacts  # no decode error
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("enter")  # submit an empty memo
+        await pilot.pause()
+    assert fake.created_artifacts_b64 == [{"shot.png": base64.b64encode(png).decode()}]
+
+
+async def test_memo_ctrl_a_can_remove_a_queued_file(tmp_path: Path) -> None:
+    # Selecting a queued file in the attach-files modal removes it, so it isn't seeded on create.
+    src = tmp_path / "notes.md"
+    src.write_text("hello world")
+    fake = _FakeClient(
+        [],
+        repos=["r1"],
+        workflows=[{"name": "spike", "when_to_use": ""}],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")  # repo
+        await pilot.pause()
+        await pilot.press("enter")  # workflow
+        await pilot.pause()
+        await pilot.press("ctrl+a")  # open the attach-files modal
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, dashboard.ArtifactsScreen)
+        screen.query_one("#artifacts-path", Input).value = str(src)
+        await pilot.press("enter")  # add the file
+        await pilot.pause()
+        assert "notes.md" in screen._artifacts
+        option_list = screen.query_one("#artifacts-list", dashboard._VimOptionList)
+        option_list.focus()
+        option_list.highlighted = 0
+        await pilot.press("enter")  # select the highlighted file → remove it
+        await pilot.pause()
+        assert screen._artifacts == {}
+        await pilot.press("escape")  # back to the memo screen
+        await pilot.pause()
+        await pilot.press("enter")  # submit an empty memo
+        await pilot.pause()
+    assert fake.created == [("r1", "spike", None, None)]
+    assert fake.created_artifacts_b64 == [{}]
+
+
+async def test_memo_ctrl_a_rejects_a_missing_path(tmp_path: Path) -> None:
+    # A path that isn't a file shows an inline error and queues nothing.
+    fake = _FakeClient(
+        [],
+        repos=["r1"],
+        workflows=[{"name": "spike", "when_to_use": ""}],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")  # repo
+        await pilot.pause()
+        await pilot.press("enter")  # workflow
+        await pilot.pause()
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, dashboard.ArtifactsScreen)
+        screen.query_one("#artifacts-path", Input).value = str(tmp_path / "nope.md")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert screen._artifacts == {}
+        assert "not a file" in str(screen.query_one("#artifacts-error", Static).render())
+
+
+def test_artifact_path_candidates_orders_literal_first_and_dedups() -> None:
+    # The bare value is always tried first (an unquoted path with real spaces is never mangled),
+    # then the stripped form; identical candidates collapse.
+    assert dashboard._artifact_path_candidates("a b.md") == ["a b.md"]
+    assert dashboard._artifact_path_candidates("  a.md  ") == ["  a.md  ", "a.md"]
+
+
+def test_artifact_path_candidates_strips_matching_quotes() -> None:
+    # Single/double quotes are unwrapped (and the inner content stripped) as extra candidates
+    # after the literal value.
+    assert dashboard._artifact_path_candidates("'my notes.md'") == ["'my notes.md'", "my notes.md"]
+    assert dashboard._artifact_path_candidates('"my notes.md"') == ['"my notes.md"', "my notes.md"]
+    assert dashboard._artifact_path_candidates("' spaced.md '") == [
+        "' spaced.md '",
+        " spaced.md ",
+        "spaced.md",
+    ]
+
+
+def test_artifact_path_candidates_handles_escaped_spaces_and_bad_quotes() -> None:
+    # A backslash-escaped space resolves via shlex to a single token; an unquoted multi-word value
+    # never yields a lone first word; an unbalanced quote just falls back to the literal value.
+    assert "my notes.md" in dashboard._artifact_path_candidates(r"my\ notes.md")
+    assert dashboard._artifact_path_candidates("a b.md") == ["a b.md"]
+    assert dashboard._artifact_path_candidates("'unbalanced.md") == ["'unbalanced.md"]
+    assert dashboard._artifact_path_candidates("   ") == []
+
+
+async def test_memo_ctrl_a_accepts_a_quoted_path(tmp_path: Path) -> None:
+    # A shell-quoted path (as a terminal hands over a name with a space) resolves to the real file.
+    src = tmp_path / "my notes.md"
+    src.write_text("quoted")
+    fake = _FakeClient(
+        [],
+        repos=["r1"],
+        workflows=[{"name": "spike", "when_to_use": ""}],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")  # repo
+        await pilot.pause()
+        await pilot.press("enter")  # workflow
+        await pilot.pause()
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, dashboard.ArtifactsScreen)
+        screen.query_one("#artifacts-path", Input).value = f"'{src}'"
+        await pilot.press("enter")  # add the file
+        await pilot.pause()
+        assert "my notes.md" in screen._artifacts
+        assert screen._artifacts["my notes.md"] == (str(src), b"quoted")
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("enter")  # submit an empty memo
+        await pilot.pause()
+    assert fake.created_artifacts_b64 == [{"my notes.md": _b64("quoted")}]
+
+
 async def test_dashboard_drives_drop() -> None:
     # Drop is the one transition the operator drives; advance and the rest are agent skills, so
     # they aren't dashboard actions (no `a`/`i` bindings).
@@ -845,6 +1222,72 @@ async def test_pressing_p_with_no_url_does_nothing(monkeypatch: Any) -> None:
         await pilot.pause()
         assert opened == []  # nothing to open; warned and stayed put
         assert app.is_running
+
+
+async def test_pressing_w_opens_the_tasks_workdir(monkeypatch: Any, tmp_path: Path) -> None:
+    # `w` hands the task's recorded per-task clone — the checkout mounted at /workspace in its
+    # container — to the host's file manager, the same opener `f` uses for an artifact folder.
+    calls = _record_popen(monkeypatch)
+    workdir = tmp_path / "tasks" / str(_TASK["id"])
+    workdir.mkdir(parents=True)
+    task = {**_TASK, "clone": str(workdir)}
+    app = Dashboard(_FakeClient([task]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("w")
+        await pilot.pause()
+        assert calls == [[dashboard._open_command(), str(workdir)]]
+
+
+async def test_pressing_w_on_an_unprovisioned_task_warns(monkeypatch: Any) -> None:
+    # No slug yet → no branch → no clone recorded: there's no workdir to open, so warn rather
+    # than opening whatever an empty path resolves to.
+    calls = _record_popen(monkeypatch)
+    task = {**_TASK, "clone": None, "provisioned": False}
+    app = Dashboard(_FakeClient([task]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("w")
+        await pilot.pause()
+        assert calls == []
+        assert app.is_running
+
+
+async def test_pressing_w_warns_when_the_workdir_is_not_on_this_machine(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # The clone lives on the *runner's* host, which may be remote (or the checkout may simply be
+    # gone): the path isn't here, so open nothing and say so.
+    calls = _record_popen(monkeypatch)
+    task = {**_TASK, "clone": str(tmp_path / "elsewhere"), "runner_host": "gpu-box"}
+    app = Dashboard(_FakeClient([task]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("w")
+        await pilot.pause()
+        assert calls == []
+        assert app.is_running
+
+
+async def test_pressing_w_survives_a_host_with_no_opener(monkeypatch: Any, tmp_path: Path) -> None:
+    # A headless host without `xdg-open` must notify, not take the TUI down with it.
+    def boom(*args: Any, **kwargs: Any) -> None:
+        raise FileNotFoundError("xdg-open")
+
+    monkeypatch.setattr(dashboard.subprocess, "Popen", boom)
+    workdir = tmp_path / "tasks" / str(_TASK["id"])
+    workdir.mkdir(parents=True)
+    task = {**_TASK, "clone": str(workdir)}
+    app = Dashboard(_FakeClient([task]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("w")
+        await pilot.pause()
+        assert app.is_running
+
+
+def test_workdir_key_is_bound_exactly_once() -> None:
+    assert [hk.key for hk in dashboard.HOTKEYS].count("w") == 1
 
 
 def test_clipboard_command_is_platform_appropriate(monkeypatch: Any) -> None:
@@ -928,6 +1371,35 @@ def test_status_cell_displays_the_composed_status_color_coded() -> None:
     assert _status_cell({}).plain == "–"  # missing → em-dash, no crash
 
 
+def test_marks_cell_flags_artifacts_and_links_in_fixed_slots() -> None:
+    # Slot 1 is the artifact mark, slot 2 the link mark; an absent mark leaves its slot blank so
+    # the other one doesn't slide over.
+    assert _marks_cell({"has_artifacts": True, "url": "https://pr"}).plain == _MARKS_LABEL
+    assert _marks_cell({"has_artifacts": True}).plain == f"{_ARTIFACT_MARK}  "
+    assert _marks_cell({"url": "https://pr"}).plain == f"  {_LINK_MARK}"
+    assert _marks_cell({}).plain == "   "  # neither
+    assert _marks_cell({"has_artifacts": False, "url": None}).plain == "   "
+    assert _marks_cell({}).style == "dim"  # annotation, not competing with the name
+
+
+def test_marks_cell_is_the_same_width_whatever_it_carries() -> None:
+    # The column only stays aligned while every combination measures the same. This is the guard
+    # against swapping in an East_Asian_Width=Wide glyph (an emoji) later: cell_len would jump to
+    # 4 or 5 for the marked rows and the column would render ragged.
+    from rich.cells import cell_len
+
+    widths = {
+        cell_len(_marks_cell(task).plain)
+        for task in (
+            {"has_artifacts": True, "url": "https://pr"},
+            {"has_artifacts": True},
+            {"url": "https://pr"},
+            {},
+        )
+    }
+    assert widths == {3}
+
+
 async def test_task_counter_shows_agent_versus_active_counts() -> None:
     # Counter shows agent-turn active / total active; terminal tasks are excluded.
     # pause() lets Footer's _bindings_ready recompose fire so #task-counter is mounted;
@@ -945,6 +1417,68 @@ async def test_task_counter_shows_agent_versus_active_counts() -> None:
         text = str(app.query_one("#task-counter", Static).render())
         assert "1/2" in text  # 1 agent-turn, 2 total active (COMPLETE excluded)
         assert "agent" in text
+
+
+async def test_task_counter_excludes_snoozed_tasks_from_both_halves() -> None:
+    # A snoozed task is muted, so it leaves the numerator *and* the denominator — governed
+    # children included (muting is per-task, unlike the sort's ensemble-preserving exemption).
+    tasks = [
+        {**_TASK, "id": "t-agent", "slug": "a1", "state": "WORKING", "turn": "agent"},
+        {
+            **_TASK,
+            "id": "t-snoozed-agent",
+            "slug": "s1",
+            "state": "WORKING",
+            "turn": "agent",
+            "snoozed_until": _at(4),
+        },
+        {
+            **_TASK,
+            "id": "t-snoozed-user",
+            "slug": "s2",
+            "state": "PLANNING",
+            "turn": "user",
+            "snoozed_until": _INDEFINITE_SNOOZE_UNTIL,
+        },
+        {
+            **_TASK,
+            "id": "t-snoozed-child",
+            "slug": "s3",
+            "state": "WORKING",
+            "turn": "agent",
+            "snoozed_until": _at(2),
+            "governor_task_id": "t-agent",
+        },
+    ]
+    app = Dashboard(_FakeClient(tasks), now=lambda: _NOW)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_refresh()  # Footer is now ready; refresh to populate the counter
+        await pilot.pause()
+        text = str(app.query_one("#task-counter", Static).render())
+        assert "1/1" in text  # only the unsnoozed agent-turn task counts
+
+
+async def test_task_counter_still_counts_an_expired_snooze() -> None:
+    # The exclusion is clock-driven, not "the field is set": an elapsed deadline counts again.
+    tasks = [
+        {
+            **_TASK,
+            "id": "t-expired",
+            "slug": "e1",
+            "state": "WORKING",
+            "turn": "agent",
+            "snoozed_until": _at(-1),
+        },
+        {**_TASK, "id": "t-user", "slug": "u1", "state": "PLANNING", "turn": "user"},
+    ]
+    app = Dashboard(_FakeClient(tasks), now=lambda: _NOW)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_refresh()
+        await pilot.pause()
+        text = str(app.query_one("#task-counter", Static).render())
+        assert "1/2" in text
 
 
 async def test_status_cell_is_used_without_per_task_registration_calls() -> None:
@@ -1300,6 +1834,7 @@ async def test_repos_screen_creates_a_repo_autofilling_from_the_git_url() -> Non
                 "hook_file": None,
                 "enabled_workflows": [],
                 "disabled_workflows": [],
+                "agent_cli": "claude",
                 "capabilities": {"docker_in_docker": False},
             }
         ]
@@ -1331,6 +1866,7 @@ async def test_repo_form_autofill_only_fills_blank_fields() -> None:
                 "hook_file": None,
                 "enabled_workflows": [],
                 "disabled_workflows": [],
+                "agent_cli": "claude",
                 "capabilities": {"docker_in_docker": False},
             }
         ]
@@ -1481,14 +2017,71 @@ async def test_repos_screen_edits_a_repo_via_patch() -> None:
                     "git_url": "https://x/r1.git",
                     "default_base": "main",
                     "env_file": None,
+                    "credential_dir": None,
                     "image_layer_file": None,
                     "hook_file": None,
                     "capabilities": {"docker_in_docker": False},
                     "enabled_workflows": [],
                     "disabled_workflows": [],
+                    "agent_cli": "claude",
                 },
             )
         ]
+
+
+async def test_repo_form_offers_the_agent_cli_field_only_when_codex_is_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # With codex feature-flagged off (ADR 0014 §7) claude is the only selectable CLI, so the field
+    # is noise; with the flag on it's a real choice and the form offers it.
+    fake = _FakeClient([], repos=[])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        with pytest.raises(NoMatches):
+            app.screen.query_one("#field-agent_cli", Input)
+
+    monkeypatch.setenv(CODEX_FLAG, "1")
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        assert app.screen.query_one("#field-agent_cli", Input).value == "claude"
+
+
+async def test_editing_a_repo_left_on_a_disabled_cli_keeps_its_agent_cli() -> None:
+    # The field isn't offered while codex is off, so the form carries the stored value through:
+    # editing an unrelated field must never silently rewrite the repo's CLI to claude.
+    fake = _FakeClient(
+        [],
+        repos=[
+            {
+                "id": "r1",
+                "name": "old",
+                "git_url": "https://x/r1.git",
+                "default_base": "main",
+                "agent_cli": "codex",
+            }
+        ],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        app.screen.query_one("#field-name", Input).value = "new"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert fake.updated_repos[0][1]["agent_cli"] == "codex"
 
 
 async def test_repo_form_workflows_tab_pre_populates_from_repo() -> None:
@@ -1674,6 +2267,61 @@ async def test_repo_form_space_toggles_the_checkbox_without_saving() -> None:
         assert isinstance(app.screen, dashboard.RepoFormScreen)  # form still open
 
 
+async def test_repo_form_general_tab_scrolls_on_a_short_terminal() -> None:
+    # The general tab needs ~40 rows; on a short terminal it must scroll (and say so with a
+    # scrollbar) rather than clipping the fields below the fold with no indication they exist.
+    fake = _FakeClient([], repos=[])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test(size=(100, 24)) as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        pane = app.screen.query_one("#pane-general")
+        assert pane.virtual_size.height > pane.size.height  # taller than its viewport
+        assert pane.max_scroll_y > 0  # …and the overflow is reachable
+        assert pane.show_vertical_scrollbar  # …with the scrollbar as the affordance
+
+
+async def test_repo_form_tab_reaches_the_last_field_on_a_short_terminal() -> None:
+    # Tabbing scrolls a below-the-fold field into view — the regression guard for the fields
+    # being unreachable when the modal is shorter than its content.
+    fake = _FakeClient([], repos=[])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test(size=(100, 24)) as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        pane = app.screen.query_one("#pane-general")
+        checkbox = app.screen.query_one("#field-docker_in_docker", Checkbox)
+        assert not pane.content_region.contains_region(checkbox.region)  # below the fold
+        for _ in range(30):
+            await pilot.press("tab")
+            await pilot.pause()
+            if app.screen.focused is checkbox:
+                break
+        assert app.screen.focused is checkbox  # reachable by keyboard
+        assert pane.content_region.contains_region(checkbox.region)  # scrolled into view
+
+
+async def test_repo_form_fits_a_narrow_terminal() -> None:
+    # The modal is 72 columns wide by preference, but never wider than the screen.
+    fake = _FakeClient([], repos=[])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test(size=(60, 24)) as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        form = app.screen.query_one("#repo-form")
+        assert form.region.width <= app.screen.size.width
+        assert form.region.right <= app.screen.size.width  # nothing falls off the right edge
+
+
 @pytest.mark.asyncio
 async def test_env_file_field_blank_when_no_known_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1797,7 +2445,9 @@ async def test_env_file_field_custom_input_draws_a_bottom_border(
         [], repos=[{"id": "r1", "name": "x", "git_url": "https://x/r.git", "default_base": "main"}]
     )
     app = Dashboard(fake)  # type: ignore[arg-type]
-    async with app.run_test(size=(90, 40)) as pilot:
+    # Tall enough that the whole repo form (incl. the agent_cli field) fits, so the env-file custom
+    # input's bottom-border row is on-screen for the border-glyph assertion below.
+    async with app.run_test(size=(90, 44)) as pilot:
         await pilot.pause()
         await pilot.press("g")
         await pilot.pause()
@@ -2130,6 +2780,79 @@ async def test_e_warns_when_the_artifact_is_not_local(monkeypatch: Any, tmp_path
         assert fake.fetched == []  # and no REST fallback
 
 
+async def test_artifact_f_opens_the_tasks_artifact_folder(monkeypatch: Any, tmp_path: Path) -> None:
+    # `f` hands the task's artifact *directory* to the host's file manager — the repo modal's key,
+    # scoped to the task, so the operator can browse the whole folder instead of one file.
+    calls = _record_popen(monkeypatch)
+    folder = tmp_path / "tasks" / str(_TASK["id"])
+    folder.mkdir(parents=True)
+    (folder / "plan.md").write_text("# Plan\n")
+    fake = _FakeClient([_TASK], artifacts={_TASK["id"]: ["plan.md"]}, artifact_content=b"REST")
+    app = Dashboard(fake, artifacts_root=tmp_path)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        assert calls == [[dashboard._open_command(), str(folder)]]
+        assert fake.fetched == []  # a folder open fetches nothing
+
+
+async def test_artifact_f_warns_when_there_is_no_folder(monkeypatch: Any, tmp_path: Path) -> None:
+    # Nothing written yet (the directory is created on the first artifact) or a dashboard remote
+    # from the store: either way there's no folder here, so warn and stay put.
+    calls = _record_popen(monkeypatch)
+    fake = _FakeClient([_TASK], artifacts={_TASK["id"]: ["plan.md"]})
+    app = Dashboard(fake, artifacts_root=tmp_path)  # empty root  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        assert calls == []
+        assert app.is_running
+
+
+async def test_artifact_f_works_on_an_empty_list(monkeypatch: Any, tmp_path: Path) -> None:
+    # The folder is the task's, not an entry's — so `f` needs no selection. A task holding only
+    # hidden (agent bookkeeping) artifacts lists nothing, and its folder still opens.
+    calls = _record_popen(monkeypatch)
+    folder = tmp_path / "tasks" / str(_TASK["id"])
+    folder.mkdir(parents=True)
+    (folder / ".state.json").write_text("{}")
+    fake = _FakeClient([_TASK], artifacts={_TASK["id"]: [".state.json"]})
+    app = Dashboard(fake, artifacts_root=tmp_path)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        assert isinstance(app.screen, dashboard.ArtifactScreen)
+        await pilot.press("f")
+        await pilot.pause()
+        assert calls == [[dashboard._open_command(), str(folder)]]
+
+
+async def test_artifact_f_survives_a_host_with_no_opener(monkeypatch: Any, tmp_path: Path) -> None:
+    # A headless host without `xdg-open` must notify, not take the TUI down with it.
+    def _raise(argv: Any, *a: Any, **k: Any) -> None:
+        raise FileNotFoundError(argv[0])
+
+    monkeypatch.setattr(dashboard.subprocess, "Popen", _raise)
+    folder = tmp_path / "tasks" / str(_TASK["id"])
+    folder.mkdir(parents=True)
+    fake = _FakeClient([_TASK], artifacts={_TASK["id"]: []})
+    app = Dashboard(fake, artifacts_root=tmp_path)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        assert app.is_running
+
+
 async def test_missing_opener_binary_is_handled_not_crashed(monkeypatch: Any) -> None:
     # On a headless host without `xdg-open`, Popen raises FileNotFoundError; the dashboard must
     # notify and stay up rather than let it escape the screen callback and kill the TUI.
@@ -2148,7 +2871,8 @@ async def test_missing_opener_binary_is_handled_not_crashed(monkeypatch: Any) ->
         assert app.is_running  # handled, TUI survived
 
 
-async def test_pressing_a_with_no_artifacts_warns_and_opens_no_modal(monkeypatch: Any) -> None:
+async def test_pressing_a_with_no_artifacts_still_opens_the_modal(monkeypatch: Any) -> None:
+    # Even with zero artifacts the modal opens, so attach (ctrl+a) is reachable on a fresh task.
     calls = _record_popen(monkeypatch)
     fake = _FakeClient([_TASK], artifacts={})  # task has no artifacts
     app = Dashboard(fake)  # type: ignore[arg-type]
@@ -2157,8 +2881,99 @@ async def test_pressing_a_with_no_artifacts_warns_and_opens_no_modal(monkeypatch
         await pilot.press("a")
         await pilot.pause()
         assert calls == []
-        assert len(app.screen_stack) == 1  # the modal was not pushed
+        assert isinstance(app.screen, dashboard.ArtifactScreen)  # modal is up
         assert app.is_running
+
+
+async def test_ctrl_a_in_artifact_modal_attaches_a_file(tmp_path: Path) -> None:
+    # `a` opens the artifact list; `ctrl+a` opens the file-picker (the same modal task-creation
+    # uses); a queued file is uploaded to the running task via put_artifact.
+    src = tmp_path / "notes.md"
+    src.write_text("hello world")
+    fake = _FakeClient([_TASK], artifacts={_TASK["id"]: ["plan.md"]})
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")  # open the artifact list
+        await pilot.pause()
+        assert isinstance(app.screen, dashboard.ArtifactScreen)
+        await pilot.press("ctrl+a")  # open the attach-files picker
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, dashboard.ArtifactsScreen)
+        picker.query_one("#artifacts-path", Input).value = str(src)
+        await pilot.press("enter")  # add the file to the queue
+        await pilot.pause()
+        await pilot.press("escape")  # done → upload
+        await pilot.pause()
+    assert fake.put_artifacts == [(_TASK["id"], "notes.md", b"hello world")]
+
+
+async def test_ctrl_a_attaches_to_a_task_with_no_artifacts(tmp_path: Path) -> None:
+    # Attach is reachable even when the task starts with no artifacts (the list opens empty).
+    src = tmp_path / "notes.md"
+    src.write_text("first one")
+    fake = _FakeClient([_TASK], artifacts={})
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, dashboard.ArtifactsScreen)
+        picker.query_one("#artifacts-path", Input).value = str(src)
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+    assert fake.put_artifacts == [(_TASK["id"], "notes.md", b"first one")]
+
+
+async def test_ctrl_a_attaches_a_binary_file_intact(tmp_path: Path) -> None:
+    # A non-UTF-8 file (e.g. a screenshot) uploads byte-for-byte via the raw-bytes put_artifact.
+    png = b"\x89PNG\r\n\x1a\n\x00\xff\xfe\x01binary\x00data"
+    src = tmp_path / "shot.png"
+    src.write_bytes(png)
+    fake = _FakeClient([_TASK], artifacts={_TASK["id"]: ["plan.md"]})
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, dashboard.ArtifactsScreen)
+        picker.query_one("#artifacts-path", Input).value = str(src)
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+    assert fake.put_artifacts == [(_TASK["id"], "shot.png", png)]
+
+
+async def test_ctrl_a_resolves_a_shell_quoted_path(tmp_path: Path) -> None:
+    # The picker reuses _artifact_path_candidates, so a shell-quoted (spaced) path resolves.
+    src = tmp_path / "my notes.md"
+    src.write_text("quoted")
+    fake = _FakeClient([_TASK], artifacts={_TASK["id"]: ["plan.md"]})
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, dashboard.ArtifactsScreen)
+        picker.query_one("#artifacts-path", Input).value = f"'{src}'"  # single-quoted
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+    assert fake.put_artifacts == [(_TASK["id"], "my notes.md", b"quoted")]
 
 
 # -- help screen (`?`) --------------------------------------------------------------
@@ -2170,7 +2985,23 @@ def test_footer_shows_only_the_essential_keys() -> None:
     shown = {b.key for b in Dashboard.BINDINGS if b.show}
     hidden = {b.key for b in Dashboard.BINDINGS if not b.show}
     assert shown == {"t", "n", "x", "/", "d", "question_mark", "q"}
-    assert hidden == {"o", "r", "R", "p", "g", "a", "s", "u", "y", "Y", "escape"}
+    assert hidden == {
+        "o",
+        "r",
+        "R",
+        "p",
+        "e",
+        "E",
+        "g",
+        "a",
+        "A",
+        "s",
+        "u",
+        "y",
+        "Y",
+        "w",
+        "escape",
+    }
 
 
 def test_bindings_and_help_derive_from_the_single_hotkey_table() -> None:
@@ -2333,6 +3164,135 @@ def test_group_by_governor_tree_connectors_nested() -> None:
     assert terminal == []
 
 
+# --- snooze demotion in the sort key (REQ-038): active > snoozed-active root > terminal ----------
+
+
+def test_snoozed_root_sorts_after_active_before_terminal_both_modes() -> None:
+    # An actively-snoozed ungoverned task sinks to the end of the active section — after ordinary
+    # non-terminal tasks but still above COMPLETE/DROPPED — in BOTH sort modes.
+    active = {**_TASK, "id": "act", "slug": "active", "created_at": _at(-1)}
+    snoozed = {
+        **_TASK,
+        "id": "snz",
+        "slug": "snoozed",
+        "snoozed_until": _at(4),
+        "created_at": _at(-2),
+    }
+    terminal = {**_TASK, "id": "trm", "slug": "done", "state": "COMPLETE", "created_at": _at(-3)}
+    for by_updated in (False, True):
+        order = [
+            t["id"]
+            for t in sorted([snoozed, terminal, active], key=_make_sort_key(by_updated, _NOW))
+        ]
+        assert order == ["act", "snz", "trm"], f"by_updated={by_updated}"
+
+
+def test_expired_snooze_keeps_ordinary_active_ordering() -> None:
+    # An expired snooze is inactive → the task is NOT demoted; it sorts as an ordinary active task
+    # (section 0), unlike a live snooze (section 1).
+    key = _make_sort_key(now=_NOW)
+    expired = {**_TASK, "id": "exp", "snoozed_until": _at(-1)}  # deadline already passed
+    live = {**_TASK, "id": "liv", "snoozed_until": _at(4)}
+    plain = {**_TASK, "id": "pln"}
+    assert key(expired)[0] == 0  # not demoted
+    assert key(plain)[0] == 0
+    assert key(live)[0] == 1  # demoted
+
+
+def test_snooze_demotion_ignores_now_none() -> None:
+    # Regression guard: with no display clock, no task is treated as snoozed, so the section
+    # collapses to the pre-snooze active(0)-before-terminal(2) split — identical ordering to before.
+    key = _make_sort_key(now=None)
+    snoozed = {**_TASK, "id": "snz", "snoozed_until": _at(4)}
+    plain = {**_TASK, "id": "pln"}
+    terminal = {**_TASK, "id": "trm", "state": "DROPPED"}
+    assert key(snoozed)[0] == key(plain)[0] == 0  # snooze ignored → not demoted
+    assert key(terminal)[0] == 2
+
+
+def test_sort_weight_outranks_timestamp_within_section_and_turn() -> None:
+    # A higher sort_weight rises above a newer timestamp within the same section+turn group.
+    key = _make_sort_key()
+    newer_light = {**_TASK, "id": "new", "turn": "user", "created_at": _at(-1), "sort_weight": 0}
+    older_heavy = {**_TASK, "id": "old", "turn": "user", "created_at": _at(-5), "sort_weight": 10}
+    order = [t["id"] for t in sorted([newer_light, older_heavy], key=key)]
+    assert order == ["old", "new"]  # weight beats a newer timestamp
+
+
+def test_sort_weight_ties_fall_back_to_timestamp() -> None:
+    # Equal weights leave the timestamp as the tiebreaker (newest first) — unchanged behavior.
+    key = _make_sort_key()
+    newer = {**_TASK, "id": "new", "turn": "user", "created_at": _at(-1), "sort_weight": 5}
+    older = {**_TASK, "id": "old", "turn": "user", "created_at": _at(-5), "sort_weight": 5}
+    order = [t["id"] for t in sorted([older, newer], key=key)]
+    assert order == ["new", "old"]
+
+
+def test_sort_weight_does_not_override_state_or_turn() -> None:
+    # sort_weight ranks BELOW state/turn: a heavy terminal task still sorts after a light active one,
+    # and a heavy agent-turn task still sorts after a light user-turn (priority) one.
+    key = _make_sort_key()
+    active_light = {**_TASK, "id": "act", "state": "ITERATING", "turn": "user", "sort_weight": 0}
+    terminal_heavy = {**_TASK, "id": "trm", "state": "COMPLETE", "turn": "user", "sort_weight": 99}
+    assert [t["id"] for t in sorted([terminal_heavy, active_light], key=key)] == ["act", "trm"]
+
+    user_light = {**_TASK, "id": "usr", "state": "ITERATING", "turn": "user", "sort_weight": 0}
+    agent_heavy = {**_TASK, "id": "agt", "state": "ITERATING", "turn": "agent", "sort_weight": 99}
+    assert [t["id"] for t in sorted([agent_heavy, user_light], key=key)] == ["usr", "agt"]
+
+
+def test_sort_weight_defaults_to_zero_when_absent() -> None:
+    # Regression guard: a task dict without sort_weight is treated as weight 0 — no crash, and the
+    # timestamp ordering is unchanged.
+    assert "sort_weight" not in _TASK
+    key = _make_sort_key()
+    a = {**_TASK, "id": "a", "turn": "user", "created_at": _at(-1)}
+    b = {**_TASK, "id": "b", "turn": "user", "created_at": _at(-2)}
+    assert [t["id"] for t in sorted([b, a], key=key)] == ["a", "b"]  # newest first
+
+
+def test_snoozed_governed_child_does_not_split_ensemble() -> None:
+    # A snooze on a governed child must NOT demote it out of its ensemble — the exemption is gated
+    # on having no governor. The child stays adjacent to its (unsnoozed) governor.
+    governor = {
+        **_TASK,
+        "id": "gov",
+        "slug": "orch",
+        "governor_task_id": None,
+        "created_at": _at(-1),
+    }
+    child = {
+        **_TASK,
+        "id": "chd",
+        "slug": "worker",
+        "governor_task_id": "gov",
+        "snoozed_until": _at(4),  # actively snoozed, but governed → not demoted
+    }
+    other = {**_TASK, "id": "oth", "slug": "solo", "governor_task_id": None, "created_at": _at(-2)}
+    sorted_tasks = sorted([governor, child, other], key=_make_sort_key(now=_NOW))
+    active, terminal = _group_by_governor(sorted_tasks)
+    assert [(t["id"], p) for t, p in active] == [("gov", ""), ("chd", "└─ "), ("oth", "")]
+    assert terminal == []
+
+
+def test_snoozed_governor_root_carries_children_below_active() -> None:
+    # A snoozed governor *root* is demoted to the end of the active section, carrying its children
+    # with it (the ensemble travels as a unit, ordered by the root's key).
+    governor = {
+        **_TASK,
+        "id": "gov",
+        "slug": "orch",
+        "governor_task_id": None,
+        "snoozed_until": _at(4),
+    }
+    child = {**_TASK, "id": "chd", "slug": "worker", "governor_task_id": "gov"}
+    other = {**_TASK, "id": "oth", "slug": "solo", "governor_task_id": None}  # ordinary active root
+    sorted_tasks = sorted([governor, child, other], key=_make_sort_key(now=_NOW))
+    active, terminal = _group_by_governor(sorted_tasks)
+    assert [(t["id"], p) for t, p in active] == [("oth", ""), ("gov", ""), ("chd", "└─ ")]
+    assert terminal == []
+
+
 def test_slug_cell_prefix_tree_connectors() -> None:
     task = {**_TASK, "slug": "worker", "memo": None}
     assert _slug_cell(task).plain == "worker"  # no prefix (root)
@@ -2360,10 +3320,8 @@ async def test_governed_task_appears_under_governor_in_dashboard() -> None:
         await pilot.pause()
         order = [str(k.value) for k in table.rows]
         assert order == ["gov", "wrk"]
-        gov_row = table.get_row("gov")
-        wrk_row = table.get_row("wrk")
-        assert gov_row[4].plain == "orchestrator"  # slug column (index 4) — no prefix
-        assert wrk_row[4].plain == "└─ worker"  # last (only) child gets └─
+        assert _slug_of(table, "gov").plain == "orchestrator"  # no prefix
+        assert _slug_of(table, "wrk").plain == "└─ worker"  # last (only) child gets └─
 
 
 async def test_active_governor_keeps_terminal_child_in_active_section() -> None:
@@ -2406,9 +3364,9 @@ async def test_active_governor_keeps_terminal_child_in_active_section() -> None:
         assert keys.index("gov") < keys.index("done")
         assert keys.index("wrk") < keys.index("done")
         # Active governor is not faded; both terminal tasks (standalone and governed) are.
-        assert not any(s.style == "dim" for s in table.get_row("gov")[4]._spans)
+        assert not any(s.style == "dim" for s in _slug_of(table, "gov")._spans)
         for task_id in ("wrk", "done"):
-            slug = table.get_row(task_id)[4]
+            slug = _slug_of(table, task_id)
             assert slug._spans and all(s.style == "dim" for s in slug._spans), (
                 f"{task_id} slug should be dim"
             )
@@ -2499,8 +3457,7 @@ async def test_enter_on_governor_collapses_to_ensemble_row() -> None:
         assert "wrk" not in keys
         assert f"{_ENSEMBLE_KEY_PREFIX}gov" in keys
         # The ensemble row's slug cell reads "..." (dim, checked by plain text).
-        ens_row = table.get_row(f"{_ENSEMBLE_KEY_PREFIX}gov")
-        assert ens_row[4].plain == "└─ ..."
+        assert _slug_of(table, f"{_ENSEMBLE_KEY_PREFIX}gov").plain == "└─ ..."
 
 
 async def test_enter_again_on_governor_expands_ensemble() -> None:
@@ -2615,11 +3572,61 @@ async def test_search_shows_all_ancestors_when_deep_child_matches() -> None:
         assert set(keys) == {"root", "mid", "leaf"}  # whole chain visible
 
 
+# -- marks column ------------------------------------------------------------------
+
+
+async def test_marks_column_sits_left_of_the_name_in_both_layouts() -> None:
+    # Present whether or not the runner column is, and always immediately left of slug[memo] —
+    # the marks annotate the name, and the variable-width name column stays rightmost.
+    header = _MARKS_LABEL
+    single = _FakeClient([{**_TASK, "id": "t-a"}], runners=[{"id": "r1", "host": "host-a"}])
+    multi = _FakeClient(
+        [{**_TASK, "id": "t-a", "runner_host": "host-a"}],
+        runners=[{"id": "r1", "host": "host-a"}, {"id": "r2", "host": "host-b"}],
+    )
+    for client in (single, multi):
+        app = Dashboard(client)  # type: ignore[arg-type]
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            labels = _col_labels(app.query_one("#tasks", DataTable))
+            assert labels.index(header) == labels.index("slug[memo]") - 1
+
+
+async def test_marks_column_reflects_artifacts_and_url() -> None:
+    tasks = [
+        {**_TASK, "id": "t-both", "has_artifacts": True, "url": "https://pr/1"},
+        {**_TASK, "id": "t-artifact", "has_artifacts": True, "url": None},
+        {**_TASK, "id": "t-link", "has_artifacts": False, "url": "https://pr/2"},
+        {**_TASK, "id": "t-bare", "has_artifacts": False, "url": None},
+    ]
+    app = Dashboard(_FakeClient(tasks))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        idx = _col_index(table, _MARKS_LABEL)
+        assert table.get_row("t-both")[idx].plain == _MARKS_LABEL
+        assert table.get_row("t-artifact")[idx].plain == f"{_ARTIFACT_MARK}  "
+        assert table.get_row("t-link")[idx].plain == f"  {_LINK_MARK}"
+        assert table.get_row("t-bare")[idx].plain == "   "
+
+
+async def test_ensemble_placeholder_row_spans_every_column() -> None:
+    # The synthetic collapsed-ensemble row stands in for hidden tasks, so it carries no marks —
+    # but it still needs a cell per column or the table misaligns.
+    governor = {**_TASK, "id": "gov", "slug": "orchestrator", "has_artifacts": True}
+    governed = {**_TASK, "id": "wrk", "slug": "worker", "governor_task_id": "gov"}
+    app = Dashboard(_FakeClient([governor, governed]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        ens_row = table.get_row(f"{_ENSEMBLE_KEY_PREFIX}gov")  # governors start collapsed
+        assert len(ens_row) == len(table.columns)
+        assert ens_row[_col_index(table, _MARKS_LABEL)].plain == ""
+        # The governor itself still shows its own marks.
+        assert table.get_row("gov")[_col_index(table, _MARKS_LABEL)].plain == f"{_ARTIFACT_MARK}  "
+
+
 # -- multi-runner column -----------------------------------------------------------
-
-
-def _col_labels(table: DataTable) -> list[str]:
-    return [str(c.label) for c in table.columns.values()]
 
 
 async def test_runner_column_absent_for_single_runner() -> None:
@@ -2906,3 +3913,217 @@ async def test_pressing_j_then_enter_picks_the_second_option_in_a_picker() -> No
         await pilot.press("enter")  # submit an empty memo
         await pilot.pause()
         assert fake.created == [("r2", "spike", None, None)]
+
+
+# -- repo artifacts (`A`, and `a` in the repos screen) -----------------------------
+
+
+_REPO = {
+    "id": "default",
+    "name": "acme/widgets",
+    "git_url": "https://x/r1.git",
+    "default_base": "main",
+}
+
+
+async def test_pressing_shift_a_opens_the_tasks_repo_artifacts() -> None:
+    # `A` opens the *repo's* artifacts for the highlighted task — its own modal, listing the
+    # documents every task in that repo shares (nested names included).
+    fake = _FakeClient(
+        [_TASK], repos=[_REPO], repo_artifacts={"default": ["conventions.md", "notes/api.md"]}
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("A")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, dashboard.RepoArtifactScreen)
+        options = screen.query_one(OptionList)
+        listed = [str(options.get_option_at_index(i).prompt) for i in range(options.option_count)]
+        assert listed == ["conventions.md", "notes/api.md"]
+
+
+async def test_pressing_a_in_the_repos_screen_opens_that_repos_artifacts() -> None:
+    # The other entry point: `a` on the highlighted row of the repo config screen.
+    fake = _FakeClient([], repos=[_REPO], repo_artifacts={"default": ["conventions.md"]})
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        assert isinstance(app.screen, dashboard.ReposScreen)
+        await pilot.press("a")
+        await pilot.pause()
+        assert isinstance(app.screen, dashboard.RepoArtifactScreen)
+
+
+async def test_repo_artifact_enter_opens_the_selection_via_rest(monkeypatch: Any) -> None:
+    # Enter fetches over REST to the scratch dir and opens it — the path that works even when the
+    # dashboard is remote from the store. A nested name keeps its whole relative path, so two
+    # subdirectories holding the same file name can't collide in the scratch copy.
+    calls = _record_popen(monkeypatch)
+    fake = _FakeClient(
+        [_TASK],
+        repos=[_REPO],
+        repo_artifacts={"default": ["notes/api.md"]},
+        artifact_content=b"beware",
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("A")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert fake.repo_fetched == [("default", "notes/api.md")]
+        assert len(calls) == 1
+        opener, path = calls[0]
+        assert opener == dashboard._open_command()
+        assert Path(path).parts[-3:] == ("default", "notes", "api.md")
+        assert Path(path).read_bytes() == b"beware"
+
+
+async def test_repo_artifact_e_opens_the_local_file_in_place(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    calls = _record_popen(monkeypatch)
+    art = tmp_path / "repos" / "default" / "notes" / "api.md"
+    art.parent.mkdir(parents=True)
+    art.write_text("# Local\n")
+    fake = _FakeClient(
+        [_TASK],
+        repos=[_REPO],
+        repo_artifacts={"default": ["notes/api.md"]},
+        artifact_content=b"REST",
+    )
+    app = Dashboard(fake, artifacts_root=tmp_path)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("A")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        assert calls == [[dashboard._open_command(), str(art)]]  # the real file, in place
+        assert fake.repo_fetched == []  # no REST fetch
+
+
+async def test_repo_artifact_f_opens_the_repos_artifact_folder(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # The key the repo modal exists for: `f` hands the repo's artifact *directory* to the host's
+    # file manager, so the operator can browse (and drop files into) the whole tree.
+    calls = _record_popen(monkeypatch)
+    folder = tmp_path / "repos" / "default"
+    (folder / "notes").mkdir(parents=True)
+    (folder / "notes" / "api.md").write_text("beware")
+    fake = _FakeClient([_TASK], repos=[_REPO], repo_artifacts={"default": ["notes/api.md"]})
+    app = Dashboard(fake, artifacts_root=tmp_path)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("A")
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        assert calls == [[dashboard._open_command(), str(folder)]]
+        assert fake.repo_fetched == []  # a folder open fetches nothing
+
+
+async def test_repo_artifact_f_warns_when_the_folder_is_not_local(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # A dashboard remote from the artifact store (or a repo with nothing written yet) has no
+    # folder to open: warn and stay put rather than opening something that isn't there.
+    calls = _record_popen(monkeypatch)
+    fake = _FakeClient([_TASK], repos=[_REPO], repo_artifacts={"default": ["notes/api.md"]})
+    app = Dashboard(fake, artifacts_root=tmp_path)  # empty root  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("A")
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        assert calls == []
+        assert app.is_running
+
+
+async def test_repo_artifact_f_works_on_an_empty_list(monkeypatch: Any, tmp_path: Path) -> None:
+    # The folder is the repo's, not an entry's — so `f` needs no selection, which is exactly the
+    # case where an operator wants to drop the first files in by hand.
+    calls = _record_popen(monkeypatch)
+    folder = tmp_path / "repos" / "default"
+    folder.mkdir(parents=True)
+    fake = _FakeClient([_TASK], repos=[_REPO], repo_artifacts={})  # nothing listed
+    app = Dashboard(fake, artifacts_root=tmp_path)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("A")
+        await pilot.pause()
+        assert isinstance(app.screen, dashboard.RepoArtifactScreen)
+        await pilot.press("f")
+        await pilot.pause()
+        assert calls == [[dashboard._open_command(), str(folder)]]
+
+
+async def test_repo_artifact_ctrl_a_attaches_a_file_to_the_repo(tmp_path: Path) -> None:
+    # `ctrl+a` reuses the file-picker and uploads to the *repo* (put_repo_artifact), at the repo's
+    # top level — subdirectories are for agents writing with a nested name.
+    src = tmp_path / "conventions.md"
+    src.write_text("# How we work")
+    fake = _FakeClient([_TASK], repos=[_REPO], repo_artifacts={"default": []})
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("A")
+        await pilot.pause()
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, dashboard.ArtifactsScreen)
+        picker.query_one("#artifacts-path", Input).value = str(src)
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("escape")  # done → upload
+        await pilot.pause()
+    assert fake.put_repo_artifacts == [("default", "conventions.md", b"# How we work")]
+
+
+async def test_repo_artifact_modal_hides_dot_directory_entries() -> None:
+    # Hidden means any dot-prefixed segment: agent bookkeeping tucked under `.state/` is hidden
+    # like a top-level dotfile, behind the same "Show hidden" toggle.
+    fake = _FakeClient(
+        [_TASK],
+        repos=[_REPO],
+        repo_artifacts={"default": [".state/ci.json", "notes/api.md"]},
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("A")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, dashboard.RepoArtifactScreen)
+        options = screen.query_one(OptionList)
+        listed = [str(options.get_option_at_index(i).prompt) for i in range(options.option_count)]
+        assert listed == ["notes/api.md"]
+        screen.query_one("#show-hidden", Checkbox).value = True  # reveal the hidden entries
+        await pilot.pause()
+        options = screen.query_one(OptionList)
+        listed = [str(options.get_option_at_index(i).prompt) for i in range(options.option_count)]
+        assert listed == [".state/ci.json", "notes/api.md"]
+
+
+async def test_repo_artifact_list_error_is_reported_not_fatal() -> None:
+    # A down service can't list a repo's artifacts: notify and stay on the task view.
+    def _fail(repo_id: str) -> list[str]:
+        raise _http_400("service unavailable")
+
+    fake = _FakeClient([_TASK], repos=[_REPO])
+    fake.list_repo_artifacts = _fail  # type: ignore[method-assign]
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("A")
+        await pilot.pause()
+        assert not isinstance(app.screen, dashboard.RepoArtifactScreen)
+        assert app.is_running

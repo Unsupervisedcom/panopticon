@@ -120,6 +120,9 @@ The execution-backend ABC realized as a separate **host process** (ADR 0008). Pe
 - **provisions the worktree** once the slug is set — observing the task over its pull loop, it
   builds the slug-named worktree on its host and repoints the container into it, then runs the
   workflow's provisioning (ADR 0010);
+- **pushes a finished merge back to the repo's origin** when a task asks (the forge-free local-git
+  flow): the container can't reach a local-filesystem origin, so the session service does that git
+  where the per-task clone lives and records the outcome on the task;
 - **registers with the task service** and reports session status.
 
 Concrete adapters behind the same interface, over time: local Docker+tmux (now), remote
@@ -227,6 +230,13 @@ directory resolvable from the task id, e.g. `…/tasks/<task-id>/plan.md`. The D
 references. The same bytes are reachable three ways: MCP resources (agent), the filesystem
 (text editor), and the dashboard. A **single shared resolver** maps `task-id → directory →
 MCP URI` for all three (the ADR 0003 deferred item — now keyed off the internal task id).
+
+Artifacts also have a **repo scope**: `…/repos/<repo-id>/<name…>`, the documents every task in a
+repo shares (conventions, notes, screenshots). Same store, same resolver shape
+(`repo-id → directory → MCP URI`), two differences — a repo artifact's name may be a nested
+relative path, and the agent-facing tools take the *acting task's* id and resolve its repo, so a
+task writes only to its own repo's artifacts. The dashboard gives them their own modal; either
+scope's modal opens that scope's artifact folder on the host with a key of its own.
 
 ### 8.3 Identity vs. slug (refines cloude-cade)
 

@@ -307,6 +307,40 @@ def test_repo_source_label_classifies_local_github_and_other() -> None:
     assert _sh("repo_source_label ''").strip() == "unknown"
 
 
+def test_is_local_checkout_and_local_repo_path_resolve_on_host_repos() -> None:
+    # These gate the push-target step: only a repo on this host can be configured to accept
+    # panopticon's merges (and only a local path needs it — a forge accepts pushes already).
+    assert _sh("is_local_checkout /home/me/src/widget && echo yes").strip() == "yes"
+    assert _sh("is_local_checkout file:///srv/widget && echo yes").strip() == "yes"
+    assert _sh("is_local_checkout widget && echo yes").strip() == "yes"  # a bare ref
+    assert _sh("is_local_checkout https://github.com/a/b.git || echo no").strip() == "no"
+    assert _sh("is_local_checkout git@gitlab.com:a/b.git || echo no").strip() == "no"
+    assert _sh("is_local_checkout '' || echo no").strip() == "no"
+
+    assert _sh("local_repo_path file:///srv/widget").strip() == "/srv/widget"
+    assert _sh("HOME=/home/me; local_repo_path '~/src/widget'").strip() == "/home/me/src/widget"
+    assert _sh("local_repo_path /srv/widget").strip() == "/srv/widget"
+
+
+def test_shell_script_offers_to_accept_panopticons_merges_on_a_local_repo() -> None:
+    script = WF.shell_script()
+    # Gated on the repo being local *and* on the operator not having already decided: an existing
+    # receive.denyCurrentBranch value is theirs to keep.
+    assert "is_local_checkout" in script and "local_repo_path" in script
+    assert "config --get receive.denyCurrentBranch" in script
+    assert "receive.denyCurrentBranch updateInstead" in script
+    # Consented, not silent — and default-No, like every other prompt in this flow.
+    assert "Allow panopticon to push merges into" in script
+    assert "[y/N]" in script
+    # Explains *why* git refuses, so the prompt isn't a mystery.
+    assert "checked out" in script
+    # Declining is safe: the task branch still lands, and the operator merges it themselves.
+    assert "you merge it yourself" in script
+    # Runs before the closing summary, and reports into it either way.
+    assert script.rindex("push_target_needed") < script.rindex('echo "Summary:"')
+    assert 'add_summary "Merges:' in script
+
+
 def test_mask_last4_reveals_only_the_tail() -> None:
     # Consent prompts show which token without exposing it: the last 4 chars, or nothing when short.
     assert _sh("mask_last4 sk-ant-oat01-abcdWXYZ").strip() == "...WXYZ"
