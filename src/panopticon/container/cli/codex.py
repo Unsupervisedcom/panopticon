@@ -32,8 +32,6 @@ holds: this lives in ``container/`` and only :meth:`launch` execs the real CLI (
 from __future__ import annotations
 
 import json
-import os
-import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, ClassVar
@@ -45,8 +43,8 @@ from panopticon.container.skills import write_agent_operation_skills, write_agen
 from panopticon.core.models import Skill
 
 
-def _find_resume_target(sessions_dir: Path) -> str | None:
-    """Return the session id of the newest resumable codex session, or ``None``.
+def _find_resume_session(sessions_dir: Path) -> tuple[Path, str] | None:
+    """Return the ``(rollout file, session id)`` of the newest resumable codex session, or ``None``.
 
     ``$CODEX_HOME/sessions`` is shared by **all** codex invocations in the container —
     ``codex exec`` subprocesses (anything the agent shells out to) and codex-tui's own
@@ -58,12 +56,15 @@ def _find_resume_target(sessions_dir: Path) -> str | None:
     - ``payload["originator"] == "codex-tui"`` — interactive TUI, not ``codex_exec``
     - ``payload["thread_source"] == "user"`` — root thread, not an internal subagent thread
 
-    Returns ``payload["id"]`` of the eligible file with the highest ``st_mtime_ns`` (integer
-    nanoseconds — float mtime loses sub-second precision). Malformed or empty first lines and
-    any ``OSError`` are silently skipped. Returns ``None`` when nothing qualifies.
+    Returns the eligible file with the highest ``st_mtime_ns`` (integer nanoseconds — float mtime
+    loses sub-second precision) and its ``payload["id"]``. Malformed or empty first lines and any
+    ``OSError`` are silently skipped. Returns ``None`` when nothing qualifies.
+
+    The *path* is returned alongside the id because :meth:`AgentCLI.launch` needs to quarantine the
+    file when codex refuses to resume it; :func:`_find_resume_target` is the id-only view.
     """
     best_mtime: int = -1
-    best_id: str | None = None
+    best: tuple[Path, str] | None = None
 
     for path in sessions_dir.rglob("*.jsonl"):
         try:
@@ -86,11 +87,17 @@ def _find_resume_target(sessions_dir: Path) -> str | None:
             mtime = path.stat().st_mtime_ns
             if mtime > best_mtime:
                 best_mtime = mtime
-                best_id = session_id
+                best = (path, session_id)
         except (OSError, json.JSONDecodeError, ValueError):
             continue
 
-    return best_id
+    return best
+
+
+def _find_resume_target(sessions_dir: Path) -> str | None:
+    """The session id of the newest resumable codex session (:func:`_find_resume_session`), or ``None``."""
+    found = _find_resume_session(sessions_dir)
+    return found[1] if found else None
 
 
 def _command_hook(actor: str, event: str) -> dict[str, Any]:
@@ -115,6 +122,8 @@ class CodexAgentCLI(AgentCLI):
     CONFIG_FILE: ClassVar[str] = "config.toml"
     #: Session transcripts live here under the config dir; their presence means "resume" (§ launch).
     SESSIONS_DIRNAME: ClassVar[str] = "sessions"
+    #: Points codex at its (per-task volume) config dir — and so at its session history.
+    CONFIG_ENV_VAR: ClassVar[str] = "CODEX_HOME"
     #: codex's credentials file under the config home — what ``codex login --with-api-key`` writes.
     AUTH_FILE: ClassVar[str] = "auth.json"
     #: Env-var spellings carrying an OpenAI API key we materialize into :attr:`AUTH_FILE`.
@@ -327,7 +336,7 @@ class CodexAgentCLI(AgentCLI):
         The agent runs unattended in a throwaway container on a per-task clone, so it launches with
         ``--dangerously-bypass-approvals-and-sandbox`` (the ``claude --dangerously-skip-permissions``
         analogue) — no operator to answer prompts, blast radius the task's own checkout. Codex keeps
-        session transcripts under ``$CODEX_HOME/sessions``; :func:`_find_resume_target` scans them
+        session transcripts under ``$CODEX_HOME/sessions``; :func:`_find_resume_session` scans them
         and returns the id of the newest session whose first-line ``session_meta`` record marks it as
         a resumable interactive TUI root thread (``originator=codex-tui``, ``thread_source=user``).
         When one is found, ``codex resume <session_id>`` is used instead of starting fresh. The
@@ -371,24 +380,15 @@ class CodexAgentCLI(AgentCLI):
                 argv.append(initial_prompt)  # positional: codex's first message
         return argv
 
-    def launch(self, config_dir: Path) -> None:  # pragma: no cover - real LLM; skipif-gated / live
-        """Run `codex` (resuming the session if any) in the foreground; return when it exits.
+    def resume_target(self, config_dir: Path, cwd: Path) -> Path | None:
+        """The rollout file :meth:`launch_argv` would ``codex resume``, or ``None`` for a first run.
 
-        Like the claude adapter, this returns control to the launcher when codex exits (so it can
-        stop the container → the task shows down → respawn). Codex inherits this pane's TTY (the
-        interactive surface ``tmux attach`` reaches) and reads its config from ``CODEX_HOME``.
+        Unlike claude's, codex's session directory isn't keyed by ``cwd`` — it's one pool shared by
+        every codex invocation in the container — so ``cwd`` is unused here; the filtering that
+        matters happens in :func:`_find_resume_session`.
         """
-        initial_prompt = os.environ.get("PANOPTICON_INITIAL_PROMPT") or None
-        turn = os.environ.get("PANOPTICON_TASK_TURN") or None
-        starting_model = os.environ.get("PANOPTICON_STARTING_MODEL") or None
-        argv = self.launch_argv(
-            config_dir,
-            Path.cwd(),
-            initial_prompt=initial_prompt,
-            turn=turn,
-            starting_model=starting_model,
-        )
-        subprocess.run(
-            argv,
-            env={**os.environ, **self.launch_env(os.environ), "CODEX_HOME": str(config_dir)},
-        )
+        sessions_dir = config_dir / self.SESSIONS_DIRNAME
+        if not sessions_dir.exists():
+            return None
+        found = _find_resume_session(sessions_dir)
+        return found[0] if found else None

@@ -6,6 +6,8 @@ MODEL_TIERS mapping assertions live in their own modules."""
 from __future__ import annotations
 
 import io
+import os
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -16,8 +18,13 @@ from panopticon.container.cli import (
     get_agent_cli,
     register_agent_cli,
 )
-from panopticon.container.cli.base import secret_from_env, unquote_secret
-from panopticon.container.cli.claude import ClaudeAgentCLI
+from panopticon.container.cli.base import (
+    MAX_RESUME_FALLBACKS,
+    RESUME_FAILURE_WINDOW_SECONDS,
+    secret_from_env,
+    unquote_secret,
+)
+from panopticon.container.cli.claude import INTERRUPT_PROMPT, ClaudeAgentCLI
 from panopticon.container.cli.codex import CodexAgentCLI
 from panopticon.core.features import CODEX_FLAG
 
@@ -91,8 +98,19 @@ def test_registering_an_adapter_makes_it_resolvable_without_a_launcher_edit() ->
         def has_live_background_task(self, payload: dict[str, object]) -> bool:
             return False
 
-        def launch(self, config_dir: Path) -> None:  # pragma: no cover - not exercised
-            pass
+        def launch_argv(
+            self,
+            config_dir: Path,
+            cwd: Path,
+            *,
+            initial_prompt: str | None = None,
+            turn: str | None = None,
+            starting_model: str | None = None,
+        ) -> list[str]:
+            return ["fake-cli"]
+
+        def resume_target(self, config_dir: Path, cwd: Path) -> Path | None:
+            return None
 
     register_agent_cli(_Fake)
     resolved = get_agent_cli("fake-cli")
@@ -187,3 +205,178 @@ def test_launch_env_is_empty_for_a_correctly_written_env_file() -> None:
 def test_launch_env_defaults_to_normalizing_nothing() -> None:
     # SECRET_ENV_VARS is opt-in: an adapter that declares none inherits a no-op overlay.
     assert AgentCLI.SECRET_ENV_VARS == ()
+
+
+# -- launch: resume, and the fallback when the CLI refuses it ------------------------------------
+#
+# The launch *policy* — not the exec. ``run``/``clock`` are injected, so no agent CLI is ever
+# started here (AGENTS.md "No LLMs in tests"); the real :func:`_run_process` is the only uncovered
+# line. Driven through the claude adapter because its resume semantics are the real ones.
+
+
+class _FakeLaunch:
+    """A stand-in for the CLI exec: records each argv, replays a scripted (exit code, duration)."""
+
+    def __init__(self, *results: tuple[int, float]) -> None:
+        self._results = list(results)
+        self.argvs: list[list[str]] = []
+        self.envs: list[dict[str, str]] = []
+        self.now = 0.0
+
+    def run(self, argv: list[str], env: Mapping[str, str]) -> int:
+        self.argvs.append(list(argv))
+        self.envs.append(dict(env))
+        returncode, elapsed = self._results[min(len(self.argvs) - 1, len(self._results) - 1)]
+        self.now += elapsed
+        return returncode
+
+    def clock(self) -> float:
+        return self.now
+
+
+def _transcript(project: Path, name: str, *, mtime_ns: int) -> Path:
+    """Write a transcript into claude's per-project dir and pin its mtime (resume order is mtime)."""
+    project.mkdir(parents=True, exist_ok=True)
+    path = project / name
+    path.write_text('{"type":"mode"}\n')
+    os.utime(path, ns=(mtime_ns, mtime_ns))
+    return path
+
+
+@pytest.fixture
+def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A cwd the adapter's project-dir encoding resolves against, with the launch env cleared."""
+    cwd = tmp_path / "workspace"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    for var in ("PANOPTICON_INITIAL_PROMPT", "PANOPTICON_TASK_TURN", "PANOPTICON_STARTING_MODEL"):
+        monkeypatch.delenv(var, raising=False)
+    return cwd
+
+
+def test_launch_runs_once_when_there_is_nothing_to_resume(tmp_path: Path, workspace: Path) -> None:
+    # A first run that fails fast is just a failing CLI — there's no resume to blame or retry.
+    fake = _FakeLaunch((1, 0.1))
+    ClaudeAgentCLI().launch(tmp_path, run=fake.run, clock=fake.clock)
+    assert fake.argvs == [["claude", "--dangerously-skip-permissions"]]
+
+
+def test_launch_runs_once_when_a_resumed_session_exits_cleanly(
+    tmp_path: Path, workspace: Path
+) -> None:
+    cli = ClaudeAgentCLI()
+    transcript = _transcript(cli.project_dir(tmp_path, workspace), "a.jsonl", mtime_ns=1_000)
+    fake = _FakeLaunch((0, 0.1))
+    cli.launch(tmp_path, run=fake.run, clock=fake.clock)
+    assert fake.argvs == [["claude", "--dangerously-skip-permissions", "--continue"]]
+    assert transcript.exists()  # a clean exit is never grounds for quarantine
+
+
+def test_launch_quarantines_and_relaunches_when_a_resume_is_refused(
+    tmp_path: Path, workspace: Path
+) -> None:
+    # The bug: claude refuses the transcript and exits at once, which exits the pane's command and
+    # destroys the tmux session. The second launch is what keeps the task startable.
+    cli = ClaudeAgentCLI()
+    project = cli.project_dir(tmp_path, workspace)
+    transcript = _transcript(project, "sdk.jsonl", mtime_ns=1_000)
+    fake = _FakeLaunch((1, 0.2), (0, 5.0))
+    cli.launch(tmp_path, run=fake.run, clock=fake.clock)
+    assert fake.argvs == [
+        ["claude", "--dangerously-skip-permissions", "--continue"],
+        ["claude", "--dangerously-skip-permissions"],  # fresh: nothing left to resume
+    ]
+    assert not transcript.exists()
+    assert (project / "sdk.jsonl.broken").exists()  # renamed, never deleted
+
+
+def test_launch_falls_back_to_an_older_healthy_transcript(tmp_path: Path, workspace: Path) -> None:
+    # Quarantining the refused transcript uncovers the next one down, so history is recovered
+    # rather than dropped — better than the manual "move them all aside" workaround.
+    cli = ClaudeAgentCLI()
+    project = cli.project_dir(tmp_path, workspace)
+    older = _transcript(project, "older.jsonl", mtime_ns=1_000)
+    _transcript(project, "newest.jsonl", mtime_ns=2_000)
+    fake = _FakeLaunch((1, 0.2), (0, 5.0))
+    cli.launch(tmp_path, run=fake.run, clock=fake.clock)
+    assert len(fake.argvs) == 2
+    assert fake.argvs[1] == ["claude", "--dangerously-skip-permissions", "--continue"]
+    assert cli.resume_target(tmp_path, workspace) == older
+
+
+def test_launch_does_not_retry_when_the_cli_is_killed_by_a_signal(
+    tmp_path: Path, workspace: Path
+) -> None:
+    # A negative returncode is the container going down (the entrypoint's SIGTERM), not a refused
+    # resume — relaunching would fight the teardown and quarantine a healthy transcript.
+    cli = ClaudeAgentCLI()
+    transcript = _transcript(cli.project_dir(tmp_path, workspace), "a.jsonl", mtime_ns=1_000)
+    fake = _FakeLaunch((-15, 0.1))
+    cli.launch(tmp_path, run=fake.run, clock=fake.clock)
+    assert len(fake.argvs) == 1
+    assert transcript.exists()
+
+
+def test_launch_does_not_retry_when_a_resumed_session_fails_slowly(
+    tmp_path: Path, workspace: Path
+) -> None:
+    # It ran long enough to have been a real session; its history is worth keeping.
+    cli = ClaudeAgentCLI()
+    transcript = _transcript(cli.project_dir(tmp_path, workspace), "a.jsonl", mtime_ns=1_000)
+    fake = _FakeLaunch((1, RESUME_FAILURE_WINDOW_SECONDS + 1))
+    cli.launch(tmp_path, run=fake.run, clock=fake.clock)
+    assert len(fake.argvs) == 1
+    assert transcript.exists()
+
+
+def test_launch_stops_retrying_and_starts_fresh_after_the_cap(
+    tmp_path: Path, workspace: Path
+) -> None:
+    # Every launch refused: the loop must terminate, and its last pass must be a first run.
+    cli = ClaudeAgentCLI()
+    project = cli.project_dir(tmp_path, workspace)
+    for n in range(5):
+        _transcript(project, f"t{n}.jsonl", mtime_ns=1_000 + n)
+    fake = _FakeLaunch((1, 0.2))
+    cli.launch(tmp_path, run=fake.run, clock=fake.clock)
+    assert len(fake.argvs) == MAX_RESUME_FALLBACKS + 1
+    assert fake.argvs[-1] == ["claude", "--dangerously-skip-permissions"]  # fresh
+    assert not list(project.glob("*.jsonl"))  # all cleared, so a respawn also starts fresh
+
+
+def test_launch_points_the_cli_at_its_config_dir_and_normalizes_credentials(
+    tmp_path: Path, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Hoisted out of the two adapters into the shared template: the config-dir env var is what
+    # makes session history (a per-task volume) resumable at all (ADR 0014 §4a).
+    monkeypatch.setenv("ANTHROPIC_API_KEY", '"sk-ant-quoted"')
+    fake = _FakeLaunch((0, 1.0))
+    ClaudeAgentCLI().launch(tmp_path, run=fake.run, clock=fake.clock)
+    assert fake.envs[0][ClaudeAgentCLI.CONFIG_ENV_VAR] == str(tmp_path)
+    assert fake.envs[0]["ANTHROPIC_API_KEY"] == "sk-ant-quoted"
+
+
+def test_launch_passes_the_turn_derived_prompt_through_to_the_argv(
+    tmp_path: Path, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The template reads the launch env; the adapter decides what it means.
+    monkeypatch.setenv("PANOPTICON_TASK_TURN", "agent")
+    cli = ClaudeAgentCLI()
+    _transcript(cli.project_dir(tmp_path, workspace), "a.jsonl", mtime_ns=1_000)
+    fake = _FakeLaunch((0, 1.0))
+    cli.launch(tmp_path, run=fake.run, clock=fake.clock)
+    assert fake.argvs[0][-1] == INTERRUPT_PROMPT
+
+
+def test_quarantine_never_clobbers_an_existing_quarantined_file(tmp_path: Path) -> None:
+    first = tmp_path / "a.jsonl"
+    first.write_text("one")
+    assert ClaudeAgentCLI().quarantine(first) == tmp_path / "a.jsonl.broken"
+    first.write_text("two")
+    assert ClaudeAgentCLI().quarantine(first) == tmp_path / "a.jsonl.broken.1"
+    assert (tmp_path / "a.jsonl.broken").read_text() == "one"  # the earlier evidence survives
+
+
+def test_quarantine_is_best_effort(tmp_path: Path) -> None:
+    # A launch must not die trying to tidy up.
+    assert ClaudeAgentCLI().quarantine(tmp_path / "gone.jsonl") is None

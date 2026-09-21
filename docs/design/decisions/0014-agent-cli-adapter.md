@@ -69,6 +69,8 @@ The seams, one method (or small method group) each:
 | **write MCP client config** | `panopticon-mcp.json` (`{"mcpServers": …}`) via `--mcp-config` | `[mcp_servers.panopticon]` in `config.toml` |
 | **render workflow-overview / system prompt** | `--append-system-prompt <overview>` | `$CODEX_HOME/AGENTS.md` (our config dir) — **not** the repo's `/workspace/AGENTS.md` |
 | **build launch argv incl. resume** | `claude --dangerously-skip-permissions [--continue \| --model M PROMPT]` | `codex …` first-run vs `codex resume --last`/session-id |
+| **name the resume target** (`resume_target`) | newest `projects/<cwd>/*.jsonl` | the rollout file behind the resumed session id |
+| **recognize an unresumable session** (`prune_unresumable`) | SDK-written transcripts (quarantined) | n/a — the resume scan already filters by `originator` |
 | **trust / first-run pre-accept** (takes the env — some gates are keyed to a credential's value) | `.claude.json` onboarding + trust + cost keys + `customApiKeyResponses.approved` (the env API key) | codex trust / sandbox-approval seed |
 | **auth env var(s) + missing-auth check** | `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` | `OPENAI_API_KEY` / codex login token |
 | **normalize env-file secrets** (`SECRET_ENV_VARS` → `launch_env`) | `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` / `GH_TOKEN` | `CODEX_API_KEY` / `OPENAI_API_KEY` / `CODEX_ACCESS_TOKEN` / `GH_TOKEN` |
@@ -76,7 +78,36 @@ The seams, one method (or small method group) each:
 
 The bootstrap/launch split (AGENTS.md "No LLMs in tests") is preserved: the adapter's rendering
 methods are **deterministic and unit-tested with fakes**; only the final `launch(config_dir)`
-execs the real CLI and is injected in tests.
+execs the real CLI and is injected in tests. `launch` itself is **shared on the base** — its
+resume/fallback policy (below) is unit-tested against an injected process runner, so the one
+uncovered line is the `subprocess.run` of the real CLI.
+
+### 4b. Resume is advisory — the launch must survive a session it can't resume
+
+A session file existing does not prove the interactive CLI will accept it. claude writes a
+transcript per project whether it was driven interactively or through the SDK, into the same
+`projects/<cwd>` directory; handed an SDK-written one, `claude --continue` exits non-zero *before
+drawing anything*. In a task container that exits the tmux pane's command, which destroys the
+session — so the task is unstartable and unattachable, and the spawner's self-heal respawns into
+the same wall until its crash-loop budget is spent. Two real tasks were lost to this.
+
+So the contract is two-layered, and an adapter should expect both:
+
+1. `prune_unresumable` (bootstrap, deterministic, tested) quarantines sessions the adapter can
+   *recognise* as unresumable, before the argv is built. Because resume always takes the newest
+   session and there is no way to say "the one before that", moving a refused session aside
+   uncovers the newest healthy one — so this usually recovers history rather than dropping it.
+2. `AgentCLI.launch` (shared) covers what layer 1 misses: when a *resumed* launch exits non-zero
+   within `RESUME_FAILURE_WINDOW_SECONDS`, it quarantines `resume_target` and relaunches, bounded
+   by `MAX_RESUME_FALLBACKS`. A detector built from the shapes we have seen will not catch every
+   shape we have not, and the failure it guards is total.
+
+Quarantine **renames** (`<name>.broken`), never deletes: the file stays on the per-task config
+volume as evidence, and a mistaken quarantine costs a chat history, not work. Losing history beats
+a task that cannot start — the plan artifact, the memo, the branch and the working tree all
+survive. A recognizer should therefore be a **denylist of known-bad markers**, not an allowlist of
+known-good ones: an allowlist quietly stops resuming every shape we haven't catalogued as the
+CLI's format moves, and layer 2 is what makes the permissive choice safe.
 
 `config.py`'s read-merge-write stays a shared helper — both claude (JSON) and any other
 JSON-configured CLI use it; a TOML-configured CLI (codex) gets an analogous TOML merge helper.
@@ -194,7 +225,10 @@ Codex satisfies every seam, using these current facts:
   so which mechanism each CLI uses is an implementation choice inside its adapter, not a change to
   the seam's contract.
 - **Resume:** `codex resume --last` (or a session id) is the `--continue` analogue; the launcher's
-  first-run-vs-resume decision keeps its shape, only the argv changes.
+  first-run-vs-resume decision keeps its shape, only the argv changes. Codex needs no
+  `prune_unresumable` of its own — its resume scan already filters to interactive root sessions
+  (`originator == "codex-tui"`, `thread_source == "user"`), which is layer 1 by another name — but
+  it gets layer 2 from the shared `launch` via `resume_target`.
 - **Auth:** `OPENAI_API_KEY` (or the codex login token) instead of `CLAUDE_CODE_OAUTH_TOKEN`.
 
 **Flags to verify during the codex-adapter slices** (not blocking this ADR; each is a small

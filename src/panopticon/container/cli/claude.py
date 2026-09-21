@@ -11,8 +11,6 @@ the same ABC.
 from __future__ import annotations
 
 import json
-import os
-import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, ClassVar
@@ -35,6 +33,85 @@ INTERRUPT_PROMPT = "You were interrupted. Continue."
 #: ``$ve(e) = e.trim().slice(-20)``. Mirrored exactly so our seed matches what claude computes.
 _API_KEY_TRUNCATION = 20
 
+#: How many records at the head of a transcript :func:`is_sdk_transcript` reads before giving up.
+#: The markers it looks for sit in the first record or two; the bound keeps the check O(1) on a
+#: transcript that may be tens of megabytes.
+_SHAPE_SCAN_RECORDS = 20
+
+#: Record fields whose value ``"sdk"`` marks a transcript as SDK-written (see
+#: :func:`is_sdk_transcript`). ``entrypoint`` is matched by *prefix* (``"sdk-cli"`` was observed).
+_SDK_MARKER_FIELDS = ("promptSource", "turnOrigin", "entrypoint")
+
+#: A transcript whose **first** record is one of these was not opened by the interactive CLI.
+#: ``queue-operation`` is what the two observed broken transcripts began with; a healthy one begins
+#: with a ``mode`` record.
+_NON_INTERACTIVE_FIRST_TYPES = frozenset({"queue-operation"})
+
+#: The most transcripts :meth:`ClaudeAgentCLI.prune_unresumable` will quarantine in one bootstrap,
+#: so a config volume full of broken transcripts can't stall the launch.
+_MAX_PRUNE = 10
+
+
+def _head_records(path: Path, limit: int) -> list[dict[str, Any]]:
+    """The first ``limit`` decodable JSON objects in a JSONL file; ``[]`` if it can't be read.
+
+    Deliberately tolerant — blank and malformed lines are skipped rather than failing the scan, and
+    an unreadable file yields nothing at all. "Can't read it" must mean "don't judge it": the
+    caller's job is to recognise a *known-bad* transcript, and
+    :meth:`~panopticon.container.cli.base.AgentCLI.launch`'s fallback covers everything else.
+    """
+    records: list[dict[str, Any]] = []
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if len(records) >= limit:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(record, dict):
+                    records.append(record)
+    except OSError:
+        return []
+    return records
+
+
+def is_sdk_transcript(path: Path) -> bool:
+    """Whether ``path`` is a transcript the **interactive** claude CLI will refuse to ``--continue``.
+
+    claude writes a transcript per project whether it was driven interactively or through the SDK,
+    into the same ``projects/<cwd>`` directory — but only an interactively-written one can be
+    resumed. Handed an SDK-written transcript, ``claude --continue`` exits non-zero immediately
+    (``No conversation found to continue``, or a complaint about a missing deferred-tool marker),
+    which exits the tmux pane's command and destroys the task's session.
+
+    Two markers, both taken from transcripts captured off real broken tasks:
+
+    - the first record's ``type`` is in :data:`_NON_INTERACTIVE_FIRST_TYPES`, or
+    - any of the first :data:`_SHAPE_SCAN_RECORDS` records carries an ``sdk`` value in one of
+      :data:`_SDK_MARKER_FIELDS`.
+
+    This is a **denylist**, not an allowlist requiring the ``mode`` record a healthy transcript
+    opens with. An allowlist would quietly stop resuming every transcript shape we haven't
+    catalogued as claude's format moves — trading a rare unstartable task for routine silent loss
+    of history. The permissive choice is safe precisely because
+    :meth:`~panopticon.container.cli.base.AgentCLI.launch` catches what this misses.
+    """
+    records = _head_records(path, _SHAPE_SCAN_RECORDS)
+    if not records:
+        return False
+    if records[0].get("type") in _NON_INTERACTIVE_FIRST_TYPES:
+        return True
+    return any(
+        isinstance(value := record.get(field), str) and value.startswith("sdk")
+        for record in records
+        for field in _SDK_MARKER_FIELDS
+    )
+
 
 class ClaudeAgentCLI(AgentCLI):
     """The `claude` adapter — every ``container/`` seam claude satisfies today, unchanged in effect."""
@@ -54,6 +131,10 @@ class ClaudeAgentCLI(AgentCLI):
 
     #: claude's main config file. Holds (besides per-container state) per-project trust acceptance.
     CONFIG_FILE: ClassVar[str] = ".claude.json"
+    #: Points claude at its (per-task volume) config dir — and so at its session history.
+    CONFIG_ENV_VAR: ClassVar[str] = "CLAUDE_CONFIG_DIR"
+    #: Where claude keeps per-project transcripts under the config dir.
+    PROJECTS_DIRNAME: ClassVar[str] = "projects"
     #: The rendered MCP client config; claude is pointed at it via ``--mcp-config``.
     MCP_CONFIG_FILE: ClassVar[str] = "panopticon-mcp.json"
     #: The rendered workflow overview; its contents go to claude via ``--append-system-prompt``.
@@ -240,8 +321,7 @@ class ClaudeAgentCLI(AgentCLI):
         mcp_config = config_dir / self.MCP_CONFIG_FILE
         if mcp_config.exists():  # connect to the task service's MCP server, and *only* it
             argv += ["--mcp-config", str(mcp_config), "--strict-mcp-config"]
-        project = config_dir / "projects" / str(cwd).replace("/", "-")
-        if any(project.glob("*.jsonl")):
+        if self.resume_target(config_dir, cwd) is not None:
             argv.append("--continue")
             if turn == "agent":
                 argv.append(INTERRUPT_PROMPT)  # positional: auto-resume after container restart
@@ -252,33 +332,52 @@ class ClaudeAgentCLI(AgentCLI):
                 argv.append(initial_prompt)  # positional: claude's first message
         return argv
 
-    def launch(self, config_dir: Path) -> None:  # pragma: no cover - real LLM; skipif-gated / live
-        """Run `claude` (resuming the session if any) in the foreground; return when it exits.
+    def project_dir(self, config_dir: Path, cwd: Path) -> Path:
+        """claude's transcript directory for ``cwd`` — ``<config>/projects/<cwd with "/" → "-">``.
 
-        Unlike an ``exec``, this returns control to the launcher when claude exits, so it can stop
-        the container (the task → down → respawn). claude inherits this pane's TTY (the interactive
-        surface ``tmux attach`` reaches).
-
-        The env is overlaid with :meth:`~AgentCLI.launch_env` so claude — and everything it shells
-        out to — sees normalized credentials (see
-        :func:`~panopticon.container.cli.base.unquote_secret`); for a correctly written env-file the
-        overlay is empty and nothing changes.
+        If our path encoding ever misses claude's, the directory simply won't exist and we start
+        fresh — a safe degradation, the same one the old glob had.
         """
-        initial_prompt = os.environ.get("PANOPTICON_INITIAL_PROMPT") or None
-        turn = os.environ.get("PANOPTICON_TASK_TURN") or None
-        starting_model = os.environ.get("PANOPTICON_STARTING_MODEL") or None
-        argv = self.launch_argv(
-            config_dir,
-            Path.cwd(),
-            initial_prompt=initial_prompt,
-            turn=turn,
-            starting_model=starting_model,
-        )
-        subprocess.run(
-            argv,
-            env={
-                **os.environ,
-                **self.launch_env(os.environ),
-                "CLAUDE_CONFIG_DIR": str(config_dir),
-            },
-        )
+        return config_dir / self.PROJECTS_DIRNAME / str(cwd).replace("/", "-")
+
+    def resume_candidates(self, config_dir: Path, cwd: Path) -> list[Path]:
+        """Every transcript for ``cwd``, newest first — what ``--continue`` chooses among.
+
+        Ordered by integer nanosecond mtime; the float ``st_mtime`` loses sub-second precision, and
+        transcripts written moments apart are exactly the case that matters.
+        """
+        project = self.project_dir(config_dir, cwd)
+        if not project.is_dir():
+            return []
+        try:
+            return sorted(project.glob("*.jsonl"), key=lambda p: p.stat().st_mtime_ns, reverse=True)
+        except OSError:
+            return []
+
+    def resume_target(self, config_dir: Path, cwd: Path) -> Path | None:
+        """The newest transcript for ``cwd`` — the one ``claude --continue`` resumes — else ``None``."""
+        candidates = self.resume_candidates(config_dir, cwd)
+        return candidates[0] if candidates else None
+
+    def prune_unresumable(self, config_dir: Path, cwd: Path) -> list[Path]:
+        """Quarantine SDK-written transcripts from the front of ``cwd``'s resume order.
+
+        ``--continue`` always takes the newest transcript, and there's no way to tell it "the one
+        before that" — so a single SDK-written transcript at the front makes the whole project
+        unresumable (and, before the fallback in
+        :meth:`~panopticon.container.cli.base.AgentCLI.launch`, made the task unstartable). Walking
+        the order from the front and moving each refused transcript aside therefore doesn't just
+        avoid the crash: it uncovers the newest *healthy* transcript, so the agent resumes real
+        history instead of starting over.
+
+        Stops at the first transcript that looks resumable (everything older is already
+        unreachable), and at :data:`_MAX_PRUNE` regardless. Returns the quarantined paths.
+        """
+        pruned: list[Path] = []
+        for path in self.resume_candidates(config_dir, cwd)[:_MAX_PRUNE]:
+            if not is_sdk_transcript(path):
+                break
+            if self.quarantine(path) is None:
+                break  # couldn't move it, so it still heads the order — nothing older is reachable
+            pruned.append(path)
+        return pruned
