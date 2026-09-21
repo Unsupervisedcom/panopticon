@@ -173,6 +173,12 @@ class ShellRunner(Runner):
         sessions = self._run(self._tmux("list-sessions", "-F", "#{session_name}"), check=False)
         return session in sessions.splitlines()
 
+    def exit_reason(self, task_id: str) -> str | None:
+        """Always ``None`` — a shell task has no container whose exit state could explain a stop
+        (its script ending is natural completion, not a crash). Mirrors the local runner's method
+        name so the spawner's reconcile can ask either backend uniformly."""
+        return None
+
     def stop(self, session_id: str) -> None:
         # Idempotent: tolerate an already-gone session.
         self._run(self._tmux("kill-session", "-t", session_id), check=False)

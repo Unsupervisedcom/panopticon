@@ -8,6 +8,13 @@
 # user via gosu. LLM-free — no agent runs here.
 set -euo pipefail
 
+# Clear any marker left by a previous run of *this* container before we start remapping. `/run` is
+# the container's writable layer (not a tmpfs for a plain image), so a restart in place
+# (`docker start`/`restart`, a restart policy, an operator recovering a stopped container) re-runs
+# the remap below with the old marker still present — and a pane exec'ing against that stale marker
+# races the remap exactly as it would with no marker at all.
+rm --force /run/panopticon-ready
+
 puid="${PANOPTICON_PUID:-1000}"
 pgid="${PANOPTICON_PGID:-1000}"
 
@@ -56,5 +63,12 @@ if [ "${PANOPTICON_DOCKER_IN_DOCKER:-0}" = "1" ]; then
         echo "PANOPTICON_DOCKER_IN_DOCKER=1 but dockerd is not installed (add it in the repo's image_layer)" >&2
     fi
 fi
+
+# Signal that the remap is complete. The runner's tmux pane waits for this marker before its
+# `docker exec --user panopticon` — exec'ing earlier resolves the user to the *pre-remap* uid,
+# and the agent launcher then can't write the (post-remap-owned) home dir. `docker run --detach`
+# returns at PID-1 start, not here, so without the marker the pane races the remap and loses
+# under load.
+touch /run/panopticon-ready
 
 exec gosu panopticon "$@"
