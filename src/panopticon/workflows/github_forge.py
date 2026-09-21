@@ -19,11 +19,15 @@ string `name` defined in the scanned module.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import ClassVar
 
-from panopticon.core.models import Responsibility, Skill, Tool
+from panopticon.core.models import Repo, Responsibility, Skill, Tool
 from panopticon.workflows.planned_workflow import PlannedWorkflow
+
+#: The `Repo.capabilities` key a repo sets to opt into the tarot review-artifact responsibility
+#: (see `TAROT_REVIEW_ARTIFACTS`) — the same "per-repo opt-in map" mechanism as `docker_in_docker`.
+TAROT_REVIEW_CAPABILITY = "tarot_review"
 
 
 class GithubForgeWorkflow(PlannedWorkflow):
@@ -39,6 +43,36 @@ class GithubForgeWorkflow(PlannedWorkflow):
         key="url-recorded",
         description="The PR URL is recorded on the task with the `set_url` MCP tool.",
     )
+
+    #: ITERATING responsibility added only for repos that opt in (`capabilities.tarot_review`,
+    #: see :meth:`responsibilities`). Resolution of this key is owned by the **host-side** gate in
+    #: :mod:`panopticon.taskservice.tarot_gate`, not the agent's own `resolve_responsibility` call
+    #: — it runs the real `tarot strands check` / `tarot tour check` against the task's clone and
+    #: refuses `advance` on failure, so the description tells the agent to do the work, not to
+    #: self-attest it. The *how* deliberately isn't spelled out here: it lives in tarot's own
+    #: `tarot-authoring` skill, served alongside this responsibility for opted-in repos, so
+    #: panopticon keeps no second copy of a file-format contract tarot owns.
+    TAROT_REVIEW_ARTIFACTS: ClassVar[Responsibility] = Responsibility(
+        key="tarot-review-artifacts",
+        description=(
+            "For non-trivial changes: author this repo's `.tarot/` review artifacts (a strand "
+            "seed and a tour) and commit them on the branch — follow the `tarot-authoring` "
+            "skill, which carries tarot's own instructions and names the tools to use. Verified "
+            "for real when you advance (trivial diffs are skipped), so a failure refuses the "
+            "advance rather than taking your word for it."
+        ),
+    )
+
+    def responsibilities(self, label: str, *, repo: Repo | None = None) -> Iterator[Responsibility]:
+        """ITERATING gains `TAROT_REVIEW_ARTIFACTS` for a repo that opts in (see
+        `TAROT_REVIEW_CAPABILITY`); every other state, and a non-opted-in repo, is unchanged."""
+        yield from super().responsibilities(label, repo=repo)
+        if (
+            label == "ITERATING"
+            and repo is not None
+            and repo.capabilities.get(TAROT_REVIEW_CAPABILITY)
+        ):
+            yield self.TAROT_REVIEW_ARTIFACTS
 
     def tools(self) -> Sequence[Tool]:
         """`gh` is in the image (see `image_layer`); name it so the agent reaches for it."""

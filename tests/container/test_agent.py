@@ -74,10 +74,13 @@ def test_claude_argv_continues_an_existing_session(tmp_path: Path) -> None:
     project = tmp_path / "projects" / "-work-repo"  # claude's <config>/projects/<cwd, / → ->
     project.mkdir(parents=True)
     (project / "session.jsonl").write_text("{}")
+    # `--continue` always carries a positional: claude rejects a bare resume ("No deferred tool
+    # marker found in the resumed session … Provide a prompt to continue the conversation").
     assert agent._claude_argv(tmp_path, Path("/work/repo")) == [
         "claude",
         "--dangerously-skip-permissions",
         "--continue",
+        agent.RESUME_WAIT_PROMPT,
     ]
 
 
@@ -108,12 +111,45 @@ def test_claude_argv_appends_interrupt_prompt_on_respawn_for_agent_turn(tmp_path
     ]
 
 
-def test_claude_argv_omits_interrupt_prompt_on_respawn_for_user_turn(tmp_path: Path) -> None:
+def test_claude_argv_uses_passive_resume_prompt_on_respawn_for_user_turn(tmp_path: Path) -> None:
+    # The user's turn still needs a positional (a bare `--continue` is rejected outright, which
+    # exits the pane and puts the heal loop into a permanent respawn storm) — but it must be the
+    # passive one, so the agent reports and stops rather than resuming work that isn't its turn.
     project = tmp_path / "projects" / "-work-repo"
     project.mkdir(parents=True)
     (project / "session.jsonl").write_text("{}")
     argv = agent._claude_argv(tmp_path, Path("/work/repo"), turn="user")
-    assert argv == ["claude", "--dangerously-skip-permissions", "--continue"]
+    assert argv == [
+        "claude",
+        "--dangerously-skip-permissions",
+        "--continue",
+        agent.RESUME_WAIT_PROMPT,
+    ]
+    assert agent.INTERRUPT_PROMPT not in argv
+
+
+def test_claude_argv_appends_ask_prompt_on_resume_over_interrupt(tmp_path: Path) -> None:
+    # ask-the-author: a parked task resumed to answer a reviewer's question gets the ask as its
+    # --continue prompt, winning over the generic INTERRUPT_PROMPT even on the agent's turn.
+    project = tmp_path / "projects" / "-work-repo"
+    project.mkdir(parents=True)
+    (project / "session.jsonl").write_text("{}")
+    argv = agent._claude_argv(
+        tmp_path, Path("/work/repo"), turn="agent", ask_prompt="a reviewer asks: why?"
+    )
+    assert argv == [
+        "claude",
+        "--dangerously-skip-permissions",
+        "--continue",
+        "a reviewer asks: why?",
+    ]
+    assert agent.INTERRUPT_PROMPT not in argv
+
+
+def test_claude_argv_uses_ask_prompt_on_first_run_when_no_session(tmp_path: Path) -> None:
+    # Defensive: if there's somehow no prior session, the ask still lands as the first message.
+    argv = agent._claude_argv(tmp_path, Path("/work/repo"), ask_prompt="why?")
+    assert argv == ["claude", "--dangerously-skip-permissions", "why?"]
 
 
 def test_write_mcp_config_points_claude_at_the_task_service_mcp(tmp_path: Path) -> None:

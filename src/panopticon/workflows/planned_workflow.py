@@ -30,12 +30,15 @@ class PlannedWorkflow(Workflow):
     PLAN_ARTIFACT_NAME: ClassVar[str] = "plan.md"
 
     #: Shared PLANNING responsibility: upload the plan as a ``plan.md`` artifact (not a
-    #: working-tree file) so the operator can open it from the dashboard.
+    #: working-tree file) so the operator can open it from the dashboard, and summarize it in
+    #: chat when ending the planning turn so the user can review without opening the artifact.
     PLAN_WRITTEN: ClassVar[Responsibility] = Responsibility(
         key="plan-written",
         description=(
             f"The plan is uploaded to the plan artifact `{PLAN_ARTIFACT_NAME}` (a markdown file) with "
-            "the `put_artifact` tool — not just written to the working tree."
+            "the `put_artifact` tool — not just written to the working tree. When you end your "
+            "planning turn, also post a concise summary of the plan in chat so the user can review "
+            "it without opening the artifact."
         ),
     )
 

@@ -108,6 +108,15 @@ def trust_workspace(config_dir: Path, cwd: Path) -> Path:
 #: Sent to claude as the first message when a container restarts mid-task on the agent's turn.
 INTERRUPT_PROMPT = "You were interrupted. Continue."
 
+#: Resume prompt for a task whose turn is the **user's**. `--continue` rejects a bare invocation
+#: ("No deferred tool marker found in the resumed session … Provide a prompt to continue the
+#: conversation"), so a positional is mandatory — but the agent must not pick the work back up when
+#: the ball is the user's. Acknowledge and stop: the Stop hook then re-sets `turn=user`, unchanged.
+RESUME_WAIT_PROMPT = (
+    "Your container restarted. It is the user's turn, so do not resume work and do not use tools — "
+    "reply with a one-line summary of where the task stands, then stop."
+)
+
 
 def _claude_argv(
     config_dir: Path,
@@ -116,6 +125,7 @@ def _claude_argv(
     initial_prompt: str | None = None,
     turn: str | None = None,
     starting_model: str | None = None,
+    ask_prompt: str | None = None,
 ) -> list[str]:
     """`claude` argv, resuming the project's most recent conversation if one exists.
 
@@ -134,6 +144,11 @@ def _claude_argv(
     the agent's turn (``turn == "agent"``), :data:`INTERRUPT_PROMPT` is appended instead so the
     agent automatically picks up where it left off rather than waiting for user input.
 
+    ``ask_prompt`` (ask-the-author) takes precedence over both: when a parked/terminal task is
+    resumed to answer a reviewer's question, it's appended as the positional prompt so claude
+    processes the question as the agent's next message (the message already carries the read-only
+    guardrail; the agent answers and its Stop hook records the reply).
+
     ``starting_model`` (e.g. ``"opus"``) is passed as ``--model`` on the **first run only** — on
     resume claude uses whichever model the conversation was already using.
     """
@@ -145,19 +160,22 @@ def _claude_argv(
     if mcp_config.exists():  # connect to the task service's MCP server, and *only* it
         argv += ["--mcp-config", str(mcp_config), "--strict-mcp-config"]
     project = config_dir / "projects" / str(cwd).replace("/", "-")
+    positional: str | None
     if any(project.glob("*.jsonl")):
         argv.append("--continue")
-        if turn == "agent":
-            argv.append(INTERRUPT_PROMPT)  # positional: auto-resume after container restart
+        # An ask (delivered as the resume prompt) wins over the generic resume prompts.
+        # ALWAYS supply a positional: a bare `--continue` is rejected by claude, the pane exits, and
+        # the heal loop respawns forever (the survivor window keeps resetting the crash-loop budget,
+        # so it never gives up). See RESUME_WAIT_PROMPT.
+        positional = ask_prompt or (INTERRUPT_PROMPT if turn == "agent" else RESUME_WAIT_PROMPT)
     else:
         if (
             starting_model
         ):  # first run only — on resume claude uses the conversation's existing model
             argv += ["--model", starting_model]
-        if initial_prompt:
-            argv.append(
-                initial_prompt
-            )  # positional: claude sends this as the agent's first message
+        positional = ask_prompt or initial_prompt
+    if positional:  # positional: claude sends this as the agent's next message
+        argv.append(positional)
     return argv
 
 
@@ -170,12 +188,14 @@ def _run_claude(config_dir: Path) -> None:  # pragma: no cover - real LLM; skipi
     initial_prompt = os.environ.get("PANOPTICON_INITIAL_PROMPT") or None
     turn = os.environ.get("PANOPTICON_TASK_TURN") or None
     starting_model = os.environ.get("PANOPTICON_STARTING_MODEL") or None
+    ask_prompt = os.environ.get("PANOPTICON_ASK_PROMPT") or None
     argv = _claude_argv(
         config_dir,
         Path.cwd(),
         initial_prompt=initial_prompt,
         turn=turn,
         starting_model=starting_model,
+        ask_prompt=ask_prompt,
     )
     subprocess.run(argv, env={**os.environ, "CLAUDE_CONFIG_DIR": str(config_dir)})
 

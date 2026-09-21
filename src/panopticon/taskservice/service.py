@@ -19,11 +19,13 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
-from panopticon.core.artifacts import ArtifactStore
+from panopticon.core.artifacts import ArtifactStore, decode_b64_artifact
 from panopticon.core.dirs import secrets_file_path
 from panopticon.core.layers import LayerStore
 from panopticon.core.models import (
     Actor,
+    Ask,
+    AskStatus,
     ContainerStatus,
     LifecyclePhase,
     Repo,
@@ -36,6 +38,14 @@ from panopticon.core.provisioning import PROVISION_SKILL
 from panopticon.core.state import TERMINAL_LABELS, Dropped
 from panopticon.core.store import NotFound, Store
 from panopticon.core.workflow import Workflow
+from panopticon.taskservice.tarot_gate import (
+    RESPONSIBILITY_KEY as TAROT_RESPONSIBILITY_KEY,
+)
+from panopticon.taskservice.tarot_gate import (
+    TarotGate,
+    TarotGateRefused,
+    authoring_skill,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -46,6 +56,12 @@ def _utc_now_iso() -> str:
 
 def _uuid_hex() -> str:
     return uuid.uuid4().hex
+
+
+#: Max unanswered asks (PENDING or DELIVERED) a task may hold at once (ask-the-author). A reviewer
+#: may queue several questions; delivery stays strictly serialized (one delivered-unanswered at a
+#: time). Only a **full** queue is rejected — a small bound so a runaway loop can't grow unboundedly.
+ASK_QUEUE_CAP = 10
 
 
 class UnknownWorkflow(Exception):
@@ -59,6 +75,14 @@ class AlreadyClaimed(Exception):
 class NotAuthorized(Exception):
     """Raised when a task attempts an operation its workflow isn't permitted (e.g. a
     non-orchestration workflow trying to create other tasks)."""
+
+
+class AskQueueFull(Exception):
+    """Raised when a task's ask queue is at capacity (:data:`ASK_QUEUE_CAP` unanswered asks)."""
+
+
+class AskGone(Exception):
+    """Raised when reading an ask whose task's config volume was reaped — undeliverable (→ 410)."""
 
 
 @dataclass
@@ -121,6 +145,7 @@ class TaskService:
         layers: LayerStore | None = None,
         clock: Callable[[], str] = _utc_now_iso,
         id_factory: Callable[[], str] = _uuid_hex,
+        tarot_gate: TarotGate | None = None,
     ) -> None:
         self._store = store
         self._workflows = dict(workflows)
@@ -128,9 +153,16 @@ class TaskService:
         self._layers = layers
         self._clock = clock
         self._id = id_factory
+        #: The review-artifact gate (host-side `tarot`). Always present — it no-ops for every repo
+        #: that hasn't opted in, so there's no conditional wiring to get wrong.
+        self._tarot_gate = tarot_gate if tarot_gate is not None else TarotGate()
         self._registrations: dict[str, Registration] = {}
         self._runner_registrations: dict[str, RunnerRegistration] = {}
         self._lifecycles: dict[str, ContainerLifecycle] = {}
+        #: Ephemeral ask-the-author records (question → delivery → answer), keyed by ask id. Held in
+        #: memory like registrations/lifecycles — a review-time conversation, not stored task state,
+        #: so it never bumps the store version (ephemeral changes wake the feed via ``_notify_change``).
+        self._asks: dict[str, Ask] = {}
         # Ephemeral liveness (registrations, runner liveness, lifecycle phases) lives outside the
         # store, so it doesn't bump the store's version. But the dashboard's change-feed long-poll
         # only wakes on a version change — so a container going live or a phase advancing wouldn't
@@ -314,7 +346,9 @@ class TaskService:
         governor_task_id: str | None = None,
         initial_prompt: str | None = None,
         artifacts: dict[str, str] | None = None,
+        artifacts_b64: dict[str, str] | None = None,
         depends_on_task_ids: list[str] | None = None,
+        sort_weight: int = 0,
     ) -> Task:
         repo = await self.get_repo(repo_id)  # ensure exists (raises NotFound)
         if governor_task_id is not None:
@@ -323,14 +357,19 @@ class TaskService:
         if not self._workflow_visible(wf, repo):
             raise NotAuthorized(f"workflow {workflow_name!r} is not enabled for repo {repo_id!r}")
         now = self._clock()
-        task = wf.start_task(self._id(), repo_id, at=now, memo=memo, initial_prompt=initial_prompt)
+        task = wf.start_task(
+            self._id(), repo_id, at=now, memo=memo, initial_prompt=initial_prompt, repo=repo
+        )
         task.governor_task_id = governor_task_id
+        task.sort_weight = sort_weight
         task.created_at = now
         task.updated_at = now  # creation time = first mutation
         await self._store.create_task(task)
         _log.info("task %s: created (workflow=%s, repo=%s)", task.id, workflow_name, repo_id)
         for name, content in (artifacts or {}).items():
             await self.put_artifact(task.id, name, content.encode())
+        for name, encoded in (artifacts_b64 or {}).items():  # binary artifacts arrive base64
+            await self.put_artifact(task.id, name, decode_b64_artifact(name, encoded))
         if depends_on_task_ids:
             task = await self.set_dependencies(task.id, depends_on_task_ids)
         return task
@@ -358,7 +397,9 @@ class TaskService:
         memo: str | None = None,
         initial_prompt: str | None = None,
         artifacts: dict[str, str] | None = None,
+        artifacts_b64: dict[str, str] | None = None,
         depends_on_task_ids: list[str] | None = None,
+        sort_weight: int = 0,
     ) -> Task:
         """Create a task **on behalf of an orchestrator task** — gated to orchestration workflows.
 
@@ -376,7 +417,9 @@ class TaskService:
             governor_task_id=actor_task_id,
             initial_prompt=initial_prompt,
             artifacts=artifacts,
+            artifacts_b64=artifacts_b64,
             depends_on_task_ids=depends_on_task_ids,
+            sort_weight=sort_weight,
         )
 
     async def workflow_names_as(self, actor_task_id: str) -> list[str]:
@@ -448,9 +491,95 @@ class TaskService:
 
     async def skills(self, task_id: str) -> list[Skill]:
         """The in-container skills for a task: the agnostic `provision` skill (every task names
-        itself to get a branch, ADR 0011) followed by the active workflow's own skills."""
+        itself to get a branch, ADR 0011), the active workflow's own skills, and — for a repo
+        opted into the review-artifact gate — tarot's **own** packaged authoring skill.
+
+        Serving tarot's text rather than paraphrasing it keeps one copy of a contract tarot owns:
+        the file formats change with tarot's validators, and the judgment it teaches (what to
+        retitle, what a description is for) is exactly what a schema summary would lose."""
         task = await self.get_task(task_id)
-        return [PROVISION_SKILL, *self._workflow(task.workflow).skills()]
+        skills = [PROVISION_SKILL, *self._workflow(task.workflow).skills()]
+        repo = await self.get_repo(task.repo_id)
+        if self._tarot_gate.opted_in(repo):
+            tarot_skill = authoring_skill(self._tarot_gate.cli)
+            if tarot_skill is not None:
+                skills.append(tarot_skill)
+        return skills
+
+    # -- tarot authoring passthroughs ---------------------------------------------
+    #
+    # Tarot's authoring skill has seven steps; four invoke the CLI. These are those four, run
+    # host-side against the task's clone — the same directory the container sees at /workspace, so
+    # a seed the agent asked for is computed from exactly the code it just wrote. The agent stays
+    # the author: `strand_seed` and `check` write nothing at all, and `tour_scaffold` writes only
+    # the stub file the agent then fills in.
+
+    async def _tarot_target(self, task_id: str) -> tuple[Task, Repo, str, list[str]]:
+        """The ``(task, repo, clone, base_args)`` for a tarot authoring tool, or refuse.
+
+        Refuses — with the operator/agent-facing message, never a traceback — when the repo hasn't
+        opted in, tarot isn't on this host, or the clone isn't readable here.
+        """
+        task = await self.get_task(task_id)
+        repo = await self.get_repo(task.repo_id)
+        if not self._tarot_gate.opted_in(repo):
+            raise TarotGateRefused(
+                f"repo {repo.id!r} hasn't opted into the tarot review gate "
+                "(`capabilities.tarot_review`), so the tarot authoring tools aren't available here."
+            )
+        host = self.runner_host(task.claimed_by) if task.claimed_by else None
+        unusable = self._tarot_gate.unusable_reason(task, runner_host=host)
+        if unusable is not None:
+            raise TarotGateRefused(unusable)
+        assert task.clone is not None  # guaranteed by unusable_reason
+        cli = self._tarot_gate.cli
+        return task, repo, task.clone, cli.resolve_base_args(task.clone, repo.default_base)
+
+    async def tarot_strand_seed(self, task_id: str) -> str:
+        """`tarot strands suggest --json`: the detector-built strand seed, for the agent to edit.
+
+        **Read-only** — ``--json`` prints the seed instead of writing ``.tarot/strands.json``, so
+        nothing in the agent's working tree changes. What it supplies is the one thing an agent
+        can't derive from a diff: tarot's own enumeration of changed nodes, which is the set
+        ``strands check`` will insist is claimed exactly once.
+        """
+        _task, _repo, clone, base_args = await self._tarot_target(task_id)
+        result = self._tarot_gate.cli.suggest(clone, base_args=base_args)
+        if not result.ok:
+            raise TarotGateRefused(result.output.strip() or "`tarot strands suggest` failed")
+        return result.output
+
+    async def tarot_check(self, task_id: str) -> str:
+        """`tarot strands check` + `tarot tour check`, **without attempting a transition**.
+
+        The tight authoring loop. Without it the only way for an agent to see its violations is to
+        attempt an `advance` and be refused, which turns the gate from a backstop into the
+        iteration mechanism and spends a transition per round.
+        """
+        task, _repo, clone, base_args = await self._tarot_target(task_id)
+        outcome = self._tarot_gate.cli.check(clone, base_args=base_args)
+        if outcome.missing_binary:
+            raise TarotGateRefused(
+                self._tarot_gate.unusable_reason(task) or "`tarot` is not available on this host"
+            )
+        if outcome.ok:
+            return "tarot: the strand seed and every tour are valid."
+        return outcome.output
+
+    async def tarot_tour_scaffold(self, task_id: str, *, title: str = "PR walkthrough") -> str:
+        """`tarot tour scaffold --from-strands`: step stubs built from the *edited* strand seed.
+
+        The one authoring tool that **writes** (`.tarot/tours/<id>.json`; tarot has no ``--json``
+        for scaffold). Worth it: the scaffold carries one chapter per strand with the author's own
+        titles, a real trail/cursor per step, and blast-radius steps taken from tarot's call graph
+        — none of which a hand enumeration produces — and leaves every note a ``TODO`` for the
+        agent to replace with the narrative, which is the part that wants judgment.
+        """
+        _task, _repo, clone, base_args = await self._tarot_target(task_id)
+        result = self._tarot_gate.cli.scaffold(clone, base_args=base_args, title=title)
+        if not result.ok:
+            raise TarotGateRefused(result.output.strip() or "`tarot tour scaffold` failed")
+        return result.output.strip() or "tarot: wrote the tour scaffold."
 
     async def briefing(self, task_id: str) -> str:
         """A short briefing on the task's current phase (state + responsibilities + how it advances),
@@ -485,6 +614,40 @@ class TaskService:
             task, wf, to_state, force=False, trigger=trigger, note=note
         )
 
+    async def _run_tarot_gate(self, task: Task, repo: Repo) -> None:
+        """Verify the task's `.tarot/` review artifacts, refusing the transition if they fail.
+
+        Runs for an `advance` out of ITERATING on an opted-in repo (:meth:`TarotGate.applies`).
+        The outcome is recorded on the ``tarot-review-artifacts`` responsibility either way; on
+        failure the recorded ``FAILED`` comment is persisted and :class:`TarotGateRefused` is
+        raised **before** the transition, so the task stays where it is. The refusal — not the
+        comment — is the enforcement (a ``FAILED``-with-comment promise counts as resolved), which
+        is why this runs on every attempt rather than only while the promise is pending.
+        """
+        host = self.runner_host(task.claimed_by) if task.claimed_by else None
+        decision = self._tarot_gate.evaluate(task, repo, runner_host=host)
+        if decision.resolution is not None:
+            self._record_tarot_resolution(task, *decision.resolution)
+        if decision.allowed:
+            return
+        await self._save_task(task)  # persist the FAILED comment; the transition does not happen
+        _log.info("task %s: tarot review gate refused advance", task.id)
+        raise TarotGateRefused(decision.refusal or "the tarot review checks failed")
+
+    @staticmethod
+    def _record_tarot_resolution(task: Task, status: Status, comment: str) -> None:
+        """Resolve the gate's responsibility, if the current state actually promised it.
+
+        A repo can be opted in *after* a task entered ITERATING, in which case the promise was
+        never seeded on this history entry and ``resolve_responsibility`` would raise. The gate
+        still runs (and still refuses) — it just has nowhere to write the comment.
+        """
+        promised = {r.key for r in task.current_entry.responsibilities}
+        if TAROT_RESPONSIBILITY_KEY in promised:
+            task.resolve_responsibility(
+                key=TAROT_RESPONSIBILITY_KEY, status=status, comment=comment
+            )
+
     async def set_state(self, task_id: str, to_state: str, *, note: str | None = None) -> Task:
         """The user's free override: move the task to any state, bypassing the graph and the gate."""
         task = await self.get_task(task_id)
@@ -505,10 +668,22 @@ class TaskService:
     ) -> Task:
         from_state = task.state
         _log.info("task %s: %s → %s (trigger=%s)", task.id, from_state, to_state, trigger)
+        repo = await self.get_repo(task.repo_id)
+        if not force and self._tarot_gate.applies(
+            task,
+            repo,
+            trigger=trigger,
+            declared={r.key for r in wf.responsibilities(task.state, repo=repo)},
+        ):
+            await self._run_tarot_gate(task, repo)
         if force:
-            wf.force_transition(task, to_state, at=self._clock(), trigger=trigger, note=note)
+            wf.force_transition(
+                task, to_state, at=self._clock(), trigger=trigger, note=note, repo=repo
+            )
         else:
-            wf.apply_transition(task, to_state, at=self._clock(), trigger=trigger, note=note)
+            wf.apply_transition(
+                task, to_state, at=self._clock(), trigger=trigger, note=note, repo=repo
+            )
         # Deterministic lifecycle hook (e.g. seed the plan on plan acceptance) — may touch the
         # task/artifacts; run before the single save so any task mutation persists with it.
         await wf.on_transition(
@@ -603,6 +778,31 @@ class TaskService:
         _log.debug("task %s: blocked=%s", task_id, blocked)
         return task
 
+    async def set_snooze(self, task_id: str, until: str | None) -> Task:
+        """Record or clear an operator snooze deadline without interpreting the clock.
+
+        The value is stored verbatim (any ISO-8601 string, or ``None`` to clear); whether a finite
+        deadline is active is decided by the dashboard alone. Leaves ``state``/``turn``/``blocked``
+        untouched — a plain recorded fact, like the url.
+        """
+        task = await self.get_task(task_id)
+        task.snoozed_until = until
+        await self._save_task(task)
+        _log.debug("task %s: snoozed_until → %s", task_id, until)
+        return task
+
+    async def set_sort_weight(self, task_id: str, sort_weight: int) -> Task:
+        """Set the task's dashboard sort weight (default 0; higher sorts first).
+
+        A plain recorded fact, like the url: ranks above the ``updated_at`` timestamp but below
+        state/turn in the dashboard ordering. Leaves ``state``/``turn``/``blocked`` untouched.
+        """
+        task = await self.get_task(task_id)
+        task.sort_weight = sort_weight
+        await self._save_task(task)
+        _log.debug("task %s: sort_weight → %s", task_id, sort_weight)
+        return task
+
     async def set_governor(self, task_id: str, governor_task_id: str | None) -> Task:
         """Set or clear the governor task for ``task_id``.
 
@@ -687,6 +887,167 @@ class TaskService:
         await self._save_task(task)
         _log.info("task %s: provisioned (branch=%s)", task_id, branch)
         return task
+
+    # -- asks (ask-the-author: a reviewer interrogates a task's agent) ---------------------
+    #
+    # Ephemeral like a registration/lifecycle: review-time questions delivered to the task's claude
+    # session and their answers, held in memory (:attr:`_asks`) — never a workflow transition, so an
+    # ask neither changes state nor seeds responsibilities. A reviewer may **queue** several questions
+    # per task (a bounded FIFO of PENDING asks); the **session service** delivers them **strictly one
+    # at a time** — the next only once the previous is ANSWERED or GONE — because answer extraction
+    # anchors on the transcript's turn boundaries, so a second question injected mid-answer would
+    # truncate the first reply. The task service tracks the queue and enforces its bound; the
+    # container's Stop hook records each answer.
+
+    _UNANSWERED = frozenset({AskStatus.PENDING, AskStatus.DELIVERED})
+
+    def _task_asks(self, task_id: str) -> list[Ask]:
+        """This task's asks, oldest first (created_at is an ISO string, so lexical == chronological)."""
+        asks = [a for a in self._asks.values() if a.task_id == task_id]
+        return sorted(asks, key=lambda a: a.created_at or "")
+
+    def _ask_queue(self, task_id: str) -> list[Ask]:
+        """The task's live ask queue: unanswered asks (PENDING/DELIVERED), oldest (head) first.
+        Answered/gone asks have left the queue. This is what ``answering N of M`` counts over."""
+        return [a for a in self._task_asks(task_id) if a.status in self._UNANSWERED]
+
+    def _get_ask(self, task_id: str, ask_id: str) -> Ask:
+        ask = self._asks.get(ask_id)
+        if ask is None or ask.task_id != task_id:
+            raise NotFound(f"ask {ask_id!r} does not exist for task {task_id!r}")
+        return ask
+
+    async def create_ask(self, task_id: str, question: str, context: str = "") -> Ask:
+        """Append a question to the task's ask queue (the session service delivers it in turn).
+
+        Always accepts while the queue has room — a reviewer can stack several questions and read the
+        answers as they land. Only a **full** queue (:data:`ASK_QUEUE_CAP` unanswered asks) is
+        rejected, with :class:`AskQueueFull`. Wakes the change feed so the host daemon's ask worker
+        picks up the head of the queue.
+        """
+        await self.get_task(task_id)  # ensure the task exists (raises NotFound)
+        if len(self._ask_queue(task_id)) >= ASK_QUEUE_CAP:
+            raise AskQueueFull(
+                f"task {task_id!r} ask queue is full ({ASK_QUEUE_CAP}); wait for answers before asking more"
+            )
+        ask = Ask(
+            id=self._id(),
+            task_id=task_id,
+            question=question,
+            context=context,
+            created_at=self._clock(),
+        )
+        self._asks[ask.id] = ask
+        self._notify_change()  # wake the host daemon's ask worker (it reads pending_ask_id)
+        _log.info(
+            "task %s: ask %s queued (position %d)", task_id, ask.id, len(self._ask_queue(task_id))
+        )
+        return ask
+
+    def get_ask(self, task_id: str, ask_id: str) -> Ask:
+        """The ask (raises :class:`NotFound` if unknown; :class:`AskGone` if its volume was reaped)."""
+        ask = self._get_ask(task_id, ask_id)
+        if ask.status is AskStatus.GONE:
+            raise AskGone(
+                f"ask {ask_id!r}: the task's container/volume is gone; the agent can't be resumed"
+            )
+        return ask
+
+    def ask_position(self, task_id: str, ask_id: str) -> tuple[int, int]:
+        """``(position, queue_length)`` for an ask: its 1-based place in the live queue (the head,
+        being delivered/answered now, is 1) and the queue's length. Position ``0`` means the ask has
+        left the queue (answered or gone). Lets the review tool show ``answering 1 of 3``."""
+        queue = self._ask_queue(task_id)
+        ids = [a.id for a in queue]
+        position = ids.index(ask_id) + 1 if ask_id in ids else 0
+        return position, len(queue)
+
+    def outstanding_ask(self, task_id: str) -> Ask | None:
+        """The task's currently **delivered** (in-flight, unanswered) ask, or ``None`` — what the
+        container Stop hook checks to attribute a reply. Delivery is serialized, so there is at most
+        one; the rest of the queue is still PENDING behind it, invisible to attribution."""
+        for ask in self._task_asks(task_id):
+            if ask.status is AskStatus.DELIVERED:
+                return ask
+        return None
+
+    def pending_ask_id(self, task_id: str) -> str | None:
+        """The id of the task's next **deliverable** ask (the head of the queue), or ``None``.
+
+        Overlaid on the task's serialized form so the host daemon's ask worker spots a deliverable ask
+        without a per-task request. Enforces serialization at the source: while an ask is in flight
+        (DELIVERED, awaiting its answer) this returns ``None``, so the worker holds the rest of the
+        queue; it clears to the next PENDING head only once the in-flight one is ANSWERED or GONE.
+        """
+        queue = self._ask_queue(task_id)
+        if any(a.status is AskStatus.DELIVERED for a in queue):
+            return None  # one delivered-unanswered at a time — hold the queue until it resolves
+        head = queue[0] if queue else None
+        return head.id if head is not None and head.status is AskStatus.PENDING else None
+
+    def mark_ask_delivered(self, task_id: str, ask_id: str) -> Ask:
+        """Mark an ask delivered (the session service handed it to the agent); wakes the feed."""
+        ask = self._get_ask(task_id, ask_id)
+        ask.status = AskStatus.DELIVERED
+        self._notify_change()
+        _log.info("task %s: ask %s delivered", task_id, ask_id)
+        return ask
+
+    def mark_ask_gone(self, task_id: str, ask_id: str) -> Ask:
+        """Mark ``ask_id`` — and every other unanswered ask queued behind it — GONE.
+
+        The config volume being reaped means the agent's session is unrecoverable, which is true for
+        the whole queue, not just the head: draining it lets the review tool offer a surrogate
+        **once** rather than rediscovering the dead session per question. Returns the named ask.
+        """
+        named = self._get_ask(task_id, ask_id)
+        drained = 0
+        for ask in self._ask_queue(task_id):
+            ask.status = AskStatus.GONE
+            drained += 1
+        self._notify_change()
+        _log.info(
+            "task %s: ask %s gone (volume reaped); drained %d queued ask(s)",
+            task_id,
+            ask_id,
+            drained,
+        )
+        return named
+
+    def record_ask_answer(self, task_id: str, ask_id: str, answer: str) -> Ask:
+        """Record the agent's reply (the container Stop hook extracts it from the transcript). The
+        ask leaves the queue (ANSWERED), so the worker's next pass delivers the queue's new head."""
+        ask = self._get_ask(task_id, ask_id)
+        ask.answer = answer
+        ask.status = AskStatus.ANSWERED
+        self._notify_change()
+        _log.info("task %s: ask %s answered", task_id, ask_id)
+        return ask
+
+    async def lookup_task(
+        self, *, repo_id: str | None = None, branch: str | None = None, url: str | None = None
+    ) -> Task:
+        """Find the task matching a branch (with its repo) or a URL — the review tool's entry point.
+
+        Exactly one selector is expected: ``repo_id`` + ``branch``, or ``url``. Raises
+        :class:`ValueError` for a malformed request and :class:`NotFound` if nothing matches. Returns
+        the full task (history included), so the review tool gets the same shape as ``GET /tasks/{id}``.
+        """
+        if url is not None:
+            if repo_id is not None or branch is not None:
+                raise ValueError("pass either url, or repo_id + branch — not both")
+            found = await self._store.find_task_by_url(url)
+            if found is None:
+                raise NotFound(f"no task with url {url!r}")
+        elif repo_id is not None and branch is not None:
+            found = await self._store.find_task_by_branch(repo_id, branch)
+            if found is None:
+                raise NotFound(f"no task on repo {repo_id!r} with branch {branch!r}")
+        else:
+            raise ValueError("pass either url, or repo_id + branch")
+        return await self.get_task(
+            found.id
+        )  # re-read for full history (the lookup is history-less)
 
     # -- artifacts ----------------------------------------------------------------
 

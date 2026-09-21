@@ -10,6 +10,7 @@ plane serves REST and MCP. ``create_app`` builds an app around an injected
 from __future__ import annotations
 
 import asyncio
+import mimetypes
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from typing import Any
@@ -19,15 +20,24 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from panopticon.core.artifacts import ArtifactError
-from panopticon.core.models import Actor, LifecyclePhase, Repo, Status, Task
+from panopticon.core.models import Actor, Ask, AskStatus, LifecyclePhase, Repo, Status, Task
 from panopticon.core.store import AlreadyExists, NotFound, StoreError
 from panopticon.core.workflow import IllegalTransition, InvalidWorkflow, ResponsibilitiesNotMet
 from panopticon.taskservice.service import (
     AlreadyClaimed,
+    AskGone,
+    AskQueueFull,
     NotAuthorized,
     TaskService,
     UnknownWorkflow,
 )
+from panopticon.taskservice.tarot_gate import TarotGateRefused
+
+# Artifact content-types must not depend on the stdlib table's vintage: Python only
+# gained the .md mapping in newer 3.13s, and requires-python floors at 3.11. Register
+# what artifacts actually serve so a 3.11 venv and CI agree (test_artifact_download_
+# content_type_from_extension is the pin). Runs at import, before any request serves an artifact.
+mimetypes.add_type("text/markdown", ".md")
 
 #: How often the held ``/live`` stream emits a keepalive byte. This does **not** govern how fast
 #: death is noticed — disconnect is event-driven (Starlette cancels the stream the instant the
@@ -78,6 +88,7 @@ class TaskSummaryOut(BaseModel):
     initial_prompt: str | None
     slug: str | None
     url: str | None
+    snoozed_until: str | None = None
     branch: str | None
     clone: str | None
     claimed_by: str | None
@@ -87,12 +98,16 @@ class TaskSummaryOut(BaseModel):
     governor_task_id: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    sort_weight: int = 0
     depends_on_task_ids: list[str] = []
     provisioned: bool
     container_status: str = "–"
     lifecycle_detail: str | None = None
     runner_host: str | None = (
         None  # hostname the claiming runner registered with (M5: remote attach)
+    )
+    pending_ask_id: str | None = (
+        None  # id of an undelivered ask-the-author question; the host daemon's ask worker delivers it
     )
 
 
@@ -111,6 +126,9 @@ class TaskOut(BaseModel):
     initial_prompt: str | None  # optional text prefilled into Claude's input box on first spawn
     slug: str | None
     url: str | None  # an optional external URL (PR, issue, …); the dashboard's `p` hotkey opens it
+    snoozed_until: str | None = (
+        None  # operator-owned attention mute deadline (ISO-8601); None = not snoozed
+    )
     branch: str | None
     clone: str | None
     claimed_by: str | None  # the runner that owns this task (the spawn gate), or None
@@ -130,6 +148,9 @@ class TaskOut(BaseModel):
     updated_at: str | None = (
         None  # ISO-8601 timestamp of the last mutation, stamped by the task service
     )
+    sort_weight: int = (
+        0  # operator sort priority: ranks above updated_at but below state/turn; higher sorts first
+    )
     depends_on_task_ids: list[
         str
     ] = []  # task IDs that must complete before work on this task should begin
@@ -143,6 +164,9 @@ class TaskOut(BaseModel):
     )
     runner_host: str | None = (
         None  # hostname the claiming runner registered with (M5: remote attach)
+    )
+    pending_ask_id: str | None = (
+        None  # id of an undelivered ask-the-author question; the host daemon's ask worker delivers it
     )
     history: list[HistoryOut]
 
@@ -210,7 +234,9 @@ class CreateTaskIn(BaseModel):
     governor_task_id: str | None = None
     initial_prompt: str | None = None
     artifacts: dict[str, str] | None = None
+    artifacts_b64: dict[str, str] | None = None  # binary artifacts, name → base64
     depends_on_task_ids: list[str] = []
+    sort_weight: int = 0
 
 
 class DependenciesIn(BaseModel):
@@ -258,6 +284,45 @@ class ProvisioningIn(BaseModel):
     clone: str
 
 
+class AskIn(BaseModel):
+    """A reviewer's question for a task's implementing agent (ask-the-author)."""
+
+    question: str
+    context: str = ""
+
+
+class AskCreatedOut(BaseModel):
+    """The id a reviewer polls with after posting an ask."""
+
+    ask_id: str
+
+
+class AskOut(BaseModel):
+    """An ask's public shape: ``status`` (pending/answered) and the ``answer`` once available. The
+    internal ``delivered`` status maps to ``pending`` on the wire — the review tool only distinguishes
+    "still working" from "answered". ``question``/``context`` are echoed for the session service.
+    ``queue_position``/``queue_length`` place this ask in the task's queue (head = 1, being answered
+    now; ``0`` once it has left the queue) so the review tool can show ``answering 1 of 3``."""
+
+    ask_id: str
+    status: str
+    answer: str | None = None
+    question: str
+    context: str
+    queue_position: int = 0
+    queue_length: int = 0
+
+
+class OutstandingAskOut(BaseModel):
+    """The task's in-flight (delivered, unanswered) ask (or ``ask_id=None``) — the Stop hook reads this."""
+
+    ask_id: str | None = None
+
+
+class AskAnswerIn(BaseModel):
+    answer: str
+
+
 class SkillOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -272,6 +337,14 @@ class TurnIn(BaseModel):
 
 class BlockedIn(BaseModel):
     blocked: bool
+
+
+class SnoozeIn(BaseModel):
+    until: str | None
+
+
+class SortWeightIn(BaseModel):
+    sort_weight: int
 
 
 class ClaimIn(BaseModel):
@@ -363,7 +436,7 @@ def create_app(service: TaskService) -> FastAPI:
         async with mcp.session_manager.run():
             yield
 
-    app = FastAPI(title="panopticon task service", version="0.0.3", lifespan=lifespan)
+    app = FastAPI(title="panopticon task service", version="0.0.5", lifespan=lifespan)
 
     # The block-until-change feed: a store mutation bumps the version + wakes parked GET /tasks
     # long-polls (the seam the daemons/dashboard migrate onto, replacing their interval re-polls).
@@ -381,6 +454,7 @@ def create_app(service: TaskService) -> FastAPI:
         out.lifecycle_detail = lifecycle.detail if lifecycle is not None else None
         if task.claimed_by is not None:
             out.runner_host = service.runner_host(task.claimed_by)
+        out.pending_ask_id = service.pending_ask_id(task.id)
         return out
 
     def _task_summary_out(task: Task) -> TaskSummaryOut:
@@ -391,6 +465,7 @@ def create_app(service: TaskService) -> FastAPI:
         out.lifecycle_detail = lifecycle.detail if lifecycle is not None else None
         if task.claimed_by is not None:
             out.runner_host = service.runner_host(task.claimed_by)
+        out.pending_ask_id = service.pending_ask_id(task.id)
         return out
 
     # -- error mapping: domain exceptions -> HTTP status --------------------------
@@ -414,6 +489,25 @@ def create_app(service: TaskService) -> FastAPI:
     @app.exception_handler(NotAuthorized)
     async def _not_authorized(_: Request, exc: NotAuthorized) -> JSONResponse:
         return JSONResponse(status_code=403, content={"detail": str(exc)})
+
+    @app.exception_handler(AskQueueFull)
+    async def _ask_queue_full(_: Request, exc: AskQueueFull) -> JSONResponse:
+        # The task's ask queue is at capacity — 409 with a "queue full" detail (asks are otherwise
+        # queued, never rejected for one being in flight).
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @app.exception_handler(TarotGateRefused)
+    async def _tarot_refused(_: Request, exc: TarotGateRefused) -> JSONResponse:
+        # The repo opted into the tarot review gate and the artifacts don't pass. 409 (like the
+        # other "you can't do that *right now*" cases) with the checks' own output as the detail,
+        # so the agent sees the violations the way it would see a failing test's.
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @app.exception_handler(AskGone)
+    async def _ask_gone(_: Request, exc: AskGone) -> JSONResponse:
+        # The task's config volume was reaped — the agent can't be resumed. The review tool has a
+        # documented fallback for this (the memo's guardrail); 410 Gone is the clear signal.
+        return JSONResponse(status_code=410, content={"detail": str(exc)})
 
     @app.exception_handler(UnknownWorkflow)
     async def _unknown_wf(_: Request, exc: UnknownWorkflow) -> JSONResponse:
@@ -505,7 +599,9 @@ def create_app(service: TaskService) -> FastAPI:
                 governor_task_id=body.governor_task_id,
                 initial_prompt=body.initial_prompt,
                 artifacts=body.artifacts,
+                artifacts_b64=body.artifacts_b64,
                 depends_on_task_ids=body.depends_on_task_ids or None,
+                sort_weight=body.sort_weight,
             )
         )
 
@@ -542,6 +638,21 @@ def create_app(service: TaskService) -> FastAPI:
         tasks = [_task_summary_out(t) for t in tasks_raw]
         response.headers[TASKS_VERSION_HEADER] = str(version)
         return tasks
+
+    @app.get("/tasks/lookup")
+    async def lookup_task(
+        repo_id: str | None = Query(default=None),
+        branch: str | None = Query(default=None),
+        url: str | None = Query(default=None),
+    ) -> TaskOut:
+        """Find the task working a branch (``?repo_id=&branch=``) or a PR/URL (``?url=``); 404 if none.
+        Declared before ``/tasks/{task_id}`` so ``lookup`` isn't captured as a task id. The review
+        tool (ask-the-author) uses this to resolve a task from what it's reviewing."""
+        try:
+            task = await service.lookup_task(repo_id=repo_id, branch=branch, url=url)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _task_out(task)
 
     @app.get("/tasks/{task_id}")
     async def get_task(task_id: str) -> TaskOut:
@@ -625,6 +736,14 @@ def create_app(service: TaskService) -> FastAPI:
     async def set_blocked(task_id: str, body: BlockedIn) -> TaskOut:
         return _task_out(await service.set_blocked(task_id, body.blocked))
 
+    @app.put("/tasks/{task_id}/snooze")
+    async def set_snooze(task_id: str, body: SnoozeIn) -> TaskOut:
+        return _task_out(await service.set_snooze(task_id, body.until))
+
+    @app.put("/tasks/{task_id}/sort-weight")
+    async def set_sort_weight(task_id: str, body: SortWeightIn) -> TaskOut:
+        return _task_out(await service.set_sort_weight(task_id, body.sort_weight))
+
     @app.put("/tasks/{task_id}/governor")
     async def set_governor(task_id: str, body: GovernorIn) -> TaskOut:
         return _task_out(await service.set_governor(task_id, body.governor_task_id))
@@ -659,6 +778,64 @@ def create_app(service: TaskService) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return _task_out(task)
 
+    # -- asks (ask-the-author) ----------------------------------------------------
+    #
+    # The review tool posts a question, then polls for the answer; the host daemon's ask worker
+    # delivers it to the task's claude session and the container Stop hook records the reply. An ask
+    # never transitions the task — it's conversation. Delivery/gone/answer are recorded by the
+    # session service + container (same-host trust), the poll is the review tool's.
+
+    def _ask_out(ask: Ask) -> AskOut:
+        # `delivered` is an internal step; the review tool only cares pending-vs-answered.
+        status = "pending" if ask.status is AskStatus.DELIVERED else ask.status.value
+        position, length = service.ask_position(ask.task_id, ask.id)
+        return AskOut(
+            ask_id=ask.id,
+            status=status,
+            answer=ask.answer,
+            question=ask.question,
+            context=ask.context,
+            queue_position=position,
+            queue_length=length,
+        )
+
+    @app.post("/tasks/{task_id}/ask", status_code=201)
+    async def create_ask(task_id: str, body: AskIn) -> AskCreatedOut:
+        """Queue a reviewer's question for a task's agent. Accepted while the queue has room;
+        409 only when the queue is full. Returns the ``ask_id`` to poll ``GET …/ask/{ask_id}`` with."""
+        ask = await service.create_ask(task_id, body.question, body.context)
+        return AskCreatedOut(ask_id=ask.id)
+
+    @app.get("/tasks/{task_id}/ask")
+    async def outstanding_ask(task_id: str) -> OutstandingAskOut:
+        """The task's in-flight (delivered, unanswered) ask id (or null) — the container Stop hook
+        reads this to know whether the reply it's about to finish should be recorded."""
+        await service.get_task(task_id)  # 404 if the task is unknown
+        ask = service.outstanding_ask(task_id)
+        return OutstandingAskOut(ask_id=ask.id if ask is not None else None)
+
+    @app.get("/tasks/{task_id}/ask/{ask_id}")
+    async def get_ask(task_id: str, ask_id: str) -> AskOut:
+        """Poll an ask: ``{status: pending|answered, answer}`` (plus the echoed question/context).
+        410 if the task's config volume was reaped (undeliverable)."""
+        return _ask_out(service.get_ask(task_id, ask_id))
+
+    @app.post("/tasks/{task_id}/ask/{ask_id}/delivered")
+    async def mark_ask_delivered(task_id: str, ask_id: str) -> AskOut:
+        """The session service reports it delivered the ask to the agent (tmux / --continue)."""
+        return _ask_out(service.mark_ask_delivered(task_id, ask_id))
+
+    @app.post("/tasks/{task_id}/ask/{ask_id}/gone")
+    async def mark_ask_gone(task_id: str, ask_id: str) -> OutstandingAskOut:
+        """The session service reports the config volume is gone — the ask is undeliverable (→ 410)."""
+        ask = service.mark_ask_gone(task_id, ask_id)
+        return OutstandingAskOut(ask_id=ask.id)
+
+    @app.post("/tasks/{task_id}/ask/{ask_id}/answer")
+    async def record_ask_answer(task_id: str, ask_id: str, body: AskAnswerIn) -> AskOut:
+        """The container Stop hook records the agent's reply, extracted from the transcript."""
+        return _ask_out(service.record_ask_answer(task_id, ask_id, body.answer))
+
     # -- artifacts ----------------------------------------------------------------
 
     @app.put("/tasks/{task_id}/artifacts/{name}", status_code=204)
@@ -675,7 +852,10 @@ def create_app(service: TaskService) -> FastAPI:
         content = await service.get_artifact(task_id, name)
         if content is None:
             raise HTTPException(status_code=404, detail=f"artifact {name!r} not found")
-        return Response(content=content, media_type="application/octet-stream")
+        # Type the download from the name's extension so a screenshot serves as image/png etc.;
+        # unknown/extensionless names fall back to octet-stream.
+        media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        return Response(content=content, media_type=media_type)
 
     # -- liveness -----------------------------------------------------------------
 

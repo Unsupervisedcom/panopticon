@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from panopticon.core import (
     ResponsibilitiesNotMet,
     Workflow,
 )
+from panopticon.core.artifacts import InvalidArtifactContent
 from panopticon.core.models import Actor, LifecyclePhase, Repo, Responsibility, Status
 from panopticon.core.store import NotFound
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
@@ -271,6 +273,24 @@ async def test_blocked_marker_survives_turn_flips(tmp_path: Path) -> None:
     assert reloaded.turn is Actor.USER
     assert reloaded.blocked is True
     assert (await svc.set_blocked(task.id, False)).blocked is False  # cleared only explicitly
+
+
+async def test_create_task_seeds_sort_weight(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    task = await svc.create_task("r1", "spike", sort_weight=8)
+    assert task.sort_weight == 8
+    assert (await svc.get_task(task.id)).sort_weight == 8  # persisted
+
+
+async def test_set_sort_weight_defaults_to_zero_and_persists(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    assert task.sort_weight == 0  # default
+    updated = await svc.set_sort_weight(task.id, 10)
+    assert updated.sort_weight == 10
+    assert (await svc.get_task(task.id)).sort_weight == 10  # persisted
+    assert (await svc.set_sort_weight(task.id, -3)).sort_weight == -3  # negatives allowed
+    assert (await svc.set_sort_weight(task.id, 0)).sort_weight == 0  # reset
 
 
 # -- claim: a runner owns the task (the spawn gate) ---------------------------------
@@ -557,6 +577,25 @@ async def test_artifact_roundtrip(tmp_path: Path) -> None:
     await svc.put_artifact(task.id, "plan.md", b"# Plan")
     assert await svc.get_artifact(task.id, "plan.md") == b"# Plan"
     assert await svc.list_artifacts(task.id) == ["plan.md"]
+
+
+async def test_create_task_seeds_binary_artifacts_from_base64(tmp_path: Path) -> None:
+    png = b"\x89PNG\r\n\x1a\n\x00\xff\xfe\x01binary"
+    svc = await make_service(tmp_path)
+    task = await svc.create_task(
+        "r1",
+        "spike",
+        artifacts={"plan.md": "# Plan"},
+        artifacts_b64={"shot.png": base64.b64encode(png).decode()},
+    )
+    assert await svc.get_artifact(task.id, "shot.png") == png  # bytes exact
+    assert await svc.get_artifact(task.id, "plan.md") == b"# Plan"  # text channel intact
+
+
+async def test_create_task_rejects_malformed_base64_artifact(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    with pytest.raises(InvalidArtifactContent):
+        await svc.create_task("r1", "spike", artifacts_b64={"x.bin": "not base64!!"})
 
 
 async def test_briefing_surfaces_the_plan_uri_once_the_plan_exists(tmp_path: Path) -> None:

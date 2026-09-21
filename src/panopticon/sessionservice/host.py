@@ -36,6 +36,7 @@ from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.dirs import CLONE_CACHE_DIR, TASKS_DIR
 from panopticon.core.git import GitClones
 from panopticon.sessionservice._migration import migrate_session_dirs
+from panopticon.sessionservice.ask_worker import AskWorker
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.executions import WorkflowExecutions
 from panopticon.sessionservice.images import ImageBuilder
@@ -62,6 +63,7 @@ class HostDaemon:
         client: TaskServiceClient,
         spawner: Spawner,
         provisioner: Provisioner,
+        ask_worker: AskWorker | None = None,
         *,
         stall_monitor: StallMonitor | None = None,
         sleep: Callable[[float], None] = time.sleep,
@@ -70,19 +72,21 @@ class HostDaemon:
         self._client = client
         self._spawner = spawner
         self._provisioner = provisioner
+        self._ask_worker = ask_worker
         self._stall_monitor = stall_monitor
         self._sleep = sleep
         self._interval = interval
 
     def tick(self, tasks: list[JsonObj]) -> None:
         """One pass over a task snapshot: spawn each spawnable task, provision each slugged one,
-        reconcile each claimed one's container-lifecycle status (down-detection), heal each
-        orphan (a claimed task whose tmux session is gone → respawn), and probe each live one for
-        a stalled agent (ADR 0014 — a claimed, ``turn == "agent"`` task that's gone silent mid-turn,
-        alive-but-idle-errored or its process outright gone). All self-gate, so re-running over an
-        unchanged snapshot is a no-op. ``stall_monitor`` is optional purely for test ergonomics
-        (existing per-task fakes that predate it need not grow the new methods) — the real host
-        loop always constructs one (see :func:`run_host`).
+        deliver each pending ask (ask-the-author), reconcile each claimed one's container-lifecycle
+        status (down-detection), heal each orphan (a claimed task whose tmux session is gone →
+        respawn), and probe each live one for a stalled agent (ADR 0014 — a claimed,
+        ``turn == "agent"`` task that's gone silent mid-turn, alive-but-idle-errored or its
+        process outright gone). All self-gate, so re-running over an unchanged snapshot is a
+        no-op. ``ask_worker`` and ``stall_monitor`` are optional purely for test ergonomics
+        (existing per-task fakes that predate them need not grow the new methods) — the real host
+        loop always constructs both (see :func:`run_host`).
 
         A cheap REST-only **pre-pass flags every orphan ``healing`` first**, before any respawn. The
         respawn loop below is serial (each :meth:`Spawner.heal` blocks on ``docker run`` + the tmux
@@ -98,6 +102,11 @@ class HostDaemon:
             try:
                 self._spawner.spawn_one(task)
                 self._provisioner.provision(task)
+                # Deliver a pending ask before heal: a parked task with a question is resumed with
+                # the ask as its prompt (spawn_for_ask), so heal then sees a live session and skips it
+                # rather than respawning it a second time with the generic INTERRUPT_PROMPT.
+                if self._ask_worker is not None:
+                    self._ask_worker.deliver(task)
                 self._spawner.reconcile(task)
                 self._spawner.heal(task)
                 self._spawner.cleanup(task)
@@ -211,6 +220,7 @@ def run_host(
         makedirs=makedirs,
     )
     provisioner = Provisioner(client, clones_root=tasks_root, git=git, executions=executions)
+    ask_worker = AskWorker(client, runner, spawner, runner_id=runner_id)
     stall_monitor = StallMonitor(
         client,
         runner,
@@ -223,7 +233,13 @@ def run_host(
         retry_text=stall_retry_text,
     )
     HostDaemon(
-        client, spawner, provisioner, stall_monitor=stall_monitor, interval=interval, sleep=sleep
+        client,
+        spawner,
+        provisioner,
+        ask_worker=ask_worker,
+        stall_monitor=stall_monitor,
+        interval=interval,
+        sleep=sleep,
     ).run(until=until)
 
 

@@ -8,10 +8,14 @@
 - **PreToolUse**/**PostToolUse** matched to the ``AskUserQuestion`` tool flip to the *user* while
   the agent is asking the user something (so the dashboard shows input is required) and back to the
   *agent* once it's answered. ``AskUserQuestion`` is a mid-turn tool call — it never fires ``Stop``
-  — so without this the turn would wrongly read *agent* the whole time the question is pending.
+  — so without this the turn would wrongly read *agent* the whole time the question is pending;
+The tarot review-artifact gate used to hang off **PreToolUse** on `apply_operation`; it now runs
+host-side in the task service (:mod:`panopticon.taskservice.tarot_gate`), so nothing is wired here
+for it. :mod:`panopticon.container.tarot_gate` remains as an allow-everything shim for containers
+whose persisted settings still name it.
 
-claude-specific (`.claude/settings.json`); M3 revisits for other CLIs. Pure — the callback the
-hooks invoke is :mod:`panopticon.container.hook`. `:blocked:` is preserved by construction: the
+claude-specific (`.claude/settings.json`); M3 revisits for other CLIs. Pure — the turn-flip
+callback is :mod:`panopticon.container.hook`. `:blocked:` is preserved by construction: the
 callback only sets the turn, never the block.
 """
 
@@ -53,7 +57,9 @@ def settings() -> dict[str, Any]:
             "Stop": [run("user", "stop")],
             "UserPromptSubmit": [run("agent", "prompt")],
             # The agent stops to ask the user → flip to user; once answered → back to agent.
-            "PreToolUse": [run("user", matcher="AskUserQuestion")],
+            "PreToolUse": [
+                run("user", matcher="AskUserQuestion"),
+            ],
             "PostToolUse": [run("agent", matcher="AskUserQuestion")],
         },
         "skipDangerousModePermissionPrompt": True,

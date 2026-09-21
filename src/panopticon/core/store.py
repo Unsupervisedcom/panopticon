@@ -129,6 +129,17 @@ class Store(ABC):
         """Return all tasks without history (cheap: tasks-table data only)."""
         return await self._list_tasks_summary()
 
+    async def find_task_by_branch(self, repo_id: str, branch: str) -> Task | None:
+        """Return the task on ``repo_id`` working the given ``branch``, or ``None`` (a thin lookup
+        over an existing column — the branch a task provisions is unique per repo). If more than one
+        matches (shouldn't happen), the most-recently-created is returned."""
+        return await self._find_task_by_branch(repo_id, branch)
+
+    async def find_task_by_url(self, url: str) -> Task | None:
+        """Return the task whose recorded ``url`` (e.g. its PR) matches, or ``None`` (most-recently
+        created if more than one)."""
+        return await self._find_task_by_url(url)
+
     async def save_task(self, task: Task) -> None:
         """Persist an updated task, enforcing consistency and append-only history."""
         validate_task_consistency(task)
@@ -171,6 +182,14 @@ class Store(ABC):
     @abstractmethod
     async def _list_tasks_summary(self) -> list[Task]:
         """Return all tasks with ``history=[]`` (no history loaded)."""
+
+    @abstractmethod
+    async def _find_task_by_branch(self, repo_id: str, branch: str) -> Task | None:
+        """Return the task on ``repo_id`` with the given ``branch`` (most recent if >1), or ``None``."""
+
+    @abstractmethod
+    async def _find_task_by_url(self, url: str) -> Task | None:
+        """Return the task with the given ``url`` (most recent if >1), or ``None``."""
 
     @abstractmethod
     async def _stored_history(self, task_id: str) -> list[HistoryEntry]:

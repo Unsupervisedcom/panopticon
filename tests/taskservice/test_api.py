@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -227,6 +228,20 @@ def test_create_task_records_the_memo(client: TestClient) -> None:
     assert got.json()["memo"] == "make it green"
 
 
+def test_create_task_defaults_sort_weight_to_zero(client: TestClient) -> None:
+    resp = client.post("/tasks", json={"repo_id": "r1", "workflow": "spike"})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["sort_weight"] == 0
+
+
+def test_create_task_accepts_sort_weight(client: TestClient) -> None:
+    resp = client.post("/tasks", json={"repo_id": "r1", "workflow": "spike", "sort_weight": 7})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["sort_weight"] == 7
+    got = client.get(f"/tasks/{resp.json()['id']}")  # and it survives a reload
+    assert got.json()["sort_weight"] == 7
+
+
 def test_get_missing_task_404(client: TestClient) -> None:
     assert client.get("/tasks/ghost").status_code == 404
 
@@ -330,6 +345,47 @@ def test_set_turn_and_blocked(client: TestClient) -> None:
     assert blocked.json()["turn"] == "user"  # flip-independent: the block left the turn alone
 
 
+def test_set_snooze_records_deadline_verbatim(client: TestClient) -> None:
+    task_id = _new_task(client)  # turn=agent, blocked=false, snoozed_until=None
+    before = client.get(f"/tasks/{task_id}").json()
+    assert before["snoozed_until"] is None
+
+    snoozed = client.put(f"/tasks/{task_id}/snooze", json={"until": "2026-08-06T03:00:00+00:00"})
+    assert snoozed.status_code == 200
+    body = snoozed.json()
+    assert body["snoozed_until"] == "2026-08-06T03:00:00+00:00"
+    # lifecycle is untouched — snooze is a plain recorded fact
+    assert body["state"] == before["state"]
+    assert body["turn"] == before["turn"]
+    assert body["blocked"] == before["blocked"]
+
+    # the reserved indefinite value is treated as an opaque string and round-trips verbatim
+    indefinite = client.put(f"/tasks/{task_id}/snooze", json={"until": "9999-12-31T23:59:59+00:00"})
+    assert indefinite.json()["snoozed_until"] == "9999-12-31T23:59:59+00:00"
+
+    # null clears it
+    cleared = client.put(f"/tasks/{task_id}/snooze", json={"until": None})
+    assert cleared.json()["snoozed_until"] is None
+
+
+def test_set_sort_weight_over_rest(client: TestClient) -> None:
+    task_id = _new_task(client)
+    before = client.get(f"/tasks/{task_id}").json()
+    assert before["sort_weight"] == 0  # default
+
+    weighted = client.put(f"/tasks/{task_id}/sort-weight", json={"sort_weight": 10})
+    assert weighted.status_code == 200
+    body = weighted.json()
+    assert body["sort_weight"] == 10
+    # a plain recorded fact — lifecycle untouched
+    assert body["state"] == before["state"]
+    assert body["turn"] == before["turn"]
+
+    assert client.get(f"/tasks/{task_id}").json()["sort_weight"] == 10  # persisted
+    reset = client.put(f"/tasks/{task_id}/sort-weight", json={"sort_weight": 0})
+    assert reset.json()["sort_weight"] == 0
+
+
 def test_claim_release_over_rest(client: TestClient) -> None:
     task_id = _new_task(client)
     assert client.get(f"/tasks/{task_id}").json()["claimed_by"] is None
@@ -362,6 +418,52 @@ def test_artifact_put_get_list(client: TestClient) -> None:
 def test_artifact_missing_404(client: TestClient) -> None:
     task_id = _new_task(client)
     assert client.get(f"/tasks/{task_id}/artifacts/plan.md").status_code == 404
+
+
+def test_artifact_download_content_type_from_extension(client: TestClient) -> None:
+    # A binary artifact downloads byte-exact with a type derived from its extension (so a browser
+    # renders a screenshot), while text keeps its own type; unknown/extensionless falls back.
+    task_id = _new_task(client)
+    png = b"\x89PNG\r\n\x1a\n\x00\xff\xfe\x01"
+    client.put(f"/tasks/{task_id}/artifacts/shot.png", content=png)
+    client.put(f"/tasks/{task_id}/artifacts/plan.md", content=b"# Plan")
+    client.put(f"/tasks/{task_id}/artifacts/blob", content=b"\x00\x01")
+
+    shot = client.get(f"/tasks/{task_id}/artifacts/shot.png")
+    assert shot.content == png
+    assert shot.headers["content-type"] == "image/png"
+    assert (
+        client.get(f"/tasks/{task_id}/artifacts/plan.md")
+        .headers["content-type"]
+        .startswith("text/markdown")
+    )
+    assert (
+        client.get(f"/tasks/{task_id}/artifacts/blob").headers["content-type"]
+        == "application/octet-stream"
+    )
+
+
+def test_create_task_seeds_binary_artifacts_from_base64(client: TestClient) -> None:
+    png = b"\x89PNG\r\n\x1a\n\x00\xff\xfe\x01binary"
+    resp = client.post(
+        "/tasks",
+        json={
+            "repo_id": "r1",
+            "workflow": "spike",
+            "artifacts_b64": {"shot.png": base64.b64encode(png).decode()},
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    task_id = resp.json()["id"]
+    assert client.get(f"/tasks/{task_id}/artifacts/shot.png").content == png
+
+
+def test_create_task_rejects_malformed_base64_artifact(client: TestClient) -> None:
+    resp = client.post(
+        "/tasks",
+        json={"repo_id": "r1", "workflow": "spike", "artifacts_b64": {"x.bin": "not base64!!"}},
+    )
+    assert resp.status_code == 400, resp.text
 
 
 # -- liveness -----------------------------------------------------------------------
