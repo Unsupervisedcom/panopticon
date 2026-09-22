@@ -1,0 +1,44 @@
+# Pre-baked finder BUILDER image — heavy deps installed once, source overlaid per build.
+#
+# Destined for the unsupervised-main repo (e.g. subrepos/finder/Dockerfile.finder-builder),
+# published to Harbor by the companion CI job (publish.finder-builder.yml). Kept here in the
+# panopticon bundle as the reviewable source; copy into unsupervised-main via a normal PR.
+#
+# Reproduces the CANONICAL build (.github/workflows/build.finder.yml: Py3.10 + Rust + maturin
+# + editable installs), but STOPS before `pyinstaller.sh`. Finder is installed editable, so at
+# build-in-pod time the agent overlays the current src at the known path and runs pyinstaller
+# (~2 min) instead of rebuilding the ~heavy deps + Rust ext.
+#
+# Build context = repo root (needs both subrepos/finder and subrepos/python-utils, since
+# finder's requirements.txt has `-e ../python-utils`). Build with submodules checked out:
+#   docker build -f subrepos/finder/Dockerfile.finder-builder -t <harbor>/images/finder-builder:<tag> .
+FROM python:3.10-bookworm
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install --yes --no-install-recommends \
+      build-essential libpq-dev curl git ca-certificates pkg-config \
+ && rm -rf /var/lib/apt/lists/*
+
+# Rust toolchain (pybfinder is a maturin/Rust extension). Pin to match CI's stable.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+RUN pip install --no-cache-dir maturin pyinstaller
+
+# Bring in both subrepos at the SAME relative layout finder expects (`-e ../python-utils`).
+WORKDIR /build
+COPY subrepos/python-utils /build/subrepos/python-utils
+COPY subrepos/finder      /build/subrepos/finder
+
+WORKDIR /build/subrepos/finder
+# Install python deps + editable python-utils + editable finder (from requirements.txt),
+# then build & install the Rust extension. This is the expensive part we pre-bake.
+RUN pip install --no-cache-dir -r requirements.txt \
+ && (cd pybfinder && maturin build -r && pip install target/wheels/*.whl)
+
+# NOTE: no `pyinstaller.sh` here. The editable finder lives at /build/subrepos/finder/src;
+# build-finder-in-pod.sh overlays the agent's current src there and runs pyinstaller.
+# A marker the build script checks for, so a stale/wrong image fails loudly:
+RUN echo "finder-builder: deps baked; overlay src at /build/subrepos/finder/src then run pyinstaller.sh" \
+      > /build/FINDER_BUILDER_READY
