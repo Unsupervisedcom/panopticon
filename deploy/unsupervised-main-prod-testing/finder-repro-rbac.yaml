@@ -23,6 +23,24 @@ metadata:
   name: panopticon-repro
   namespace: finder-repro
 ---
+# Run identity for finder TEST PODS (separate from the control SA above). The pods an
+# agent provisions set `serviceAccountName: finder-test` so they can READ prod S3 exports
+# via IRSA. Data access rides on this SA, NOT on kubectl / the control credential.
+#
+# ACTIVATION (operator, AWS-side — see iam-finder-repro-readonly.json):
+#   1. Create IAM role `prod-finder-repro-readonly` (trust = EKS OIDC + sub
+#      system:serviceaccount:finder-repro:finder-test; permissions = read-only s3 on
+#      unsupervised-prod-internal/internal/*).
+#   2. Uncomment the annotation below with that role's ARN and re-apply.
+# Until then this SA exists but has no data access (small/synthetic tests still work).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: finder-test
+  namespace: finder-repro
+  # annotations:
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::037004398141:role/prod-finder-repro-readonly
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

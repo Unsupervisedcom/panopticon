@@ -1,59 +1,54 @@
 # Enable panopticon agents to do finder prod-testing
 
 Give unsupervised-main task agents the ability to **provision test pods, generate the finder
-executable, and profile results** in prod — the workflow that's currently done by hand.
+executable, and profile results** against production data — the workflow currently done by hand.
 
-Approach (operator-chosen): **build the finder binary in a k8s pod (no Docker-in-Docker)**, from a
-**pre-baked Harbor builder image**, with the repro ServiceAccount **scoped to a dedicated namespace**.
+Design (operator-chosen): **in-pod finder build (no Docker-in-Docker)** from a **pre-baked Harbor
+builder image**; repro ServiceAccount **scoped to a dedicated `finder-repro` namespace**; prod
+**data read-only via a scoped IRSA SA**; every prod run gated by an **operator turn-handoff**, with
+the namespace **ResourceQuota as the enforced backstop**.
 
-## What already exists
-- Repo env-file injects `PROD_REPRO_KUBECONFIG_B64` (SA `panopticon-repro`, embedded token — no
-  `awscli` needed) and `PROD_READONLY_KUBECONFIG_B64`.
-- The `panopticon-repro` SA already has pods create/delete/exec/log (in `default`).
-- Harbor push creds already exist in CI (`vars.HARBOR_USERNAME` + `secrets.HARBOR_PASSWORD`); the
-  in-cluster pull secret `unsupervised-regcred` already exists.
+## Two identities (keep them straight)
+- **Control** — `panopticon-repro` SA: creates/execs pods (RBAC). No data access.
+- **Run** — `finder-test` SA: the SA the test *pods* run as; IRSA -> read-only prod S3. Data
+  access rides here, not on kubectl.
 
-## What this bundle adds
+## Files
 
 | File | Goes to | Purpose |
 |---|---|---|
-| `finder-repro-rbac.yaml` | prod cluster (`kubectl apply`) | Dedicated `finder-repro` ns + SA + Role (pods CRUD/exec/log) + ResourceQuota/LimitRange ceiling |
-| `unsupervised-main/Dockerfile.finder-builder` | unsupervised-main (PR) | Pre-baked builder image: heavy deps (Rust ext + py deps) installed, source overlaid per build |
-| `unsupervised-main/publish.finder-builder.yml` | unsupervised-main (PR) | CI job that builds & pushes `harbor…/images/finder-builder` (reuses existing Harbor creds) |
-| `build-finder-in-pod.sh` | panopticon image layer (`/usr/local/bin`) | Agent-run: overlay current src into a builder pod, `pyinstaller`, copy binary out |
-| `image-layer.head.dockerfile` | panopticon `$CONFIG/layers/` | **⚠ pending — see below.** kubectl + auto-wiring wrapper |
-| `apply.sh` | operator runs once | **⚠ pending — see below.** wire config + scope the SA |
+| `finder-repro-rbac.yaml` | prod cluster (`kubectl apply`) | `finder-repro` ns + `panopticon-repro` (control) + `finder-test` (run) SAs + Role + ResourceQuota/LimitRange |
+| `iam-finder-repro-readonly.json` | **AWS (operator creates)** | IAM role templates: trust (EKS OIDC + `finder-repro:finder-test`) + read-only s3 on `unsupervised-prod-internal/internal/*` |
+| `unsupervised-main/Dockerfile.finder-builder` | unsupervised-main (PR) | Pre-baked builder image (deps installed, source overlaid per build) |
+| `unsupervised-main/publish.finder-builder.yml` | unsupervised-main (PR) | CI publish job (reuses existing `HARBOR_USERNAME`/`HARBOR_PASSWORD`) |
+| `image-layer.head.dockerfile` | `$CONFIG/layers/` (via apply.sh) | kubectl + auto-wiring wrapper (materializes kubeconfig from the injected env var) |
+| `build-finder-in-pod.sh` | image layer `/usr/local/bin` | Agent-run in-pod build |
+| `repro-pod.template.yaml` | reference | A finder test pod running as `finder-test` (IRSA S3) |
+| `prod-testing-gate.md` | unsupervised-main AGENTS.md | The turn-handoff approval rule agents must follow |
+| `apply.sh` | operator runs | `config` (wire layer+repo) / `scope-sa` (prod RBAC + rewrite kubeconfig secret) |
 
-## ⚠ Two credential-handling files still to write (need your OK)
-The auto-mode classifier blocked writing files that **decode your prod kubeconfig secret**, which is
-correct — they touch a credential. They are:
-1. **`image-layer.head.dockerfile`** — installs `kubectl` and a wrapper that lazily materializes
-   `~/.kube/config` from `$PROD_REPRO_KUBECONFIG_B64` on first use (works under `bash -c`; no host-hook
-   change; the existing `neutralize-claude-hooks.sh` stays as-is).
-2. **`apply.sh`** — one-shot operator script: assemble the layer file (head + `build-finder-in-pod.sh`
-   as a heredoc) into `$CONFIG/layers/unsupervised-main.dockerfile`; `PATCH /repos/unsupervised-main`
-   with `image_layer_file`; **regenerate `PROD_REPRO_KUBECONFIG_B64`** to point at the `finder-repro`
-   namespace (backing up the old value first); rebuild the composed image.
+## Guardrail = policy + backstop
+- **Policy (turn-handoff, `prod-testing-gate.md`):** before any pod in `finder-repro`, the agent
+  ends its turn with a proposal (change, pod size, **which exports it reads**, what it measures);
+  you approve in the dashboard. Trust-based, per-run, full context.
+- **Backstop (enforced by the API server):** `ResourceQuota` caps the namespace (8 pods / 128 CPU
+  / 600Gi / 1000Gi scratch), `LimitRange` caps any one pod (64 CPU / 300Gi / 500Gi). IRSA is
+  read-only, one bucket. So worst case, even if the policy is ignored, the blast radius is bounded.
 
-Approve those and I'll write them.
-
-## Apply sequence (once everything's written)
-1. **PR** `Dockerfile.finder-builder` + `publish.finder-builder.yml` into unsupervised-main; run the CI
-   job once → `harbor…/images/finder-builder:latest` exists.
-2. `kubectl --context <prod> apply -f finder-repro-rbac.yaml`  (creates `finder-repro`).
-3. Copy the pull secret into the new ns (no new account):
-   `kubectl --context <prod> -n default get secret unsupervised-regcred -o yaml \
-      | sed 's/namespace: default/namespace: finder-repro/' \
-      | kubectl --context <prod> -n finder-repro apply -f -`
-4. `./apply.sh`  (wires the layer + repo config; **rewrites the kubeconfig secret to finder-repro** —
-   the one prod-credential mutation, done with a backup).
-5. Smoke test: `build-finder-in-pod.sh` produces a binary; provision a repro pod in `finder-repro`;
-   profile via `kubectl exec` (passive cgroup `cpu.stat`).
-
-## Profiling
-No extra agent-side capability: it's `kubectl exec` into the test pod (cgroup `cpu.stat` +
-table-completion progress; py-spy in-pod). See the finder-load perf notes.
+## Apply sequence
+1. **PR** `Dockerfile.finder-builder` + `publish.finder-builder.yml` into unsupervised-main; run the
+   CI job once -> `harbor…/images/finder-builder:latest` exists.
+2. **AWS (you):** create IAM role `prod-finder-repro-readonly` from `iam-finder-repro-readonly.json`;
+   uncomment the `finder-test` SA's `role-arn` annotation in `finder-repro-rbac.yaml`.
+3. `apply.sh config` — assemble+install the image layer, PATCH repo config, force image rebuild.
+4. `kubectl --context <prod> apply -f finder-repro-rbac.yaml`; copy the pull secret into the ns:
+   `kubectl -n default get secret unsupervised-regcred -o yaml | sed 's/namespace: default/namespace: finder-repro/' | kubectl -n finder-repro apply -f -`
+   (or just run `apply.sh scope-sa`, which does the apply + pull-secret copy + kubeconfig rewrite).
+5. `apply.sh scope-sa` — mint a `finder-repro`-scoped kubeconfig, **test it (probe pod) before
+   overwriting**, back up the old value, rewrite `PROD_REPRO_KUBECONFIG_B64`.
+6. Add `prod-testing-gate.md` to unsupervised-main's AGENTS.md.
+7. Smoke test: `build-finder-in-pod.sh` -> binary; provision a `repro-pod.template.yaml` pod; profile.
 
 ## Rebuild cadence
-The pre-baked image only needs rebuilding when the **heavy deps** change (requirements.txt / Rust ext /
-python-utils) — ordinary `fc.py` edits are overlaid at build-in-pod time, so day-to-day this is free.
+The pre-baked image only rebuilds when the **heavy deps** change (requirements.txt / Rust ext /
+python-utils). Ordinary `fc.py` edits are overlaid at build-in-pod time — day-to-day this is free.
