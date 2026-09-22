@@ -1,3 +1,9 @@
+# ============================================================================
+# PHASE 2 — NOT USED IN THE BROAD-ROLE INTERIM. Do NOT apply this until an
+# IAM-admin has created the prod-finder-repro-readonly role (iam-finder-repro-
+# readonly.json) and you've uncommented the finder-test SA's role-arn. Until
+# then, agents run test pods in `default` as unsupervised-unsupervised.
+# ============================================================================
 # Scoped RBAC for panopticon agents doing finder prod-testing.
 # Applies to the prod EKS cluster. Replaces the current arrangement where the
 # `panopticon-repro` ServiceAccount lives in `default` with pod create/delete/exec/log.

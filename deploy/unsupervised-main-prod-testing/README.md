@@ -3,10 +3,19 @@
 Give unsupervised-main task agents the ability to **provision test pods, generate the finder
 executable, and profile results** against production data — the workflow currently done by hand.
 
-Design (operator-chosen): **in-pod finder build (no Docker-in-Docker)** from a **pre-baked Harbor
-builder image**; repro ServiceAccount **scoped to a dedicated `finder-repro` namespace**; prod
-**data read-only via a scoped IRSA SA**; every prod run gated by an **operator turn-handoff**, with
-the namespace **ResourceQuota as the enforced backstop**.
+Two phases:
+- **Interim (now, broad role):** test pods run in **`default`** as `unsupervised-unsupervised` (the
+  existing `prod-unsupervised-main` IRSA role) to read prod exports. **No cluster/credential/IAM
+  changes** — everything needed already exists in `default`. Trade-off: agents get the broad
+  (read+write) role and there is **no ResourceQuota** — the operator turn-handoff gate is the only
+  guardrail. Files marked "phase 2" below are NOT used here.
+- **Phase 2 (later, needs IAM-admin):** scoped `finder-repro` namespace + read-only IRSA SA +
+  ResourceQuota. Blocked until an IAM-admin creates the scoped role (the `Unsupervised-Engineer` SSO
+  role can't `iam:CreateRole`). `finder-repro-rbac.yaml` + `iam-finder-repro-readonly.json` + `apply.sh
+  scope-sa` are the phase-2 path, kept ready.
+
+Common to both: **in-pod finder build (no Docker-in-Docker)** from a pre-baked Harbor builder image,
+and every prod run gated by an **operator turn-handoff**.
 
 ## Two identities (keep them straight)
 - **Control** — `panopticon-repro` SA: creates/execs pods (RBAC). No data access.

@@ -1,7 +1,11 @@
-# Template: a finder repro/test pod an agent provisions in finder-repro.
-# Runs as `finder-test` (IRSA -> read-only prod S3 exports). The agent kubectl-cp's the
-# binary it built (build-finder-in-pod.sh) into the pod, then execs it against a config
-# that points at real S3 export URIs. Size within the ResourceQuota ceiling.
+# Template: a finder repro/test pod an agent provisions.
+#
+# INTERIM (broad role): runs in `default` as `unsupervised-unsupervised` — the existing
+# prod-unsupervised-main IRSA role, so it can read prod S3 exports. No new cluster objects.
+# PHASE 2 (scoped, needs IAM-admin): namespace: finder-repro, serviceAccountName: finder-test.
+#
+# NOTE: `default` has no ResourceQuota, so nothing but the operator turn-handoff gate bounds
+# this in the interim. Keep pod sizes explicit (below) and ALWAYS delete pods when done.
 #
 # The agent fills: <POD>, memory/cpu, and the finder config (feature_ids/file_locations
 # pointing at s3://unsupervised-prod-internal/internal/... exports the operator staged).
@@ -9,19 +13,19 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: <POD>            # e.g. finder-repro-<runId>
-  namespace: finder-repro
+  namespace: default
   labels:
     app.kubernetes.io/managed-by: panopticon
     purpose: finder-repro
 spec:
   restartPolicy: Never
-  serviceAccountName: finder-test           # IRSA: read-only prod S3 exports
+  serviceAccountName: unsupervised-unsupervised   # broad IRSA -> prod S3 exports (interim)
   imagePullSecrets:
-    - name: unsupervised-regcred            # Harbor pull (copied into finder-repro)
+    - name: unsupervised-regcred                  # Harbor pull (already in default)
   containers:
     - name: finder
       # A base image just to hold/exec the cp'd binary; the binary is self-contained
-      # (PyInstaller). Any image with a shell works; reuse the prod image for parity.
+      # (PyInstaller). Reuse the prod image for parity.
       image: harbor.unsupervised.com/images/unsupervised-main:latest
       command: ["sleep", "36000"]
       env:
@@ -29,7 +33,7 @@ spec:
         - { name: TMPDIR, value: "/scratch" }
         - { name: FINDER_WORKERS, value: "52" }
       resources:
-        # Stay under the LimitRange max (64 CPU / 300Gi mem / 500Gi ephemeral).
+        # Keep these explicit — in `default` there is no quota to clamp a runaway pod.
         requests: { cpu: "16", memory: 200Gi }
         limits:   { cpu: "32", memory: 256Gi }
       volumeMounts:
@@ -38,7 +42,8 @@ spec:
     - name: scratch
       emptyDir: { sizeLimit: 400Gi }
 # Agent workflow, once Ready:
-#   kubectl -n finder-repro cp ./finder <POD>:/scratch/finder
-#   kubectl -n finder-repro cp ./cfg.json <POD>:/scratch/cfg.json
-#   kubectl -n finder-repro exec <POD> -- bash -lc 'chmod +x /scratch/finder && /scratch/finder -i /scratch/cfg.json'
-#   # profile passively: kubectl -n finder-repro exec <POD> -- cat /sys/fs/cgroup/cpu.stat
+#   kubectl -n default cp ./finder <POD>:/scratch/finder
+#   kubectl -n default cp ./cfg.json <POD>:/scratch/cfg.json
+#   kubectl -n default exec <POD> -- bash -lc 'chmod +x /scratch/finder && /scratch/finder -i /scratch/cfg.json'
+#   # profile passively: kubectl -n default exec <POD> -- cat /sys/fs/cgroup/cpu.stat
+#   kubectl -n default delete pod <POD>   # ALWAYS clean up

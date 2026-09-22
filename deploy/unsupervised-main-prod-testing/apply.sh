@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # One-shot operator setup to enable unsupervised-main agents' finder prod-testing.
 #
-#   apply.sh config     # wire the image layer + repo config (idempotent, non-prod)
-#   apply.sh scope-sa   # prod: create finder-repro RBAC, mint a scoped kubeconfig,
-#                        # and REWRITE the PROD_REPRO_KUBECONFIG_B64 secret (backed up first)
-#   apply.sh all        # config then scope-sa
-#
-# scope-sa is the only step that mutates prod + a credential. It TESTS the new kubeconfig
-# (creates+deletes a probe pod in finder-repro) and only overwrites the secret if the test
-# passes; the old secret value is backed up to a timestamped file first.
+#   apply.sh config     # INTERIM (default): wire the image layer + repo config only.
+#                        # No cluster/credential changes — agents run test pods in `default`
+#                        # as unsupervised-unsupervised (broad prod-unsupervised-main IRSA),
+#                        # and panopticon-repro's existing kubeconfig already grants pod-create
+#                        # in `default`. This is all that's needed for the broad-role interim.
+#   apply.sh scope-sa   # PHASE 2 (needs an IAM-admin first): create the finder-repro RBAC,
+#                        # mint a finder-repro-scoped kubeconfig, and REWRITE
+#                        # PROD_REPRO_KUBECONFIG_B64 (backed up first). Requires the scoped IAM
+#                        # role + finder-test SA annotation to exist — do NOT run until then.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -122,9 +123,11 @@ PY
   echo "  done. New task spawns will use the finder-repro-scoped credential."
 }
 
-case "${1:-all}" in
+case "${1:-config}" in
   config)   config ;;
-  scope-sa) scope_sa ;;
-  all)      config; scope_sa ;;
-  *) echo "usage: apply.sh [config|scope-sa|all]" >&2; exit 2 ;;
+  scope-sa)
+    echo "PHASE 2: only run scope-sa after an IAM-admin has created prod-finder-repro-readonly"
+    echo "and you've uncommented the finder-test SA role-arn. Ctrl-C now if that's not done." >&2
+    sleep 5; scope_sa ;;
+  *) echo "usage: apply.sh [config|scope-sa]   (config = broad-role interim; scope-sa = phase 2)" >&2; exit 2 ;;
 esac

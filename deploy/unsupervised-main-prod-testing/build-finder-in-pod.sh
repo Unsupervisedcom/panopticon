@@ -13,7 +13,9 @@ set -euo pipefail
 
 SRC="subrepos/finder"
 OUT="./finder"
-NS="finder-repro"
+# Interim: pods run in `default` (broad prod-unsupervised-main IRSA via unsupervised-unsupervised).
+# Phase 2 (once an IAM-admin provisions the scoped role): switch to NS=finder-repro.
+NS="default"
 IMAGE="${FINDER_BUILDER_IMAGE:-harbor.unsupervised.com/images/finder-builder:latest}"
 POD=""
 REBUILD_RUST=0
