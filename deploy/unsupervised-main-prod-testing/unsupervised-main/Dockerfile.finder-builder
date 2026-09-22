@@ -39,7 +39,7 @@ WORKDIR /build/subrepos/finder
 RUN grep -v '^-e \.$' requirements.txt > requirements-nofinder.txt \
  && pip install --no-cache-dir -r requirements-nofinder.txt
 # Compile + install the bfinder wheel from the Rust source.
-RUN cd pybfinder && maturin build -r && pip install --no-cache-dir target/wheels/*.whl
+RUN cd pybfinder && maturin build -r -o /tmp/wheels && pip install --no-cache-dir /tmp/wheels/*.whl
 
 # Record a content+path hash of the Rust source, then DELETE the Rust source (keep only the
 # installed compiled wheel). Same hash recipe as build-finder-in-pod.sh's rust_hash().

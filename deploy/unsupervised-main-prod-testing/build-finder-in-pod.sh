@@ -83,7 +83,7 @@ kubectl -n "$NS" exec "$POD" -- bash -lc "
   now=\$(rust_hash)
   if [ '${FORCE_RUST}' = '1' ] || [ \"\$now\" != \"\$baked\" ]; then
     echo '   Rust source changed (or --force-rust) -> recompiling wheel'
-    (cd pybfinder && maturin build -r && pip install --force-reinstall --no-deps target/wheels/*.whl)
+    (cd pybfinder && maturin build -r -o /tmp/wheels && pip install --force-reinstall --no-deps /tmp/wheels/*.whl)
   else
     echo '   Rust unchanged -> using baked wheel (fast path)'
   fi
