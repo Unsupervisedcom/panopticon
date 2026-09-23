@@ -1,7 +1,7 @@
 # Container authentication — giving a task's agent CLI its credentials
 
 Every task runs an agent CLI inside its container — **`claude` by default, or `codex`** when the
-repo's `agent_cli` selects it. Either way the agent authenticates from credentials the runner injects
+repo's `agent_cli` selects it (codex is behind a feature flag; see below). Either way the agent authenticates from credentials the runner injects
 from the **repo's `env_file`** at spawn (ADR 0007 / ADR 0012); which variable(s) you set depends on
 the CLI. This page covers **claude** first (the default), then **codex** — tasks whose `agent_cli`
 is `codex`.
@@ -74,6 +74,12 @@ it can't capture the token (or the repo has no `env_file`), it falls back to pri
 instructions above.
 
 ## Codex (tasks whose `agent_cli` is `codex`)
+
+> **Codex is feature-flagged off by default** (ADR 0014 §7). Until `PANOPTICON_ENABLE_CODEX=1` is
+> set in the control plane's environment (and its runner's — `make restart` to pick it up), a repo
+> or task can't select `agent_cli: codex` at all: the task service rejects it with a 400 naming the
+> flag, `make build` doesn't build the `panopticon-base-codex` image, and the container's adapter
+> registry doesn't register codex. Turn the flag on first, then follow this section.
 
 A repo whose `agent_cli` is `codex` runs the `codex` CLI in its task containers instead of `claude`,
 and codex authenticates differently: it reads credentials from `$CODEX_HOME/auth.json`, not from an

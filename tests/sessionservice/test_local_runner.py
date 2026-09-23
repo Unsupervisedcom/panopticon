@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from panopticon.core.features import CODEX_FLAG
 from panopticon.core.models import LifecyclePhase
 from panopticon.sessionservice.local_runner import (
     CLI_CONFIG_DIRNAME,
@@ -70,19 +71,23 @@ def test_spawn_runs_detached_container_then_tmux_pane_execing_in() -> None:
     # pane execs the in-container agent launcher (so `tmux attach` reaches the live agent)
     assert tmux_new[:4] == ["tmux", "-L", "panopticon", "new-session"]
     assert tmux_new[tmux_new.index("-s") + 1] == "panopticon-t1"
-    # the pane execs in as the unprivileged `panopticon` user (so the agent's whoami isn't root)
-    assert tmux_new[-10:] == [
-        "docker",
-        "exec",
-        "--interactive",
-        "--tty",
-        "--user",
-        "panopticon",
-        "panopticon-t1",
-        "python",
-        "-m",
-        "panopticon.container.agent",
-    ]
+    # The pane is one host shell command: a bounded wait for the entrypoint's remap-complete
+    # marker (exec'ing in earlier resolves `--user panopticon` to the pre-remap uid — the spawn
+    # race), then the exec in as the unprivileged `panopticon` user (the agent's whoami isn't
+    # root). Manual `respawn-pane`/heal reruns get the same guard since it *is* the pane command.
+    pane = tmux_new[-1]
+    assert pane.startswith("i=0; until docker exec panopticon-t1 test -f /run/panopticon-ready; ")
+    assert (
+        "[ $i -ge 150 ] && break; sleep 0.2" in pane
+    )  # bounded — a pre-marker image still launches
+    # `docker exec` doesn't inherit the container's OOM score (it forks from the daemon, not from
+    # PID 1), so the exec'd command raises its own before `exec`ing the launcher — otherwise the one
+    # process that eats memory sits at the host's default score. `exec` keeps the process tree flat.
+    assert pane.endswith(
+        "exec docker exec --interactive --tty --user panopticon panopticon-t1 sh -c"
+        " 'echo 500 > /proc/self/oom_score_adj 2>/dev/null || true;"
+        " exec python -m panopticon.container.agent'"
+    )
 
 
 def test_spawn_reports_starting_then_awaiting_via_the_progress_callback() -> None:
@@ -124,6 +129,37 @@ def test_is_running_queries_docker_ps_by_container_name() -> None:
 def test_is_running_is_false_when_no_container_is_listed() -> None:
     runner = LocalRunner("http://svc:8000", run=_Recorder())  # records, returns "" → not running
     assert runner.is_running("t1") is False
+
+
+def test_exit_reason_inspects_the_containers_exit_state() -> None:
+    rec = _ReturningRecorder("false false 137\n")
+    runner = LocalRunner("http://svc:8000", run=rec)
+    assert runner.exit_reason("t1") == "container exited (exit 137)"
+    ((inspect, check),) = rec.calls
+    assert inspect == [
+        "docker",
+        "inspect",
+        "--format",
+        "{{.State.Running}} {{.State.OOMKilled}} {{.State.ExitCode}}",
+        "panopticon-t1",
+    ]
+    assert check is False  # a missing container prints nothing — that's an answer, not an error
+
+
+def test_exit_reason_names_an_oom_kill_over_the_exit_code() -> None:
+    # The kernel's OOM killer can leave a deceptively clean exit code 0 — OOMKilled is the truth.
+    runner = LocalRunner("http://svc:8000", run=_ReturningRecorder("false true 0\n"))
+    assert runner.exit_reason("t1") == "container OOM-killed (exit 0)"
+
+
+def test_exit_reason_is_none_when_running_or_gone() -> None:
+    # Still running → nothing to explain.
+    assert (
+        LocalRunner("http://svc:8000", run=_ReturningRecorder("true false 0\n")).exit_reason("t1")
+        is None
+    )
+    # Container gone entirely (inspect errors → empty stdout) → nothing left to ask.
+    assert LocalRunner("http://svc:8000", run=_Recorder()).exit_reason("t1") is None
 
 
 def test_has_session_lists_the_tmux_server_and_matches_the_session_name() -> None:
@@ -177,6 +213,152 @@ def test_spawn_with_docker_in_docker_runs_privileged_and_flags_the_entrypoint() 
     assert "--privileged" in docker_run  # nested daemon needs it (repo capability, ADR 0005)
     assert "panopticon-dind-t1:/var/lib/docker" in docker_run  # per-task docker layer cache
     assert "PANOPTICON_DOCKER_IN_DOCKER=1" in docker_run  # entrypoint starts dockerd
+
+
+class _CgroupRefusingRunner(_Recorder):
+    """A daemon that rejects the cgroup priority flags — what a nested Docker daemon whose cgroup
+    is in threaded mode does: ``docker run`` fails with ``unable to apply cgroup configuration``
+    whenever ``--cpu-shares``/``--blkio-weight`` are present."""
+
+    def __init__(self, *, refusing: bool = True) -> None:
+        super().__init__()
+        self.refusing = refusing
+
+    def __call__(
+        self,
+        args: Sequence[str],
+        *,
+        check: bool = True,
+        interactive: bool = False,
+        verbose: bool = False,
+    ) -> str:
+        super().__call__(args, check=check, interactive=interactive, verbose=verbose)
+        if self.refusing and "--cpu-shares" in args:
+            raise subprocess.CalledProcessError(
+                125, list(args), stderr="unable to apply cgroup configuration"
+            )
+        return ""
+
+
+class _RunFailingRunner(_Recorder):
+    """A daemon where ``docker run`` itself fails (a bad image, say) — flags or no flags. ``failing``
+    is flipped to model the daemon recovering."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.failing = True
+
+    def __call__(
+        self,
+        args: Sequence[str],
+        *,
+        check: bool = True,
+        interactive: bool = False,
+        verbose: bool = False,
+    ) -> str:
+        super().__call__(args, check=check, interactive=interactive, verbose=verbose)
+        if self.failing and list(args[:2]) == ["docker", "run"]:
+            raise subprocess.CalledProcessError(125, list(args), stderr="no such image")
+        return ""
+
+
+def test_spawn_runs_the_container_at_the_lowest_priority() -> None:
+    # A task container shares the host with the operator's editor and the control plane, so it
+    # yields CPU + disk and is the kernel's first OOM pick (priority, not a cap — an idle host
+    # still runs it at full speed).
+    rec = _Recorder()
+    LocalRunner("http://svc", image="img:1", run=rec).spawn("t1")
+    docker_run = rec.calls[2][0]
+    assert docker_run[docker_run.index("--cpu-shares") + 1] == "2"
+    assert docker_run[docker_run.index("--blkio-weight") + 1] == "10"
+    assert docker_run[docker_run.index("--oom-score-adj") + 1] == "500"
+    assert docker_run[-1] == "img:1"  # still the final positional — flags precede the image
+
+
+def test_spawn_priority_is_configurable_per_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PANOPTICON_CONTAINER_CPU_SHARES", "512")
+    monkeypatch.setenv("PANOPTICON_CONTAINER_CGROUP_PARENT", "panopticon.slice")
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).spawn("t1")
+    docker_run = rec.calls[2][0]
+    assert docker_run[docker_run.index("--cpu-shares") + 1] == "512"
+    assert docker_run[docker_run.index("--cgroup-parent") + 1] == "panopticon.slice"
+
+
+def test_spawn_with_priority_switched_off_emits_the_unconstrained_argv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An operator on a dedicated build host opts out entirely: no flags, and the pane's exec is the
+    # bare launcher again (no oom_score_adj wrapper) — byte-identical to the pre-priority argv.
+    for var in (
+        "PANOPTICON_CONTAINER_CPU_SHARES",
+        "PANOPTICON_CONTAINER_BLKIO_WEIGHT",
+        "PANOPTICON_CONTAINER_OOM_SCORE_ADJ",
+    ):
+        monkeypatch.setenv(var, "off")
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).spawn("t1")
+    docker_run, pane = rec.calls[2][0], rec.calls[3][0][-1]
+    assert not [arg for arg in docker_run if arg.startswith(("--cpu-", "--blkio-", "--oom-"))]
+    assert pane.endswith(
+        "exec docker exec --interactive --tty --user panopticon panopticon-t1"
+        " python -m panopticon.container.agent"
+    )
+
+
+def test_spawn_retries_without_the_cgroup_flags_when_the_daemon_refuses_them() -> None:
+    # A host that merely can't deprioritize must not lose the spawn (this is reproducible on a
+    # nested Docker daemon). The retry drops the controller-backed flags, keeps --oom-score-adj
+    # (which needs no controller), and clears the half-created container first — its name is taken.
+    rec = _CgroupRefusingRunner()
+    LocalRunner("http://svc", image="img:1", run=rec).spawn("t1")
+    runs = [args for args, _ in rec.calls if args[:2] == ["docker", "run"]]
+    assert len(runs) == 2
+    assert "--cpu-shares" in runs[0]
+    assert "--cpu-shares" not in runs[1] and "--blkio-weight" not in runs[1]
+    assert runs[1][runs[1].index("--oom-score-adj") + 1] == "500"
+    # the failed container is removed before the retry, so `docker run --name` doesn't collide
+    removes = [
+        i for i, (args, _) in enumerate(rec.calls) if args[:3] == ["docker", "rm", "--force"]
+    ]
+    retry = [i for i, (args, _) in enumerate(rec.calls) if args[:2] == ["docker", "run"]][1]
+    assert max(removes) < retry
+    # and the tmux pane still comes up, so the task is genuinely spawned
+    assert rec.calls[-1][0][:4] == ["tmux", "-L", "panopticon", "new-session"]
+
+
+def test_the_cleanup_sweep_degrades_on_a_refusing_daemon_too() -> None:
+    # Cleanup can run before any spawn in a process, so it can't rely on the spawn path having
+    # discovered the daemon's answer. The retry needs no `docker rm` — the sweep is --rm + unnamed.
+    rec = _CgroupRefusingRunner()
+    LocalRunner("http://svc", image="panopticon-base", run=rec).delete_workspace_contents("/w")
+    runs = [args for args, _ in rec.calls if args[:2] == ["docker", "run"]]
+    assert len(runs) == 2 and "--cpu-shares" not in runs[1]
+    assert not [args for args, _ in rec.calls if args[:3] == ["docker", "rm", "--force"]]
+
+
+def test_a_refusing_daemon_is_only_discovered_once() -> None:
+    # The fallback costs an extra `docker run` per spawn if we keep asking, so the answer is latched.
+    rec = _CgroupRefusingRunner()
+    runner = LocalRunner("http://svc", run=rec)
+    runner.spawn("t1")
+    rec.calls.clear()
+    runner.spawn("t2")
+    runs = [args for args, _ in rec.calls if args[:2] == ["docker", "run"]]
+    assert len(runs) == 1 and "--cpu-shares" not in runs[0]
+
+
+def test_an_ordinary_run_failure_is_raised_and_does_not_disable_the_flags() -> None:
+    # A bad image fails both attempts: the error surfaces (the spawner reports it), and the daemon
+    # is *not* written off as unable to deprioritize — the next spawn asks for the flags again.
+    rec = _RunFailingRunner()
+    runner = LocalRunner("http://svc", run=rec)
+    with pytest.raises(subprocess.CalledProcessError):
+        runner.spawn("t1")
+    rec.failing = False  # the daemon recovers
+    rec.calls.clear()
+    runner.spawn("t1")
+    assert "--cpu-shares" in rec.calls[2][0]
 
 
 def test_extra_env_is_forwarded() -> None:
@@ -265,6 +447,21 @@ def test_spawn_derives_the_config_mount_and_env_var_from_the_resolved_cli() -> N
     assert "PANOPTICON_AGENT_CLI=codex" in docker_run
 
 
+def test_spawn_carries_the_codex_feature_flag_into_the_container_only_when_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The container's adapter registry reads the same flag as the host (ADR 0014 §7), so the runner
+    # passes it through — but only when it's on, leaving the default `docker run` argv unchanged.
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).spawn("t1")
+    assert not [arg for arg in rec.calls[2][0] if arg.startswith(CODEX_FLAG)]
+
+    monkeypatch.setenv(CODEX_FLAG, "1")
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).spawn("t1")
+    assert f"{CODEX_FLAG}=1" in rec.calls[2][0]
+
+
 def test_base_image_and_config_mount_name_by_cli() -> None:
     assert base_image("claude") == "panopticon-base-claude"
     assert base_image("codex") == "panopticon-base-codex"
@@ -272,11 +469,11 @@ def test_base_image_and_config_mount_name_by_cli() -> None:
     assert config_mount("codex") == "/home/panopticon/.codex"
 
 
-def test_host_config_dir_map_matches_the_in_container_adapters() -> None:
+def test_host_config_dir_map_matches_the_in_container_adapters(enable_codex: None) -> None:
     # The host mounts the config volume at CLI_CONFIG_DIRNAME[cli]; the in-container adapter reads it
     # from its own config_dirname. If the two drift, resume silently breaks (ADR 0014 §4a) — so pin
-    # them equal for every *registered* adapter (codex's map entry is forward-looking; its adapter
-    # lands in a later slice, so skip CLIs with no adapter yet).
+    # them equal for every *registered* adapter. Codex is behind its feature flag (ADR 0014 §7);
+    # enable it here so the cross-check covers it rather than skipping it.
     from panopticon.container.cli import get_agent_cli
 
     checked = 0
@@ -284,10 +481,10 @@ def test_host_config_dir_map_matches_the_in_container_adapters() -> None:
         try:
             adapter = get_agent_cli(cli)
         except KeyError:
-            continue  # adapter not registered yet (e.g. codex) — nothing to cross-check
+            continue  # a mapped CLI with no adapter registered — nothing to cross-check
         assert adapter.config_dirname == dirname, cli
         checked += 1
-    assert checked >= 1  # claude at least is registered and cross-checked
+    assert checked == len(CLI_CONFIG_DIRNAME)  # every mapped CLI was cross-checked
 
 
 def test_spawn_passes_initial_prompt_as_env_var() -> None:
@@ -345,6 +542,13 @@ def test_delete_workspace_contents_runs_root_container_to_empty_directory() -> N
                 "/bin/sh",
                 "--volume",
                 "/tasks/t1:/cleanup",
+                # deleting a whole checkout is an IO storm too — it yields to the host like a task
+                "--cpu-shares",
+                "2",
+                "--blkio-weight",
+                "10",
+                "--oom-score-adj",
+                "500",
                 "panopticon-base",
                 "-c",
                 "find /cleanup -mindepth 1 -delete",

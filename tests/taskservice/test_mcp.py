@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
+import pytest
 from mcp.shared.memory import create_connected_server_and_client_session as connect
 
 from panopticon.core.models import Actor, Repo
@@ -108,6 +109,97 @@ async def test_binary_artifact_round_trips_via_base64_tool_and_blob_resource(
         blob = res.contents[0].blob  # type: ignore[union-attr]
         assert base64.b64decode(blob) == png
     assert await svc.get_artifact(task.id, "shot.png") == png
+
+
+async def test_repo_artifacts_round_trip_via_tool_and_resource(tmp_path: Path) -> None:
+    # The agent names itself, not a repo: the tool resolves its task's repo, so a task can only
+    # write to the repo it belongs to — and doesn't have to know that repo's id.
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        names = {t.name for t in (await s.list_tools()).tools}
+        assert {"put_repo_artifact", "list_repo_artifacts"} <= names
+        put = await s.call_tool(
+            "put_repo_artifact",
+            {"task_id": task.id, "name": "notes/api.md", "content": "beware the widget"},
+        )
+        assert put.isError is False
+        listed = await s.call_tool("list_repo_artifacts", {"task_id": task.id})
+        assert listed.structuredContent is not None
+        assert listed.structuredContent["result"] == [
+            {"name": "notes/api.md", "uri": "panopticon://repos/r1/artifacts/notes%2Fapi.md"}
+        ]
+        # A nested name travels percent-encoded, and reads back as a resource by that URI.
+        res = await s.read_resource("panopticon://repos/r1/artifacts/notes%2Fapi.md")
+        assert res.contents[0].text == "beware the widget"  # type: ignore[union-attr]
+    assert await svc.get_repo_artifact("r1", "notes/api.md") == b"beware the widget"
+    # The task's own artifacts are untouched — the two scopes are separate documents.
+    assert await svc.list_artifacts(task.id) == []
+
+
+async def test_repo_artifact_is_shared_by_the_repo_not_the_task(tmp_path: Path) -> None:
+    # Two tasks in the same repo see one set of documents; a task in another repo sees its own.
+    svc = await _service(tmp_path)
+    writer = await svc.create_task("r1", "spike")
+    reader = await svc.create_task("r1", "spike")
+    other = await svc.create_task("r2", "spike")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        await s.call_tool(
+            "put_repo_artifact",
+            {"task_id": writer.id, "name": "conventions.md", "content": "# How we work"},
+        )
+        seen = await s.call_tool("list_repo_artifacts", {"task_id": reader.id})
+        assert seen.structuredContent is not None
+        assert [entry["name"] for entry in seen.structuredContent["result"]] == ["conventions.md"]
+        elsewhere = await s.call_tool("list_repo_artifacts", {"task_id": other.id})
+        assert elsewhere.structuredContent is not None
+        assert elsewhere.structuredContent["result"] == []
+
+
+async def test_binary_repo_artifact_round_trips_as_a_blob(tmp_path: Path) -> None:
+    # A reference screenshot: base64 in, a base64 blob out (JSON can't carry raw bytes).
+    png = b"\x89PNG\r\n\x1a\n\x00\xff\xfe\x01binary\x00data"
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        await s.call_tool(
+            "put_repo_artifact",
+            {
+                "task_id": task.id,
+                "name": "shots/login.png",
+                "content_base64": base64.b64encode(png).decode(),
+            },
+        )
+        res = await s.read_resource("panopticon://repos/r1/artifacts/shots%2Flogin.png")
+        assert base64.b64decode(res.contents[0].blob) == png  # type: ignore[union-attr]
+    assert await svc.get_repo_artifact("r1", "shots/login.png") == png
+
+
+async def test_put_repo_artifact_requires_exactly_one_content_argument(tmp_path: Path) -> None:
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r1", "spike")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        neither = await s.call_tool("put_repo_artifact", {"task_id": task.id, "name": "x.md"})
+        assert neither.isError is True
+        both = await s.call_tool(
+            "put_repo_artifact",
+            {"task_id": task.id, "name": "x.md", "content": "a", "content_base64": "YQ=="},
+        )
+        assert both.isError is True
+        assert await svc.list_repo_artifacts("r1") == []
+
+
+async def test_missing_repo_artifact_resource_errors(tmp_path: Path) -> None:
+    svc = await _service(tmp_path)
+    await svc.create_task("r1", "spike")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        with pytest.raises(Exception):  # noqa: B017 — the SDK wraps the handler's error
+            await s.read_resource("panopticon://repos/r1/artifacts/absent.md")
 
 
 async def test_put_artifact_requires_exactly_one_content_argument(tmp_path: Path) -> None:
@@ -300,7 +392,7 @@ async def test_create_task_seeds_sort_weight(tmp_path: Path) -> None:
     assert (await svc.get_task(child_id)).sort_weight == 9  # persisted
 
 
-async def test_create_task_carries_agent_cli_override(tmp_path: Path) -> None:
+async def test_create_task_carries_agent_cli_override(tmp_path: Path, enable_codex: None) -> None:
     svc = await _service(tmp_path)
     boss = await svc.create_task("r1", "orchestrator")
     async with connect(build_mcp_server(svc)) as s:

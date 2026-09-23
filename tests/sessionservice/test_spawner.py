@@ -30,13 +30,16 @@ def _no_op_run(args: object, *, check: bool = True) -> str:
 
 class _FakeRunner:
     """Records spawn calls; stands in for LocalRunner. Mimics its ``progress`` callbacks (STARTING
-    then AWAITING), ``is_running`` (for reconcile/down-detection) and ``has_session`` (for heal/
-    self-heal) — both configurable."""
+    then AWAITING), ``is_running`` (for reconcile/down-detection), ``has_session`` (for heal/
+    self-heal) and ``exit_reason`` (why a stopped container died) — all configurable."""
 
-    def __init__(self, *, running: bool = True, session: bool = True) -> None:
+    def __init__(
+        self, *, running: bool = True, session: bool = True, exit_reason: str | None = None
+    ) -> None:
         self.spawned: list[dict[str, object]] = []
         self._running = running
         self._session = session
+        self._exit_reason = exit_reason
 
     def spawn(
         self,
@@ -77,6 +80,9 @@ class _FakeRunner:
 
     def has_session(self, task_id: str) -> bool:
         return self._session
+
+    def exit_reason(self, task_id: str) -> str | None:
+        return self._exit_reason
 
     def stop(self, container_id: str) -> None:
         pass
@@ -234,7 +240,9 @@ def test_spawn_one_passes_starting_model_to_runner() -> None:
     assert runner.spawned[0]["starting_model"] == "primary"
 
 
-def test_spawn_one_resolves_the_repo_default_cli_and_drives_the_image_variant() -> None:
+def test_spawn_one_resolves_the_repo_default_cli_and_drives_the_image_variant(
+    enable_codex: None,
+) -> None:
     # No task override → the repo's default CLI is resolved host-side (ADR 0014 §3) and drives the
     # base-image variant (§4), the base probe, and the env var the launcher reads.
     client, runner, images = (
@@ -248,6 +256,26 @@ def test_spawn_one_resolves_the_repo_default_cli_and_drives_the_image_variant() 
     assert runner.spawned[0]["agent_cli"] == "codex"
     assert runner.spawned[0]["image"] == "panopticon-base-codex"  # spike has no layers → the base
     assert images.base_checks == ["codex"]
+
+
+def test_spawn_one_refuses_a_disabled_cli_and_reports_the_reason() -> None:
+    # A repo left on codex while the flag is off (a record written before it was gated, or by a host
+    # that has it on): refuse loudly — no container, and FAILED carries the remedy — rather than
+    # silently running claude in its place (ADR 0014 §7).
+    client, runner = _FakeClient(repo={**_REPO, "agent_cli": "codex"}), _FakeRunner()
+    with pytest.raises(ValueError, match="PANOPTICON_ENABLE_CODEX"):
+        _spawner(client, runner).spawn_one(
+            {
+                "id": "t1",
+                "repo_id": "r1",
+                "workflow": "spike",
+                "state": "ITERATING",
+                "claimed_by": None,
+            }
+        )
+    assert runner.spawned == []
+    failures = [detail for _, phase, detail in client.phases if phase == "failed"]
+    assert failures and "PANOPTICON_ENABLE_CODEX" in (failures[-1] or "")
 
 
 def test_spawn_one_task_agent_cli_overrides_the_repo_default() -> None:
@@ -313,6 +341,9 @@ class _FakeShellRunner:
 
     def has_session(self, task_id: str) -> bool:
         return self._session
+
+    def exit_reason(self, task_id: str) -> str | None:
+        return None  # a shell task has no container to inspect (mirrors ShellRunner)
 
     def stop(self, session_id: str) -> None:
         pass
@@ -626,6 +657,39 @@ def test_reconcile_ignores_tasks_not_in_flight_or_not_ours() -> None:
     assert client.cleared == []  # live/failed are left as-is; t3 belongs to another runner
 
 
+def test_reconcile_surfaces_why_the_container_died() -> None:
+    # The container stopped but is still around to ask (e.g. the kernel OOM-killed it): report
+    # `failed` with the exit reason — the dashboard shows the cause, not a bare `down`.
+    client = _FakeClient(repo=_REPO)
+    runner = _FakeRunner(running=False, exit_reason="container OOM-killed (exit 0)")
+    _spawner(client, runner).reconcile(
+        {"id": "t1", "claimed_by": "host-1", "container_status": "awaiting", "state": "ITERATING"}
+    )
+    assert client.phases == [("t1", "failed", "container OOM-killed (exit 0)")]
+    assert client.cleared == []  # surfaced as failed+why, not cleared to an unexplained `down`
+
+
+def test_reconcile_surfaces_a_down_tasks_exit_reason() -> None:
+    # A task can go `down` *after* being live (its registration lapsed when the container died) —
+    # the evidence is still in the stopped container, so the same exit-reason check applies.
+    client = _FakeClient(repo=_REPO)
+    runner = _FakeRunner(running=False, exit_reason="container exited (exit 137)")
+    _spawner(client, runner).reconcile(
+        {"id": "t1", "claimed_by": "host-1", "container_status": "down", "state": "ITERATING"}
+    )
+    assert client.phases == [("t1", "failed", "container exited (exit 137)")]
+
+
+def test_reconcile_leaves_a_down_task_alone_without_an_exit_reason() -> None:
+    # `down` with the container gone entirely: nothing to add and nothing to clear — no feed churn.
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner(running=False)
+    _spawner(client, runner).reconcile(
+        {"id": "t1", "claimed_by": "host-1", "container_status": "down", "state": "ITERATING"}
+    )
+    assert client.phases == []
+    assert client.cleared == []
+
+
 def test_heal_respawns_an_orphan_claimed_by_us_with_no_session() -> None:
     # The orphan case (e.g. the tmux server crashed, or `make stop` tore everything down but the
     # task stays claimed): claimed by us, non-terminal, but its tmux session is gone → respawn it
@@ -745,6 +809,41 @@ def test_heal_caps_respawns_then_surfaces_a_crash_looping_task() -> None:
     assert (
         len(runner.spawned) == 3
     )  # capped at max_respawns; further attempts are surfaced, not spawned
+
+
+def test_heal_cap_reports_failed_once_with_a_pointer_to_respawn() -> None:
+    # Hitting the crash-loop cap is surfaced where the user looks — a `failed` report whose detail
+    # says what happened and what to do — not just the runner log. And only once: a task already
+    # reading `failed` is left alone rather than re-reported (feed churn) every pass.
+    clock = {"t": 0.0}
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner(session=False)
+    spawner = Spawner(
+        client,
+        runner,
+        runner_id="host-1",  # type: ignore[arg-type]
+        cache=CloneCache(
+            "/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None
+        ),
+        tasks_root="/tasks",
+        git=GitClones(run=_no_op_run),
+        images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        makedirs=lambda _p: None,
+        now=lambda: clock["t"],
+        max_respawns=2,
+        respawn_reset=60.0,
+    )
+    spawner.heal(_orphan())  # respawn 1
+    clock["t"] += 1.0
+    spawner.heal(_orphan())  # respawn 2 → budget exhausted
+    clock["t"] += 1.0
+    spawner.heal(_orphan())  # capped → surfaced as failed
+    failed = [p for p in client.phases if p[1] == "failed"]
+    assert failed == [
+        ("t1", "failed", "keeps losing its tmux session (2 respawns) — press R to respawn")
+    ]
+    clock["t"] += 1.0
+    spawner.heal({**_orphan(), "container_status": "failed"})  # already surfaced on a later pass
+    assert [p for p in client.phases if p[1] == "failed"] == failed  # reported once, not every pass
 
 
 def test_heal_resets_the_respawn_budget_after_a_survivor_window() -> None:

@@ -19,7 +19,9 @@ If you add a package that orchestrates or renders, keep it LLM-free.
 src/panopticon/
   core/            # domain models, state classes, the Workflow interface (the state
                    # machine: resolution, queries, start_task/apply_transition),
-                   # store & artifact interfaces — pure, no I/O EXCEPT git.py (local
+                   # store & artifact interfaces, features.py = the host-side feature
+                   # flags (PANOPTICON_ENABLE_CODEX gates the codex CLI, off by default —
+                   # ADR 0014 §7) — pure, no I/O EXCEPT git.py (local
                    # branch/worktree ops; LLM-free, behind an injectable command-runner)
   workflows/       # built-in Workflow subclasses (Spike seed; GithubPeerReviewed [formerly Parity]
                    # = cloude-cade lifecycle; GithubSelfReviewed = same, sans the peer-review state,
@@ -31,7 +33,8 @@ src/panopticon/
                    # discovery.py = scan the package + an optional path for Workflow subclasses
                    # (the registry build_app runs on; drop a module in → registered, ADR 0004)
   taskservice/     # control plane: TaskService, FastAPI REST API, the SQLAlchemy store
-                   # adapter (in-memory or on-disk SQLite), filesystem artifact store, MCP
+                   # adapter (in-memory or on-disk SQLite), filesystem artifact store
+                   # (per-task + per-repo artifacts, the latter with nested names), MCP
                    # server (mcp.py: operations=tools, artifacts=resources; FastMCP) mounted at /mcp
   sessionservice/  # the runner: Runner ABC + StubRunner (in-process) + LocalRunner
                    # (real Docker+tmux via the CLIs) + ShellRunner (shell_runner.py = a workflow's
@@ -39,11 +42,16 @@ src/panopticon/
                    # workflows; the spawner routes on it, skipping the image + the clone unless the
                    # workflow opts in via clone_repo); images.py = ADR-0005 composed images
                    # (base→workflow→repo); provisioner.py = host-side provisioning
-                   # (ADR 0011: branch the per-task clone on slug, record it back); clones.py =
+                   # (ADR 0011: branch the per-task clone on slug, record it back); priority.py =
+                   # host-side resource priority (env → argv: the deprioritizing `docker run` flags
+                   # every task container gets — cpu/blkio weight floors + a raised OOM score — the
+                   # agent pane's own oom_score_adj, `nice` for shell tasks, and the cgroup-flag
+                   # strip the runner degrades through on a daemon that refuses them); clones.py =
                    # per-repo clone cache; spawn.py = spawn-prep (clone --local the per-task
-                   # checkout, mounted rw at /workspace; point origin at the forge, then init any
+                   # checkout, mounted rw at /workspace; point origin at the forge, then fill in any
                    # submodules — in that order, since relative .gitmodules URLs resolve against
-                   # origin); spawner.py = the spawn loop (claim an unclaimed task → spawn its
+                   # origin — hardlink-cloning them out of the repo's own checkout on this host when
+                   # git_url names one, ADR 0011 §1c); spawner.py = the spawn loop (claim an unclaimed task → spawn its
                    # container; prefills claude's input box with the task memo on a first spawn);
                    # prefill.py = the detached input-box prefill
                    # poller (mirrors cloude-cade: pipe-pane watch for ESC[?2004h → paste-buffer the
@@ -56,14 +64,19 @@ src/panopticon/
                    # pane's CLI-agnostic launcher: resolve the AgentCLI adapter from PANOPTICON_AGENT_CLI
                    # → render skills + operations, point it at the /mcp server, deliver the workflow
                    # overview to the agent's context → launch the CLI); cli/ = the agent-CLI adapter
-                   # package (ADR 0014): cli/base.py = the AgentCLI seam (ABC) + registry,
+                   # package (ADR 0014): cli/base.py = the AgentCLI seam (ABC) + registry + the
+                   # shared launch (resume, then quarantine-and-relaunch when the CLI refuses the
+                   # session it was handed — ADR 0014 §4b: resume is advisory, a dead pane is not),
                    # cli/claude.py = ClaudeAgentCLI + cli/codex.py = CodexAgentCLI (config, skills,
-                   # MCP, AGENTS.md overview, launch/resume, auth, turn-flip hooks — full seam)
+                   # MCP, AGENTS.md overview, launch/resume, auth, turn-flip hooks — full seam;
+                   # codex is registered only behind PANOPTICON_ENABLE_CODEX, ADR 0014 §7)
                    # — the ONLY LLM pkg
 docker/Dockerfile  # base task-container image (ADR 0005 base layer): python + git + bash +
                    # the panopticon package + the `claude` CLI the agent execs; runs as the
                    # unprivileged `panopticon` user. docker/entrypoint.sh = remap that user to the
-                   # invoking host uid/gid (PANOPTICON_PUID/PGID) then drop via gosu
+                   # invoking host uid/gid (PANOPTICON_PUID/PGID), touch /run/panopticon-ready (the
+                   # remap-complete marker the runner's tmux pane waits for before exec'ing in —
+                   # exec'ing earlier resolves --user to the pre-remap uid), then drop via gosu
 ```
 
 ## Conventions
@@ -110,6 +123,8 @@ make check       # lint + typecheck + test (what CI runs)
 make serve       # run the task service over HTTP (python -m panopticon.taskservice)
 make dashboard   # run the dashboard once (no attach loop)
 make start       # bring up everything: task service + session-service runner + dashboard supervisor
+make stop        # stop the task containers + kill the -L panopticon tmux server
+make restart     # restart the control plane (service + runner) in place — task containers keep running
 make build       # docker build the base task-container image (panopticon-base)
 make clean       # remove the base + composed panopticon-* images
 make migrate     # alembic upgrade head (uses $PANOPTICON_DB; override DB=<url>)
@@ -142,6 +157,15 @@ with `ssh -t <host>` when set. Crucially the runner spawns task sessions on the 
 `switch-client`), so the same loop reaches a remote task over ssh at M5; `s` jumps to the
 `service` session. The background sessions persist after `q`
 (stop them with `make stop`, which stops the task containers and kills the `-L panopticon` server).
+**`make restart`** (`panopticon restart [service|runner|dashboard|all]`) is the in-place bounce for
+picking up new control-plane code: it kills and relaunches the `service` and `runner` sessions from
+the same launch table `start` uses (`terminal/sessions.py`), waiting for each old process to exit
+before relaunching (the port must be free) and for the new one to answer. It never touches `docker`
+or the `panopticon-<task-id>` task sessions — the containers stay up and re-register with the new
+task service over their `/live` heartbeat, and the runner returns under the same runner id so its
+claims survive; the printed before/after summary (task sessions, tasks reporting `live`) is the
+proof. The `dashboard` is opt-in (restarting it drops an attached supervisor back to the shell —
+rejoin with `panopticon console`).
 Spawning needs the base image — `make build`
 first. `make dashboard` runs the dashboard once without the attach loop (talks to
 `PANOPTICON_SERVICE_URL`).
@@ -181,6 +205,10 @@ on every PR (the same commands the Makefile wraps).
   branch + clone path are recorded and a second pass is a no-op (idempotent).
 - `tests/test_clones.py` — the per-repo clone cache: unit tests pin the clone-on-first-use vs
   fetch-when-present decision (fakes); a `skipif` integration test clones a real local repo.
+- `tests/taskservice/test_artifacts.py` — the artifact store, **both scopes**: the task layout +
+  slug alias, and the repo namespace (nested names, recursive listing, traversal/symlink refusal,
+  the folder + file accessors the dashboard opens with, and that a repo and a task sharing an id
+  keep separate documents).
 - `tests/test_models.py` — the pure **container-status composition** (`compose_container_status`):
   the truth table folding the session service's reported `LifecyclePhase` with registration
   presence + runner liveness into the displayed `ContainerStatus` (queued/…/live/down/failed/
@@ -189,9 +217,11 @@ on every PR (the same commands the Makefile wraps).
   skip terminal/claimed, skip on a 409 lost claim), the **reported phase sequence** (claiming →
   preparing → building → starting → awaiting, and `failed` with the error when a step raises), the
   `reconcile` down-detection (a claimed-by-us in-flight task whose container is gone → clear the
-  phase → composes `down`), `heal` **self-heal** (a claimed-by-us non-terminal task whose tmux
-  session is gone → respawn via the idempotent spawn path; skips healthy/unclaimed/terminal tasks;
-  the crash-loop cap + survivor-window budget reset), and the `spawnable_tasks` filter; an
+  phase → composes `down`; a stopped container still present → report `failed` with its
+  `exit_reason` — OOM kill/exit code — including for an already-`down` task), `heal` **self-heal**
+  (a claimed-by-us non-terminal task whose tmux session is gone → respawn via the idempotent spawn
+  path; skips healthy/unclaimed/terminal tasks; the crash-loop cap — surfaced once as `failed`
+  with a press-R detail — + survivor-window budget reset), and the `spawnable_tasks` filter; an
   integration test claims + spawns against the real task service over REST (fake git/runner).
 - `tests/test_host.py` — the unified per-host daemon (ADR 0008/0011): a unit test isolates a
   failing task and another pins that each pass also `heal`s every task; an integration test drives
@@ -208,7 +238,8 @@ on every PR (the same commands the Makefile wraps).
   transition → history) over the REST API, no Docker.
 - `tests/test_local_runner.py` / `tests/test_entrypoint.py` — the runner's emitted docker/tmux
   commands (incl. the ADR 0011 `/workspace` mount + the CLI's spawn-prep→spawn flow, `is_running`'s
-  `docker ps` probe + `has_session`'s `tmux list-sessions` probe for self-heal) and the container
+  `docker ps` probe + `has_session`'s `tmux list-sessions` probe for self-heal, `exit_reason`'s
+  `docker inspect` of a stopped container — OOM-kill before exit code) and the container
   entrypoint loop (fakes; no Docker/LLM), plus a `skipif` docker integration test.
 - `tests/test_spawn.py` — spawn-prep (ADR 0011): unit tests pin the `clone --local` of the
   per-task checkout and the idempotency gate (skips when the checkout already exists), plus the
@@ -221,6 +252,22 @@ on every PR (the same commands the Makefile wraps).
   mounts-anywhere property); another hydrates a nested submodule from a source repo whose
   submodules' own repos have been moved away, pinning that the objects are hardlinked from it and
   that `sync` leaves no donor path behind.
+- `tests/container/test_cli_base.py` — the agent-CLI seam, including the **resume fallback** (ADR
+  0014 §4b): with the process runner and clock injected (no CLI is ever started), a resumed launch
+  that exits non-zero fast quarantines the session and relaunches — recovering an older healthy
+  session when there is one — while a signal death, a clean exit and a slow failure each leave the
+  history alone, and the retry loop is capped so its last pass is necessarily a first run.
+- `tests/container/test_claude.py` — the claude adapter's rendered surface *and* its
+  unresumable-transcript recognizer: the SDK marker shapes captured off the two tasks this broke,
+  the newest-first resume order, and the regression that an SDK-only project now yields a
+  first-run argv instead of the `--continue` that killed the pane.
+- `tests/sessionservice/test_priority.py` — resource priority (env → argv): the shipped defaults
+  every task container is spawned with, each per-host override, the `off` switch that returns the
+  argv to its pre-priority form, the clamps (a negative OOM adjustment refused), a bad value falling
+  back rather than failing a spawn, and the cgroup-flag strip. `test_local_runner.py` covers the
+  wiring — the flags on `docker run`, the pane wrapper that raises the exec'd agent's OOM score
+  (`docker exec` doesn't inherit the container's), and the retry-without-cgroup-flags fallback plus
+  its latch; `test_shell_runner.py` covers the `nice` prefix on a shell task's host session.
 - `tests/test_prefill.py` — the input-box prefill poller: unit tests drive `prefill_pane` with a
   fake tmux runner + injected `sleep`/raw-log — pin the `pipe-pane`/`load-buffer`/`paste-buffer -p`
   commands when the box becomes ready, and every best-effort give-up (empty prompt, timeout,
@@ -260,6 +307,8 @@ on every PR (the same commands the Makefile wraps).
   `capabilities`, a JSON opt-in map for elevated container privileges (`docker_in_docker` → the
   runner spawns `--privileged` and the entrypoint starts a nested Docker daemon; a trust escalation,
   off by default).
+  A repo also owns **artifacts** of its own (see **Artifact**): the documents every task in it
+  shares, under `<artifacts>/repos/<repo-id>/`, written by any of its tasks over MCP.
 - **Workflow** — a `Workflow` subclass whose **states are nested `State` classes**
   (declarative). It declares `initial`; states are discovered and their transitions
   (class refs or label strings) resolved + validated when the workflow is instantiated.
@@ -340,7 +389,13 @@ on every PR (the same commands the Makefile wraps).
 - **Task service** — the deterministic control plane (sole DB authority).
 - **Session service / runner** — spawns task containers (stubbed for now).
 - **Terminal controller** — the user-facing CLI/dashboard (Slice 3).
-- **Artifact** — a file-backed per-task document (plan, notes), reachable via REST/FS/MCP.
+- **Artifact** — a file-backed document, reachable via REST/FS/MCP. **Task-scoped** (plan,
+  notes; `<artifacts>/tasks/<task-id>/<name>`, a single-segment name) or **repo-scoped**
+  (`<artifacts>/repos/<repo-id>/<name…>`) — the documents every task in a repo shares, whose
+  names may be nested. The agent writes the latter with `put_repo_artifact`/`list_repo_artifacts`,
+  naming its own task (the service resolves its repo, so it can only write to its own); the
+  dashboard gives them their own modal (`A`, or `a` in the repos screen). Either scope's modal
+  opens its artifact **folder** on the host with `f` — the task's under `a`, the repo's under `A`.
 - **Lifecycle hook** — a deterministic `Workflow` method the task service runs at a defined
   moment (currently `on_transition`, after a transition, before persistence). It may write
   artifacts or mutate the task's own record — no LLM, no clock. The seam; the built-in workflows

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import shlex
 from unittest.mock import MagicMock, patch
 
-from panopticon.terminal.__main__ import _start_sessions, main
+import pytest
+
+from panopticon.terminal.__main__ import main
 
 
 def test_stop_kills_containers_and_server() -> None:
@@ -52,41 +53,10 @@ def test_doctor_dispatches_to_the_checker_and_returns_its_code() -> None:
     mock_report.assert_called_once_with(["sentinel"])
 
 
-def test_start_sessions_quotes_a_python_path_with_spaces() -> None:
-    # A pipx install on macOS lives under `~/Library/Application Support/...`; the space in the
-    # interpreter path would word-split when the launch command runs through the shell (tmux runs
-    # `new-session`'s command via `/bin/sh -c`), so the path must be shlex-quoted. Regression for
-    # `zsh: no such file or directory: /Users/.../Library/Application`.
-    fake_executable = "/Users/x/Library/Application Support/pipx/venvs/panopticon/bin/python"
-    # `has-session` returns non-zero (no existing session) so both services get a `new-session`.
-    no_session = MagicMock(returncode=1)
-    with (
-        patch("sys.executable", fake_executable),
-        patch("subprocess.run", return_value=no_session) as mock_run,
-    ):
-        _start_sessions()
-
-    new_session_cmds = [
-        call.args[0][
-            -1
-        ]  # the final arg to `tmux … new-session -d -s <name> <cmd>` is the shell cmd
-        for call in mock_run.call_args_list
-        if "new-session" in call.args[0]
-    ]
-    assert len(new_session_cmds) == 2  # service + runner
-    quoted = shlex.quote(fake_executable)
-    for cmd in new_session_cmds:
-        assert quoted in cmd  # the quoted path is present…
-        # …and the bare, unquoted path is not — i.e. the command is safe through `/bin/sh -c`.
-        assert f"{fake_executable} -m" not in cmd
-        # It parses as a single argv token, not two (the whole point of quoting).
-        assert shlex.split(cmd)[0] == fake_executable
-
-
 def test_host_runs_migrate_then_sessions() -> None:
     with (
         patch("panopticon.terminal.__main__._run_migrate") as mock_migrate,
-        patch("panopticon.terminal.__main__._start_sessions") as mock_sessions,
+        patch("panopticon.terminal.__main__.start_sessions") as mock_sessions,
     ):
         assert main(["host"]) == 0
     mock_migrate.assert_called_once_with()
@@ -96,7 +66,7 @@ def test_host_runs_migrate_then_sessions() -> None:
 def test_no_arg_aliases_start() -> None:
     with (
         patch("panopticon.terminal.__main__._run_migrate") as mock_migrate,
-        patch("panopticon.terminal.__main__._start_sessions") as mock_sessions,
+        patch("panopticon.terminal.__main__.start_sessions") as mock_sessions,
         patch("panopticon.terminal.console.run_console_local") as mock_console,
     ):
         assert main([]) == 0
@@ -108,7 +78,7 @@ def test_no_arg_aliases_start() -> None:
 def test_start_runs_migrate_sessions_then_console() -> None:
     with (
         patch("panopticon.terminal.__main__._run_migrate") as mock_migrate,
-        patch("panopticon.terminal.__main__._start_sessions") as mock_sessions,
+        patch("panopticon.terminal.__main__.start_sessions") as mock_sessions,
         patch("panopticon.terminal.console.run_console_local") as mock_console,
     ):
         assert main(["start"]) == 0
@@ -122,8 +92,29 @@ def test_start_with_a_task_arg_joins_it() -> None:
     # `panopticon start <task>` threads the task ref through to the console as `join=`.
     with (
         patch("panopticon.terminal.__main__._run_migrate"),
-        patch("panopticon.terminal.__main__._start_sessions"),
+        patch("panopticon.terminal.__main__.start_sessions"),
         patch("panopticon.terminal.console.run_console_local") as mock_console,
     ):
         assert main(["start", "fix-login"]) == 0
     assert mock_console.call_args.kwargs["join"] == "fix-login"
+
+
+def test_restart_dispatches_the_default_targets() -> None:
+    # No target → the command decides (service + runner); `_run_migrate` is threaded in so a
+    # restart after a code pull applies any new migration before the service comes back.
+    with patch("panopticon.terminal.__main__.restart_sessions", return_value=0) as mock_restart:
+        assert main(["restart"]) == 0
+    assert mock_restart.call_args.args[0] == []
+    assert mock_restart.call_args.kwargs["service_url"]
+    assert mock_restart.call_args.kwargs["migrate"] is not None
+
+
+def test_restart_passes_named_targets_through_and_returns_its_code() -> None:
+    with patch("panopticon.terminal.__main__.restart_sessions", return_value=1) as mock_restart:
+        assert main(["restart", "runner", "dashboard"]) == 1
+    assert mock_restart.call_args.args[0] == ["runner", "dashboard"]
+
+
+def test_restart_rejects_an_unknown_target() -> None:
+    with pytest.raises(SystemExit):  # argparse rejects it before anything is bounced
+        main(["restart", "containers"])

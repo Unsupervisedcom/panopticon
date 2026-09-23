@@ -41,14 +41,37 @@ def test_fetches_when_the_clone_exists() -> None:
     assert path == "/clones/r1"
     assert rec.calls == [
         ["git", "-C", "/clones/r1", "fetch", "--all", "--prune"],
+        # advance local base to upstream (else stale) — an ordinary merge, not --ff-only, so a
+        # diverged-but-unconflicting cache clone still catches up; identity is passed inline so a
+        # merge commit doesn't need the host's global git config.
         [
             "git",
             "-C",
             "/clones/r1",
+            "-c",
+            "user.name=panopticon",
+            "-c",
+            "user.email=panopticon@localhost",
             "merge",
-            "--ff-only",
-        ],  # advance local base to upstream (else stale)
+            "--no-edit",
+        ],
     ]
+
+
+def test_a_conflicting_merge_is_aborted_and_raised() -> None:
+    """A failed merge must not leave the cache clone mid-merge — the next task clones from it."""
+    calls: list[list[str]] = []
+
+    def run(args: Sequence[str], *, check: bool = True) -> str:
+        calls.append(list(args))
+        if "merge" in args and "--no-edit" in args:
+            raise RuntimeError("CONFLICT")
+        return ""
+
+    cache = CloneCache("/clones", run=run, exists=lambda _p: True, makedirs=lambda _p: None)
+    with pytest.raises(RuntimeError):
+        cache.ensure("r1", "https://x/r1.git")
+    assert calls[-1] == ["git", "-C", "/clones/r1", "merge", "--abort"]
 
 
 def test_ensure_creates_root_dir_before_cloning(tmp_path: Path) -> None:
@@ -84,3 +107,75 @@ def test_ensure_clones_then_fetches_a_real_repo(tmp_path: Path) -> None:
     assert (
         Path(path) / "README"
     ).read_text() == "updated"  # the cache's base branch advanced (not stale)
+
+
+@pytest.mark.skipif(not shutil.which("git"), reason="needs git")
+def test_ensure_merges_a_diverged_but_unconflicting_clone(tmp_path: Path) -> None:
+    """The cache clone has a local commit of its own; upstream moved a *different* file.
+
+    `--ff-only` would refuse this; an ordinary merge takes both sides.
+    """
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    at_origin = lambda *a: subprocess.run(a, cwd=origin, check=True, capture_output=True)
+    at_origin("git", "init", "--initial-branch", "main")
+    at_origin("git", "config", "user.email", "t@example.com")
+    at_origin("git", "config", "user.name", "t")
+    (origin / "README").write_text("hi")
+    at_origin("git", "add", "--all")
+    at_origin("git", "commit", "--message", "init")
+
+    cache = CloneCache(str(tmp_path / "clones"))
+    path = Path(cache.ensure("r1", str(origin)))
+
+    at_clone = lambda *a: subprocess.run(a, cwd=path, check=True, capture_output=True)
+    at_clone("git", "config", "user.email", "c@example.com")
+    at_clone("git", "config", "user.name", "c")
+    (path / "LOCAL").write_text("local work")  # the clone diverges…
+    at_clone("git", "add", "--all")
+    at_clone("git", "commit", "--message", "local")
+
+    (origin / "OTHER").write_text("upstream work")  # …and so does origin, without conflicting
+    at_origin("git", "add", "--all")
+    at_origin("git", "commit", "--message", "upstream")
+
+    assert cache.ensure("r1", str(origin)) == str(path)
+    assert (path / "LOCAL").read_text() == "local work"  # both sides survive the merge
+    assert (path / "OTHER").read_text() == "upstream work"
+
+
+@pytest.mark.skipif(not shutil.which("git"), reason="needs git")
+def test_ensure_aborts_a_conflicting_merge_leaving_the_clone_usable(tmp_path: Path) -> None:
+    """A real conflict raises, and the clone is left clean — not mid-merge."""
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    at_origin = lambda *a: subprocess.run(a, cwd=origin, check=True, capture_output=True)
+    at_origin("git", "init", "--initial-branch", "main")
+    at_origin("git", "config", "user.email", "t@example.com")
+    at_origin("git", "config", "user.name", "t")
+    (origin / "README").write_text("hi")
+    at_origin("git", "add", "--all")
+    at_origin("git", "commit", "--message", "init")
+
+    cache = CloneCache(str(tmp_path / "clones"))
+    path = Path(cache.ensure("r1", str(origin)))
+
+    at_clone = lambda *a: subprocess.run(a, cwd=path, check=True, capture_output=True)
+    at_clone("git", "config", "user.email", "c@example.com")
+    at_clone("git", "config", "user.name", "c")
+    (path / "README").write_text("clone side")  # both sides edit the same line
+    at_clone("git", "commit", "--all", "--message", "local")
+
+    (origin / "README").write_text("origin side")
+    at_origin("git", "commit", "--all", "--message", "upstream")
+
+    with pytest.raises(subprocess.CalledProcessError):
+        cache.ensure("r1", str(origin))
+    status = subprocess.run(
+        ["git", "-C", str(path), "status", "--porcelain"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert status == ""  # the aborted merge left no conflicted files behind
+    assert (path / "README").read_text() == "clone side"

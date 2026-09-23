@@ -173,7 +173,10 @@ surface the task service exposes over MCP (and REST):
   invokes `advance` through a skill; the dashboard drives only `drop`.
 - **Artifacts** — the task's own documents (the plan, notes), file-backed and addressable
   at `panopticon://tasks/{id}/artifacts/{name}`. The plan lives here, not in the repo;
-  read it from the dashboard with `a`.
+  read it from the dashboard with `a` (whose `f` opens the task's whole artifact folder in
+  your file manager). The task's **repo** has artifacts too — the documents
+  every task in it shares, written with `put_repo_artifact` and read from the dashboard with
+  `A`; see [`repos.md`](repos.md#repo-artifacts).
 - **Skills** — agent-driven procedures exposed in the container. Every task has the
   universal **`provision`** skill; a workflow adds its own (the GitHub workflows add
   `open-pr`, `babysit-ci`, `babysit-merge`).

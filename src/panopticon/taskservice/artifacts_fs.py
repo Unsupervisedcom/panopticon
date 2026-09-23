@@ -1,14 +1,17 @@
 """Filesystem artifact-store adapter (ADR 0003: local filesystem first).
 
-Layout: ``<root>/tasks/<task_id>/<name>``. The same files are openable in an editor and,
-later, served over MCP using the resolver in :mod:`panopticon.core.artifacts`. Once a task has
-a slug, ``<root>/tasks/<slug>`` is a relative symlink to its id-named directory, so a human can
-reach a task's artifacts by its readable label as well as its opaque id.
+Layout: ``<root>/tasks/<task_id>/<name>`` for a task's artifacts and
+``<root>/repos/<repo_id>/<name…>`` for a repo's (whose names may be nested). The same files are
+openable in an editor and, later, served over MCP using the resolver in
+:mod:`panopticon.core.artifacts`. Once a task has a slug, ``<root>/tasks/<slug>`` is a relative
+symlink to its id-named directory, so a human can reach a task's artifacts by its readable label
+as well as its opaque id.
 """
 
 from __future__ import annotations
 
 import asyncio
+import builtins
 import os
 from pathlib import Path
 
@@ -16,6 +19,7 @@ from panopticon.core.artifacts import (
     ArtifactStore,
     InvalidArtifactName,
     is_hidden,
+    validate_relative_name,
     validate_segment,
 )
 
@@ -37,6 +41,20 @@ class FilesystemArtifactStore(ArtifactStore):
         validate_segment(name)
         path = self._task_dir(task_id) / name
         return path if path.is_file() else None
+
+    def task_artifact_dir(self, task_id: str) -> Path | None:
+        """The task's artifact **directory**, or ``None`` when it doesn't exist here.
+
+        :meth:`path`'s directory twin — the same local-callers-only contract, answering about the
+        whole folder rather than one file, for the dashboard's "open the folder" key. ``None``
+        covers both reasons there's nothing to open: the caller doesn't share this store's
+        filesystem, or the task has no artifacts yet (the directory is created on first write).
+        It is the **id**-named directory, not the ``<root>/tasks/<slug>`` alias symlink: that one
+        is a convenience for humans browsing by label, while this is the canonical location and
+        exists whether or not the task is slugged.
+        """
+        task_dir = self._task_dir(task_id)
+        return task_dir if task_dir.is_dir() else None
 
     async def put(self, task_id: str, name: str, content: bytes) -> None:
         validate_segment(name)
@@ -88,6 +106,80 @@ class FilesystemArtifactStore(ArtifactStore):
         so the shortcut is worth the override.
         """
         return await asyncio.to_thread(self._has_artifacts_sync, task_id)
+
+    # -- repo-scoped artifacts ----------------------------------------------------
+    #
+    # ``<root>/repos/<repo_id>/<name…>`` — the repo sibling of the ``tasks/`` namespace above, so
+    # the two scopes can never collide even when a repo and a task share an id. Names here may be
+    # nested (``notes/api.md``), which is the one real difference in the implementations: writes
+    # create intermediate directories and listing recurses.
+
+    def _repo_dir(self, repo_id: str) -> Path:
+        validate_segment(repo_id)
+        return self._root / "repos" / repo_id
+
+    def _repo_file(self, repo_id: str, name: str) -> Path:
+        """The on-disk path of a repo artifact, guarded against escaping its repo directory.
+
+        :func:`validate_relative_name` already refuses ``..``, an absolute name and the other
+        traversal spellings; resolving the join and re-checking the parentage is the belt to that
+        braces — a **symlinked** subdirectory planted in the tree points somewhere the name itself
+        looks innocent about, and only a resolved path reveals it.
+        """
+        validate_relative_name(name)
+        repo_dir = self._repo_dir(repo_id)
+        path = repo_dir / name
+        if repo_dir.resolve() not in path.resolve().parents:
+            raise InvalidArtifactName(f"artifact name {name!r} escapes the repo directory")
+        return path
+
+    def repo_artifact_path(self, repo_id: str, name: str) -> Path | None:
+        """A repo artifact's on-disk path, or ``None`` when it doesn't exist — :meth:`path`'s
+        repo-scoped twin, for local callers that share this store's filesystem (the dashboard's
+        open-in-place)."""
+        path = self._repo_file(repo_id, name)
+        return path if path.is_file() else None
+
+    def repo_artifact_dir(self, repo_id: str) -> Path | None:
+        """The repo's artifact **directory**, or ``None`` when it doesn't exist here.
+
+        The dashboard's "open the folder" key hands this to the host's file manager, so unlike
+        :meth:`repo_artifact_path` it answers about a directory rather than one file. ``None``
+        covers both reasons there's nothing to open: the dashboard doesn't share this store's
+        filesystem, or the repo has no artifacts yet.
+        """
+        repo_dir = self._repo_dir(repo_id)
+        return repo_dir if repo_dir.is_dir() else None
+
+    async def put_repo_artifact(self, repo_id: str, name: str, content: bytes) -> None:
+        path = self._repo_file(repo_id, name)
+        await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(path.write_bytes, content)
+
+    async def get_repo_artifact(self, repo_id: str, name: str) -> bytes | None:
+        path = self._repo_file(repo_id, name)
+        if not await asyncio.to_thread(path.is_file):
+            return None
+        return await asyncio.to_thread(path.read_bytes)
+
+    def _list_repo_artifacts_sync(self, repo_id: str) -> builtins.list[str]:
+        """Every file under the repo's directory as a ``/``-separated relative name, sorted.
+
+        Synchronous because it's blocking I/O the async method hands to a worker thread, like
+        :meth:`_has_artifacts_sync`. ``rglob`` recurses (nested names are the point) and
+        ``as_posix`` keeps the wire form ``/``-separated on a Windows host, so the name a caller
+        reads back is the same name it can pass to :meth:`get_repo_artifact`.
+        """
+        repo_dir = self._repo_dir(repo_id)
+        if not repo_dir.is_dir():
+            return []
+        return sorted(
+            path.relative_to(repo_dir).as_posix() for path in repo_dir.rglob("*") if path.is_file()
+        )
+
+    async def list_repo_artifacts(self, repo_id: str) -> builtins.list[str]:
+        # ``builtins.list``: :meth:`list` shadows the builtin inside this class body.
+        return await asyncio.to_thread(self._list_repo_artifacts_sync, repo_id)
 
     def _link_slug_sync(self, task_id: str, slug: str) -> None:
         validate_segment(task_id)

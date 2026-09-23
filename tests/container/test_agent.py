@@ -126,6 +126,10 @@ def test_main_resolves_the_adapter_from_the_agent_cli_env_var(
             calls.append("credentials")
             return None
 
+        def prune_unresumable(self, config_dir: Path, cwd: Path) -> list[Path]:
+            calls.append("prune")
+            return []
+
         def launch(self, config_dir: Path) -> None:
             calls.append(f"launch:{config_dir}")
 
@@ -145,6 +149,7 @@ def test_main_resolves_the_adapter_from_the_agent_cli_env_var(
         "overview",
         "trust",
         "credentials",
+        "prune",  # …and only then launch: pruning must precede the argv decision it feeds
         f"launch:{tmp_path / '.fake'}",
         "on_exit",
     ]

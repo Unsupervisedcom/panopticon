@@ -3,11 +3,17 @@
 Freeform per-task files (plan, notes) are file-backed, not in the DB. The same bytes are
 reachable via the filesystem, the dashboard, and MCP; this module owns the single resolver
 that maps ``(task_id, name)`` to a path and an MCP URI so every surface agrees.
+
+Artifacts come in two scopes. A **task** artifact belongs to one task and its name is a single
+path segment. A **repo** artifact belongs to a repo — shared by every task in it, outliving any
+one of them — and its name may be a ``/``-separated relative path, so a repo's documents can be
+organised into subdirectories. Both scopes live in the same store behind the same resolver.
 """
 
 from __future__ import annotations
 
 import binascii
+import builtins
 from abc import ABC, abstractmethod
 from base64 import b64decode
 from urllib.parse import quote, unquote
@@ -46,14 +52,31 @@ def validate_segment(segment: str) -> None:
         raise InvalidArtifactName(f"invalid artifact segment: {segment!r}")
 
 
+def validate_relative_name(name: str) -> None:
+    """Reject a ``/``-separated relative artifact name that could escape its directory.
+
+    The nested form of :func:`validate_segment`, for the surfaces that allow subdirectories —
+    repo artifacts (``notes/api.md``, ``screenshots/login.png``), where a task artifact's name is
+    a single segment. Validating each segment in turn is the whole check: an empty name, an
+    absolute one (``/etc/passwd``), a trailing slash, an empty interior segment (``a//b``), a
+    backslash and ``.``/``..`` all reduce to a segment :func:`validate_segment` already refuses.
+    A dot-*prefixed* segment stays legal (it just reads as hidden — see :func:`is_hidden`)."""
+    for segment in name.split("/"):
+        validate_segment(segment)
+
+
 def is_hidden(name: str) -> bool:
     """Whether an artifact is hidden from the operator's default view.
 
     Dotfile artifacts are agent bookkeeping — cross-turn state like ``.babysit-ci-state.json`` —
     rather than documents a human asked for. The dashboard hides them behind a "Show hidden"
     toggle and the task list's artifact mark ignores them, so the rule lives here rather than
-    being spelled out at each surface."""
-    return name.startswith(".")
+    being spelled out at each surface.
+
+    **Any** dot-prefixed segment hides the artifact, so a nested repo artifact tucked under a
+    dot-directory (``.state/ci.json``) is hidden like a top-level dotfile is — the reason for
+    hiding it is the same, and hiding the directory but listing its contents would be incoherent."""
+    return any(part.startswith(".") for part in name.split("/"))
 
 
 def mcp_uri(task_id: str, name: str) -> str:
@@ -67,6 +90,19 @@ def mcp_uri(task_id: str, name: str) -> str:
     return f"{MCP_URI_SCHEME}://tasks/{quote(task_id, safe='')}/artifacts/{quote(name, safe='')}"
 
 
+def repo_mcp_uri(repo_id: str, name: str) -> str:
+    """The canonical MCP resource URI for a **repo** artifact — :func:`mcp_uri`'s repo-scoped twin.
+
+    The name is percent-encoded with **no** safe characters, so a nested name's separators become
+    ``%2F`` (``notes/api.md`` → ``notes%2Fapi.md``) and the whole name stays inside one URI
+    segment. That matters: the MCP resource layer compiles a URI template's ``{name}`` to a
+    segment-bounded pattern, so an unencoded ``/`` would make the URI unroutable.
+    :func:`decode_segment` reverses this in the resource handler — the two must stay paired."""
+    validate_segment(repo_id)
+    validate_relative_name(name)
+    return f"{MCP_URI_SCHEME}://repos/{quote(repo_id, safe='')}/artifacts/{quote(name, safe='')}"
+
+
 def decode_segment(segment: str) -> str:
     """Percent-decode a path segment extracted from an MCP artifact URI, reversing the encoding
     :func:`mcp_uri` applied. The MCP resource layer matches the URI template but does **not**
@@ -75,7 +111,7 @@ def decode_segment(segment: str) -> str:
 
 
 class ArtifactStore(ABC):
-    """Read/write per-task artifact files."""
+    """Read/write artifact files, per task and per repo."""
 
     @abstractmethod
     async def put(self, task_id: str, name: str, content: bytes) -> None:
@@ -98,6 +134,29 @@ class ArtifactStore(ABC):
         still inherits a correct implementation (the filesystem store overrides it with a
         directory scan that stops at the first hit)."""
         return any(not is_hidden(name) for name in await self.list(task_id))
+
+    # -- repo-scoped artifacts ----------------------------------------------------
+    #
+    # The same file-backed documents, owned by a **repo** rather than a task: shared by every task
+    # in that repo and outliving any one of them (conventions, accumulated notes, screenshots).
+    # Two differences from the task methods above: the owner is a repo id, and a name may be a
+    # ``/``-separated relative path (:func:`validate_relative_name`) rather than one segment, so a
+    # repo's artifacts can be organised into subdirectories.
+
+    @abstractmethod
+    async def put_repo_artifact(self, repo_id: str, name: str, content: bytes) -> None:
+        """Create or overwrite a repo artifact (``name`` may contain ``/``)."""
+
+    @abstractmethod
+    async def get_repo_artifact(self, repo_id: str, name: str) -> bytes | None:
+        """Return a repo artifact's bytes, or ``None`` if it does not exist."""
+
+    @abstractmethod
+    async def list_repo_artifacts(self, repo_id: str) -> builtins.list[str]:
+        """Return a repo's artifact names as ``/``-separated relative paths (empty if none).
+
+        (``builtins.list`` because :meth:`list` above shadows the builtin for everything declared
+        after it in this class body.)"""
 
     async def link_slug(self, task_id: str, slug: str) -> None:
         """Expose a task's artifacts under a readable ``slug`` alias (best-effort).

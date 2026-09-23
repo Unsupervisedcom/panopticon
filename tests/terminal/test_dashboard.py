@@ -15,8 +15,10 @@ from typing import Any
 import httpx
 import pytest
 from textual.app import App
-from textual.widgets import Checkbox, DataTable, Input, Select, Static
+from textual.css.query import NoMatches
+from textual.widgets import Checkbox, DataTable, Input, OptionList, Select, Static
 
+from panopticon.core.features import CODEX_FLAG
 from panopticon.terminal import dashboard
 from panopticon.terminal.dashboard import (
     _ARTIFACT_MARK,
@@ -109,6 +111,7 @@ class _FakeClient:
         operations: dict[str, str] | None = None,
         artifacts: dict[str, list[str]] | None = None,
         artifact_content: bytes = b"",
+        repo_artifacts: dict[str, list[str]] | None = None,
     ) -> None:
         self._tasks = tasks
         self._registrations = registrations or {}
@@ -127,6 +130,7 @@ class _FakeClient:
         self._operations = operations or {}
         self._artifacts = artifacts or {}
         self._artifact_content = artifact_content
+        self._repo_artifacts = repo_artifacts or {}  # repo id → names (the repo-scoped scope)
         # Change-feed state for the long-poll worker: a version cursor + an event a test arms with
         # `signal_change()` to release a parked `list_tasks_versioned` (the producer "changed a task").
         self._version = 0
@@ -144,6 +148,8 @@ class _FakeClient:
         self.repo_error: str | None = None
         self.fetched: list[tuple[str, str]] = []  # (task_id, name) passed to get_artifact
         self.put_artifacts: list[tuple[str, str, bytes]] = []  # (task_id, name, content) uploads
+        self.repo_fetched: list[tuple[str, str]] = []  # (repo_id, name) → get_repo_artifact
+        self.put_repo_artifacts: list[tuple[str, str, bytes]] = []  # repo-scoped uploads
 
     def list_tasks(self) -> list[dict[str, Any]]:
         self.list_tasks_calls += 1
@@ -187,6 +193,17 @@ class _FakeClient:
     def put_artifact(self, task_id: str, name: str, content: bytes) -> None:
         self.put_artifacts.append((task_id, name, content))
         self._artifacts.setdefault(task_id, []).append(name)  # reflect the upload in list_artifacts
+
+    def list_repo_artifacts(self, repo_id: str) -> list[str]:
+        return self._repo_artifacts.get(repo_id, [])
+
+    def get_repo_artifact(self, repo_id: str, name: str) -> bytes:
+        self.repo_fetched.append((repo_id, name))
+        return self._artifact_content
+
+    def put_repo_artifact(self, repo_id: str, name: str, content: bytes) -> None:
+        self.put_repo_artifacts.append((repo_id, name, content))
+        self._repo_artifacts.setdefault(repo_id, []).append(name)  # reflect it in the listing
 
     def list_repos(self) -> list[dict[str, Any]]:
         return self._repos
@@ -1207,6 +1224,72 @@ async def test_pressing_p_with_no_url_does_nothing(monkeypatch: Any) -> None:
         assert app.is_running
 
 
+async def test_pressing_w_opens_the_tasks_workdir(monkeypatch: Any, tmp_path: Path) -> None:
+    # `w` hands the task's recorded per-task clone — the checkout mounted at /workspace in its
+    # container — to the host's file manager, the same opener `f` uses for an artifact folder.
+    calls = _record_popen(monkeypatch)
+    workdir = tmp_path / "tasks" / str(_TASK["id"])
+    workdir.mkdir(parents=True)
+    task = {**_TASK, "clone": str(workdir)}
+    app = Dashboard(_FakeClient([task]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("w")
+        await pilot.pause()
+        assert calls == [[dashboard._open_command(), str(workdir)]]
+
+
+async def test_pressing_w_on_an_unprovisioned_task_warns(monkeypatch: Any) -> None:
+    # No slug yet → no branch → no clone recorded: there's no workdir to open, so warn rather
+    # than opening whatever an empty path resolves to.
+    calls = _record_popen(monkeypatch)
+    task = {**_TASK, "clone": None, "provisioned": False}
+    app = Dashboard(_FakeClient([task]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("w")
+        await pilot.pause()
+        assert calls == []
+        assert app.is_running
+
+
+async def test_pressing_w_warns_when_the_workdir_is_not_on_this_machine(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # The clone lives on the *runner's* host, which may be remote (or the checkout may simply be
+    # gone): the path isn't here, so open nothing and say so.
+    calls = _record_popen(monkeypatch)
+    task = {**_TASK, "clone": str(tmp_path / "elsewhere"), "runner_host": "gpu-box"}
+    app = Dashboard(_FakeClient([task]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("w")
+        await pilot.pause()
+        assert calls == []
+        assert app.is_running
+
+
+async def test_pressing_w_survives_a_host_with_no_opener(monkeypatch: Any, tmp_path: Path) -> None:
+    # A headless host without `xdg-open` must notify, not take the TUI down with it.
+    def boom(*args: Any, **kwargs: Any) -> None:
+        raise FileNotFoundError("xdg-open")
+
+    monkeypatch.setattr(dashboard.subprocess, "Popen", boom)
+    workdir = tmp_path / "tasks" / str(_TASK["id"])
+    workdir.mkdir(parents=True)
+    task = {**_TASK, "clone": str(workdir)}
+    app = Dashboard(_FakeClient([task]))  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("w")
+        await pilot.pause()
+        assert app.is_running
+
+
+def test_workdir_key_is_bound_exactly_once() -> None:
+    assert [hk.key for hk in dashboard.HOTKEYS].count("w") == 1
+
+
 def test_clipboard_command_is_platform_appropriate(monkeypatch: Any) -> None:
     # The result is cached (the installed tool can't change at runtime); clear it before each
     # probe so the monkeypatched platform/PATH takes effect, and once more at the end so the
@@ -1946,6 +2029,61 @@ async def test_repos_screen_edits_a_repo_via_patch() -> None:
         ]
 
 
+async def test_repo_form_offers_the_agent_cli_field_only_when_codex_is_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # With codex feature-flagged off (ADR 0014 §7) claude is the only selectable CLI, so the field
+    # is noise; with the flag on it's a real choice and the form offers it.
+    fake = _FakeClient([], repos=[])
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        with pytest.raises(NoMatches):
+            app.screen.query_one("#field-agent_cli", Input)
+
+    monkeypatch.setenv(CODEX_FLAG, "1")
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        assert app.screen.query_one("#field-agent_cli", Input).value == "claude"
+
+
+async def test_editing_a_repo_left_on_a_disabled_cli_keeps_its_agent_cli() -> None:
+    # The field isn't offered while codex is off, so the form carries the stored value through:
+    # editing an unrelated field must never silently rewrite the repo's CLI to claude.
+    fake = _FakeClient(
+        [],
+        repos=[
+            {
+                "id": "r1",
+                "name": "old",
+                "git_url": "https://x/r1.git",
+                "default_base": "main",
+                "agent_cli": "codex",
+            }
+        ],
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        app.screen.query_one("#field-name", Input).value = "new"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert fake.updated_repos[0][1]["agent_cli"] == "codex"
+
+
 async def test_repo_form_workflows_tab_pre_populates_from_repo() -> None:
     """The workflows tab in the repo form pre-populates checkboxes from the repo's stored prefs."""
     existing = {
@@ -2642,6 +2780,79 @@ async def test_e_warns_when_the_artifact_is_not_local(monkeypatch: Any, tmp_path
         assert fake.fetched == []  # and no REST fallback
 
 
+async def test_artifact_f_opens_the_tasks_artifact_folder(monkeypatch: Any, tmp_path: Path) -> None:
+    # `f` hands the task's artifact *directory* to the host's file manager — the repo modal's key,
+    # scoped to the task, so the operator can browse the whole folder instead of one file.
+    calls = _record_popen(monkeypatch)
+    folder = tmp_path / "tasks" / str(_TASK["id"])
+    folder.mkdir(parents=True)
+    (folder / "plan.md").write_text("# Plan\n")
+    fake = _FakeClient([_TASK], artifacts={_TASK["id"]: ["plan.md"]}, artifact_content=b"REST")
+    app = Dashboard(fake, artifacts_root=tmp_path)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        assert calls == [[dashboard._open_command(), str(folder)]]
+        assert fake.fetched == []  # a folder open fetches nothing
+
+
+async def test_artifact_f_warns_when_there_is_no_folder(monkeypatch: Any, tmp_path: Path) -> None:
+    # Nothing written yet (the directory is created on the first artifact) or a dashboard remote
+    # from the store: either way there's no folder here, so warn and stay put.
+    calls = _record_popen(monkeypatch)
+    fake = _FakeClient([_TASK], artifacts={_TASK["id"]: ["plan.md"]})
+    app = Dashboard(fake, artifacts_root=tmp_path)  # empty root  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        assert calls == []
+        assert app.is_running
+
+
+async def test_artifact_f_works_on_an_empty_list(monkeypatch: Any, tmp_path: Path) -> None:
+    # The folder is the task's, not an entry's — so `f` needs no selection. A task holding only
+    # hidden (agent bookkeeping) artifacts lists nothing, and its folder still opens.
+    calls = _record_popen(monkeypatch)
+    folder = tmp_path / "tasks" / str(_TASK["id"])
+    folder.mkdir(parents=True)
+    (folder / ".state.json").write_text("{}")
+    fake = _FakeClient([_TASK], artifacts={_TASK["id"]: [".state.json"]})
+    app = Dashboard(fake, artifacts_root=tmp_path)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        assert isinstance(app.screen, dashboard.ArtifactScreen)
+        await pilot.press("f")
+        await pilot.pause()
+        assert calls == [[dashboard._open_command(), str(folder)]]
+
+
+async def test_artifact_f_survives_a_host_with_no_opener(monkeypatch: Any, tmp_path: Path) -> None:
+    # A headless host without `xdg-open` must notify, not take the TUI down with it.
+    def _raise(argv: Any, *a: Any, **k: Any) -> None:
+        raise FileNotFoundError(argv[0])
+
+    monkeypatch.setattr(dashboard.subprocess, "Popen", _raise)
+    folder = tmp_path / "tasks" / str(_TASK["id"])
+    folder.mkdir(parents=True)
+    fake = _FakeClient([_TASK], artifacts={_TASK["id"]: []})
+    app = Dashboard(fake, artifacts_root=tmp_path)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        assert app.is_running
+
+
 async def test_missing_opener_binary_is_handled_not_crashed(monkeypatch: Any) -> None:
     # On a headless host without `xdg-open`, Popen raises FileNotFoundError; the dashboard must
     # notify and stay up rather than let it escape the screen callback and kill the TUI.
@@ -2774,7 +2985,23 @@ def test_footer_shows_only_the_essential_keys() -> None:
     shown = {b.key for b in Dashboard.BINDINGS if b.show}
     hidden = {b.key for b in Dashboard.BINDINGS if not b.show}
     assert shown == {"t", "n", "x", "/", "d", "question_mark", "q"}
-    assert hidden == {"o", "r", "R", "p", "e", "E", "g", "a", "s", "u", "y", "Y", "escape"}
+    assert hidden == {
+        "o",
+        "r",
+        "R",
+        "p",
+        "e",
+        "E",
+        "g",
+        "a",
+        "A",
+        "s",
+        "u",
+        "y",
+        "Y",
+        "w",
+        "escape",
+    }
 
 
 def test_bindings_and_help_derive_from_the_single_hotkey_table() -> None:
@@ -3686,3 +3913,217 @@ async def test_pressing_j_then_enter_picks_the_second_option_in_a_picker() -> No
         await pilot.press("enter")  # submit an empty memo
         await pilot.pause()
         assert fake.created == [("r2", "spike", None, None)]
+
+
+# -- repo artifacts (`A`, and `a` in the repos screen) -----------------------------
+
+
+_REPO = {
+    "id": "default",
+    "name": "acme/widgets",
+    "git_url": "https://x/r1.git",
+    "default_base": "main",
+}
+
+
+async def test_pressing_shift_a_opens_the_tasks_repo_artifacts() -> None:
+    # `A` opens the *repo's* artifacts for the highlighted task — its own modal, listing the
+    # documents every task in that repo shares (nested names included).
+    fake = _FakeClient(
+        [_TASK], repos=[_REPO], repo_artifacts={"default": ["conventions.md", "notes/api.md"]}
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("A")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, dashboard.RepoArtifactScreen)
+        options = screen.query_one(OptionList)
+        listed = [str(options.get_option_at_index(i).prompt) for i in range(options.option_count)]
+        assert listed == ["conventions.md", "notes/api.md"]
+
+
+async def test_pressing_a_in_the_repos_screen_opens_that_repos_artifacts() -> None:
+    # The other entry point: `a` on the highlighted row of the repo config screen.
+    fake = _FakeClient([], repos=[_REPO], repo_artifacts={"default": ["conventions.md"]})
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        assert isinstance(app.screen, dashboard.ReposScreen)
+        await pilot.press("a")
+        await pilot.pause()
+        assert isinstance(app.screen, dashboard.RepoArtifactScreen)
+
+
+async def test_repo_artifact_enter_opens_the_selection_via_rest(monkeypatch: Any) -> None:
+    # Enter fetches over REST to the scratch dir and opens it — the path that works even when the
+    # dashboard is remote from the store. A nested name keeps its whole relative path, so two
+    # subdirectories holding the same file name can't collide in the scratch copy.
+    calls = _record_popen(monkeypatch)
+    fake = _FakeClient(
+        [_TASK],
+        repos=[_REPO],
+        repo_artifacts={"default": ["notes/api.md"]},
+        artifact_content=b"beware",
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("A")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert fake.repo_fetched == [("default", "notes/api.md")]
+        assert len(calls) == 1
+        opener, path = calls[0]
+        assert opener == dashboard._open_command()
+        assert Path(path).parts[-3:] == ("default", "notes", "api.md")
+        assert Path(path).read_bytes() == b"beware"
+
+
+async def test_repo_artifact_e_opens_the_local_file_in_place(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    calls = _record_popen(monkeypatch)
+    art = tmp_path / "repos" / "default" / "notes" / "api.md"
+    art.parent.mkdir(parents=True)
+    art.write_text("# Local\n")
+    fake = _FakeClient(
+        [_TASK],
+        repos=[_REPO],
+        repo_artifacts={"default": ["notes/api.md"]},
+        artifact_content=b"REST",
+    )
+    app = Dashboard(fake, artifacts_root=tmp_path)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("A")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        assert calls == [[dashboard._open_command(), str(art)]]  # the real file, in place
+        assert fake.repo_fetched == []  # no REST fetch
+
+
+async def test_repo_artifact_f_opens_the_repos_artifact_folder(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # The key the repo modal exists for: `f` hands the repo's artifact *directory* to the host's
+    # file manager, so the operator can browse (and drop files into) the whole tree.
+    calls = _record_popen(monkeypatch)
+    folder = tmp_path / "repos" / "default"
+    (folder / "notes").mkdir(parents=True)
+    (folder / "notes" / "api.md").write_text("beware")
+    fake = _FakeClient([_TASK], repos=[_REPO], repo_artifacts={"default": ["notes/api.md"]})
+    app = Dashboard(fake, artifacts_root=tmp_path)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("A")
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        assert calls == [[dashboard._open_command(), str(folder)]]
+        assert fake.repo_fetched == []  # a folder open fetches nothing
+
+
+async def test_repo_artifact_f_warns_when_the_folder_is_not_local(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # A dashboard remote from the artifact store (or a repo with nothing written yet) has no
+    # folder to open: warn and stay put rather than opening something that isn't there.
+    calls = _record_popen(monkeypatch)
+    fake = _FakeClient([_TASK], repos=[_REPO], repo_artifacts={"default": ["notes/api.md"]})
+    app = Dashboard(fake, artifacts_root=tmp_path)  # empty root  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("A")
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        assert calls == []
+        assert app.is_running
+
+
+async def test_repo_artifact_f_works_on_an_empty_list(monkeypatch: Any, tmp_path: Path) -> None:
+    # The folder is the repo's, not an entry's — so `f` needs no selection, which is exactly the
+    # case where an operator wants to drop the first files in by hand.
+    calls = _record_popen(monkeypatch)
+    folder = tmp_path / "repos" / "default"
+    folder.mkdir(parents=True)
+    fake = _FakeClient([_TASK], repos=[_REPO], repo_artifacts={})  # nothing listed
+    app = Dashboard(fake, artifacts_root=tmp_path)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("A")
+        await pilot.pause()
+        assert isinstance(app.screen, dashboard.RepoArtifactScreen)
+        await pilot.press("f")
+        await pilot.pause()
+        assert calls == [[dashboard._open_command(), str(folder)]]
+
+
+async def test_repo_artifact_ctrl_a_attaches_a_file_to_the_repo(tmp_path: Path) -> None:
+    # `ctrl+a` reuses the file-picker and uploads to the *repo* (put_repo_artifact), at the repo's
+    # top level — subdirectories are for agents writing with a nested name.
+    src = tmp_path / "conventions.md"
+    src.write_text("# How we work")
+    fake = _FakeClient([_TASK], repos=[_REPO], repo_artifacts={"default": []})
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("A")
+        await pilot.pause()
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, dashboard.ArtifactsScreen)
+        picker.query_one("#artifacts-path", Input).value = str(src)
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("escape")  # done → upload
+        await pilot.pause()
+    assert fake.put_repo_artifacts == [("default", "conventions.md", b"# How we work")]
+
+
+async def test_repo_artifact_modal_hides_dot_directory_entries() -> None:
+    # Hidden means any dot-prefixed segment: agent bookkeeping tucked under `.state/` is hidden
+    # like a top-level dotfile, behind the same "Show hidden" toggle.
+    fake = _FakeClient(
+        [_TASK],
+        repos=[_REPO],
+        repo_artifacts={"default": [".state/ci.json", "notes/api.md"]},
+    )
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("A")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, dashboard.RepoArtifactScreen)
+        options = screen.query_one(OptionList)
+        listed = [str(options.get_option_at_index(i).prompt) for i in range(options.option_count)]
+        assert listed == ["notes/api.md"]
+        screen.query_one("#show-hidden", Checkbox).value = True  # reveal the hidden entries
+        await pilot.pause()
+        options = screen.query_one(OptionList)
+        listed = [str(options.get_option_at_index(i).prompt) for i in range(options.option_count)]
+        assert listed == [".state/ci.json", "notes/api.md"]
+
+
+async def test_repo_artifact_list_error_is_reported_not_fatal() -> None:
+    # A down service can't list a repo's artifacts: notify and stay on the task view.
+    def _fail(repo_id: str) -> list[str]:
+        raise _http_400("service unavailable")
+
+    fake = _FakeClient([_TASK], repos=[_REPO])
+    fake.list_repo_artifacts = _fail  # type: ignore[method-assign]
+    app = Dashboard(fake)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("A")
+        await pilot.pause()
+        assert not isinstance(app.screen, dashboard.RepoArtifactScreen)
+        assert app.is_running

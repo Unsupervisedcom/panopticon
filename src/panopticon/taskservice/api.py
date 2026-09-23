@@ -19,6 +19,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from panopticon import __version__
 from panopticon.core.artifacts import ArtifactError
 from panopticon.core.models import Actor, LifecyclePhase, PushStatus, Repo, Status, Task
 from panopticon.core.store import AlreadyExists, NotFound, StoreError
@@ -407,7 +408,7 @@ def create_app(service: TaskService) -> FastAPI:
         async with mcp.session_manager.run():
             yield
 
-    app = FastAPI(title="panopticon task service", version="0.0.5", lifespan=lifespan)
+    app = FastAPI(title="panopticon task service", version=__version__, lifespan=lifespan)
 
     # The block-until-change feed: a store mutation bumps the version + wakes parked GET /tasks
     # long-polls (the seam the daemons/dashboard migrate onto, replacing their interval re-polls).
@@ -545,8 +546,8 @@ def create_app(service: TaskService) -> FastAPI:
 
     @app.post("/tasks", status_code=201)
     async def create_task(body: CreateTaskIn) -> TaskOut:
-        return _task_out(
-            await service.create_task(
+        try:
+            task = await service.create_task(
                 body.repo_id,
                 body.workflow,
                 memo=body.memo,
@@ -558,7 +559,9 @@ def create_app(service: TaskService) -> FastAPI:
                 sort_weight=body.sort_weight,
                 agent_cli=body.agent_cli,
             )
-        )
+        except ValueError as exc:  # e.g. a disabled agent_cli (codex behind its feature flag)
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _task_out(task)
 
     @app.get("/tasks")
     async def list_tasks(
@@ -749,6 +752,30 @@ def create_app(service: TaskService) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"artifact {name!r} not found")
         # Type the download from the name's extension so a screenshot serves as image/png etc.;
         # unknown/extensionless names fall back to octet-stream.
+        media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        return Response(content=content, media_type=media_type)
+
+    # -- repo artifacts -----------------------------------------------------------
+    #
+    # The repo-scoped twins of the task routes above. The name is a ``:path`` parameter rather
+    # than a plain one because a repo artifact's name may be nested (``notes/api.md``) — a plain
+    # parameter matches a single segment, which would leave a subdirectory unaddressable. An
+    # invalid name still lands as a 400 through the registered ``ArtifactError`` handler.
+
+    @app.put("/repos/{repo_id}/artifacts/{name:path}", status_code=204)
+    async def put_repo_artifact(repo_id: str, name: str, request: Request) -> Response:
+        await service.put_repo_artifact(repo_id, name, await request.body())
+        return Response(status_code=204)
+
+    @app.get("/repos/{repo_id}/artifacts")
+    async def list_repo_artifacts(repo_id: str) -> list[str]:
+        return await service.list_repo_artifacts(repo_id)
+
+    @app.get("/repos/{repo_id}/artifacts/{name:path}")
+    async def get_repo_artifact(repo_id: str, name: str) -> Response:
+        content = await service.get_repo_artifact(repo_id, name)
+        if content is None:
+            raise HTTPException(status_code=404, detail=f"repo artifact {name!r} not found")
         media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
         return Response(content=content, media_type=media_type)
 

@@ -21,6 +21,7 @@ from typing import Any
 
 from panopticon.core.artifacts import ArtifactStore, decode_b64_artifact
 from panopticon.core.dirs import credential_dir_path, secrets_file_path
+from panopticon.core.features import require_available_agent_cli
 from panopticon.core.layers import LayerStore
 from panopticon.core.models import (
     Actor,
@@ -150,6 +151,7 @@ class TaskService:
     async def create_repo(self, repo: Repo) -> Repo:
         await self._validate_env_file(repo.env_file)
         await self._validate_credential_dir(repo.credential_dir)
+        require_available_agent_cli(repo.agent_cli)  # codex is behind a feature flag (ADR 0014 §7)
         await self._store.create_repo(repo)
         return repo
 
@@ -222,6 +224,8 @@ class TaskService:
             )  # so an unrelated patch never fails on it
         if "credential_dir" in changes:
             await self._validate_credential_dir(updated.credential_dir)
+        if "agent_cli" in changes:  # same rule: a patch that doesn't touch the CLI still applies
+            require_available_agent_cli(updated.agent_cli)  # to a repo left on a disabled one
         await self._store.update_repo(updated)
         return updated
 
@@ -346,6 +350,7 @@ class TaskService:
         agent_cli: str | None = None,
     ) -> Task:
         repo = await self.get_repo(repo_id)  # ensure exists (raises NotFound)
+        require_available_agent_cli(agent_cli)  # the per-task override; None = the repo default
         if governor_task_id is not None:
             await self.get_task(governor_task_id)  # ensure governor exists (raises NotFound)
         wf = self._workflow(workflow_name)
@@ -802,6 +807,45 @@ class TaskService:
         that doesn't exist both answer ``False``. Paying for a store read per row to tell those
         apart would buy nothing."""
         return await self._artifacts.has_unhidden_artifacts(task_id)
+
+    # -- repo artifacts -----------------------------------------------------------
+    #
+    # The same artifact store, owned by a repo rather than a task: documents shared by every task
+    # in the repo and outliving each of them (conventions, accumulated notes, screenshots). Names
+    # may be nested (``notes/api.md``). Each reader/writer guards on the repo existing, mirroring
+    # the ``get_task`` guard on the task methods above. No change-feed notification, unlike
+    # :meth:`put_artifact`: nothing the task list renders depends on a repo's artifacts.
+
+    async def put_repo_artifact(self, repo_id: str, name: str, content: bytes) -> None:
+        await self.get_repo(repo_id)  # ensure the repo exists (raises NotFound)
+        await self._artifacts.put_repo_artifact(repo_id, name, content)
+        _log.debug("repo %s: artifact %s written", repo_id, name)
+
+    async def get_repo_artifact(self, repo_id: str, name: str) -> bytes | None:
+        await self.get_repo(repo_id)
+        return await self._artifacts.get_repo_artifact(repo_id, name)
+
+    async def list_repo_artifacts(self, repo_id: str) -> list[str]:
+        await self.get_repo(repo_id)
+        return await self._artifacts.list_repo_artifacts(repo_id)
+
+    async def put_repo_artifact_for_task(self, task_id: str, name: str, content: bytes) -> str:
+        """Write into the **acting task's own** repo, returning that repo's id.
+
+        The task-scoped entry point the in-container agent uses: it names itself, not a repo, so
+        it can't write into another repo's artifacts by passing a different id — and it doesn't
+        have to know its repo id to contribute to it. The returned id is what the caller needs to
+        build the artifact's URI.
+        """
+        task = await self.get_task(task_id)
+        await self.put_repo_artifact(task.repo_id, name, content)
+        return task.repo_id
+
+    async def list_repo_artifacts_for_task(self, task_id: str) -> tuple[str, list[str]]:
+        """The acting task's repo id and its repo artifacts — :meth:`put_repo_artifact_for_task`'s
+        read side (discovery of what the repo already holds)."""
+        task = await self.get_task(task_id)
+        return task.repo_id, await self.list_repo_artifacts(task.repo_id)
 
     # -- liveness -----------------------------------------------------------------
     #

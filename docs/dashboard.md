@@ -17,9 +17,11 @@ kept in sync with the `HOTKEYS` keymap and the modal `BINDINGS` in
 | `r` | Refresh from the task service now |
 | `R` | Respawn a down task (releases its claim so the runner re-spawns it) |
 | `p` | Open the task's URL in the browser |
+| `w` | Open the task's workdir (its per-task clone) in the host's file manager |
 | `e` | Snooze the highlighted task for 12 hours |
 | `E` | Snooze the highlighted task indefinitely |
 | `a` | List the task's artifacts |
+| `A` | List the task's **repo's** artifacts (shared by every task in it) |
 | `g` | Open the repo config screen |
 | `s` | Switch to the task-service session |
 | `u` | Switch to the session-service (runner) session |
@@ -39,7 +41,7 @@ agentic turn and is triggered from inside the container.
 | `h` `l` | Vim-style navigation, alongside the arrow keys |
 
 Vim keys work in the task table, the repo table, and the option-list pickers (the `n` repo/workflow
-choice, the `a` artifact list).
+choice, the `a` and `A` artifact lists).
 
 ## Search
 
@@ -70,8 +72,30 @@ placeholder row and the full list. This is display-only — it does not touch th
 | --- | --- |
 | `Enter` | Open the selected artifact with the host's default handler |
 | `e` | Open the on-disk file in place (when the dashboard shares the artifact store) |
+| `f` | Open the task's artifact **folder** in the host's file manager (when it's on this machine) |
 | `Ctrl-a` | Attach new local files to the task |
 | `Esc` | Cancel |
+
+`f` needs no selection — the folder belongs to the task, not an entry, so it works on an empty
+list too. A task's folder is created with its first artifact, so before then there is nothing to
+open and `f` says so.
+
+## Repo artifacts modal (`A`, or `a` in the repos modal)
+
+A repo's artifacts are the documents every task in it shares — conventions, accumulated notes,
+reference screenshots — as opposed to `a`'s task-scoped ones. Names may be nested
+(`notes/api.md`). See [`repos.md`](repos.md#repo-artifacts).
+
+| Key | Action |
+| --- | --- |
+| `Enter` | Open the selected artifact with the host's default handler |
+| `e` | Open the on-disk file in place (when the dashboard shares the artifact store) |
+| `f` | Open the repo's artifact **folder** in the host's file manager (when it's on this machine) |
+| `Ctrl-a` | Attach local files to the repo |
+| `Esc` | Cancel |
+
+`f` needs no selection — the folder belongs to the repo, so it works on an empty list too, which
+is when you'd want to drop the first files in by hand.
 
 ## New-task memo (`n`)
 
@@ -100,6 +124,7 @@ Reached from the new-task memo or the artifacts modal.
 | `n` | New repo |
 | `e` | Edit the highlighted repo |
 | `s` | Setup repo |
+| `a` | The highlighted repo's artifacts |
 | `Esc` | Close |
 
 ## Supervisor (attached to a task)

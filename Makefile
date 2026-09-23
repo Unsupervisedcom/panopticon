@@ -1,10 +1,11 @@
 # panopticon — dev tasks. Thin wrappers over `uv`/`docker`; see CLAUDE.md for details.
 .DEFAULT_GOAL := help
-.PHONY: help sync test typecheck lint format lint-check check serve dashboard host start stop build clean migrate migrate-revision
+.PHONY: help sync test typecheck lint format lint-check check serve dashboard host start stop restart build clean migrate migrate-revision
 
 #: The agent CLIs whose base variants `make build` builds (ADR 0014 §4). The claude variant must
-#: match DEFAULT_IMAGE. Override to build a subset, e.g. `make build AGENT_CLIS=codex`.
-AGENT_CLIS ?= claude codex
+#: match DEFAULT_IMAGE. Codex is feature-flagged off (ADR 0014 §8, PANOPTICON_ENABLE_CODEX), so it
+#: isn't built by default — add it back with `make build AGENT_CLIS="claude codex"`.
+AGENT_CLIS ?= claude
 #: The freshness stamp shared with ImageBuilder.build_base_if_missing.  Keep this overridable so
 #: callers can select an explicit package identity (and tests can dry-run without invoking Python).
 PANOPTICON_VERSION ?= $(shell uv run python -c 'import panopticon; print(panopticon.__version__)')
@@ -54,6 +55,9 @@ start:  ## Run panopticon: task service + session-service runner (background) + 
 
 stop:  ## Stop everything `make start` started: the task containers + the -L panopticon tmux server
 	uv run panopticon stop
+
+restart:  ## Restart the control plane (task service + runner) in place; task containers keep running
+	uv run panopticon restart
 
 build:  ## Build the per-CLI base task-container images (override CLIs with AGENT_CLIS=)
 	uv build --wheel --out-dir src/panopticon/docker/

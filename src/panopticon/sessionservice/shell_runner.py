@@ -30,6 +30,7 @@ from panopticon.sessionservice.local_runner import (
     _subprocess_run,
     session_name,
 )
+from panopticon.sessionservice.priority import host_nice_prefix
 from panopticon.sessionservice.runner import Runner
 
 #: The panopticon shell lib (``task_lib.sh``): functions a shell workflow's script uses to drive its
@@ -153,8 +154,23 @@ class ShellRunner(Runner):
         self._run(self._tmux("kill-session", "-t", session), check=False)
         _report(LifecyclePhase.STARTING)
         # -c sets the pane's start directory (the task's own dir) so the script runs in a known place.
+        # A shell task's script runs on the **host** with no container cgroup around it, so `nice`
+        # is the only lever that keeps it from competing with the operator's own processes (see
+        # `priority`). tmux execs a multi-argument shell-command directly, so the assembled script
+        # still reaches `sh -c` verbatim.
         self._run(
-            self._tmux("new-session", "-d", "-s", session, "-c", start_dir, "sh", "-c", command)
+            self._tmux(
+                "new-session",
+                "-d",
+                "-s",
+                session,
+                "-c",
+                start_dir,
+                *host_nice_prefix(),
+                "sh",
+                "-c",
+                command,
+            )
         )
         _report(LifecyclePhase.AWAITING)
         return session
@@ -172,6 +188,12 @@ class ShellRunner(Runner):
         session = session_name(task_id)
         sessions = self._run(self._tmux("list-sessions", "-F", "#{session_name}"), check=False)
         return session in sessions.splitlines()
+
+    def exit_reason(self, task_id: str) -> str | None:
+        """Always ``None`` — a shell task has no container whose exit state could explain a stop
+        (its script ending is natural completion, not a crash). Mirrors the local runner's method
+        name so the spawner's reconcile can ask either backend uniformly."""
+        return None
 
     def stop(self, session_id: str) -> None:
         # Idempotent: tolerate an already-gone session.
