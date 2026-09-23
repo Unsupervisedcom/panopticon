@@ -116,6 +116,73 @@ For what a slug, branch, clone, and `provisioned` mean as task concepts, see [ta
 - **Auth.** The agent authenticates from a `CLAUDE_CODE_OAUTH_TOKEN` injected from the repo's
   env-file — see [auth](auth.md).
 
+## Resource priority: tasks yield to you
+
+A task container is where unbounded work happens — an agent running a repo's whole test suite, a
+`docker build` inside a dind task, six tasks at once — on the same machine as your editor, your
+shell, and panopticon's own control plane. So every container is spawned **deprioritized**: it
+loses CPU and disk races against normally-weighted processes, and under real memory pressure the
+kernel kills it before anything of yours.
+
+This is *priority*, **not a cap**. Nothing limits how much CPU or RAM a task may use when nobody
+else wants it, so on an idle host tasks run at full speed.
+
+Concretely, each container gets `--cpu-shares 2` (docker's floor — cgroup v2 `cpu.weight` 1),
+`--blkio-weight 10` (the floor; disk contention is what actually makes a desktop stutter) and
+`--oom-score-adj 500`. The agent pane raises its own OOM score too: `oom_score_adj` is
+per-process and inherited across *fork*, and the pane is started with `docker exec` (forked from
+the Docker daemon, not from the container's PID 1), so the flag on `docker run` would otherwise
+miss the one process that actually eats memory. The cgroup levers need no such trick — an exec'd
+process joins the container's cgroup. The workspace-cleanup sweep runs deprioritized as well.
+
+If a task does get OOM-killed you'll see it: the runner reads `OOMKilled` off `docker inspect`
+before the exit code, so the task shows `failed` with an out-of-memory detail rather than a
+mystery.
+
+### Tuning it per host
+
+The knobs are read from the **runner host's** environment, so a big build box and a laptop can
+differ. Set any of them to `off` (or empty) to drop that flag entirely — the argv is then exactly
+what panopticon emitted before any of this existed.
+
+| Variable | Default | What it sets |
+|---|---|---|
+| `PANOPTICON_CONTAINER_CPU_SHARES` | `2` | CPU weight (`--cpu-shares`) |
+| `PANOPTICON_CONTAINER_BLKIO_WEIGHT` | `10` | block-IO weight (`--blkio-weight`) |
+| `PANOPTICON_CONTAINER_OOM_SCORE_ADJ` | `500` | OOM-killer preference, for the container *and* the agent pane |
+| `PANOPTICON_CONTAINER_CGROUP_PARENT` | unset | parent cgroup (`--cgroup-parent`) — see below |
+| `PANOPTICON_HOST_NICE` | `19` | `nice` for a shell task's host session (no container to weight) |
+
+A bad value warns and falls back to the default instead of failing the spawn, and values are
+clamped to what docker and the kernel accept (a *negative* OOM adjustment — shielding a task at
+the host's expense — is refused).
+
+**Hosts that refuse the flags.** Some daemons reject `--cpu-shares`/`--blkio-weight` outright: a
+nested Docker daemon whose cgroup is in threaded mode answers any of them with `unable to apply
+cgroup configuration`. A spawn is never lost to that — the runner retries once without the
+cgroup-backed flags (keeping `--oom-score-adj`, which needs no controller), logs one warning, and
+remembers the answer for the rest of its life.
+
+**Going further with a slice.** With docker's systemd cgroup driver, containers land in
+`system.slice/docker-<id>.scope` while your own processes sit in `user.slice`, and cgroup weights
+are compared **between siblings** — so weight 1 on a container's scope deprioritizes it *within*
+`system.slice` but doesn't by itself make it lose to `user.slice`. If you want that enforced at the
+hierarchy level, create a low-weight slice and point panopticon at it:
+
+```ini
+# /etc/systemd/system/panopticon.slice
+[Slice]
+CPUWeight=1
+IOWeight=1
+```
+
+```sh
+sudo systemctl daemon-reload
+export PANOPTICON_CONTAINER_CGROUP_PARENT=panopticon.slice   # on the runner host
+```
+
+Installing a unit is your call, so per-container weights stay the zero-setup default.
+
 ## When it goes wrong
 
 A container can disappear out from under a live task — an OOM kill, a host reboot, a `docker rm`.
