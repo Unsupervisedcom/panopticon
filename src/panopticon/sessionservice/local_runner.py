@@ -11,6 +11,7 @@ daemon. LLM-free — the agent runs inside the container.
 
 from __future__ import annotations
 
+import logging
 import os
 import shlex
 import subprocess
@@ -21,7 +22,16 @@ from typing import Protocol
 from panopticon.core.dirs import credential_dir_path, secrets_file_path
 from panopticon.core.features import CODEX_FLAG, codex_enabled
 from panopticon.core.models import DEFAULT_AGENT_CLI, LifecyclePhase
+from panopticon.sessionservice.priority import (
+    BLKIO_WEIGHT_VAR,
+    CPU_SHARES_VAR,
+    container_oom_score_adj,
+    container_priority_flags,
+    strip_cgroup_flags,
+)
 from panopticon.sessionservice.runner import Runner
+
+_log = logging.getLogger(__name__)
 
 #: The container home the per-CLI config dir lives under (the base image's ``panopticon`` user).
 CONTAINER_HOME = "/home/panopticon"
@@ -130,6 +140,29 @@ def _invoking_user() -> str:
     return f"{os.getuid()}:{os.getgid()}"
 
 
+def _deprioritized(command: Sequence[str]) -> list[str]:
+    """``command``, wrapped so it raises its own OOM score before exec'ing (or unchanged when off).
+
+    The agent pane is started with ``docker exec``, and ``oom_score_adj`` is a **per-process**
+    attribute inherited across fork — the pane forks from the Docker daemon, not from the
+    container's PID 1, so ``docker run --oom-score-adj`` does *not* reach it. That leaves the one
+    process that actually eats memory (the agent CLI and its children) at the host's default score,
+    which defeats the point. ``docker exec`` has no flag for it, so the command writes
+    ``/proc/self/oom_score_adj`` itself — raising your own score needs no privilege (only
+    *lowering* it does) — and then ``exec``s, keeping the process tree and signal behaviour
+    identical to running the command directly. Best-effort: a host that refuses the write is
+    tolerated (``|| true``) rather than losing the agent. The cgroup-based flags need no such
+    treatment — an exec'd process joins the container's cgroup like any other."""
+    adj = container_oom_score_adj()
+    if adj is None:
+        return list(command)
+    return [
+        "sh",
+        "-c",
+        f"echo {adj} > /proc/self/oom_score_adj 2>/dev/null || true; exec {shlex.join(command)}",
+    ]
+
+
 class LocalRunner(Runner):
     """Runs task containers + host tmux on the local Docker daemon (one host)."""
 
@@ -161,11 +194,53 @@ class LocalRunner(Runner):
         self._agent_command = list(agent_command)
         self._tmux_socket = tmux_socket  # isolate panopticon's tmux server when set (-L)
         self._extra_env = dict(extra_env or {})
+        # Set once a `docker run` proves this daemon can't apply the cgroup priority flags, so the
+        # flagless retry in `_run_container` is paid at most once per process, not per spawn.
+        self._cgroup_flags_unsupported = False
         self._run = run
 
     def _tmux(self, *args: str) -> list[str]:
         prefix = ["tmux", *(["-L", self._tmux_socket] if self._tmux_socket else [])]
         return [*prefix, *args]
+
+    def _priority_flags(self) -> list[str]:
+        """The deprioritizing ``docker run`` flags for a task container (see
+        :mod:`panopticon.sessionservice.priority`), minus the cgroup ones once this daemon has
+        proved it can't apply them."""
+        flags = container_priority_flags()
+        return strip_cgroup_flags(flags) if self._cgroup_flags_unsupported else flags
+
+    def _run_container(self, docker_run: Sequence[str], container: str | None = None) -> None:
+        """``docker run``, degrading rather than failing on a daemon that refuses the cgroup
+        priority flags.
+
+        Some daemons reject ``--cpu-shares``/``--blkio-weight`` outright — a nested daemon whose
+        cgroup is in threaded mode answers with ``unable to apply cgroup configuration`` — and no
+        work may be lost to a host that merely can't deprioritize. So a failed flagged run is
+        retried once without those flags; when the run named a container (a task spawn), the
+        half-created one is cleared first, since the name is taken. The "this daemon can't do it"
+        latch is set **only if the retry succeeds**: an ordinary failure (a bad image, say) then
+        propagates as before, with later runs still asking for full priority control."""
+        stripped = strip_cgroup_flags(docker_run)
+        if list(stripped) == list(docker_run):  # nothing to fall back to
+            self._run(docker_run)
+            return
+        try:
+            self._run(docker_run)
+            return
+        except Exception as exc:  # any runner failure is worth one flagless retry
+            first_error = exc
+        if container is not None:
+            self._run(["docker", "rm", "--force", container], check=False)
+        self._run(stripped)  # still failing => a real error, raised as it would have been anyway
+        self._cgroup_flags_unsupported = True
+        _log.warning(
+            "docker refused the cgroup priority flags (%s) — running task containers without "
+            "them; they keep --oom-score-adj. Set %s/%s to `off` to silence this.",
+            first_error,
+            CPU_SHARES_VAR,
+            BLKIO_WEIGHT_VAR,
+        )
 
     def spawn(
         self,
@@ -252,6 +327,11 @@ class LocalRunner(Runner):
             f"panopticon.task={task_id}",
             "--add-host",
             HOST_GATEWAY,
+            # Run the task at the lowest priority we can: it yields CPU and disk to the operator's
+            # own processes and is the kernel's first OOM pick, so a runaway agent or a heavy
+            # in-task build can't destabilize the host (see `priority`). Not a cap — an idle host
+            # still runs the task at full speed.
+            *self._priority_flags(),
         ]
         if (
             docker_in_docker
@@ -288,7 +368,7 @@ class LocalRunner(Runner):
         self._run(self._tmux("kill-session", "-t", container), check=False)
         self._run(["docker", "rm", "--force", container], check=False)
         _report(LifecyclePhase.STARTING)  # docker run + the tmux session coming up
-        self._run(docker_run)
+        self._run_container(docker_run, container)
         # The pane is a host shell command: wait (bounded) for the entrypoint's READY_MARKER — the
         # remap-complete signal — then exec in as the unprivileged `panopticon` user, so `tmux
         # attach` and the agent's `whoami` see that named user, not root (and never the pre-remap
@@ -303,7 +383,7 @@ class LocalRunner(Runner):
                 "--user",
                 CONTAINER_USER,
                 container,
-                *self._agent_command,
+                *_deprioritized(self._agent_command),
             ]
         )
         pane = (
@@ -383,7 +463,7 @@ class LocalRunner(Runner):
         it, so the daemon can then ``rmtree`` the now-empty directory. Overrides the
         panopticon entrypoint (which would remap uid) so the container runs as root and can
         reach files it created. Raises on nonzero docker exit."""
-        self._run(
+        self._run_container(
             [
                 "docker",
                 "run",
@@ -392,6 +472,11 @@ class LocalRunner(Runner):
                 "/bin/sh",
                 "--volume",
                 f"{path}:/cleanup",
+                # An unbounded delete over a whole checkout is exactly the IO storm the priority
+                # flags exist for, so the cleanup sweep yields to the host like a task does — and it
+                # degrades the same way on a daemon that won't take them (a spawn may not have
+                # discovered that yet). The container is `--rm` and unnamed, so no name to clear.
+                *self._priority_flags(),
                 self._image,
                 "-c",
                 "find /cleanup -mindepth 1 -delete",

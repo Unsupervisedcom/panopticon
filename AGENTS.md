@@ -42,7 +42,11 @@ src/panopticon/
                    # workflows; the spawner routes on it, skipping the image + the clone unless the
                    # workflow opts in via clone_repo); images.py = ADR-0005 composed images
                    # (base→workflow→repo); provisioner.py = host-side provisioning
-                   # (ADR 0011: branch the per-task clone on slug, record it back); clones.py =
+                   # (ADR 0011: branch the per-task clone on slug, record it back); priority.py =
+                   # host-side resource priority (env → argv: the deprioritizing `docker run` flags
+                   # every task container gets — cpu/blkio weight floors + a raised OOM score — the
+                   # agent pane's own oom_score_adj, `nice` for shell tasks, and the cgroup-flag
+                   # strip the runner degrades through on a daemon that refuses them); clones.py =
                    # per-repo clone cache; spawn.py = spawn-prep (clone --local the per-task
                    # checkout, mounted rw at /workspace; point origin at the forge, then init any
                    # submodules — in that order, since relative .gitmodules URLs resolve against
@@ -251,6 +255,13 @@ on every PR (the same commands the Makefile wraps).
   unresumable-transcript recognizer: the SDK marker shapes captured off the two tasks this broke,
   the newest-first resume order, and the regression that an SDK-only project now yields a
   first-run argv instead of the `--continue` that killed the pane.
+- `tests/sessionservice/test_priority.py` — resource priority (env → argv): the shipped defaults
+  every task container is spawned with, each per-host override, the `off` switch that returns the
+  argv to its pre-priority form, the clamps (a negative OOM adjustment refused), a bad value falling
+  back rather than failing a spawn, and the cgroup-flag strip. `test_local_runner.py` covers the
+  wiring — the flags on `docker run`, the pane wrapper that raises the exec'd agent's OOM score
+  (`docker exec` doesn't inherit the container's), and the retry-without-cgroup-flags fallback plus
+  its latch; `test_shell_runner.py` covers the `nice` prefix on a shell task's host session.
 - `tests/test_prefill.py` — the input-box prefill poller: unit tests drive `prefill_pane` with a
   fake tmux runner + injected `sleep`/raw-log — pin the `pipe-pane`/`load-buffer`/`paste-buffer -p`
   commands when the box becomes ready, and every best-effort give-up (empty prompt, timeout,

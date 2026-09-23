@@ -52,7 +52,22 @@ def test_spawn_kills_stale_session_then_starts_the_script_in_the_task_dir() -> N
     assert new_session[:6] == ["tmux", "-L", "panopticon", "new-session", "-d", "-s"]
     assert new_session[6] == "panopticon-t1"
     assert new_session[7:9] == ["-c", "/tasks/t1"]  # the pane starts in the task's own directory
-    assert new_session[9:11] == ["sh", "-c"]  # the pane runs the assembled script under sh -c
+    # A shell task's script runs on the host with no cgroup around it, so `nice` is the only lever
+    # keeping it off the operator's back; the script still reaches `sh -c` verbatim behind it.
+    assert new_session[9:12] == ["nice", "-n", "19"]
+    assert new_session[12:14] == ["sh", "-c"]  # the pane runs the assembled script under sh -c
+
+
+def test_spawn_without_host_nice_runs_the_script_unprefixed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Switching the knob off returns the pane to exactly the argv it had before priority existed.
+    monkeypatch.setenv("PANOPTICON_HOST_NICE", "off")
+    rec = _Recorder()
+    ShellRunner("http://svc:8000", run=rec).spawn("t1", script="true", workdir="/tasks/t1")
+    new_session = rec.calls[1]
+    assert new_session[9:11] == ["sh", "-c"]
+    assert "nice" not in new_session
 
 
 def test_spawn_falls_back_to_the_operator_home_without_a_workdir() -> None:
