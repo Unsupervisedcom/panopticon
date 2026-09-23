@@ -646,6 +646,30 @@ async def test_active_snooze_dims_the_row_and_labels_the_turn_cell() -> None:
             assert cell._spans and all(s.style == "dim" for s in cell._spans)
 
 
+async def test_cascaded_snooze_mutes_a_governed_child_row() -> None:
+    # The task service cascades a governor's snooze onto its governed tasks, so a child arrives
+    # carrying the deadline on its own record — the display path needs no governor lookup.
+    governor = {**_TASK, "id": "gov", "slug": "orchestrator", "snoozed_until": _at(4)}
+    child = {
+        **_TASK,
+        "id": "wrk",
+        "slug": "worker",
+        "governor_task_id": "gov",
+        "snoozed_until": _at(4),
+    }
+    app = Dashboard(_FakeClient([governor, child]), now=lambda: _NOW)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        table.move_cursor(row=table.get_row_index("gov"))
+        await pilot.press("enter")  # governors start collapsed — expand to see the child row
+        await pilot.pause()
+        row = table.get_row("wrk")
+        assert row[1].plain == "snoozed · 4h left"  # the child's turn cell carries the label too
+        for cell in row:  # and the whole child row is muted, tree prefix and all
+            assert cell._spans and all(s.style == "dim" for s in cell._spans)
+
+
 async def test_expired_snooze_resumes_normal_presentation_without_mutating() -> None:
     task = {**_TASK, "snoozed_until": _at(-1)}  # deadline already passed at _NOW
     client = _FakeClient([task])
