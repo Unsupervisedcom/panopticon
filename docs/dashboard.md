@@ -18,8 +18,8 @@ kept in sync with the `HOTKEYS` keymap and the modal `BINDINGS` in
 | `R` | Respawn a down task (releases its claim so the runner re-spawns it) |
 | `p` | Open the task's URL in the browser |
 | `w` | Open the task's workdir (its per-task clone) in the host's file manager |
-| `e` | Snooze the highlighted task for 12 hours (stops its container) |
-| `E` | Snooze the highlighted task indefinitely (stops its container) |
+| `e` | Snooze the highlighted task for 12 hours |
+| `E` | Snooze the highlighted task indefinitely |
 | `a` | List the task's artifacts |
 | `A` | List the task's **repo's** artifacts (shared by every task in it) |
 | `g` | Open the repo config screen |
