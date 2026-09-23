@@ -18,8 +18,8 @@ kept in sync with the `HOTKEYS` keymap and the modal `BINDINGS` in
 | `R` | Respawn a down task (releases its claim so the runner re-spawns it) |
 | `p` | Open the task's URL in the browser |
 | `w` | Open the task's workdir (its per-task clone) in the host's file manager |
-| `e` | Snooze the highlighted task for 12 hours |
-| `E` | Snooze the highlighted task indefinitely |
+| `e` | Snooze the highlighted task for 12 hours (cascades to its governed tasks) |
+| `E` | Snooze the highlighted task indefinitely (cascades to its governed tasks) |
 | `a` | List the task's artifacts |
 | `A` | List the task's **repo's** artifacts (shared by every task in it) |
 | `g` | Open the repo config screen |
@@ -32,6 +32,14 @@ kept in sync with the `HOTKEYS` keymap and the modal `BINDINGS` in
 
 `x` (drop) is the only state transition the dashboard drives; every other transition starts a new
 agentic turn and is triggered from inside the container.
+
+Snoozing mutes a task — the row dims and its turn cell reads `snoozed · Nh left` — and it
+**cascades down the governance tree**: every non-terminal task governed (transitively) by the
+snoozed one records the same deadline, so muting a governor mutes its whole ensemble. Un-snoozing
+the governor (`e` again while the snooze is active) clears theirs too; a child's own longer snooze
+is overwritten by its governor's. Nothing cascades upward — `e` on a governed task mutes that task
+alone. Tasks created under an already-snoozed governor don't inherit it; snooze the governor again
+to re-cascade.
 
 ## Navigation
 

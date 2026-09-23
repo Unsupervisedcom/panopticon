@@ -275,6 +275,105 @@ async def test_blocked_marker_survives_turn_flips(tmp_path: Path) -> None:
     assert (await svc.set_blocked(task.id, False)).blocked is False  # cleared only explicitly
 
 
+# -- snooze: an operator mute that cascades down the governance tree ----------------
+
+
+_UNTIL = "2026-08-06T03:00:00+00:00"
+
+
+async def test_snooze_cascades_to_governed_children(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    gov = await svc.create_task("r1", "spike")
+    child_a = await svc.create_task("r1", "spike", governor_task_id=gov.id)
+    child_b = await svc.create_task("r1", "spike", governor_task_id=gov.id)
+    ungoverned = await svc.create_task("r1", "spike")
+
+    snoozed = await svc.set_snooze(gov.id, _UNTIL)
+
+    assert snoozed.snoozed_until == _UNTIL
+    assert (await svc.get_task(child_a.id)).snoozed_until == _UNTIL
+    assert (await svc.get_task(child_b.id)).snoozed_until == _UNTIL
+    assert (await svc.get_task(ungoverned.id)).snoozed_until is None  # not in the ensemble
+
+
+async def test_snooze_cascades_through_nested_governors(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    gov = await svc.create_task("r1", "spike")
+    child = await svc.create_task("r1", "spike", governor_task_id=gov.id)
+    grandchild = await svc.create_task("r1", "spike", governor_task_id=child.id)
+
+    await svc.set_snooze(gov.id, _UNTIL)
+
+    assert (await svc.get_task(child.id)).snoozed_until == _UNTIL
+    assert (await svc.get_task(grandchild.id)).snoozed_until == _UNTIL
+
+
+async def test_snooze_skips_terminal_children_but_descends_through_them(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    gov = await svc.create_task("r1", "spike")
+    done = await svc.create_task("r1", "spike", governor_task_id=gov.id)
+    live_sibling = await svc.create_task("r1", "spike", governor_task_id=gov.id)
+    under_done = await svc.create_task("r1", "spike", governor_task_id=done.id)
+    await svc.set_state(done.id, Complete.label)  # finished before the governor was snoozed
+
+    await svc.set_snooze(gov.id, _UNTIL)
+
+    assert (await svc.get_task(done.id)).snoozed_until is None  # nothing to mute
+    assert (await svc.get_task(live_sibling.id)).snoozed_until == _UNTIL
+    # A finished intermediate doesn't shield the live work below it.
+    assert (await svc.get_task(under_done.id)).snoozed_until == _UNTIL
+
+
+async def test_clearing_a_governors_snooze_clears_its_ensemble(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    gov = await svc.create_task("r1", "spike")
+    child = await svc.create_task("r1", "spike", governor_task_id=gov.id)
+    await svc.set_snooze(child.id, "9999-12-31T23:59:59+00:00")  # its own, longer snooze
+    await svc.set_snooze(gov.id, _UNTIL)
+    assert (await svc.get_task(child.id)).snoozed_until == _UNTIL  # overwritten by the governor
+
+    cleared = await svc.set_snooze(gov.id, None)
+
+    assert cleared.snoozed_until is None
+    assert (await svc.get_task(child.id)).snoozed_until is None
+
+
+async def test_snoozing_a_child_leaves_its_governor_and_siblings_alone(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    gov = await svc.create_task("r1", "spike")
+    child = await svc.create_task("r1", "spike", governor_task_id=gov.id)
+    sibling = await svc.create_task("r1", "spike", governor_task_id=gov.id)
+
+    await svc.set_snooze(child.id, _UNTIL)  # nothing cascades upward or sideways
+
+    assert (await svc.get_task(gov.id)).snoozed_until is None
+    assert (await svc.get_task(sibling.id)).snoozed_until is None
+
+
+async def test_snooze_cascade_terminates_on_a_governance_cycle(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    first = await svc.create_task("r1", "spike")
+    second = await svc.create_task("r1", "spike", governor_task_id=first.id)
+    await svc.set_governor(first.id, second.id)  # a cycle: set_governor doesn't reject one
+
+    await svc.set_snooze(first.id, _UNTIL)  # must not recurse forever
+
+    assert (await svc.get_task(first.id)).snoozed_until == _UNTIL
+    assert (await svc.get_task(second.id)).snoozed_until == _UNTIL
+
+
+async def test_recascading_an_unchanged_snooze_leaves_children_untouched(tmp_path: Path) -> None:
+    svc = await make_service(tmp_path)
+    gov = await svc.create_task("r1", "spike")
+    child = await svc.create_task("r1", "spike", governor_task_id=gov.id)
+    await svc.set_snooze(gov.id, _UNTIL)
+    stamped = (await svc.get_task(child.id)).updated_at
+
+    await svc.set_snooze(gov.id, _UNTIL)  # same value again
+
+    assert (await svc.get_task(child.id)).updated_at == stamped  # no updated_at churn
+
+
 async def test_create_task_seeds_sort_weight(tmp_path: Path) -> None:
     svc = await make_service(tmp_path)
     task = await svc.create_task("r1", "spike", sort_weight=8)

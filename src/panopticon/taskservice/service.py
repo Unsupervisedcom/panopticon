@@ -637,12 +637,50 @@ class TaskService:
         The value is stored verbatim (any ISO-8601 string, or ``None`` to clear); whether a finite
         deadline is active is decided by the dashboard alone. Leaves ``state``/``turn``/``blocked``
         untouched — a plain recorded fact, like the url.
+
+        Snoozing **cascades down the governance tree**: every non-terminal task governed
+        (transitively) by this one records the same value, so muting a governor mutes its whole
+        ensemble — and clearing the governor's snooze clears theirs. Nothing cascades upward: a
+        child's snooze is its own.
         """
         task = await self.get_task(task_id)
         task.snoozed_until = until
         await self._save_task(task)
         _log.debug("task %s: snoozed_until → %s", task_id, until)
+        await self._cascade_snooze_governed(task.id, until)
         return task
+
+    async def _cascade_snooze_governed(self, governor_id: str, until: str | None) -> None:
+        """Record ``until`` on every non-terminal task governed (transitively) by governor_id.
+
+        Terminal tasks are skipped — a finished task demands no attention to mute — but the walk
+        still descends *through* them, so a live grandchild under a completed child is not shielded
+        from its governor's snooze. A child already holding ``until`` is left alone (no ``updated_at``
+        churn on a repeated snooze), and ``seen`` guards the walk against a governance cycle.
+        """
+        children: dict[str, list[str]] = {}
+        for task in await self._store.list_tasks_summary():
+            if task.governor_task_id is not None:
+                children.setdefault(task.governor_task_id, []).append(task.id)
+        seen = {governor_id}
+        queue = list(children.get(governor_id, ()))
+        count = 0
+        while queue:
+            child_id = queue.pop(0)
+            if child_id in seen:
+                continue
+            seen.add(child_id)
+            queue.extend(children.get(child_id, ()))
+            # Re-read the full record: the summary rows above carry no history, so they must never
+            # be persisted over a stored task.
+            child = await self.get_task(child_id)
+            if child.state in TERMINAL_LABELS or child.snoozed_until == until:
+                continue
+            child.snoozed_until = until
+            await self._save_task(child)
+            count += 1
+        if count:
+            _log.info("task %s: cascade-snoozed %d governed task(s)", governor_id, count)
 
     async def set_sort_weight(self, task_id: str, sort_weight: int) -> Task:
         """Set the task's dashboard sort weight (default 0; higher sorts first).
