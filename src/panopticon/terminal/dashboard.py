@@ -115,6 +115,7 @@ from panopticon.core.artifacts import InvalidArtifactName, is_hidden, validate_s
 from panopticon.core.dirs import ARTIFACTS_DIR
 from panopticon.core.features import codex_enabled
 from panopticon.core.models import resolve_agent_cli
+from panopticon.core.snooze import INDEFINITE_UNTIL, snooze_remaining
 from panopticon.core.state import TERMINAL_LABELS
 from panopticon.sessionservice.local_runner import session_name
 from panopticon.taskservice.artifacts_fs import FilesystemArtifactStore
@@ -363,29 +364,18 @@ def _matches(task: JsonObj, query: str) -> bool:
 # Fixed operator snooze controls: `e` means "not today"; `E` records the reserved sticky value.
 # A snooze always mutes until it expires — there is no attention/piercing here (that field was
 # deliberately dropped from this fork), so the turn-column precedence is just: snoozed > normal.
+# Snoozing also **stops the task's container** (the session service reads the same deadline off its
+# own clock, `core.snooze`); clearing it — or the deadline lapsing — respawns the task.
 _SNOOZE_DURATION = timedelta(hours=12)
-_INDEFINITE_SNOOZE_UNTIL = "9999-12-31T23:59:59+00:00"
+_INDEFINITE_SNOOZE_UNTIL = INDEFINITE_UNTIL
 
 
 def _snooze_remaining(task: JsonObj, now: datetime) -> float | None:
-    """Active seconds remaining; +inf for the reserved sticky deadline; None if inactive."""
-    raw = task.get("snoozed_until")
-    if not isinstance(raw, str):
-        return None
-    if raw == _INDEFINITE_SNOOZE_UNTIL:
-        return float("inf")
-    try:
-        deadline = datetime.fromisoformat(raw)
-    except ValueError:
-        return None
-    if deadline.tzinfo is None:
-        deadline = deadline.replace(tzinfo=UTC)
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=UTC)
-    seconds = (deadline - now).total_seconds()
-    if seconds <= 0:
-        return None
-    return seconds
+    """Active seconds remaining; +inf for the reserved sticky deadline; None if inactive.
+
+    The arithmetic itself lives in :mod:`panopticon.core.snooze` — shared with the session service,
+    which gates stopping the container on the same predicate."""
+    return snooze_remaining(task.get("snoozed_until"), now)
 
 
 def _snooze_label(task: JsonObj, now: datetime) -> str | None:
@@ -1927,12 +1917,18 @@ HOTKEYS: tuple[Hotkey, ...] = (
         "Open the task's workdir (its per-task clone) in the host's file manager",
         show=False,
     ),
-    Hotkey("e", "snooze", "Snooze", "Snooze the highlighted task for 12 hours", show=False),
+    Hotkey(
+        "e",
+        "snooze",
+        "Snooze",
+        "Snooze the highlighted task for 12 hours (stops its container)",
+        show=False,
+    ),
     Hotkey(
         "E",
         "snooze_indefinitely",
         "Snooze sticky",
-        "Snooze the highlighted task indefinitely",
+        "Snooze the highlighted task indefinitely (stops its container)",
         show=False,
     ),
     Hotkey("g", "repos", "Repos", "Repo config (list / create / edit repos)", show=False),
@@ -2465,8 +2461,11 @@ class Dashboard(App[None]):
     def action_snooze(self) -> None:
         """`e`: toggle a fixed twelve-hour operator snooze on the highlighted task.
 
-        Snoozing a task mutes it (dims the row, shows `snoozed · Nh left`) until the deadline; a
-        second `e` while it's active clears it. The 12h window is a hard constant."""
+        Snoozing a task mutes it (dims the row, shows `snoozed · Nh left`) until the deadline **and
+        stops its container** — the session service reads the same deadline off its own clock, stops
+        the container and releases the claim, so the task reads `queued` until it wakes. A second `e`
+        while it's active clears it, and the next daemon pass respawns the task (the agent resumes
+        its session). The 12h window is a hard constant."""
         task_id = self._current
         if task_id is None:
             return
@@ -2482,7 +2481,8 @@ class Dashboard(App[None]):
             self.action_refresh()
 
     def action_snooze_indefinitely(self) -> None:
-        """`E`: record the reserved sticky snooze deadline (mute until explicitly un-snoozed)."""
+        """`E`: record the reserved sticky snooze deadline (mute — and stop the container — until
+        explicitly un-snoozed)."""
         task_id = self._current
         if task_id is None:
             return
