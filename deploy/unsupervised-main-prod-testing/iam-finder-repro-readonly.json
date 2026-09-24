@@ -1,0 +1,51 @@
+{
+  "_README": [
+    "Templates for the IAM role that lets finder TEST PODS read prod S3 exports via IRSA.",
+    "Operator creates this AWS-side (agents cannot). Read-only, one bucket, scoped to the",
+    "finder-repro:finder-test ServiceAccount. Then uncomment the role-arn annotation on the",
+    "finder-test SA in finder-repro-rbac.yaml and re-apply.",
+    "",
+    "  ROLE=prod-finder-repro-readonly",
+    "  aws iam create-role --role-name $ROLE --assume-role-policy-document file://<trust_policy>",
+    "  aws iam put-role-policy --role-name $ROLE --policy-name s3-read --policy-document file://<permission_policy>",
+    "",
+    "Scope the permission_policy Resource to specific export prefixes if you want to expose",
+    "only curated staged exports rather than the whole internal/ prefix."
+  ],
+  "trust_policy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Principal": {
+          "Federated": "arn:aws:iam::037004398141:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/5182D36C43F8988418E19551325D9F69"
+        },
+        "Action": "sts:AssumeRoleWithWebIdentity",
+        "Condition": {
+          "StringEquals": {
+            "oidc.eks.us-east-1.amazonaws.com/id/5182D36C43F8988418E19551325D9F69:sub": "system:serviceaccount:finder-repro:finder-test",
+            "oidc.eks.us-east-1.amazonaws.com/id/5182D36C43F8988418E19551325D9F69:aud": "sts.amazonaws.com"
+          }
+        }
+      }
+    ]
+  },
+  "permission_policy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Sid": "ListExports",
+        "Effect": "Allow",
+        "Action": ["s3:ListBucket"],
+        "Resource": "arn:aws:s3:::unsupervised-prod-internal",
+        "Condition": { "StringLike": { "s3:prefix": ["internal/*"] } }
+      },
+      {
+        "Sid": "ReadExports",
+        "Effect": "Allow",
+        "Action": ["s3:GetObject"],
+        "Resource": "arn:aws:s3:::unsupervised-prod-internal/internal/*"
+      }
+    ]
+  }
+}

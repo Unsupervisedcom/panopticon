@@ -1,0 +1,50 @@
+# Pre-baked finder BUILDER image — toolchain + deps + compiled bfinder wheel ONLY.
+#
+# Deliberately carries NO finder Python source and NO Rust source: the agent overlays the
+# CURRENT finder source at build-in-pod time and runs pyinstaller. The Rust `bfinder`/`pybfinder`
+# source is used here only to compile the wheel, then deleted — so nothing proprietary beyond the
+# already-shipped compiled artifacts persists in Harbor. (python-utils remains as an installed
+# runtime dep, unavoidable — pyinstaller bundles it.)
+#
+# We record a hash of the Rust source (RUST_SRC_HASH). build-finder-in-pod.sh compares the
+# overlaid source against it and recompiles the wheel iff the change touches the Rust — so a
+# Python-only change uses the fast baked wheel, a Rust change is never tested stale.
+#
+# Destined for unsupervised-main (e.g. .github/docker/finder-builder.Dockerfile), published to
+# Harbor by publish.finder-builder.yml. Build context = repo root (needs subrepos/finder +
+# subrepos/python-utils), with submodules checked out.
+FROM python:3.10-bookworm
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install --yes --no-install-recommends \
+      build-essential libpq-dev curl git ca-certificates pkg-config \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN pip install --no-cache-dir maturin pyinstaller
+
+WORKDIR /build
+# python-utils (finder's editable dep) — stays as an installed package.
+COPY subrepos/python-utils /build/subrepos/python-utils
+# Only the Rust source + requirements from finder — NOT the finder Python src.
+COPY subrepos/finder/Cargo.toml subrepos/finder/Cargo.lock /build/subrepos/finder/
+COPY subrepos/finder/bfinder      /build/subrepos/finder/bfinder
+COPY subrepos/finder/pybfinder    /build/subrepos/finder/pybfinder
+COPY subrepos/finder/requirements.txt /build/subrepos/finder/requirements.txt
+
+WORKDIR /build/subrepos/finder
+# Install third-party deps + editable python-utils, but NOT finder (`-e .`) — no finder src here.
+RUN grep -v '^-e \.$' requirements.txt > requirements-nofinder.txt \
+ && pip install --no-cache-dir -r requirements-nofinder.txt
+# Compile + install the bfinder wheel from the Rust source.
+RUN cd pybfinder && maturin build -r -o /tmp/wheels && pip install --no-cache-dir /tmp/wheels/*.whl
+
+# Record a content+path hash of the Rust source, then DELETE the Rust source (keep only the
+# installed compiled wheel). Same hash recipe as build-finder-in-pod.sh's rust_hash().
+RUN find Cargo.toml Cargo.lock bfinder pybfinder -type f | sort | xargs sha256sum | sha256sum \
+      | cut -d' ' -f1 > /build/RUST_SRC_HASH \
+ && rm -rf bfinder pybfinder target Cargo.toml Cargo.lock requirements.txt requirements-nofinder.txt \
+ && echo "finder-builder: toolchain + deps + bfinder wheel baked; overlay finder src at build time." \
+      > /build/FINDER_BUILDER_READY

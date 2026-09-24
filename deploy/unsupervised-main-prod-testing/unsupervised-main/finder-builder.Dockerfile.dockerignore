@@ -1,0 +1,13 @@
+# Dockerfile-specific ignore for the finder-builder build.
+# BuildKit uses `<dockerfile>.dockerignore` (this file) INSTEAD of the repo-root .dockerignore,
+# which excludes `subrepos/`. This build needs subrepos/finder + subrepos/python-utils in context,
+# so we do NOT exclude them here — just trim heavy/irrelevant junk.
+.git
+**/.git
+**/.venv
+**/venv
+**/target
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/dist

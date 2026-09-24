@@ -1,0 +1,122 @@
+# ============================================================================
+# PHASE 2 — NOT USED IN THE BROAD-ROLE INTERIM. Do NOT apply this until an
+# IAM-admin has created the prod-finder-repro-readonly role (iam-finder-repro-
+# readonly.json) and you've uncommented the finder-test SA's role-arn. Until
+# then, agents run test pods in `default` as unsupervised-unsupervised.
+# ============================================================================
+# Scoped RBAC for panopticon agents doing finder prod-testing.
+# Applies to the prod EKS cluster. Replaces the current arrangement where the
+# `panopticon-repro` ServiceAccount lives in `default` with pod create/delete/exec/log.
+#
+# Decision (operator-approved): give agents a DEDICATED namespace with a resource
+# ceiling, not `default`, so an agent can't spawn an unbounded 256Gi run or interfere
+# with real workloads. The verbs match exactly what the finder-pod-testing workflow
+# needs and nothing more.
+#
+# Apply:  kubectl --context <prod> apply -f finder-repro-rbac.yaml
+# The ResourceQuota / LimitRange numbers are ceilings — tune to the real test budget.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: finder-repro
+  labels:
+    app.kubernetes.io/managed-by: panopticon
+    panopticon.unsupervised.com/purpose: finder-prod-testing
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: panopticon-repro
+  namespace: finder-repro
+---
+# Run identity for finder TEST PODS (separate from the control SA above). The pods an
+# agent provisions set `serviceAccountName: finder-test` so they can READ prod S3 exports
+# via IRSA. Data access rides on this SA, NOT on kubectl / the control credential.
+#
+# ACTIVATION (operator, AWS-side — see iam-finder-repro-readonly.json):
+#   1. Create IAM role `prod-finder-repro-readonly` (trust = EKS OIDC + sub
+#      system:serviceaccount:finder-repro:finder-test; permissions = read-only s3 on
+#      unsupervised-prod-internal/internal/*).
+#   2. Uncomment the annotation below with that role's ARN and re-apply.
+# Until then this SA exists but has no data access (small/synthetic tests still work).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: finder-test
+  namespace: finder-repro
+  # annotations:
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::037004398141:role/prod-finder-repro-readonly
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: panopticon-repro
+  namespace: finder-repro
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  # cp needs to read pod status/attach; keep it minimal.
+  - apiGroups: [""]
+    resources: ["pods/status"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: panopticon-repro
+  namespace: finder-repro
+subjects:
+  - kind: ServiceAccount
+    name: panopticon-repro
+    namespace: finder-repro
+roleRef:
+  kind: Role
+  name: panopticon-repro
+  apiGroup: rbac.authorization.k8s.io
+---
+# Ceiling on the whole namespace so agents can't run away. Finder repro pods are
+# legitimately large (200Gi+), so these are generous but bounded.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: finder-repro-quota
+  namespace: finder-repro
+spec:
+  hard:
+    pods: "8"
+    requests.cpu: "128"
+    limits.cpu: "128"
+    requests.memory: 600Gi
+    limits.memory: 600Gi
+    requests.ephemeral-storage: 1000Gi
+    limits.ephemeral-storage: 1000Gi
+---
+# Cap any single pod so one pod can't consume the entire quota, and give pods that
+# omit limits a small safe default rather than unbounded.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: finder-repro-limits
+  namespace: finder-repro
+spec:
+  limits:
+    - type: Container
+      max:
+        cpu: "64"
+        memory: 300Gi
+        ephemeral-storage: 500Gi
+      default:
+        cpu: "2"
+        memory: 8Gi
+        ephemeral-storage: 20Gi
+      defaultRequest:
+        cpu: "1"
+        memory: 4Gi
+        ephemeral-storage: 10Gi

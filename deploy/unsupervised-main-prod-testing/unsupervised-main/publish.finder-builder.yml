@@ -1,0 +1,70 @@
+# Publish the pre-baked finder BUILDER image to Harbor.
+# Destined for unsupervised-main/.github/workflows/publish.finder-builder.yml (copy via PR).
+#
+# Reuses the SAME Harbor credentials CI already uses for unsupervised-main / unsupervised-base
+# (vars.HARBOR_USERNAME + secrets.HARBOR_PASSWORD) — no new account. In-cluster PULL reuses the
+# existing `unsupervised-regcred` secret (copied into the finder-repro namespace), so nothing new
+# on the pull side either.
+#
+# Rebuild cadence: manual (workflow_dispatch) + whenever the heavy deps change. Rebuild is only
+# needed when requirements.txt / the Rust ext / python-utils change — NOT for ordinary fc.py edits
+# (those are overlaid at build-in-pod time), so this stays cheap.
+name: Publish Finder Builder Image
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag (default: short SHA)"
+        required: false
+        default: ""
+  push:
+    branches: [staging]
+    paths:
+      - "subrepos/finder/requirements.txt"
+      - "subrepos/finder/pybfinder/**"
+      - "subrepos/finder/bfinder/**"
+      - "subrepos/finder/Cargo.*"
+      - "subrepos/finder/Dockerfile.finder-builder"
+      - "subrepos/python-utils/**"
+
+concurrency:
+  group: publish-finder-builder-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          t="${{ inputs.tag }}"
+          [ -n "$t" ] || t="$(git rev-parse --short HEAD)"
+          echo "tag=$t" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Harbor
+        uses: docker/login-action@v3
+        with:
+          registry: harbor.unsupervised.com
+          username: ${{ vars.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Build & push finder-builder
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: subrepos/finder/Dockerfile.finder-builder
+          push: true
+          tags: |
+            harbor.unsupervised.com/images/finder-builder:${{ steps.tag.outputs.tag }}
+            harbor.unsupervised.com/images/finder-builder:latest
+          cache-from: type=registry,ref=harbor.unsupervised.com/images/finder-builder:buildcache
+          cache-to: type=registry,ref=harbor.unsupervised.com/images/finder-builder:buildcache,mode=max
