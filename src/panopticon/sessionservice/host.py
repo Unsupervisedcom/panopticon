@@ -69,10 +69,15 @@ class HostDaemon:
         self._interval = interval
 
     def tick(self, tasks: list[JsonObj]) -> None:
-        """One pass over a task snapshot: spawn each spawnable task, provision each slugged one,
-        publish each pending push, reconcile each claimed one's container-lifecycle status
-        (down-detection), and heal each orphan (a claimed task whose tmux session is gone →
-        respawn). All self-gate, so re-running over an unchanged snapshot is a no-op.
+        """One pass over a task snapshot: pause each snoozed task (stop its container, release the
+        claim), spawn each spawnable task, provision each slugged one, publish each pending push,
+        reconcile each claimed one's container-lifecycle status (down-detection), and heal each orphan
+        (a claimed task whose tmux session is gone → respawn). All self-gate, so re-running over an
+        unchanged snapshot is a no-op.
+
+        ``pause`` runs **first**: it's what frees a snoozed task's resources, and every step after it
+        skips a snoozed task, so nothing in the same pass undoes it. Waking needs no step of its own —
+        a task whose deadline has lapsed is unclaimed and un-snoozed, so ``spawn_one`` brings it back.
 
         ``publish`` runs **before** ``cleanup``: a task can request its push and reach a terminal
         state in the same breath, and cleanup deletes the per-task clone the push reads from.
@@ -89,6 +94,7 @@ class HostDaemon:
                 _log.warning("flagging heal failed for task %s", task.get("id"), exc_info=True)
         for task in tasks:
             try:
+                self._spawner.pause(task)  # snoozed → stop the container, release the claim
                 self._spawner.spawn_one(task)
                 self._provisioner.provision(task)
                 self._publisher.publish(task)

@@ -4,7 +4,9 @@ The session service is the per-host runner. Each pass it considers the tasks the
 that are **unclaimed** and **non-terminal**, **claims** one for this host (the claim is the spawn
 gate — exactly one runner owns it; a lost race is a 409 we skip), prepares its writable per-task
 clone (`prepare_workspace`), and spawns the container via the runner with the repo's secrets + the
-``/workspace`` mount. Provisioning (slug → branch) is the sibling loop (`ProvisionDaemon`); the
+``/workspace`` mount. It also **pauses** a task the operator snoozed (stop the container, release the
+claim) — the deadline is a recorded fact, and reading it against a clock is the host's job, not the
+control plane's. Provisioning (slug → branch) is the sibling loop (`ProvisionDaemon`); the
 unified host daemon runs both. LLM-free.
 """
 
@@ -17,6 +19,7 @@ import shutil
 import subprocess
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -25,11 +28,12 @@ from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.dirs import hook_file_path
 from panopticon.core.features import require_available_agent_cli
 from panopticon.core.models import ContainerStatus, LifecyclePhase, resolve_agent_cli
+from panopticon.core.snooze import is_snoozed
 from panopticon.core.state import TERMINAL_LABELS
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.executions import WorkflowExecutions
 from panopticon.sessionservice.images import ImageBuilder
-from panopticon.sessionservice.local_runner import LocalRunner, base_image
+from panopticon.sessionservice.local_runner import LocalRunner, base_image, session_name
 from panopticon.sessionservice.shell_runner import ShellRunner
 from panopticon.sessionservice.spawn import cleanup_workspace, prepare_workspace
 
@@ -104,6 +108,7 @@ class Spawner:
         rmtree: Callable[[str], None] = shutil.rmtree,
         docker_cleanup: Callable[[str], None] | None = None,
         now: Callable[[], float] = time.monotonic,
+        utcnow: Callable[[], datetime] = lambda: datetime.now(UTC),
         max_respawns: int = MAX_RESPAWNS,
         respawn_reset: float = RESPAWN_RESET_SECONDS,
     ) -> None:
@@ -131,6 +136,10 @@ class Spawner:
             docker_cleanup if docker_cleanup is not None else runner.delete_workspace_contents
         )
         self._now = now
+        #: Wall clock for the snooze predicate (:meth:`pause`). Distinct from ``now`` (monotonic, for
+        #: the crash-loop window): a snooze deadline is an absolute time, so it needs a real clock.
+        #: Read **here**, on the host — the control plane records the deadline and never compares it.
+        self._utcnow = utcnow
         self._max_respawns = max_respawns
         self._respawn_reset = respawn_reset
         #: task_id → (respawns in the current burst, monotonic time of the last respawn), the
@@ -147,9 +156,16 @@ class Spawner:
         Reports each spawn phase to the task service as it goes (``CLAIMING`` → ``PREPARING`` →
         ``BUILDING`` → ``STARTING`` → ``AWAITING``) so the dashboard can surface the steps to becoming
         live; a step raising is reported as ``FAILED`` (with the error) before re-raising, so the
-        host daemon's per-task isolation still applies but the failure is visible, not silent."""
+        host daemon's per-task isolation still applies but the failure is visible, not silent.
+
+        An **actively snoozed** task is skipped: the operator muted it, so it must not come up (and a
+        task :meth:`pause` just released must not be re-spawned in the same pass). Once the deadline
+        lapses — or the operator clears it — this is also what wakes the task, spawning it through the
+        full visible lifecycle with its clone and CLI session history intact."""
         if task["state"] in TERMINAL_LABELS or task.get("claimed_by"):
             return None
+        if self._is_snoozed(task):
+            return None  # muted by the operator — don't bring it up (see `pause`)
         try:
             self._client.claim(task["id"], self._runner_id)
         except httpx.HTTPStatusError as exc:
@@ -306,6 +322,49 @@ class Spawner:
         with contextlib.suppress(httpx.HTTPError):
             self._client.report_lifecycle(task_id, self._runner_id, phase.value, detail)
 
+    def _is_snoozed(self, task: JsonObj) -> bool:
+        """Whether the operator's snooze on ``task`` is **active** right now (this host's clock).
+
+        ``snoozed_until`` is a recorded fact the task service never interprets (the determinism
+        invariant): reading it against a clock is the caller's job, and here the caller is the runner.
+        The arithmetic is shared with the dashboard (:mod:`panopticon.core.snooze`), so the row you see
+        muted and the container we stop are decided by the same rule."""
+        return is_snoozed(task.get("snoozed_until"), self._utcnow())
+
+    def pause(self, task: JsonObj) -> bool:
+        """Stop the container of a task the operator snoozed, and release its claim. Did we stop one?
+
+        Snoozing is "not now": the task is muted on the dashboard, so its container shouldn't sit
+        there holding CPU, RAM and a model session. We stop it and **release the claim**, which also
+        clears any reported lifecycle phase, so the task composes ``queued`` — and waking it needs no
+        separate path: once the deadline lapses (or the operator clears it) :meth:`spawn_one` claims
+        and spawns it again like any queued task, with its per-task clone and the CLI session history
+        in its config volume intact, so the agent resumes where it left off.
+
+        Stopping is unconditional — even mid-turn. ``/workspace`` is a host bind mount, so the
+        checkout survives; what's lost is the in-container process (an in-flight tool call), not work
+        on disk.
+
+        Self-gates so calling it on every task each pass is safe: only a task **this** runner claims,
+        non-terminal, actively snoozed, and with a container or session still up (so a task already
+        paused isn't released again every pass). **Shell** tasks are skipped — their script runs once,
+        so killing it would be a cancel, not a pause (the same reason :meth:`heal` skips them)."""
+        task_id = task["id"]
+        if task.get("claimed_by") != self._runner_id or task["state"] in TERMINAL_LABELS:
+            return False
+        if not self._is_snoozed(task):
+            return False
+        if self._executions.is_shell(task.get("workflow")):
+            return False  # a shell script is run once — stopping it is a cancel, not a pause
+        runner = self._runner_for(task)
+        if not (runner.is_running(task_id) or runner.has_session(task_id)):
+            return False  # nothing left to stop — already paused
+        _log.info("task %s: snoozed — stopping its container and releasing the claim", task_id)
+        runner.stop(session_name(task_id))
+        self._respawns.pop(task_id, None)  # a deliberate stop is not a crash — forget the burst
+        self._client.release(task_id)  # → unclaimed, phase cleared → composes `queued`
+        return True
+
     def reconcile(self, task: JsonObj) -> None:
         """Reconcile a task this runner claims into the right lifecycle status (down-detection).
 
@@ -322,6 +381,8 @@ class Spawner:
         still running is left to keep coming up."""
         if task.get("claimed_by") != self._runner_id:
             return  # not ours (or unclaimed) — spawn_one handles the unclaimed case
+        if self._is_snoozed(task):
+            return  # we stopped it on purpose (`pause`) — not a death to explain
         status = task.get("container_status")
         if status not in _IN_PROGRESS and status != ContainerStatus.DOWN.value:
             return  # live / failed / queued / disconnected — nothing to reconcile
@@ -347,6 +408,8 @@ class Spawner:
         operator cancelling), not a crash to respawn — so re-running it would be wrong."""
         if task.get("claimed_by") != self._runner_id or task["state"] in TERMINAL_LABELS:
             return False
+        if self._is_snoozed(task):
+            return False  # deliberately stopped by `pause` — a paused task is not an orphan
         if self._executions.is_shell(task.get("workflow")):
             return False
         return not self._runner.has_session(task["id"])
@@ -502,12 +565,23 @@ class Spawner:
         return self._images.build(workflow, repo["id"], layers, agent_cli=agent_cli, verbose=True)
 
 
-def spawnable_tasks(client: TaskServiceClient) -> Callable[[], list[JsonObj]]:
-    """This host's spawn candidates: unclaimed, non-terminal tasks (the runner claims-then-spawns).
+def spawnable_tasks(
+    client: TaskServiceClient, *, utcnow: Callable[[], datetime] = lambda: datetime.now(UTC)
+) -> Callable[[], list[JsonObj]]:
+    """This host's spawn candidates: unclaimed, non-terminal, un-snoozed tasks (the runner
+    claims-then-spawns).
+
+    An actively snoozed task is no candidate — the operator muted it, and :meth:`Spawner.pause` stops
+    the container of one that's already up (the same gate :meth:`Spawner.spawn_one` applies, so the
+    list and the spawn can't disagree).
 
     For M1 (single host) that's every such task the service knows; scoping to this runner's own
     assignments is an M5 refinement.
     """
     return lambda: [
-        t for t in client.list_tasks() if not t["claimed_by"] and t["state"] not in TERMINAL_LABELS
+        t
+        for t in client.list_tasks()
+        if not t["claimed_by"]
+        and t["state"] not in TERMINAL_LABELS
+        and not is_snoozed(t.get("snoozed_until"), utcnow())
     ]
