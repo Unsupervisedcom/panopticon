@@ -1,0 +1,84 @@
+# DeepWork review: scope discipline.
+#
+# Catches the failure mode where a PR does what was asked AND a pile of things
+# that weren't — unrequested abstractions, defensive branches for impossible
+# states, drive-by refactors, narration comments. Each one is individually
+# defensible, which is why they accumulate; the cost lands on the reviewer, who
+# pays attention per line regardless of whether the line needed to exist.
+#
+# `all_changed_files` (tripwire): the match is only the trigger. Any source
+# change hands the reviewer the entire changeset, which is the only way to judge
+# proportionality — "is this diff bigger than the task required" is a question
+# about the whole, not about any one file.
+#
+# Deliberately ONE rule: each rule spawns its own sub-agent with real overhead,
+# and scope creep is a single judgement, not several.
+
+scope-discipline:
+  description: |
+    Flag additions the task did not require: unrequested abstractions and
+    helpers, error handling for states that cannot occur, unrelated cleanup
+    bundled into an unrelated change, comments that restate the code, and
+    redundant tests. Proportionality of the diff to the stated task.
+  match:
+    include:
+      - "**/*.py"
+      - "**/*.md"
+    exclude:
+      - ".venv/**"
+      - "**/migrations/versions/**"
+  review:
+    strategy: all_changed_files
+    instructions: |
+      Judge this changeset against one question: **is everything here required
+      by the task, and is the diff proportionate to it?**
+
+      Infer the task from the PR title, the branch name, and the commit
+      messages. If you genuinely cannot tell what was asked, say so and stop —
+      do not guess a narrower task and then flag everything outside it.
+
+      Flag each of these, with `file:line` and a one-line reason:
+
+      1. **Unrequested abstraction** — a helper, wrapper, base class, or
+         indirection introduced for a single call site. A one-shot operation
+         usually does not need a helper.
+      2. **Speculative generality** — parameters, config flags, or extension
+         points with exactly one caller and no stated requirement. Designing for
+         a hypothetical future requirement.
+      3. **Impossible-state handling** — try/except, null guards, or fallbacks
+         for conditions the surrounding code or a framework guarantee already
+         rules out. Validate at system boundaries (user input, external APIs),
+         not between two functions in the same module.
+      4. **Drive-by changes** — renames, reformatting, import reordering, or
+         refactors unrelated to the task. A bug fix does not need surrounding
+         cleanup. These are the most expensive kind of noise: they inflate the
+         diff while hiding the real change inside it.
+      5. **Narration comments** — comments that restate what the next line does,
+         explain why the change is correct, or address the reviewer rather than
+         the next reader. A comment should state a constraint the code cannot
+         show. Anything that stops being true once the PR merges is noise.
+      6. **Redundant tests** — a new test whose failure conditions are already
+         covered by an existing one. More tests is not automatically better;
+         each one is code to maintain.
+      7. **Disproportionate documentation** — a multi-section document, summary
+         file, or expanded README where the change warranted a sentence.
+
+      For each finding, state the concrete recommendation: **delete**, **split
+      into a separate PR**, or **keep** with the justification that makes it
+      required. Prefer "delete" — the default answer for something the task did
+      not ask for is that it should not be in this PR.
+
+      Then give a single overall verdict:
+
+      - **PROPORTIONATE** — the diff matches the task.
+      - **BLOATED** — name the two or three changes that would shrink it most,
+        and estimate the lines they would remove.
+
+      Two things to get right, because getting them wrong makes this rule worse
+      than useless:
+
+      - **Do not flag work the task actually required**, even where it is large.
+        A big diff is not itself a finding; a big diff for a small task is.
+      - **Do not flag missing work.** Other rules and human review cover
+        correctness, coverage, and completeness. This rule only ever argues for
+        removing things, never for adding them.
