@@ -83,8 +83,12 @@ def test_start_task_seeds_starting_model_from_default_model() -> None:
     assert task.starting_model == WF.default_model
 
 
-def test_workflow_default_model_is_opus() -> None:
-    assert WF.default_model == "opus"
+def test_workflow_default_model_is_a_pinned_id_not_an_alias() -> None:
+    # An alias like "opus" resolves to the latest model in that family at launch time, so a new
+    # release would silently re-point every task's agent. Pin an exact id; bumping it is a
+    # deliberate edit, and this test is what makes an accidental un-pinning fail loudly.
+    assert WF.default_model == "claude-opus-4-8"
+    assert WF.default_model not in ("opus", "sonnet", "haiku", "fable")
 
 
 # -- resolution: string + class refs, inherited DROPPED -----------------------------

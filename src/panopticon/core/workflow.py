@@ -101,9 +101,17 @@ class Workflow(ABC):
     hidden: ClassVar[bool] = False
     #: The model the agent starts with when working on tasks created by this workflow. Seeded onto
     #: :attr:`~panopticon.core.models.Task.starting_model` at task creation; the runner injects it
-    #: so ``claude --model`` is set on first launch. Defaults to ``"opus"`` for all built-in
-    #: workflows; override per-workflow to change the default.
-    default_model: ClassVar[str] = "opus"
+    #: so ``claude --model`` is set on first launch. Override per-workflow to change the default.
+    #:
+    #: Pinned to an explicit id rather than the ``"opus"`` alias: the alias resolves to the *latest*
+    #: Opus at launch time, so a new release silently changes the agent under every task — the same
+    #: hazard as the unpinned claude install in the base image. Bumping this should be a deliberate,
+    #: reviewable edit. 4.8 is also the more conservative model on scope: Opus 5 expands task scope
+    #: and writes longer deliverables, which shows up directly as reviewer load.
+    #:
+    #: Only applies on a task's **first** launch — on resume claude keeps whatever model the
+    #: conversation is already on, so changing this moves new tasks, not existing ones.
+    default_model: ClassVar[str] = "claude-opus-4-8"
     #: How this workflow's tasks are executed by the session service. ``"docker"`` (default)
     #: spawns the base → workflow → repo container image and runs the in-container agent (the
     #: determinism invariant — LLM calls happen there). ``"shell"`` runs :meth:`shell_script`
