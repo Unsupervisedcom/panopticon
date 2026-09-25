@@ -27,6 +27,30 @@ class Actor(str, Enum):
     AGENT = "agent"
 
 
+class WaitingOn(str, Enum):
+    """Why a task is parked on a party that is **neither** the user nor the agent.
+
+    Deliberately *not* a third :class:`Actor`. ``turn`` is machine-driven — the container's Stop
+    hook sets it to ``user`` and its UserPromptSubmit hook sets it to ``agent`` on every turn
+    boundary — so a third turn value would be clobbered the moment the agent did anything. And
+    ``Actor`` is load-bearing in the state machine (``turn_on_enter``, ``advanced_by``,
+    responsibility gating), where a third party has no meaning: nothing external ever *advances* a
+    task. This is the separate axis the turn can't carry.
+
+    Also distinct from :attr:`Task.blocked`, which is the **agent's** own declaration that it is
+    stuck and is cleared explicitly. This is **derived** by the session service from the forge and
+    clears itself when the underlying condition does, so the two never need reconciling.
+
+    The point is triage: a task at ``turn=user`` looks actionable, and opening it only to find it's
+    parked on someone else's review is the cost this removes.
+    """
+
+    #: The PR is open and the forge says a review is still required. Nobody here can move it.
+    EXTERNAL_REVIEW = "external-review"
+    #: Checks are still running. Transient, but not actionable while it lasts.
+    CI = "ci"
+
+
 class Status(str, Enum):
     """Resolution status of a single responsibility."""
 
@@ -268,6 +292,12 @@ class Task:
     #: A deliberate "waiting on something" marker the agent sets; it is **orthogonal to the
     #: turn** and survives turn flips (cloude-cade's `:blocked:`), cleared only explicitly.
     blocked: bool = False
+    #: Why this task is parked on a third party (see :class:`WaitingOn`), or ``None`` when it isn't.
+    #: **Derived**, not declared: the session service reads the forge each pass and records what it
+    #: finds, so it clears itself when the PR is approved or the checks go green. The control plane
+    #: never computes it — it has no forge access and stays LLM-free and network-free by design.
+    #: Orthogonal to ``turn`` and to ``blocked``, and touched by neither.
+    waiting_on: WaitingOn | None = None
     #: A brief, one-line reminder of what the task is, collected when the task is created (shown
     #: in the dashboard's task summary) — a human label of *intent*, not a full description (that
     #: lives in the task's plan artifact). Distinct from the ``slug`` (a short identifier the

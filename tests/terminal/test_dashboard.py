@@ -614,6 +614,29 @@ def test_snooze_label_inactive_for_past_missing_or_invalid() -> None:
     assert _snooze_label({"snoozed_until": "not-a-date"}, _NOW) is None
 
 
+def test_turn_cell_dims_a_task_parked_on_a_third_party() -> None:
+    # The bug this feature fixes: a task awaiting someone else's review sits at turn=user and
+    # renders yellow, indistinguishable from work that is actually yours.
+    plain = dashboard._turn_cell({"turn": "user"})
+    parked = dashboard._turn_cell({"turn": "user", "waiting_on": "external-review"})
+    assert plain.plain == "user" and plain.style == "yellow"
+    assert parked.plain == "ext review" and parked.style == "dim"
+
+
+def test_blocked_outranks_waiting_on() -> None:
+    # `blocked` is the agent saying it is stuck — that needs attention, so it must not be dimmed
+    # away by a third-party wait.
+    cell = dashboard._turn_cell({"turn": "user", "blocked": True, "waiting_on": "ci"})
+    assert cell.style == "red" and "⚠" in cell.plain
+
+
+def test_unknown_waiting_on_reason_still_dims() -> None:
+    # A newer runner reporting a reason this dashboard predates must not fall through to the
+    # actionable-looking turn color; show the raw value rather than hiding the wait.
+    cell = dashboard._turn_cell({"turn": "user", "waiting_on": "design-signoff"})
+    assert cell.plain == "design-signoff" and cell.style == "dim"
+
+
 def test_pause_key_is_bound_exactly_once() -> None:
     keys = [hk.key for hk in dashboard.HOTKEYS]
     assert keys.count("z") == 1

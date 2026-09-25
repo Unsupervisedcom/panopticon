@@ -20,7 +20,16 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from panopticon.core.artifacts import ArtifactError
-from panopticon.core.models import Actor, Ask, AskStatus, LifecyclePhase, Repo, Status, Task
+from panopticon.core.models import (
+    Actor,
+    Ask,
+    AskStatus,
+    LifecyclePhase,
+    Repo,
+    Status,
+    Task,
+    WaitingOn,
+)
 from panopticon.core.store import AlreadyExists, NotFound, StoreError
 from panopticon.core.workflow import IllegalTransition, InvalidWorkflow, ResponsibilitiesNotMet
 from panopticon.taskservice.service import (
@@ -90,6 +99,7 @@ class TaskSummaryOut(BaseModel):
     url: str | None
     snoozed_until: str | None = None
     paused: bool = False  # operator parked it: container reaped, session + workspace kept
+    waiting_on: WaitingOn | None = None  # parked on a third party (derived from the forge)
     branch: str | None
     clone: str | None
     claimed_by: str | None
@@ -131,6 +141,7 @@ class TaskOut(BaseModel):
         None  # operator-owned attention mute deadline (ISO-8601); None = not snoozed
     )
     paused: bool = False  # operator parked it: container reaped, session + workspace kept
+    waiting_on: WaitingOn | None = None  # parked on a third party (derived from the forge)
     branch: str | None
     clone: str | None
     claimed_by: str | None  # the runner that owns this task (the spawn gate), or None
@@ -347,6 +358,10 @@ class SnoozeIn(BaseModel):
 
 class PauseIn(BaseModel):
     paused: bool
+
+
+class WaitingOnIn(BaseModel):
+    waiting_on: WaitingOn | None
 
 
 class SortWeightIn(BaseModel):
@@ -741,6 +756,12 @@ def create_app(service: TaskService) -> FastAPI:
     @app.put("/tasks/{task_id}/blocked")
     async def set_blocked(task_id: str, body: BlockedIn) -> TaskOut:
         return _task_out(await service.set_blocked(task_id, body.blocked))
+
+    @app.put("/tasks/{task_id}/waiting-on")
+    async def set_waiting_on(task_id: str, body: WaitingOnIn) -> TaskOut:
+        """Record (or clear) why a task is parked on a third party. Reported by the session
+        service, which reads the forge; the control plane has no forge access of its own."""
+        return _task_out(await service.set_waiting_on(task_id, body.waiting_on))
 
     @app.put("/tasks/{task_id}/pause")
     async def set_paused(task_id: str, body: PauseIn) -> TaskOut:

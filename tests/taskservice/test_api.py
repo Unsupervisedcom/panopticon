@@ -345,6 +345,41 @@ def test_set_turn_and_blocked(client: TestClient) -> None:
     assert blocked.json()["turn"] == "user"  # flip-independent: the block left the turn alone
 
 
+def test_set_waiting_on_records_and_clears(client: TestClient) -> None:
+    task_id = _new_task(client)
+    before = client.get(f"/tasks/{task_id}").json()
+    assert before["waiting_on"] is None
+
+    r = client.put(f"/tasks/{task_id}/waiting-on", json={"waiting_on": "external-review"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["waiting_on"] == "external-review"
+    # A recorded fact only — the session service derives it; the lifecycle is untouched. In
+    # particular `turn` must not move: a task parked on a reviewer is still the user's turn.
+    assert body["state"] == before["state"]
+    assert body["turn"] == before["turn"]
+    assert body["blocked"] == before["blocked"]
+
+    cleared = client.put(f"/tasks/{task_id}/waiting-on", json={"waiting_on": None})
+    assert cleared.status_code == 200 and cleared.json()["waiting_on"] is None
+
+
+def test_waiting_on_rejects_an_unknown_reason(client: TestClient) -> None:
+    # A fixed set, not free text — an unrecognized reason is a bug in the reporter, not a new
+    # category to silently accept.
+    task_id = _new_task(client)
+    r = client.put(f"/tasks/{task_id}/waiting-on", json={"waiting_on": "lunch"})
+    assert r.status_code == 422
+
+
+def test_waiting_on_round_trips_into_the_list_payload(client: TestClient) -> None:
+    # The dashboard reads it off the list, so it has to survive the store, not just the write.
+    task_id = _new_task(client)
+    client.put(f"/tasks/{task_id}/waiting-on", json={"waiting_on": "ci"})
+    listed = [t for t in client.get("/tasks").json() if t["id"] == task_id]
+    assert listed and listed[0]["waiting_on"] == "ci"
+
+
 def test_set_paused_toggles_the_flag_without_touching_lifecycle(client: TestClient) -> None:
     task_id = _new_task(client)
     before = client.get(f"/tasks/{task_id}").json()

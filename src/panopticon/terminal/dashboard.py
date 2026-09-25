@@ -444,11 +444,34 @@ def _snooze_refresh_delay(task: JsonObj, now: datetime) -> float | None:
     return max(0.05, seconds - (ceil(seconds / unit) - 1) * unit)
 
 
+#: Short cell labels for :class:`~panopticon.core.models.WaitingOn`. Kept terse — this shares a
+#: narrow column with the turn — and mapped explicitly rather than prettifying the enum value, so a
+#: reason added later has to be given a deliberate label instead of leaking its raw wire form.
+_WAITING_ON_LABELS = {"external-review": "ext review", "ci": "ci"}
+
+
+def _waiting_on_label(task: JsonObj) -> str | None:
+    """The cell label for a task parked on a third party, or ``None``.
+
+    Unknown values (a newer runner reporting a reason this dashboard predates) fall back to the raw
+    string rather than vanishing: a slightly ugly cell beats silently showing the task as
+    actionable, which is the failure this whole feature exists to prevent."""
+    reason = task.get("waiting_on")
+    if not isinstance(reason, str) or not reason:
+        return None
+    return _WAITING_ON_LABELS.get(reason, reason)
+
+
 def _turn_cell(task: JsonObj, now: datetime | None = None) -> Text:
     if now is not None and (label := _snooze_label(task, now)) is not None:
         return Text(label, style="dim")
     if task.get("blocked"):
         return Text(f"{task['turn']} ⚠", style="red")
+    # Before the turn color, deliberately: a task parked on someone else's review sits at
+    # `turn=user` and would otherwise render yellow — indistinguishable from work that is actually
+    # yours. Dim is the point; it reads as "not yours" at a glance, which is the whole feature.
+    if (waiting := _waiting_on_label(task)) is not None:
+        return Text(waiting, style="dim")
     color = "green" if task["turn"] == "agent" else "yellow"
     return Text(task["turn"], style=color)
 
@@ -528,7 +551,10 @@ def render_detail(task: JsonObj, *, time_summary: str | None = None) -> str:
     caller, never computed here — it means shelling out to docker to read the task's session
     transcripts, which is too expensive to do on every highlight/refresh (see `P` /
     ``action_profile``)."""
+    waiting = _waiting_on_label(task)
     turn = f"{task['turn']}{' (blocked)' if task.get('blocked') else ''}"
+    if waiting is not None:
+        turn = f"{turn} — waiting on {waiting}"
     claim = f"    claimed: {task['claimed_by']}" if task.get("claimed_by") else ""
     lines = [
         task.get("slug") or task["id"],
