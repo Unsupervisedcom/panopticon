@@ -42,7 +42,15 @@ from sqlalchemy.orm import (
 )
 from sqlalchemy.pool import StaticPool
 
-from panopticon.core.models import Actor, HistoryEntry, Repo, Responsibility, Status, Task
+from panopticon.core.models import (
+    Actor,
+    HistoryEntry,
+    Repo,
+    Responsibility,
+    Status,
+    Task,
+    WaitingOn,
+)
 from panopticon.core.store import (
     AlreadyExists,
     IntegrityError,
@@ -131,6 +139,7 @@ class _TaskRow(_Base):
     url: Mapped[str | None] = mapped_column(default=None)
     snoozed_until: Mapped[str | None] = mapped_column(default=None)
     paused: Mapped[bool] = mapped_column(default=False)
+    waiting_on: Mapped[str | None] = mapped_column(default=None)
     branch: Mapped[str | None] = mapped_column(default=None)
     clone: Mapped[str | None] = mapped_column(default=None)
     claimed_by: Mapped[str | None] = mapped_column(default=None)
@@ -163,6 +172,7 @@ class _TaskRow(_Base):
             url=self.url,
             snoozed_until=self.snoozed_until,
             paused=self.paused,
+            waiting_on=WaitingOn(self.waiting_on) if self.waiting_on else None,
             branch=self.branch,
             clone=self.clone,
             claimed_by=self.claimed_by,
@@ -192,6 +202,7 @@ class _TaskRow(_Base):
             url=task.url,
             snoozed_until=task.snoozed_until,
             paused=task.paused,
+            waiting_on=task.waiting_on.value if task.waiting_on else None,
             branch=task.branch,
             clone=task.clone,
             claimed_by=task.claimed_by,
@@ -426,6 +437,7 @@ class SqlAlchemyStore(Store):
             row.url = task.url
             row.snoozed_until = task.snoozed_until
             row.paused = task.paused
+            row.waiting_on = task.waiting_on.value if task.waiting_on else None
             row.branch = task.branch
             row.clone = task.clone
             row.claimed_by = task.claimed_by

@@ -232,6 +232,15 @@ class TaskServiceClient:
             self._json(self._http.put(f"/tasks/{task_id}/snooze", json={"until": until})),
         )
 
+    def set_waiting_on(self, task_id: str, waiting_on: str | None) -> JsonObj:
+        """Record (or clear, with ``None``) why the task is parked on a third party."""
+        return cast(
+            JsonObj,
+            self._json(
+                self._http.put(f"/tasks/{task_id}/waiting-on", json={"waiting_on": waiting_on})
+            ),
+        )
+
     def set_paused(self, task_id: str, paused: bool) -> JsonObj:
         """Park the task (reaping its container, keeping its session) or bring it back."""
         return cast(

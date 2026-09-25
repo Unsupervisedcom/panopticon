@@ -220,6 +220,11 @@ class _NoOpSpawner:
         pass
 
 
+class _NoOpReviewWatcher:
+    def observe(self, task: JsonObj) -> None:
+        return None
+
+
 class _NoOpProvisioner:
     def provision(self, task: JsonObj) -> None:
         return None
