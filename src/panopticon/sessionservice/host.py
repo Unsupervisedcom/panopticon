@@ -42,6 +42,7 @@ from panopticon.sessionservice.executions import WorkflowExecutions
 from panopticon.sessionservice.images import ImageBuilder
 from panopticon.sessionservice.local_runner import DEFAULT_IMAGE, LocalRunner
 from panopticon.sessionservice.provisioner import Provisioner
+from panopticon.sessionservice.review_watcher import ReviewWatcher
 from panopticon.sessionservice.shell_runner import ShellRunner
 from panopticon.sessionservice.spawner import Spawner
 from panopticon.sessionservice.stall import (
@@ -65,6 +66,7 @@ class HostDaemon:
         provisioner: Provisioner,
         ask_worker: AskWorker | None = None,
         *,
+        review_watcher: ReviewWatcher | None = None,
         stall_monitor: StallMonitor | None = None,
         sleep: Callable[[float], None] = time.sleep,
         interval: float = 2.0,
@@ -73,6 +75,7 @@ class HostDaemon:
         self._spawner = spawner
         self._provisioner = provisioner
         self._ask_worker = ask_worker
+        self._review_watcher = review_watcher
         self._stall_monitor = stall_monitor
         self._sleep = sleep
         self._interval = interval
@@ -113,6 +116,9 @@ class HostDaemon:
                 # After heal: both self-gate, but reaping first would stop a container that heal
                 # then sees sessionless. It skips paused tasks, so the order is belt-and-braces.
                 self._spawner.reap_paused(task)
+                if self._review_watcher is not None:
+                    # Read-only and throttled: no container work, just the forge → triage marker.
+                    self._review_watcher.observe(task)
                 if self._stall_monitor is not None:
                     self._stall_monitor.tick(task)
             except Exception:  # a transient git/REST/FS error on one task must not stall the others
@@ -224,6 +230,7 @@ def run_host(
     )
     provisioner = Provisioner(client, clones_root=tasks_root, git=git, executions=executions)
     ask_worker = AskWorker(client, runner, spawner, runner_id=runner_id)
+    review_watcher = ReviewWatcher(client)
     stall_monitor = StallMonitor(
         client,
         runner,
@@ -240,6 +247,7 @@ def run_host(
         spawner,
         provisioner,
         ask_worker=ask_worker,
+        review_watcher=review_watcher,
         stall_monitor=stall_monitor,
         interval=interval,
         sleep=sleep,

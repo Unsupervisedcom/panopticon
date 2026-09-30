@@ -32,6 +32,7 @@ from panopticon.core.models import (
     Skill,
     Status,
     Task,
+    WaitingOn,
     compose_container_status,
 )
 from panopticon.core.provisioning import PROVISION_SKILL
@@ -789,6 +790,25 @@ class TaskService:
         task.snoozed_until = until
         await self._save_task(task)
         _log.debug("task %s: snoozed_until → %s", task_id, until)
+        return task
+
+    async def set_waiting_on(self, task_id: str, waiting_on: WaitingOn | None) -> Task:
+        """Record why a task is parked on a third party, or clear it (``None``).
+
+        A plain recorded fact, like the url or the snooze: ``state``/``turn``/``blocked`` are left
+        untouched. The control plane cannot *derive* this — it has no forge access by design — so
+        the session service observes the PR each pass and reports what it sees, the same
+        observed-not-pushed shape as provisioning and ask delivery.
+
+        Idempotent by nature: the watcher reports the same value on every pass while the condition
+        holds, and reports ``None`` the moment it clears, so this never needs a separate clear call.
+        """
+        task = await self.get_task(task_id)
+        if task.waiting_on == waiting_on:
+            return task  # unchanged — don't churn the change feed the dashboard long-polls
+        task.waiting_on = waiting_on
+        await self._save_task(task)
+        _log.info("task %s: waiting_on → %s", task_id, waiting_on.value if waiting_on else None)
         return task
 
     async def set_paused(self, task_id: str, paused: bool) -> Task:
