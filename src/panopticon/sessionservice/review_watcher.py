@@ -39,6 +39,28 @@ POLL_INTERVAL_SECONDS = 60.0
 _PENDING_CHECK_STATES = frozenset({"PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED"})
 
 
+def _pending_from_others(review_requests: object, me: str | None) -> bool:
+    """Whether a review is pending from someone other than ``me``.
+
+    ``reviewRequests`` holds users (``login``) and teams (``name``/``slug``) the review was asked
+    of. Empty means nobody was asked — a protection rule wanting *a* review, which is ours to give.
+    A team entry has no login to compare, and is treated as external by construction.
+    """
+    if not isinstance(review_requests, list) or not review_requests:
+        return False
+    for req in review_requests:
+        if not isinstance(req, dict):
+            continue
+        login = req.get("login")
+        if login is None:
+            return True  # a team (or an unfamiliar shape) — we are never a team, so: somebody else
+        if me is not None and str(login).lower() != me.lower():
+            return True  # a named someone who demonstrably isn't us
+        # Either the request is ours, or we couldn't establish an identity to compare against. Both
+        # fall through to "ours": the asymmetry matters, because a wrong "external" *hides* work.
+    return False
+
+
 class ReviewWatcher:
     """Reads each task's PR and records why it's parked, or that it no longer is."""
 
@@ -56,6 +78,9 @@ class ReviewWatcher:
         self._poll_interval = poll_interval
         #: task id → monotonic time of its last successful read, for the throttle above.
         self._last_polled: dict[str, float] = {}
+        #: The authenticated forge login, resolved once on first use (it can't change under a
+        #: running daemon). ``False`` records a failed lookup so we don't retry it every pass.
+        self._me: str | None | bool = None
 
     def observe(self, task: JsonObj) -> WaitingOn | None:
         """Record why ``task`` is parked on a third party, returning what was recorded.
@@ -83,7 +108,7 @@ class ReviewWatcher:
             return self._as_enum(current)  # unreadable — keep what we had, don't guess
         self._last_polled[task_id] = self._now()
 
-        waiting_on = self._derive(pr)
+        waiting_on = self._derive(pr, self._viewer())
         if waiting_on != self._as_enum(current):
             self._client.set_waiting_on(task_id, waiting_on.value if waiting_on else None)
             _log.info(
@@ -120,7 +145,7 @@ class ReviewWatcher:
                     "view",
                     url,
                     "--json",
-                    "state,reviewDecision,statusCheckRollup",
+                    "state,reviewDecision,reviewRequests,statusCheckRollup",
                 ],
                 check=False,
             )
@@ -133,20 +158,49 @@ class ReviewWatcher:
             return None  # `gh` printed an error rather than JSON (not a PR, no auth, …)
         return parsed if isinstance(parsed, dict) else None
 
+    def _viewer(self) -> str | None:
+        """The authenticated forge login, or ``None`` if it can't be determined.
+
+        Cached for the daemon's life. On failure we return ``None`` and remember that, which
+        makes :meth:`_derive` conservative: with no identity to compare against, a pending
+        review is treated as *ours* rather than guessed to be someone else's."""
+        if self._me is None:
+            try:
+                out = self._run(["gh", "api", "user", "--jq", ".login"], check=False)
+                self._me = out.strip() or False
+            except Exception:
+                _log.debug("gh api user failed; treating reviews as ours", exc_info=True)
+                self._me = False
+        return self._me if isinstance(self._me, str) else None
+
     @staticmethod
-    def _derive(pr: JsonObj) -> WaitingOn | None:
+    def _derive(pr: JsonObj, me: str | None) -> WaitingOn | None:
         """Fold the PR's state into a reason, or ``None`` when the ball is ours.
+
+        ``reviewDecision == "REVIEW_REQUIRED"`` is **not** on its own evidence of an external wait:
+        on a branch with a protection rule it only means *a* review is required and none has been
+        given. Every open task PR here reads that way, almost always with nobody requested — which
+        makes the pending review **ours**. Labelling those external would dim exactly the work the
+        operator most needs to see, so the question asked here is narrower: is a review pending from
+        someone *other than us*?
+
+        A requested **team** counts as external: somebody on it owes the review, and it isn't
+        specifically us. With no identity available (``me is None``) we stay conservative and treat
+        a pending review as ours — under-marking costs a glance, over-marking hides real work.
 
         Precedence is review-before-CI, deliberately. Both mean "not yours", but a required review
         sits for days while checks resolve in minutes, so the review is the more useful thing to
-        show. Two states that look like waiting but aren't:
+        show. Three states that look like waiting but aren't:
 
         * ``CHANGES_REQUESTED`` — the reviewer has acted and handed it *back*; that is work.
+        * ``REVIEW_REQUIRED`` with nobody (or only us) requested — that is work, and it's ours.
         * a failing (not pending) check — also work, for the same reason.
         """
         if pr.get("state") != "OPEN":
             return None  # merged or closed — nothing left to wait for
-        if pr.get("reviewDecision") == "REVIEW_REQUIRED":
+        if pr.get("reviewDecision") == "REVIEW_REQUIRED" and _pending_from_others(
+            pr.get("reviewRequests"), me
+        ):
             return WaitingOn.EXTERNAL_REVIEW
         rollup = pr.get("statusCheckRollup")
         if isinstance(rollup, Sequence) and not isinstance(rollup, str | bytes):
