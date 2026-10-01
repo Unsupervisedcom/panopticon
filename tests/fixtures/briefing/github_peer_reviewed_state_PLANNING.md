@@ -3,4 +3,4 @@ You are in the **PLANNING** phase of the `github-peer-reviewed` workflow. Collec
 This phase's responsibilities (resolve each one as you complete it — don't wait until the end of your turn to mark them all):
 - [pending] plan-written: The plan is uploaded to the plan artifact `plan.md` (a markdown file) with the `put_artifact` tool — not just written to the working tree. When you end your planning turn, also post a concise summary of the plan in chat so the user can review it without opening the artifact.
 
-When these are met, **stop and hand back to the user** — they review and decide when to advance (→ ITERATING). Don't advance on your own.
+When these are met, **stop and hand back to the user** — they review and decide when to advance (→ ITERATING). Don't advance on your own — but when the user asks you to, apply `advance` and carry straight on with the next phase's work in the same turn.

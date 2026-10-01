@@ -502,6 +502,11 @@ class TaskService:
         task = await self.get_task(task_id)
         return await self._workflow(task.workflow).briefing(task, artifacts=self._artifacts)
 
+    async def entry_briefing(self, task_id: str) -> str:
+        """The briefing for the phase a task just entered (what the MCP transition tools return)."""
+        task = await self.get_task(task_id)
+        return await self._workflow(task.workflow).entry_briefing(task, artifacts=self._artifacts)
+
     async def workflow_overview(self, task_id: str) -> str:
         """A one-time map of the task's whole workflow (the agent gets this in its system prompt)."""
         task = await self.get_task(task_id)

@@ -41,19 +41,30 @@ def render_command(skill: Skill, task_id: str) -> str:
     return f"---\ndescription: {skill.description}\n---\n{skill.instructions}\n{_task_id_note(task_id)}"
 
 
+def _operation_tail(target_state: str) -> str:
+    """The shared close of an operation's procedure: the gate, then *keep going*. The agent must not
+    read the move as the end of its turn — it once did ("starts a new turn"), announcing the new
+    phase and stopping until prompted. The tool result carries the new phase's briefing to act on."""
+    return (
+        f"don't edit the state directly. It's gated on the current state's responsibilities. Once it "
+        f"succeeds the task is in **{target_state}**: follow the briefing in the tool's result and "
+        f"start that phase's work right away, in this same turn — don't end your turn just to "
+        f"announce the new state.\n"
+    )
+
+
 def render_operation(name: str, target_state: str, task_id: str) -> str:
     """The rendered ``<name>.md`` body for a core operation (advance/drop/…).
 
     CLI-agnostic — both adapters write this same text; only the destination dir differs.
     Operations are the workflow's **declared, gated** moves; the agent applies one by name via the
-    `apply_operation` tool (not by editing state directly), which starts a new agentic turn.
+    `apply_operation` tool (not by editing state directly), then carries on with the new phase.
     """
     return (
         f"---\ndescription: Apply the workflow's '{name}' operation.\n---\n"
         f"Apply this workflow's `{name}` operation — it moves the task to **{target_state}**. "
         f'Invoke it with the `apply_operation` tool (`operation="{name}"`, `task_id="{task_id}"`); '
-        f"don't edit the state directly. It's gated on the current state's responsibilities and "
-        f"starts a new turn.\n"
+        f"{_operation_tail(target_state)}"
     )
 
 
@@ -115,8 +126,7 @@ def render_agent_operation(name: str, target_state: str, task_id: str) -> str:
         f"---\nname: {name}\ndescription: Apply the workflow's '{name}' operation.\n---\n"
         f"Apply this workflow's `{name}` operation — it moves the task to **{target_state}**. "
         f'Invoke it with the `apply_operation` tool (`operation="{name}"`, `task_id="{task_id}"`); '
-        f"don't edit the state directly. It's gated on the current state's responsibilities and "
-        f"starts a new turn.\n"
+        f"{_operation_tail(target_state)}"
     )
 
 

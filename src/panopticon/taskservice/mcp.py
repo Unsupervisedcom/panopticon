@@ -78,15 +78,32 @@ def build_mcp_server(service: TaskService, *, name: str = "panopticon") -> FastM
         _log.debug("mcp request_push task=%s branch=%s", task_id, branch)
         return _task(await service.request_push(task_id, branch=branch))
 
-    @mcp.tool(description="Apply a named core operation (e.g. 'advance', 'drop').")
+    # The transition tools also return the **new** phase's briefing: the per-turn one arrived with
+    # the user's prompt, so after a mid-turn move it still describes the old phase ("stop and hand
+    # back"), and agents would announce the new state and stop. This one says to keep going.
+    async def _transitioned(task: object) -> dict[str, Any]:
+        out = _task(task)
+        return {**out, "briefing": await service.entry_briefing(out["id"])}
+
+    @mcp.tool(
+        description=(
+            "Apply a named core operation (e.g. 'advance', 'drop'). Returns the task plus a "
+            "`briefing` for the phase it entered — follow it and keep working in the same turn."
+        )
+    )
     async def apply_operation(task_id: str, operation: str) -> dict[str, Any]:
         _log.debug("mcp apply_operation task=%s operation=%s", task_id, operation)
-        return _task(await service.apply_operation(task_id, operation))
+        return await _transitioned(await service.apply_operation(task_id, operation))
 
-    @mcp.tool(description="Move the task to any state directly (free move; bypasses the gate).")
+    @mcp.tool(
+        description=(
+            "Move the task to any state directly (free move; bypasses the gate). Returns the task "
+            "plus a `briefing` for the phase it entered — follow it and keep working in the same turn."
+        )
+    )
     async def set_state(task_id: str, state: str) -> dict[str, Any]:
         _log.debug("mcp set_state task=%s state=%s", task_id, state)
-        return _task(await service.set_state(task_id, state))
+        return await _transitioned(await service.set_state(task_id, state))
 
     @mcp.tool(
         description="Resolve one promised responsibility ('met', or 'failed' with a comment)."

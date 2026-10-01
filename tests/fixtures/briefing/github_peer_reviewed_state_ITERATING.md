@@ -9,4 +9,4 @@ This phase's responsibilities (resolve each one as you complete it — don't wai
 - [pending] pr-updated: The PR title and description reflect the final change, with no Test Plan / Verification section.
 - [pending] url-recorded: The PR URL is recorded on the task with the `set_url` MCP tool.
 
-When these are met, **stop and hand back to the user** — they review and decide when to advance (→ REVIEW). Don't advance on your own.
+When these are met, **stop and hand back to the user** — they review and decide when to advance (→ REVIEW). Don't advance on your own — but when the user asks you to, apply `advance` and carry straight on with the next phase's work in the same turn.
