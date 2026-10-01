@@ -440,7 +440,9 @@ class Workflow(ABC):
             if self.advanced_by(label) is Actor.USER:
                 lines.append(
                     f"When these are met, **stop and hand back to the user** — they review and decide "
-                    f"when to advance (→ {target}). Don't advance on your own."
+                    f"when to advance (→ {target}). Don't advance on your own — but when the user "
+                    f"asks you to, apply `advance` and carry straight on with the next phase's work "
+                    f"in the same turn."
                 )
             else:
                 lines.append(
@@ -451,6 +453,21 @@ class Workflow(ABC):
         if extras:
             lines += ["", *extras]
         return "\n".join(lines)
+
+    async def entry_briefing(self, task: Task, *, artifacts: ArtifactStore) -> str:
+        """The briefing for a phase the task has **just entered** — what a transition tool returns.
+
+        The per-turn :meth:`briefing` arrives with the user's prompt, so on a mid-turn move (the
+        user says "advance") the agent's latest guidance is still the *old* phase's — for a
+        user-advanced phase, "stop and hand back". Agents obeyed it: they announced the new phase
+        and stopped. This pins the new phase and tells the agent to keep going in the same turn."""
+        text = await self.briefing(task, artifacts=artifacts)
+        if self.is_terminal(task.state):
+            return text
+        return (
+            f"The task just moved to **{task.state}**. Begin this phase's work now, in this same "
+            f"turn — don't end your turn just to report the transition.\n\n{text}"
+        )
 
     def _overview_extras(self) -> Sequence[str]:
         """Extra lines a workflow appends to the static :meth:`overview` map. Default none; a

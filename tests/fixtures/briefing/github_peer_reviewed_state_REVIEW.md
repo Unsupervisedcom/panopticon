@@ -3,4 +3,4 @@ You are in the **REVIEW** phase of the `github-peer-reviewed` workflow. Wait for
 This phase's responsibilities (resolve each one as you complete it — don't wait until the end of your turn to mark them all):
 - [pending] pr-reviewed: The PR has been reviewed.
 
-When these are met, **stop and hand back to the user** — they review and decide when to advance (→ MERGING). Don't advance on your own.
+When these are met, **stop and hand back to the user** — they review and decide when to advance (→ MERGING). Don't advance on your own — but when the user asks you to, apply `advance` and carry straight on with the next phase's work in the same turn.
