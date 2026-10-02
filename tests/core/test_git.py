@@ -20,6 +20,9 @@ from panopticon.core.git import (
     GitWorktrees,
     Worktree,
     branch_name,
+    is_forge_url,
+    local_repo_path,
+    parse_submodule_paths,
     parse_submodule_status,
     worktree_path,
 )
@@ -158,6 +161,84 @@ def test_update_submodules_is_recursive_and_allows_local_transports() -> None:
         "--init",
         "--recursive",
     ]
+
+
+def test_update_submodules_can_do_one_level_only() -> None:
+    # The donor hydration walks the tree a level at a time: a nested submodule's URL can't be
+    # resolved (or redirected at the donor) before its parent has been checked out.
+    rec = _Recorder()
+    GitClones(run=rec).update_submodules(repo_path="/tasks/t1", recursive=False)
+    assert "--recursive" not in rec.calls[0][0]
+
+
+def test_submodule_paths_reads_the_declared_submodules() -> None:
+    rec = _Recorder()
+    GitClones(run=rec).submodule_paths(repo_path="/tasks/t1")
+    # Read from `.gitmodules`, so it answers before `submodule init` and for a submodule that has
+    # no checkout yet — and tolerant of a repo that declares none (git exits non-zero).
+    argv, check = rec.calls[0]
+    assert argv == [
+        "git",
+        "-C",
+        "/tasks/t1",
+        "config",
+        "--file",
+        ".gitmodules",
+        "--get-regexp",
+        "^submodule\\..*\\.path$",
+    ]
+    assert check is False
+
+
+def test_parse_submodule_paths_keeps_dotted_names_and_spaced_paths() -> None:
+    output = (
+        "submodule.vendor/lib.path vendor/lib\n"
+        "submodule.my.lib.path vendor/my lib\n"  # a name with a dot, a path with a space
+        "submodule.vendor/lib.url ../lib.git\n"  # not a `.path` line
+        "junk\n"
+    )
+    assert parse_submodule_paths(output) == {
+        "vendor/lib": "vendor/lib",
+        "my.lib": "vendor/my lib",
+    }
+
+
+def test_init_set_url_and_sync_submodules() -> None:
+    rec = _Recorder()
+    clones = GitClones(run=rec)
+    clones.init_submodules(repo_path="/tasks/t1")
+    clones.set_submodule_url(repo_path="/tasks/t1", name="vendor/lib", url="/srv/widget/vendor/lib")
+    clones.sync_submodules(repo_path="/tasks/t1")
+    assert [argv for argv, _check in rec.calls] == [
+        # `init` resolves the declared URLs into config, `config` overrides one with the donor's
+        # checkout, and `sync` puts the canonical URLs back afterwards (config *and* each
+        # submodule's own origin).
+        ["git", "-C", "/tasks/t1", "submodule", "init"],
+        ["git", "-C", "/tasks/t1", "config", "submodule.vendor/lib.url", "/srv/widget/vendor/lib"],
+        ["git", "-C", "/tasks/t1", "submodule", "sync", "--recursive"],
+    ]
+
+
+# -- a repo's URL: hosted forge vs. a checkout on this host -------------------------
+
+
+@pytest.mark.parametrize(
+    "git_url",
+    ["https://github.com/x/y.git", "http://forge/y.git", "ssh://git@forge/y.git", "git@forge:x/y"],
+)
+def test_forge_urls_have_no_local_path(git_url: str) -> None:
+    assert is_forge_url(git_url) is True
+    assert local_repo_path(git_url) is None
+
+
+def test_local_repo_paths_resolve_to_a_filesystem_path() -> None:
+    # What makes the host-side push — and cloning a task's submodules out of the repo's own
+    # checkout — possible at all.
+    assert local_repo_path("/srv/widget") == "/srv/widget"
+    assert local_repo_path("file:///srv/widget") == "/srv/widget"
+    assert local_repo_path("~/src/widget") == str(Path("~/src/widget").expanduser())
+    assert local_repo_path("  ") is None
+    assert is_forge_url("C:\\src\\widget") is False  # a drive letter isn't a scp-like remote
 
 
 def test_push_emits_a_plain_push() -> None:

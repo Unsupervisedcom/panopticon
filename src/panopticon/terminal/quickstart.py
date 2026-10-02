@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import subprocess
 from collections.abc import Callable
-from pathlib import Path
 
 import httpx
 
 from panopticon.client import TaskServiceClient
+from panopticon.core.git import is_forge_url, local_repo_path
 from panopticon.terminal.setup_repo_task import SETUP_REPO_WORKFLOW, create_setup_repo_task
 
 _FALLBACK_GIT_URL = "https://github.com/Unsupervisedcom/panopticon.git"
@@ -27,9 +27,6 @@ _TERMINAL_STATES = {"COMPLETE", "DROPPED"}
 #: local-only repos.
 _FORGE_WORKFLOW = "github-peer-reviewed"
 _LOCAL_WORKFLOW = "local-git-self-reviewed"
-
-#: URL schemes that mean a networked (hosted-forge) remote rather than a local path.
-_FORGE_SCHEMES = ("https://", "http://", "ssh://", "git://", "ftp://", "ftps://")
 
 
 def _secrets_template() -> str:
@@ -80,44 +77,13 @@ def repo_id_from_url(git_url: str) -> str:
     return tail.lower() or "repo"
 
 
-def _is_forge_url(git_url: str) -> bool:
-    """True when ``git_url`` names a hosted-forge remote (network push/PR/CI), not a local path.
-
-    Recognizes URL-scheme remotes (``https://…``, ``ssh://…``, …) and scp-like ``user@host:path``
-    remotes; treats a bare filesystem path or a ``file://`` URL as local-only.
-    """
-    url = git_url.strip()
-    if url.lower().startswith("file://"):
-        return False
-    if url.lower().startswith(_FORGE_SCHEMES):
-        return True
-    # scp-like syntax: user@host:path — an '@' and a ':' before any '/'. A Windows drive path
-    # (``C:\…``) has the ':' but no '@', so it stays local.
-    at, colon, slash = url.find("@"), url.find(":"), url.find("/")
-    return at != -1 and colon > at and (slash == -1 or colon < slash)
-
-
 def choose_enabled_workflow(git_url: str) -> str:
     """The opt-in workflow quickstart enables for a repo, chosen from its remote URL.
 
     A hosted-forge remote gets the forge lifecycle (``github-peer-reviewed``); a local-only repo
     gets the forge-free ``local-git-self-reviewed``.
     """
-    return _FORGE_WORKFLOW if _is_forge_url(git_url) else _LOCAL_WORKFLOW
-
-
-def local_repo_path(git_url: str) -> str | None:
-    """The filesystem path ``git_url`` names, or ``None`` when it names a networked remote.
-
-    The counterpart of :func:`_is_forge_url`: a bare path or a ``file://`` URL is somewhere on this
-    host, which is what makes panopticon's host-side push (and the config below) possible at all.
-    """
-    if _is_forge_url(git_url):
-        return None
-    url = git_url.strip()
-    if url.lower().startswith("file://"):
-        url = url[len("file://") :]
-    return str(Path(url).expanduser()) if url else None
+    return _FORGE_WORKFLOW if is_forge_url(git_url) else _LOCAL_WORKFLOW
 
 
 def allow_pushes_into_local_repo(

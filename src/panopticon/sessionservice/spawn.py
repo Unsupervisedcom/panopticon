@@ -4,8 +4,10 @@ Before the runner spawns a task's container, the session service gives it a writ
 it makes the repo's cache clone current (`CloneCache`) and `git clone --local`s it to the per-task
 path that gets bind-mounted at ``/workspace``. A ``--local`` clone is self-contained (hardlinked
 objects), so it mounts at any container path; the agent works there the whole task and the slug
-later just branches it (`Provisioner`). Submodules are initialized too — recursively, and *after*
-``origin`` is repointed, since that's what relative ``.gitmodules`` URLs resolve against.
+later just branches it (`Provisioner`). Submodules are filled in too — *after* ``origin`` is
+repointed, since that's what relative ``.gitmodules`` URLs resolve against, and **from the repo's
+own checkout on this host** when ``git_url`` names one (`hydrate_submodules`), so they're local
+hardlink clones rather than a per-task fetch from their forge.
 
 Idempotent: skips the clone (and the cache fetch) when the per-task checkout already exists — e.g.
 a re-created container re-mounts the same dir. LLM-free.
@@ -20,7 +22,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from panopticon.client import JsonObj
-from panopticon.core.git import SUBMODULE_UNINITIALIZED, GitClones
+from panopticon.core.git import SUBMODULE_UNINITIALIZED, GitClones, local_repo_path
 from panopticon.sessionservice.clones import CloneCache
 
 _log = logging.getLogger(__name__)
@@ -29,6 +31,10 @@ _log = logging.getLogger(__name__)
 #: :func:`cleanup_workspace`). Task ids contain no dots, so a quarantined dir can never
 #: collide with another task's checkout path.
 QUARANTINE_SUFFIX = ".stale"
+
+#: How deep :func:`hydrate_submodules` follows nested submodules. A guard against a cyclic or
+#: pathological nesting, not a real limit — git itself becomes unusable long before this.
+MAX_SUBMODULE_DEPTH = 10
 
 
 def prepare_workspace(
@@ -70,8 +76,97 @@ def prepare_workspace(
         git.clone_local(cache_path=cache_path, dest=clone)
     git.set_origin(repo_path=clone, url=repo["git_url"])
     if _needs_submodules(git.submodule_status(repo_path=clone)):
-        git.update_submodules(repo_path=clone)
+        _fill_in_submodules(clone, repo, git=git, exists=exists)
     return clone
+
+
+def _fill_in_submodules(
+    clone: str, repo: JsonObj, *, git: GitClones, exists: Callable[[str], bool]
+) -> None:
+    """Check the repo's submodules out into the per-task clone — locally when that's possible.
+
+    Prefers :func:`hydrate_submodules` from the repo's own checkout on this host (a local ``git_url``
+    — the donor), and otherwise, or if that leaves anything uninitialized, falls back to the plain
+    fetch-from-their-URLs update. The donor path is **only** an optimisation: any way it can fail
+    ends in exactly the behaviour a repo without a donor gets.
+    """
+    donor = local_repo_path(str(repo["git_url"]))
+    if donor and exists(donor):
+        try:
+            hydrate_submodules(clone, donor, git=git, exists=exists)
+        except Exception:  # any donor failure falls back to the network path below
+            _log.warning(
+                "hydrating %s's submodules from %s failed; fetching them instead",
+                clone,
+                donor,
+                exc_info=True,
+            )
+        else:
+            if not _needs_submodules(git.submodule_status(repo_path=clone)):
+                return
+            _log.info(
+                "%s still has uninitialized submodules after hydrating from %s; fetching them",
+                clone,
+                donor,
+            )
+    git.update_submodules(repo_path=clone)
+
+
+def hydrate_submodules(
+    clone: str,
+    donor: str,
+    *,
+    git: GitClones,
+    exists: Callable[[str], bool] = os.path.isdir,
+    depth: int = MAX_SUBMODULE_DEPTH,
+) -> None:
+    """Check ``clone``'s submodules out by cloning them from ``donor``'s hydrated ones.
+
+    ``donor`` is the repo's own checkout on this host (a local ``git_url``), which already holds
+    every submodule's objects — so each submodule is a *local* clone (hardlinked object store,
+    no network) instead of a fetch from its forge, paid once per task. That is the whole point:
+    the superproject was already near-free (``clone --local``); this makes its submodules so too.
+
+    The donor is matched **by path**, never by URL: the donor resolved its relative ``.gitmodules``
+    URLs against *its own* ``origin`` and the per-task clone resolves them against the repo's
+    ``git_url``, so the two can name the same submodule differently. Per level:
+
+    1. ``submodule init`` — let git resolve the declared URLs into config;
+    2. for each submodule the donor actually has checked out, overwrite that resolved URL with the
+       donor's path (a submodule the donor lacks keeps its real URL and is simply fetched);
+    3. ``submodule update`` for **this level only** — a nested submodule's URL can't be resolved
+       before its parent exists;
+    4. recurse into each submodule with the matching donor level.
+
+    Then, once at the top, ``submodule sync --recursive`` puts the canonical URLs back — in the
+    config *and* in each submodule's own ``origin`` — so the donor's host paths never reach the
+    container. Raises whatever ``git`` raises; the caller falls back to the plain update.
+    """
+    _hydrate_level(clone, donor, git=git, exists=exists, depth=depth)
+    git.sync_submodules(repo_path=clone)
+
+
+def _hydrate_level(
+    repo_path: str, donor: str, *, git: GitClones, exists: Callable[[str], bool], depth: int
+) -> None:
+    """One superproject level of :func:`hydrate_submodules`, then a recursion per submodule."""
+    paths = git.submodule_paths(repo_path=repo_path) if depth > 0 else {}
+    if not paths:
+        return
+    git.init_submodules(repo_path=repo_path)
+    for name, path in paths.items():
+        donor_sub = f"{donor.rstrip('/')}/{path}"
+        if exists(donor_sub):
+            git.set_submodule_url(repo_path=repo_path, name=name, url=donor_sub)
+    git.update_submodules(repo_path=repo_path, recursive=False)
+    for path in paths.values():
+        _hydrate_level(
+            f"{repo_path.rstrip('/')}/{path}",
+            f"{donor.rstrip('/')}/{path}",
+            git=git,
+            exists=exists,
+            depth=depth - 1,
+        )
 
 
 def _needs_submodules(states: Mapping[str, str]) -> bool:
