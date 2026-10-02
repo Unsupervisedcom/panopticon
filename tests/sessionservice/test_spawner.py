@@ -1,11 +1,13 @@
 """Host-side spawn loop (ADR 0008): claim an unclaimed task, then spawn its container. Unit tests
-drive `spawn_one`/`spawnable_tasks` with fakes; an integration test runs against the real task
-service over REST. No Docker, no LLM — `git`/runner are fakes."""
+drive `spawn_one`/`spawnable_tasks`/`pause` with fakes (an injected wall clock for the snooze
+predicate); integration tests run against the real task service over REST. No Docker, no LLM —
+`git`/runner are fakes."""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -15,6 +17,7 @@ from fastapi.testclient import TestClient
 from panopticon.client import JsonObj, TaskServiceClient
 from panopticon.core.git import GitClones
 from panopticon.core.models import LifecyclePhase, Repo
+from panopticon.core.snooze import INDEFINITE_UNTIL
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.spawner import Spawner, spawnable_tasks
 from panopticon.taskservice.api import create_app
@@ -37,6 +40,7 @@ class _FakeRunner:
         self, *, running: bool = True, session: bool = True, exit_reason: str | None = None
     ) -> None:
         self.spawned: list[dict[str, object]] = []
+        self.stopped: list[str] = []
         self._running = running
         self._session = session
         self._exit_reason = exit_reason
@@ -85,7 +89,7 @@ class _FakeRunner:
         return self._exit_reason
 
     def stop(self, container_id: str) -> None:
-        pass
+        self.stopped.append(container_id)
 
     def delete_workspace_contents(self, path: str) -> None:
         pass
@@ -162,7 +166,17 @@ class _FakeClient:
         return {"id": task_id}
 
 
-def _spawner(client: object, runner: object, images: object = None) -> Spawner:
+#: The fixed "now" the injected clock reports, so snooze deadlines in these tests are exact.
+NOW = datetime(2026, 8, 6, 12, 0, tzinfo=UTC)
+
+
+def _spawner(
+    client: object,
+    runner: object,
+    images: object = None,
+    *,
+    now: datetime = NOW,
+) -> Spawner:
     cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
     return Spawner(
         client,
@@ -173,6 +187,7 @@ def _spawner(client: object, runner: object, images: object = None) -> Spawner:
         git=GitClones(run=_no_op_run),
         images=images or _FakeImageBuilder(),  # type: ignore[arg-type]
         makedirs=lambda _p: None,
+        utcnow=lambda: now,
     )
 
 
@@ -308,6 +323,7 @@ class _FakeShellRunner:
 
     def __init__(self, *, session: bool = True) -> None:
         self.spawned: list[dict[str, object]] = []
+        self.stopped: list[str] = []
         self._session = session
 
     def spawn(
@@ -346,11 +362,16 @@ class _FakeShellRunner:
         return None  # a shell task has no container to inspect (mirrors ShellRunner)
 
     def stop(self, session_id: str) -> None:
-        pass
+        self.stopped.append(session_id)
 
 
 def _shell_spawner(
-    client: object, runner: object, shell_runner: object, made: list[str] | None = None
+    client: object,
+    runner: object,
+    shell_runner: object,
+    made: list[str] | None = None,
+    *,
+    now: datetime = NOW,
 ) -> Spawner:
     cache = CloneCache("/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None)  # type: ignore[arg-type]
     return Spawner(
@@ -363,6 +384,7 @@ def _shell_spawner(
         git=GitClones(run=_no_op_run),
         images=_FakeImageBuilder(),  # type: ignore[arg-type]
         makedirs=(made.append if made is not None else (lambda _p: None)),
+        utcnow=lambda: now,
     )
 
 
@@ -1088,6 +1110,187 @@ def test_spawnable_tasks_filters_unclaimed_non_terminal() -> None:
     assert [t["id"] for t in spawnable_tasks(_Lister())()] == ["a"]  # type: ignore[arg-type]
 
 
+# --- snooze → stop the container (`pause`) -----------------------------------------------------
+# `snoozed_until` is a recorded fact the control plane never compares to a clock, so the runner
+# reads it against its own (injected here). A snoozed task's container is stopped and its claim
+# released; every other step must then leave it alone, and waking it is just `spawn_one` again.
+
+_SNOOZED = (NOW + timedelta(hours=12)).isoformat()  # what the dashboard's `e` records
+
+
+def _task(**over: object) -> JsonObj:
+    task: JsonObj = {
+        "id": "t1",
+        "repo_id": "r1",
+        "workflow": "spike",
+        "state": "ITERATING",
+        "claimed_by": "host-1",
+        "snoozed_until": _SNOOZED,
+    }
+    task.update(over)
+    return task
+
+
+def test_pause_stops_the_container_and_releases_the_claim_of_a_snoozed_task() -> None:
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner(running=True, session=True)
+    assert _spawner(client, runner).pause(_task()) is True
+    assert runner.stopped == ["panopticon-t1"]  # tmux session + container, by session name
+    assert client.releases == ["t1"]  # → unclaimed, phase cleared → composes `queued`
+
+
+def test_pause_stops_a_task_the_agent_is_still_working_on() -> None:
+    # Unconditional by design: /workspace is a host bind mount, so the checkout survives — only the
+    # in-container process dies, and the respawn resumes the CLI session from its config volume.
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner()
+    assert _spawner(client, runner).pause(_task(turn="agent", container_status="live")) is True
+    assert runner.stopped == ["panopticon-t1"]
+
+
+def test_pause_stops_a_task_snoozed_indefinitely() -> None:
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner()
+    assert _spawner(client, runner).pause(_task(snoozed_until=INDEFINITE_UNTIL)) is True
+    assert runner.stopped == ["panopticon-t1"]
+
+
+def test_pause_forgets_the_crash_loop_budget() -> None:
+    # A deliberate stop is not a crash: it clears the task's respawn budget, so a snooze/wake cycle
+    # can never push a healthy task over the self-heal cap. With the cap at 1, a second heal only
+    # respawns because `pause` reset the burst.
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner(session=False)
+    spawner = Spawner(
+        client,
+        runner,
+        runner_id="host-1",  # type: ignore[arg-type]
+        cache=CloneCache(
+            "/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None
+        ),
+        tasks_root="/tasks",
+        git=GitClones(run=_no_op_run),
+        images=_FakeImageBuilder(),  # type: ignore[arg-type]
+        makedirs=lambda _p: None,
+        now=lambda: 0.0,  # frozen well inside the survivor window, so only `pause` can reset it
+        utcnow=lambda: NOW,
+        max_respawns=1,
+    )
+    awake = _task(snoozed_until=None)
+    spawner.heal(awake)  # the one respawn the cap allows
+    spawner.heal(awake)  # capped — no second respawn
+    assert len(runner.spawned) == 1
+    spawner.pause(_task())  # snoozed → stopped, budget forgotten
+    spawner.heal(awake)  # woken → respawnable again
+    assert len(runner.spawned) == 2
+
+
+def test_pause_skips_an_unsnoozed_task() -> None:
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner()
+    spawner = _spawner(client, runner)
+    assert spawner.pause(_task(snoozed_until=None)) is False
+    lapsed = (NOW - timedelta(seconds=1)).isoformat()
+    assert spawner.pause(_task(snoozed_until=lapsed)) is False  # the deadline has passed → awake
+    assert runner.stopped == [] and client.releases == []
+
+
+def test_pause_skips_tasks_not_claimed_by_this_runner() -> None:
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner()
+    spawner = _spawner(client, runner)
+    assert spawner.pause(_task(claimed_by=None)) is False
+    assert spawner.pause(_task(claimed_by="host-9")) is False
+    assert runner.stopped == [] and client.releases == []
+
+
+def test_pause_skips_terminal_tasks() -> None:
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner()
+    assert _spawner(client, runner).pause(_task(state="COMPLETE")) is False
+    assert runner.stopped == [] and client.releases == []
+
+
+def test_pause_is_a_no_op_once_the_task_is_already_stopped() -> None:
+    # Called on every task each pass, so an already-paused task must not be released again (which
+    # would churn the change feed forever).
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner(running=False, session=False)
+    assert _spawner(client, runner).pause(_task(claimed_by="host-1")) is False
+    assert runner.stopped == [] and client.releases == []
+
+
+def test_pause_stops_a_container_whose_session_is_gone() -> None:
+    # Either half still being up is enough to stop: a container with no session (the orphan case)
+    # is exactly what we must not leave running.
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner(running=True, session=False)
+    assert _spawner(client, runner).pause(_task()) is True
+    assert runner.stopped == ["panopticon-t1"]
+
+
+def test_pause_never_stops_a_shell_task() -> None:
+    # A shell script runs once — killing it is a cancel, not a pause (the same reason heal skips it).
+    client = _FakeClient(repo=_REPO, runner_type="shell", shell_script="echo hi")
+    runner, shell = _FakeRunner(), _FakeShellRunner(session=True)
+    task = _task(workflow="setup-repo", state="RUNNING")
+    assert _shell_spawner(client, runner, shell).pause(task) is False
+    assert shell.stopped == [] and runner.stopped == [] and client.releases == []
+
+
+def test_spawn_one_skips_a_snoozed_task() -> None:
+    # Both the never-spawned case and the just-paused one: a snoozed task must not come up, and the
+    # release `pause` just did must not be undone later in the same pass.
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner()
+    assert _spawner(client, runner).spawn_one(_task(claimed_by=None)) is None
+    assert client.claims == [] and runner.spawned == []
+
+
+def test_spawn_one_wakes_a_task_once_its_snooze_lapses() -> None:
+    # Waking needs no path of its own: the deadline passing leaves an unclaimed, un-snoozed task,
+    # which is exactly what spawn_one claims and spawns — the full visible lifecycle, same clone.
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner()
+    spawner = _spawner(client, runner, now=NOW + timedelta(hours=13))
+    assert spawner.spawn_one(_task(claimed_by=None)) == "panopticon-t1"
+    assert client.claims == [("t1", "host-1")]
+    assert [phase for _t, phase, _d in client.phases] == [
+        "claiming",
+        "preparing",
+        "building",
+        "starting",
+        "awaiting",
+    ]
+
+
+def test_reconcile_leaves_a_paused_task_alone() -> None:
+    # Within the same pass, reconcile still sees the pre-pause snapshot (claimed by us, `live`) with
+    # the container now gone. Without the snooze gate it would report `failed: container exited …`
+    # for a container we killed on purpose.
+    client = _FakeClient(repo=_REPO)
+    runner = _FakeRunner(running=False, exit_reason="container exited (exit 137)")
+    _spawner(client, runner).reconcile(_task(container_status="live"))
+    assert client.phases == [] and client.cleared == []
+
+
+def test_heal_does_not_respawn_a_paused_task() -> None:
+    # Same stale-snapshot window: claimed by us with no session is the orphan shape, but a task we
+    # stopped on purpose is not an orphan — respawning it would defeat the snooze entirely.
+    client, runner = _FakeClient(repo=_REPO), _FakeRunner(session=False)
+    spawner = _spawner(client, runner)
+    assert spawner.heal(_task()) is None
+    spawner.mark_healing(_task())
+    assert runner.spawned == [] and client.phases == []
+
+
+def test_spawnable_tasks_filters_snoozed_tasks() -> None:
+    class _Lister:
+        def list_tasks(self) -> list[JsonObj]:
+            return [
+                {"id": "a", "state": "ITERATING", "claimed_by": None, "snoozed_until": None},
+                {"id": "b", "state": "ITERATING", "claimed_by": None, "snoozed_until": _SNOOZED},
+                {
+                    "id": "c",  # a deadline that has already passed — awake again
+                    "state": "ITERATING",
+                    "claimed_by": None,
+                    "snoozed_until": (NOW - timedelta(hours=1)).isoformat(),
+                },
+            ]
+
+    candidates = spawnable_tasks(_Lister(), utcnow=lambda: NOW)()  # type: ignore[arg-type]
+    assert [t["id"] for t in candidates] == ["a", "c"]
+
+
 def test_spawn_runs_repo_hook_with_correct_args() -> None:
     calls: list[tuple[str, str, str, str]] = []
 
@@ -1385,3 +1588,54 @@ def test_spawner_against_the_real_service(tmp_path: Path) -> None:
         assert spawner.spawn_one(task) == f"panopticon-{task_id}"
         assert client.get_task(task_id)["claimed_by"] == "host-1"  # claim recorded on the service
         assert spawnable_tasks(client)() == []  # now claimed → no longer spawnable
+
+
+def test_snooze_stops_the_container_and_waking_respawns_it(tmp_path: Path) -> None:
+    """The whole cycle over REST: snooze → stopped + `queued`, wake → claimed + respawned."""
+    service = TaskService(SqlAlchemyStore(), {"spike": Spike()}, FilesystemArtifactStore(tmp_path))
+    asyncio.run(service.init())
+    asyncio.run(
+        service.create_repo(Repo(id="r1", name="acme/widgets", git_url="https://forge/r1.git"))
+    )
+    with TestClient(create_app(service)) as http:
+        client = TaskServiceClient(http)
+        task_id = client.create_task("r1", "spike")["id"]
+        runner = _FakeRunner()
+        clock = {"now": NOW}
+
+        def _spawner_at() -> Spawner:
+            return Spawner(
+                client,
+                runner,
+                runner_id="host-1",  # type: ignore[arg-type]
+                cache=CloneCache(
+                    "/cache", run=_no_op_run, exists=lambda _p: True, makedirs=lambda _p: None
+                ),
+                tasks_root="/tasks",
+                git=GitClones(run=_no_op_run),
+                images=_FakeImageBuilder(),  # type: ignore[arg-type]
+                makedirs=lambda _p: None,
+                utcnow=lambda: clock["now"],
+            )
+
+        spawner = _spawner_at()
+        spawner.spawn_one(client.get_task(task_id))
+        assert client.get_task(task_id)["claimed_by"] == "host-1"  # up and owned by this host
+
+        client.set_snooze(task_id, _SNOOZED)  # the dashboard's `e`
+        assert spawner.pause(client.get_task(task_id)) is True
+        assert runner.stopped == [f"panopticon-{task_id}"]
+        paused = client.get_task(task_id)
+        assert paused["claimed_by"] is None  # claim released
+        # Unclaimed composes `queued` — releasing cleared the reported phase along with the claim,
+        # so nothing stale is left behind to read as a spawn still in flight.
+        assert paused["container_status"] == "queued"
+        assert spawner.spawn_one(paused) is None  # still snoozed — stays down
+        assert len(runner.spawned) == 1
+
+        clock["now"] = NOW + timedelta(hours=13)  # the deadline lapses — no event, just the clock
+        woken = _spawner_at()
+        assert woken.pause(client.get_task(task_id)) is False
+        assert woken.spawn_one(client.get_task(task_id)) == f"panopticon-{task_id}"
+        assert client.get_task(task_id)["claimed_by"] == "host-1"
+        assert len(runner.spawned) == 2  # respawned — same clone, same config volume

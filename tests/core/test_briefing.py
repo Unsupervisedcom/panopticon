@@ -76,6 +76,8 @@ def test_briefing_names_the_phase_responsibilities_and_user_advance(tmp_path: Pa
     assert "ITERATING" in text  # the advance target
     # PLANNING is user-advanced, so the agent should hand back, not advance itself
     assert "hand back to the user" in text and "Don't advance on your own" in text
+    # ... unless the user asks — then it advances and keeps going rather than stopping to report
+    assert "carry straight on" in text and "same turn" in text
 
 
 def test_briefing_for_an_agent_advanced_phase(tmp_path: Path) -> None:

@@ -52,7 +52,9 @@ src/panopticon/
                    # submodules — in that order, since relative .gitmodules URLs resolve against
                    # origin — hardlink-cloning them out of the repo's own checkout on this host when
                    # git_url names one, ADR 0011 §1c); spawner.py = the spawn loop (claim an unclaimed task → spawn its
-                   # container; prefills claude's input box with the task memo on a first spawn);
+                   # container; prefills claude's input box with the task memo on a first spawn;
+                   # `pause` stops a snoozed task's container + releases its claim, and the same
+                   # snooze gate keeps spawn/reconcile/heal off it until the deadline lapses);
                    # prefill.py = the detached input-box prefill
                    # poller (mirrors cloude-cade: pipe-pane watch for ESC[?2004h → paste-buffer the
                    # description, unsent); daemon.py = the provision-only pull loop;
@@ -196,6 +198,9 @@ on every PR (the same commands the Makefile wraps).
 - `tests/test_discovery.py` — workflow discovery (Slice 8): the built-in package + an optional
   path are scanned for `Workflow` subclasses; a dropped-in module registers with no core change;
   underscored/non-workflow files are ignored; duplicate names are rejected.
+- `tests/core/test_snooze.py` — the snooze predicate both clock-owners share: an active vs lapsed
+  deadline, the sticky sentinel, naive datetimes, and an unreadable fact reading *inactive* rather
+  than raising (a bad recorded value must never stall a spawn).
 - `tests/test_git.py` — local git ops: unit tests pin the emitted `git` commands and slug-gating
   for `GitWorktrees` and the per-task-clone ops `GitClones` (clone/branch/set-origin, ADR 0011);
   a `skipif` integration test creates a real worktree.
@@ -221,10 +226,15 @@ on every PR (the same commands the Makefile wraps).
   `exit_reason` — OOM kill/exit code — including for an already-`down` task), `heal` **self-heal**
   (a claimed-by-us non-terminal task whose tmux session is gone → respawn via the idempotent spawn
   path; skips healthy/unclaimed/terminal tasks; the crash-loop cap — surfaced once as `failed`
-  with a press-R detail — + survivor-window budget reset), and the `spawnable_tasks` filter; an
-  integration test claims + spawns against the real task service over REST (fake git/runner).
+  with a press-R detail — + survivor-window budget reset), `pause` **snooze → stop** (a snoozed
+  task's container is stopped and its claim released — even mid-turn; no-op when unclaimed/terminal/
+  shell/awake/already stopped — and the matching gates that keep `spawn_one`/`reconcile`/`heal` off a
+  paused task within the same pass), and the `spawnable_tasks` filter; integration tests claim +
+  spawn against the real task service over REST (fake git/runner) and drive the whole snooze cycle
+  (stopped + `queued` → the deadline lapses on an injected clock → claimed + respawned).
 - `tests/test_host.py` — the unified per-host daemon (ADR 0008/0011): a unit test isolates a
-  failing task and another pins that each pass also `heal`s every task; an integration test drives
+  failing task, another pins that each pass also `heal`s every task, and another that it `pause`s
+  every task **before** spawning it (so nothing re-spawns what a snooze just stopped); an integration test drives
   spawn → set slug → provision against the real task service over REST (claimed + spawned, then
   branched, no re-spawn).
 - `tests/test_daemon.py` — the observe-and-provision loop + its launch: unit tests drive
@@ -332,6 +342,14 @@ on every PR (the same commands the Makefile wraps).
   in — but, being a transition, a free move runs through an agent skill (the user directs the
   agent), not the dashboard. `force_transition` is the engine primitive (e.g. going back to
   coding is just `set_state(ITERATING)` — not a named operation).
+- **Snooze** — `Task.snoozed_until`, an operator-owned "not now" deadline (dashboard `e` = 12h,
+  `E` = the sticky sentinel, a second `e` clears it). The task service stores it **verbatim** and
+  never compares it to a clock (the determinism invariant); the arithmetic is `core/snooze.py`
+  (`is_snoozed(until, now)` — pure, `now` passed in), shared by the two callers that own a clock:
+  the dashboard mutes the row, and the **session service stops the container** (`Spawner.pause` →
+  stop + release the claim, so the task reads `queued`). Waking needs no separate path — a lapsed
+  or cleared deadline leaves an unclaimed, un-snoozed task, which `spawn_one` claims and respawns
+  with its per-task clone and CLI session history intact.
 - **Turn-flip / blocked** — the live `Task.turn` flips *within* a state via
   `PUT /tasks/{id}/turn` (the agnostic agent↔user ball tracking). The **contract** for the
   in-container hooks: the agent's stop hook sets `turn=user` (**unless a background task — a

@@ -114,6 +114,9 @@ def test_tick_isolates_a_failing_task_from_the_others() -> None:
         def mark_healing(self, task: JsonObj) -> None:
             return None
 
+        def pause(self, task: JsonObj) -> None:
+            return None
+
         def spawn_one(self, task: JsonObj) -> None:
             seen.append(task["id"])
             if task["id"] == "t1":
@@ -143,6 +146,9 @@ def test_tick_heals_each_task_in_the_snapshot() -> None:
 
     class _Spawner:
         def mark_healing(self, task: JsonObj) -> None:
+            return None
+
+        def pause(self, task: JsonObj) -> None:
             return None
 
         def spawn_one(self, task: JsonObj) -> None:
@@ -177,6 +183,9 @@ def test_tick_flags_every_orphan_healing_before_any_respawn() -> None:
         def mark_healing(self, task: JsonObj) -> None:
             events.append(f"mark:{task['id']}")
 
+        def pause(self, task: JsonObj) -> None:
+            return None
+
         def spawn_one(self, task: JsonObj) -> None:
             return None
 
@@ -199,6 +208,41 @@ def test_tick_flags_every_orphan_healing_before_any_respawn() -> None:
     assert events == ["mark:t1", "mark:t2", "heal:t1", "heal:t2"]  # all marks precede any respawn
 
 
+def test_tick_pauses_each_task_before_spawning_it() -> None:
+    # Snoozing stops the container: `pause` runs over every task, and *before* `spawn_one` — it
+    # releases the claim of a snoozed task, and every later step self-gates on the same snooze, so
+    # nothing in the same pass brings back what it just stopped.
+    events: list[str] = []
+
+    class _Spawner:
+        def mark_healing(self, task: JsonObj) -> None:
+            return None
+
+        def pause(self, task: JsonObj) -> None:
+            events.append(f"pause:{task['id']}")
+
+        def spawn_one(self, task: JsonObj) -> None:
+            events.append(f"spawn:{task['id']}")
+
+        def reconcile(self, task: JsonObj) -> None:
+            return None
+
+        def heal(self, task: JsonObj) -> None:
+            return None
+
+        def cleanup(self, task: JsonObj) -> None:
+            return None
+
+    class _Provisioner:
+        def provision(self, task: JsonObj) -> None:
+            return None
+
+    HostDaemon(_FakeClient([]), _Spawner(), _Provisioner(), _NoopPublisher()).tick(
+        [{"id": "t1"}, {"id": "t2"}]
+    )  # type: ignore[arg-type]
+    assert events == ["pause:t1", "spawn:t1", "pause:t2", "spawn:t2"]
+
+
 def test_tick_publishes_each_task_before_cleaning_it_up() -> None:
     # Both halves matter. A task can request its push and reach a terminal state in the same
     # breath, and `cleanup` deletes the per-task clone the push reads from — so publishing has to
@@ -207,6 +251,9 @@ def test_tick_publishes_each_task_before_cleaning_it_up() -> None:
 
     class _Spawner:
         def mark_healing(self, task: JsonObj) -> None:
+            return None
+
+        def pause(self, task: JsonObj) -> None:
             return None
 
         def spawn_one(self, task: JsonObj) -> None:
@@ -240,6 +287,9 @@ def test_tick_isolates_a_failing_publish_from_the_other_tasks() -> None:
 
     class _Spawner:
         def mark_healing(self, task: JsonObj) -> None:
+            return None
+
+        def pause(self, task: JsonObj) -> None:
             return None
 
         def spawn_one(self, task: JsonObj) -> None:
@@ -281,6 +331,9 @@ def test_run_calls_startup_reclaim_once_on_first_successful_tick() -> None:
             reclaims.append(list(tasks))
 
         def mark_healing(self, task: JsonObj) -> None:
+            return None
+
+        def pause(self, task: JsonObj) -> None:
             return None
 
         def spawn_one(self, task: JsonObj) -> None:
@@ -329,6 +382,9 @@ def test_run_blocks_on_the_change_feed_and_feeds_the_version_back() -> None:
         def mark_healing(self, task: JsonObj) -> None:
             return None
 
+        def pause(self, task: JsonObj) -> None:
+            return None
+
         def spawn_one(self, task: JsonObj) -> None:
             self.seen.append(task["id"])
 
@@ -369,6 +425,9 @@ def test_run_survives_a_whole_pass_failure() -> None:
             return None
 
         def mark_healing(self, task: JsonObj) -> None:
+            return None
+
+        def pause(self, task: JsonObj) -> None:
             return None
 
         def spawn_one(self, task: JsonObj) -> None:
@@ -532,6 +591,9 @@ def test_tick_cleans_up_each_task() -> None:
 
     class _Spawner:
         def mark_healing(self, task: JsonObj) -> None:
+            return None
+
+        def pause(self, task: JsonObj) -> None:
             return None
 
         def spawn_one(self, task: JsonObj) -> None:

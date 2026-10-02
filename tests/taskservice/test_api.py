@@ -439,6 +439,25 @@ def test_set_snooze_records_deadline_verbatim(client: TestClient) -> None:
     assert cleared.json()["snoozed_until"] is None
 
 
+def test_set_snooze_cascades_to_governed_tasks_over_rest(client: TestClient) -> None:
+    gov_id = _new_task(client)
+    child = client.post(
+        "/tasks", json={"repo_id": "r1", "workflow": "spike", "governor_task_id": gov_id}
+    )
+    assert child.status_code == 201, child.text
+    child_id = child.json()["id"]
+
+    snoozed = client.put(f"/tasks/{gov_id}/snooze", json={"until": "2026-08-06T03:00:00+00:00"})
+    assert snoozed.json()["snoozed_until"] == "2026-08-06T03:00:00+00:00"
+    # the response carries the snoozed task; the ensemble's mute is read back off each child
+    child_body = client.get(f"/tasks/{child_id}").json()
+    assert child_body["snoozed_until"] == "2026-08-06T03:00:00+00:00"
+    assert child_body["state"] == "ITERATING"  # a plain recorded fact — lifecycle untouched
+
+    client.put(f"/tasks/{gov_id}/snooze", json={"until": None})
+    assert client.get(f"/tasks/{child_id}").json()["snoozed_until"] is None
+
+
 def test_set_sort_weight_over_rest(client: TestClient) -> None:
     task_id = _new_task(client)
     before = client.get(f"/tasks/{task_id}").json()

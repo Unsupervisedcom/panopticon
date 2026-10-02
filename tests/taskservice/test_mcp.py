@@ -74,6 +74,28 @@ async def test_tools_are_exposed_and_drive_the_task(tmp_path: Path) -> None:
     assert (await svc.get_task(task.id)).state == "COMPLETE"  # the tool actually mutated the task
 
 
+async def test_transition_tools_return_the_entered_phases_briefing(tmp_path: Path) -> None:
+    # The per-turn briefing still describes the *old* phase after a mid-turn move, so the
+    # transition tools hand back the new one — with an explicit "keep working" lead.
+    svc = await _service(tmp_path)
+    task = await svc.create_task("r2", "github-self-reviewed")
+    await svc.set_slug(task.id, "s")
+    async with connect(build_mcp_server(svc)) as s:
+        await s.initialize()
+        result = await s.call_tool("set_state", {"task_id": task.id, "state": "ITERATING"})
+        assert result.isError is False and result.structuredContent is not None
+        out = result.structuredContent
+        assert out["state"] == "ITERATING" and out["id"] == task.id  # still the task
+        assert out["briefing"].startswith("The task just moved to **ITERATING**")
+        assert "in this same turn" in out["briefing"]
+        assert "You are in the **ITERATING** phase" in out["briefing"]
+
+        result = await s.call_tool("apply_operation", {"task_id": task.id, "operation": "drop"})
+        assert result.structuredContent is not None
+        briefing = result.structuredContent["briefing"]
+        assert "terminal state **DROPPED**" in briefing and "just moved" not in briefing
+
+
 async def test_artifacts_round_trip_via_tool_and_resource(tmp_path: Path) -> None:
     svc = await _service(tmp_path)
     task = await svc.create_task("r1", "spike")
