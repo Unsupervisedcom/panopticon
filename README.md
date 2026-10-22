@@ -149,6 +149,11 @@ variable (resolution is `$PANOPTICON_*` → `$XDG_*_HOME/panopticon` → the def
 | Layers, secrets, workflows | `~/.config/panopticon/` | `PANOPTICON_CONFIG` (workflows also via the `--workflows-path` flag) |
 | Per-repo clone cache | `~/.cache/panopticon/repos/` | `PANOPTICON_CACHE` |
 
+The database runs in SQLite's WAL mode, so it is `panopticon.db` plus `panopticon.db-wal` and
+`panopticon.db-shm` beside it. To back it up, stop the service first (`make stop`) or use
+`sqlite3 ~/.local/share/panopticon/panopticon.db ".backup <dest>"` — copying the `.db` alone while
+the service runs can miss recent commits.
+
 ## Managing your install
 
 - **Bring it back up** after a reboot or after you quit: `panopticon start` starts the services and

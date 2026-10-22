@@ -23,6 +23,13 @@ adapter translates ``sqlite://`` → ``sqlite+aiosqlite://`` internally. The ini
 reproduces this exact schema, and ``tests/test_migrations.py`` guards the two against drift.
 On a persistent deployment, run ``alembic upgrade head`` to apply migrations; ``alembic stamp
 head`` aligns a dev database that ``create_all`` already bootstrapped.
+
+Concurrency: a file-backed SQLite DB runs in **WAL** mode (set on every new connection, see
+:func:`_set_sqlite_pragmas`) so the dashboard's reads never block behind the agents' writes —
+the default rollback journal locks readers out while a writer commits, which surfaced as
+``database is locked`` 500s under a few dozen live agents. WAL keeps two sidecar files next to
+the DB (``<db>-wal``, ``<db>-shm``); copy the DB with the service stopped, or via
+``sqlite3 <db> .backup``. In-memory engines are left alone (WAL means nothing there).
 """
 
 from __future__ import annotations
@@ -30,7 +37,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import JSON, ForeignKey, ForeignKeyConstraint, select
+from sqlalchemy import JSON, ForeignKey, ForeignKeyConstraint, event, select
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -64,12 +71,33 @@ from panopticon.core.store import (
 
 _IN_MEMORY = ("sqlite://", "sqlite:///:memory:")
 
+#: How long a connection waits on another writer's lock before failing with ``database is
+#: locked`` (the driver default is 5 s). With WAL only writers contend, so this just queues them.
+_SQLITE_BUSY_TIMEOUT_MS = 30_000
+
 
 def _to_async_url(url: str) -> str:
     """Translate a plain ``sqlite://`` URL to its ``sqlite+aiosqlite://`` equivalent."""
     if url.startswith("sqlite://"):
         return "sqlite+aiosqlite" + url[len("sqlite") :]
     return url
+
+
+def _set_sqlite_pragmas(dbapi_conn: Any, _record: Any) -> None:
+    """Put a fresh file-backed SQLite connection in WAL mode (an engine ``connect`` listener).
+
+    ``journal_mode=WAL`` lets readers proceed while a writer commits (and is persisted in the
+    file, so Alembic's sync engine inherits it); ``synchronous=NORMAL`` is WAL's standard
+    pairing — durable across an app crash, only the newest commits at risk on power loss;
+    ``busy_timeout`` makes colliding writers wait rather than fail.
+    """
+    cursor = dbapi_conn.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_TIMEOUT_MS}")
+    finally:
+        cursor.close()
 
 
 # -- ORM row classes (mutable; live only in this adapter; own their translation) ----
@@ -388,6 +416,8 @@ class SqlAlchemyStore(Store):
             )
         else:
             self._engine = create_async_engine(async_url)
+            if async_url.startswith("sqlite+aiosqlite://"):
+                event.listen(self._engine.sync_engine, "connect", _set_sqlite_pragmas)
         self._session: async_sessionmaker[AsyncSession] = async_sessionmaker(
             self._engine, class_=AsyncSession, expire_on_commit=False
         )

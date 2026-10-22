@@ -62,6 +62,11 @@ def migrate_db_to_home(db_url: str) -> None:
             logging.info("panopticon: migrating %s → %s", old.resolve(), new)
             new.parent.mkdir(parents=True, exist_ok=True)
             old.rename(new)
+            # A WAL-mode DB keeps uncheckpointed commits in its sidecars — they move with it.
+            for suffix in ("-wal", "-shm"):
+                sidecar = old.with_name(old.name + suffix)
+                if sidecar.is_file():
+                    sidecar.rename(new.with_name(new.name + suffix))
             return
 
 

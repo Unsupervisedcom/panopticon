@@ -8,6 +8,8 @@ silently drift apart.
 
 from __future__ import annotations
 
+import asyncio
+import sqlite3
 from collections.abc import AsyncIterator
 from dataclasses import MISSING, fields, is_dataclass, replace
 from pathlib import Path
@@ -440,6 +442,56 @@ async def test_current_entry_responsibilities_persist_in_place(store: Store) -> 
     got = await store.get_task("t1")
     assert got is not None
     assert got.history[-1].responsibilities[0].status is Status.MET
+
+
+# -- SQLite journal mode (WAL) ------------------------------------------------------
+
+
+async def _pragma(store: SqlAlchemyStore, name: str) -> Any:
+    async with store._engine.connect() as conn:
+        return (await conn.exec_driver_sql(f"PRAGMA {name}")).scalar()
+
+
+async def test_on_disk_sqlite_runs_in_wal_mode(tmp_path: Path) -> None:
+    store = SqlAlchemyStore(f"sqlite:///{tmp_path / 'tasks.db'}")
+    await store.init()
+    try:
+        assert await _pragma(store, "journal_mode") == "wal"
+        assert await _pragma(store, "synchronous") == 1  # NORMAL
+        assert await _pragma(store, "busy_timeout") == rs._SQLITE_BUSY_TIMEOUT_MS
+    finally:
+        await store.close()
+
+
+async def test_in_memory_sqlite_is_left_alone() -> None:
+    store = SqlAlchemyStore("sqlite://")
+    await store.init()
+    try:
+        assert await _pragma(store, "journal_mode") == "memory"
+    finally:
+        await store.close()
+
+
+async def test_reads_proceed_while_another_connection_holds_the_write_lock(
+    tmp_path: Path,
+) -> None:
+    # The bug WAL fixes: under the rollback journal an exclusive writer locks every reader out
+    # (the dashboard's long-poll read failed with `database is locked`). In WAL it doesn't.
+    db = tmp_path / "tasks.db"
+    store = SqlAlchemyStore(f"sqlite:///{db}")
+    await store.init()
+    await _seed_repo(store)
+    await _new_task(store)
+    writer = sqlite3.connect(db, timeout=0)
+    try:
+        writer.execute("BEGIN EXCLUSIVE")
+        writer.execute("UPDATE task SET slug = 'uncommitted'")
+        tasks = await asyncio.wait_for(store.list_tasks_summary(), timeout=5)
+        assert [t.slug for t in tasks] == [None]  # sees the last committed state
+    finally:
+        writer.rollback()
+        writer.close()
+        await store.close()
 
 
 # -- domain / persistence sync ------------------------------------------------------
