@@ -33,7 +33,8 @@ src/panopticon/
                    # discovery.py = scan the package + an optional path for Workflow subclasses
                    # (the registry build_app runs on; drop a module in → registered, ADR 0004)
   taskservice/     # control plane: TaskService, FastAPI REST API, the SQLAlchemy store
-                   # adapter (in-memory or on-disk SQLite), filesystem artifact store
+                   # adapter (in-memory or on-disk SQLite — the latter in WAL mode, so reads
+                   # never block behind writes), filesystem artifact store
                    # (per-task + per-repo artifacts, the latter with nested names), MCP
                    # server (mcp.py: operations=tools, artifacts=resources; FastMCP) mounted at /mcp
   sessionservice/  # the runner: Runner ABC + StubRunner (in-process) + LocalRunner

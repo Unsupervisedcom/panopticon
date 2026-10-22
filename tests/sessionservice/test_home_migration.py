@@ -74,6 +74,28 @@ def test_migrate_db_noop_when_old_absent(tmp_path: Path, monkeypatch: pytest.Mon
     assert not Path(fake_url[len("sqlite:///") :]).exists()
 
 
+def test_migrate_db_moves_wal_sidecars_with_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "panopticon.db").write_bytes(b"sqlite-data")
+    (tmp_path / "panopticon.db-wal").write_bytes(b"wal")
+    (tmp_path / "panopticon.db-shm").write_bytes(b"shm")
+
+    fake_url = _make_fake_db_url(tmp_path)
+    monkeypatch.setattr("panopticon.taskservice.__main__.DB_URL", fake_url)
+
+    from panopticon.taskservice.__main__ import migrate_db_to_home
+
+    migrate_db_to_home(fake_url)
+
+    new = Path(fake_url[len("sqlite:///") :])
+    assert (new.parent / "panopticon.db-wal").read_bytes() == b"wal"
+    assert (new.parent / "panopticon.db-shm").read_bytes() == b"shm"
+    assert not (tmp_path / "panopticon.db-wal").exists()
+    assert not (tmp_path / "panopticon.db-shm").exists()
+
+
 def test_migrate_db_skips_custom_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     old = tmp_path / "panopticon.db"
