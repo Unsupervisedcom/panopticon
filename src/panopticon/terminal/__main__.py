@@ -90,6 +90,12 @@ def main(
     sub.add_parser(
         "host", help="start task service + runner in background tmux sessions (no console)"
     )
+    mix = sub.add_parser(
+        "request-mix", help="tally the task service's log: writes vs long-polls vs full reads"
+    )
+    mix.add_argument(
+        "log", nargs="?", help="the service log (default: /tmp/panopticon-service.log)"
+    )
     start = sub.add_parser("start", help="start everything and open the dashboard supervisor")
     start.add_argument("task", nargs="?", help="task id or slug to join (attach to) on startup")
     sub.add_parser("stop", help="stop task containers and the panopticon tmux server")
@@ -135,6 +141,10 @@ def main(
         from panopticon.terminal import doctor
 
         return doctor.report(doctor.run_checks())
+    elif args.command == "request-mix":
+        from panopticon.terminal import request_mix
+
+        return request_mix.report(args.log or request_mix.DEFAULT_LOG)
     elif args.command == "host":
         _run_migrate()
         start_sessions()

@@ -62,11 +62,14 @@ class TaskServiceClient:
     def list_repos(self) -> list[JsonObj]:
         return cast("list[JsonObj]", self._json(self._http.get("/repos")))
 
-    def list_tasks(self) -> list[JsonObj]:
-        return cast("list[JsonObj]", self._json(self._http.get("/tasks")))
+    def list_tasks(self, *, terminal_limit: int | None = None) -> list[JsonObj]:
+        """Every task (summary shape); ``terminal_limit`` keeps only the N most recently updated
+        finished task trees — see :meth:`list_tasks_versioned`."""
+        params = {} if terminal_limit is None else {"terminal_limit": terminal_limit}
+        return cast("list[JsonObj]", self._json(self._http.get("/tasks", params=params)))
 
     def list_tasks_versioned(
-        self, *, since: int = 0, wait: float | None = None
+        self, *, since: int = 0, wait: float | None = None, terminal_limit: int | None = None
     ) -> tuple[list[JsonObj], int]:
         """Block-until-change ``GET /tasks``: return ``(tasks, version)`` where ``version`` is the
         store's change-feed cursor (the ``X-Tasks-Version`` header).
@@ -76,8 +79,13 @@ class TaskServiceClient:
         current snapshot + version. Without ``wait`` it's an immediate snapshot + version. Feed the
         returned ``version`` back as ``since`` on the next call to wait for the *next* change —
         replacing a ``list_tasks()`` + ``sleep`` poll loop with one event-driven call.
+
+        ``terminal_limit`` caps the terminal tasks to the N most recently updated trees (every
+        active task still comes back) — for a viewer that only shows the newest finished work.
         """
         params: dict[str, Any] = {"since": since}
+        if terminal_limit is not None:
+            params["terminal_limit"] = terminal_limit
         if wait is None:
             resp = self._http.get("/tasks", params=params)
         else:

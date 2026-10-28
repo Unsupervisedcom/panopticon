@@ -16,6 +16,7 @@ import binascii
 import builtins
 from abc import ABC, abstractmethod
 from base64 import b64decode
+from collections.abc import Iterable
 from urllib.parse import quote, unquote
 
 MCP_URI_SCHEME = "panopticon"
@@ -134,6 +135,14 @@ class ArtifactStore(ABC):
         still inherits a correct implementation (the filesystem store overrides it with a
         directory scan that stops at the first hit)."""
         return any(not is_hidden(name) for name in await self.list(task_id))
+
+    async def tasks_with_unhidden_artifacts(self, task_ids: Iterable[str]) -> set[str]:
+        """The subset of ``task_ids`` that :meth:`has_unhidden_artifacts` answers ``True`` for.
+
+        The bulk form the task list resolves its marks with, so an adapter can answer a whole
+        page in one round-trip instead of one per row. The default just asks each id in turn; the
+        filesystem store overrides it to scan every directory in a single worker-thread hop."""
+        return {task_id for task_id in task_ids if await self.has_unhidden_artifacts(task_id)}
 
     # -- repo-scoped artifacts ----------------------------------------------------
     #
