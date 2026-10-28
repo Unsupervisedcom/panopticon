@@ -41,6 +41,8 @@ class _FakeRunner:
     ) -> None:
         self.spawned: list[dict[str, object]] = []
         self.stopped: list[str] = []
+        self.removed_volumes: list[str] = []
+        self.failing_volumes: set[str] = set()  # remove_volume raises for these names
         self._running = running
         self._session = session
         self._exit_reason = exit_reason
@@ -93,6 +95,11 @@ class _FakeRunner:
 
     def delete_workspace_contents(self, path: str) -> None:
         pass
+
+    def remove_volume(self, name: str) -> None:
+        self.removed_volumes.append(name)  # recorded even when it fails — the attempt is the point
+        if name in self.failing_volumes:
+            raise RuntimeError(f"cannot remove {name}")
 
 
 class _FakeClient:
@@ -729,6 +736,7 @@ def test_heal_respawns_an_orphan_claimed_by_us_with_no_session() -> None:
     assert cid == "panopticon-t1"
     assert [s["task_id"] for s in runner.spawned] == ["t1"]  # respawned
     assert client.claims == []  # already ours — heal doesn't re-claim
+    assert runner.removed_volumes == []  # a respawn keeps the dind image cache + session history
 
 
 def test_heal_skips_a_task_whose_session_is_alive() -> None:
@@ -1639,3 +1647,70 @@ def test_snooze_stops_the_container_and_waking_respawns_it(tmp_path: Path) -> No
         assert woken.spawn_one(client.get_task(task_id)) == f"panopticon-{task_id}"
         assert client.get_task(task_id)["claimed_by"] == "host-1"
         assert len(runner.spawned) == 2  # respawned — same clone, same config volume
+
+
+def test_sweep_removes_a_terminal_tasks_container_then_its_dind_and_config_volumes() -> None:
+    runner = _FakeRunner(running=False)
+    spawner = _cleanup_spawner(runner, workspace_exists=False)
+    spawner.sweep({"id": "t1", "state": "COMPLETE", "claimed_by": "host-1"})
+    # The stopped container goes first — it would otherwise pin its volumes ("volume is in use").
+    assert runner.stopped == ["panopticon-t1"]
+    assert runner.removed_volumes == ["panopticon-dind-t1", "panopticon-config-t1"]
+
+
+def test_sweep_sweeps_an_unclaimed_terminal_task() -> None:
+    # The agent releases its claim on exit (and cleanup releases any it left), so the sweep can't
+    # gate on the claim — an unclaimed DROPPED task's volumes must still go.
+    runner = _FakeRunner(running=False)
+    spawner = _cleanup_spawner(runner, workspace_exists=False)
+    spawner.sweep({"id": "t1", "state": "DROPPED", "claimed_by": None})
+    assert runner.removed_volumes == ["panopticon-dind-t1", "panopticon-config-t1"]
+
+
+def test_sweep_runs_docker_once_per_task() -> None:
+    runner = _FakeRunner(running=False)
+    spawner = _cleanup_spawner(runner, workspace_exists=False)
+    task = {"id": "t1", "state": "COMPLETE"}
+    spawner.sweep(task)
+    spawner.sweep(task)  # already swept → no second stop / volume rm
+    assert runner.stopped == ["panopticon-t1"]
+    assert runner.removed_volumes == ["panopticon-dind-t1", "panopticon-config-t1"]
+
+
+def test_sweep_skips_a_non_terminal_task() -> None:
+    runner = _FakeRunner(running=False)
+    spawner = _cleanup_spawner(runner, workspace_exists=False)
+    spawner.sweep({"id": "t1", "state": "ITERATING", "claimed_by": "host-1"})
+    assert runner.stopped == []
+    assert runner.removed_volumes == []
+
+
+def test_sweep_waits_while_the_container_is_still_running() -> None:
+    runner = _FakeRunner(running=True)
+    spawner = _cleanup_spawner(runner, workspace_exists=False)
+    task = {"id": "t1", "state": "COMPLETE"}
+    spawner.sweep(task)
+    assert runner.removed_volumes == []
+    runner._running = False  # the agent exits → the next pass sweeps (it wasn't marked swept)
+    spawner.sweep(task)
+    assert runner.removed_volumes == ["panopticon-dind-t1", "panopticon-config-t1"]
+
+
+def test_sweep_skips_a_shell_task() -> None:
+    runner = _FakeRunner(running=False)
+    client = _FakeClient(repo=_REPO, runner_type="shell", shell_script="echo hi")
+    spawner = _shell_spawner(client, runner, _FakeShellRunner())
+    spawner.sweep({"id": "t1", "state": "COMPLETE", "workflow": "setup-repo"})
+    assert runner.stopped == []
+    assert runner.removed_volumes == []
+
+
+def test_sweep_removes_each_volume_independently_of_the_others_failure() -> None:
+    for failing in ("panopticon-dind-t1", "panopticon-config-t1"):
+        runner = _FakeRunner(running=False)
+        runner.failing_volumes = {failing}
+        spawner = _cleanup_spawner(runner, workspace_exists=False)
+        spawner.sweep({"id": "t1", "state": "COMPLETE"})  # logs, never raises
+        assert runner.removed_volumes == ["panopticon-dind-t1", "panopticon-config-t1"]
+        spawner.sweep({"id": "t1", "state": "COMPLETE"})  # a failure isn't retried every pass
+        assert runner.removed_volumes == ["panopticon-dind-t1", "panopticon-config-t1"]

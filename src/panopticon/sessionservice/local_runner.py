@@ -80,6 +80,19 @@ def session_name(task_id: str) -> str:
     return f"panopticon-{task_id}"
 
 
+def dind_volume(task_id: str) -> str:
+    """The named volume holding ``task_id``'s nested Docker daemon store (``/var/lib/docker``) — the
+    repo's whole pulled image stack, tens of GB. Kept across respawns (it's what makes one fast);
+    removed by the host daemon's sweep once the task is terminal."""
+    return f"panopticon-dind-{task_id}"
+
+
+def config_volume(task_id: str) -> str:
+    """The named volume holding ``task_id``'s CLI config dir (its resumable session history, see
+    :func:`config_mount`). Kept across respawns; removed by the sweep once the task is terminal."""
+    return f"panopticon-config-{task_id}"
+
+
 #: Where a task's per-task clone is mounted — the one stable, writable path the agent works in
 #: for the whole task (ADR 0011): planning, then coding on its branch once provisioned.
 WORKSPACE_MOUNT = "/workspace"
@@ -337,7 +350,7 @@ class LocalRunner(Runner):
             docker_in_docker
         ):  # privileged nested Docker daemon (repo capability); entrypoint starts it
             docker_run.append("--privileged")
-            docker_run += ["--volume", f"panopticon-dind-{task_id}:/var/lib/docker"]
+            docker_run += ["--volume", f"{dind_volume(task_id)}:/var/lib/docker"]
             env["PANOPTICON_DOCKER_IN_DOCKER"] = "1"
         if env_path := secrets_file_path(env_file, secrets_dir=self._secrets_dir):
             docker_run += ["--env-file", env_path]  # per-repo secrets, resolved host-locally
@@ -356,7 +369,7 @@ class LocalRunner(Runner):
         # Per-task config volume: persists the CLI's session history across respawn/recreate (the
         # transcripts live in the config dir, which is otherwise thrown away with the container). The
         # mount path is the resolved CLI's config dir, or resume silently breaks (ADR 0014 §4a).
-        docker_run += ["--volume", f"panopticon-config-{task_id}:{config_mount(agent_cli)}"]
+        docker_run += ["--volume", f"{config_volume(task_id)}:{config_mount(agent_cli)}"]
         for key, value in env.items():
             docker_run += ["--env", f"{key}={value}"]
         docker_run.append(
@@ -482,6 +495,12 @@ class LocalRunner(Runner):
                 "find /cleanup -mindepth 1 -delete",
             ]
         )
+
+    def remove_volume(self, name: str) -> None:
+        """Remove the named Docker volume ``name`` (one of a terminal task's :func:`dind_volume` /
+        :func:`config_volume`). ``--force`` makes an already-gone volume a no-op, but a volume still
+        mounted by a container is refused — so a real failure raises for the caller to log."""
+        self._run(["docker", "volume", "rm", "--force", name])
 
     def stop(self, container_id: str) -> None:
         # Idempotent: tolerate an already-gone session/container.

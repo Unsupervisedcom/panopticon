@@ -33,7 +33,13 @@ from panopticon.core.state import TERMINAL_LABELS
 from panopticon.sessionservice.clones import CloneCache
 from panopticon.sessionservice.executions import WorkflowExecutions
 from panopticon.sessionservice.images import ImageBuilder
-from panopticon.sessionservice.local_runner import LocalRunner, base_image, session_name
+from panopticon.sessionservice.local_runner import (
+    LocalRunner,
+    base_image,
+    config_volume,
+    dind_volume,
+    session_name,
+)
 from panopticon.sessionservice.shell_runner import ShellRunner
 from panopticon.sessionservice.spawn import cleanup_workspace, prepare_workspace
 
@@ -145,6 +151,9 @@ class Spawner:
         #: task_id → (respawns in the current burst, monotonic time of the last respawn), the
         #: crash-loop guard state for :meth:`heal`.
         self._respawns: dict[str, tuple[int, float]] = {}
+        #: Terminal tasks whose volumes :meth:`sweep` has already tried to remove this process — so it
+        #: runs docker at most once per task (a restart re-sweeps each once, harmlessly).
+        self._swept: set[str] = set()
 
     def spawn_one(self, task: JsonObj) -> str | None:
         """Claim + spawn ``task`` if it's a fresh unclaimed, non-terminal task; else ``None``.
@@ -549,6 +558,38 @@ class Spawner:
             rmtree=self._rmtree,
             docker_cleanup=self._docker_cleanup,
         )
+
+    def sweep(self, task: JsonObj) -> None:
+        """Remove a terminal task's Docker volumes once its container has exited.
+
+        A ``docker_in_docker`` task's :func:`dind_volume` holds the nested daemon's whole image
+        store (tens of GB), and every container task has a :func:`config_volume`; nothing else ever
+        removes them. They must outlive a *respawn* (heal, snooze wake, ``R``) — the image cache and
+        the CLI session history are what make one fast and resumable — but a terminal task never
+        respawns, so here they go.
+
+        Gated like :meth:`cleanup` — terminal, and no container running on this host — and **not**
+        on the claim: the container agent releases its own claim on exit, and :meth:`cleanup`
+        releases any it left, so a claim gate would almost never fire. (A host that never ran the
+        task just no-ops.) Shell tasks have no volumes. A stopped container still references its
+        volumes (they're spawned without ``--rm``), so it is removed first. The two volumes are
+        removed independently — a config-volume failure can't skip the dind one — and each failure
+        is logged, never raised. The task is recorded as swept whatever the outcome, so a failure
+        isn't retried (and re-logged) every pass; a runner restart retries it once."""
+        task_id = task["id"]
+        if task["state"] not in TERMINAL_LABELS or task_id in self._swept:
+            return
+        if self._executions.is_shell(task.get("workflow")):
+            return  # no container, no volumes
+        if self._runner.is_running(task_id):
+            return  # still up — wait for it to exit, as cleanup does
+        self._swept.add(task_id)
+        self._runner.stop(session_name(task_id))  # a stopped container pins its volumes
+        for volume in (dind_volume(task_id), config_volume(task_id)):
+            try:
+                self._runner.remove_volume(volume)
+            except Exception:  # best-effort — never let one volume (or task) stall the pass
+                _log.warning("task %s: removing volume %s failed", task_id, volume, exc_info=True)
 
     def _compose_image(self, workflow: str, repo: JsonObj, agent_cli: str) -> str:
         """Compose the task's image (the CLI's base → workflow → repo layers, ADR 0005 + ADR 0014 §4)
