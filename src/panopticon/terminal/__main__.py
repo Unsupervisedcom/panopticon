@@ -30,6 +30,16 @@ from panopticon.terminal.sessions import TARGETS, restart_sessions, start_sessio
 
 DEFAULT_SERVICE_URL = "http://localhost:8000"
 
+# The full `GET /tasks` read can outlast httpx's 5s default on a loaded host — and the service's own
+# SQLite busy timeout is also 5s, so the default gives up just as the server is waiting on a lock.
+# Read generously; connect stays short so a down service still fails fast. (`list_tasks_versioned`
+# overrides this per-request with its long-poll headroom.)
+SERVICE_TIMEOUT = httpx.Timeout(30.0, connect=5.0)
+
+
+def _service_client(service_url: str) -> TaskServiceClient:
+    return TaskServiceClient(httpx.Client(base_url=service_url, timeout=SERVICE_TIMEOUT))
+
 
 def _run_migrate() -> None:
     import importlib.resources
@@ -144,7 +154,7 @@ def main(
         _qs.wait_for_service(args.service_url)
         env_file = _qs.ensure_secrets_file()
         git_url = _qs.detect_git_url()
-        qs_client = TaskServiceClient(httpx.Client(base_url=args.service_url))
+        qs_client = _service_client(args.service_url)
         repo_id, repo_name = _qs.setup_repo(qs_client, git_url, env_file)
         task_id = _qs.ensure_setup_repo_task(qs_client, repo_id, repo_name)
         from panopticon.terminal.console import run_console_local
@@ -180,7 +190,7 @@ def main(
             )
         return 0
 
-    client = client or TaskServiceClient(httpx.Client(base_url=args.service_url))
+    client = client or _service_client(args.service_url)
     if args.command == "tasks":
         for t in client.list_tasks():
             print(f"{t['id']}  {t['state']:<10}  {t['turn']:<5}  {t['slug'] or '-'}")

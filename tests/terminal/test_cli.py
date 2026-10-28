@@ -118,3 +118,44 @@ def test_restart_passes_named_targets_through_and_returns_its_code() -> None:
 def test_restart_rejects_an_unknown_target() -> None:
     with pytest.raises(SystemExit):  # argparse rejects it before anything is bounced
         main(["restart", "containers"])
+
+
+def test_the_service_client_reads_generously_but_connects_fast() -> None:
+    from panopticon.terminal.__main__ import SERVICE_TIMEOUT
+
+    assert SERVICE_TIMEOUT.read == 30.0
+    assert SERVICE_TIMEOUT.connect == 5.0
+
+
+def test_the_dashboard_client_is_built_with_the_service_timeout() -> None:
+    from panopticon.terminal.__main__ import SERVICE_TIMEOUT
+
+    with (
+        patch("panopticon.terminal.__main__.httpx.Client") as mock_http,
+        patch("panopticon.terminal.dashboard.run"),
+    ):
+        main(["dashboard"])
+    assert mock_http.call_args.kwargs["timeout"] is SERVICE_TIMEOUT
+
+
+def test_the_long_poll_still_overrides_the_service_timeout() -> None:
+    import httpx
+
+    from panopticon.client import TaskServiceClient
+    from panopticon.terminal.__main__ import SERVICE_TIMEOUT
+
+    seen: list[dict[str, float | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.extensions["timeout"])
+        return httpx.Response(200, json=[], headers={"X-Tasks-Version": "1"})
+
+    http = httpx.Client(
+        base_url="http://test", transport=httpx.MockTransport(handler), timeout=SERVICE_TIMEOUT
+    )
+    client = TaskServiceClient(http)
+    client.list_tasks_versioned(since=0, wait=20.0)
+    client.list_tasks_versioned(since=0)
+    assert seen[0]["read"] == 30.0  # wait + 10
+    assert seen[0]["connect"] == 30.0  # the per-request Timeout(wait + 10) sets every phase
+    assert seen[1] == SERVICE_TIMEOUT.as_dict()
