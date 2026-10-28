@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import builtins
 import os
+from collections.abc import Iterable
 from pathlib import Path
 
 from panopticon.core.artifacts import (
@@ -106,6 +107,12 @@ class FilesystemArtifactStore(ArtifactStore):
         so the shortcut is worth the override.
         """
         return await asyncio.to_thread(self._has_artifacts_sync, task_id)
+
+    async def tasks_with_unhidden_artifacts(self, task_ids: Iterable[str]) -> set[str]:
+        """One worker-thread hop for the whole batch, not one per task: the task list asks this
+        for every row it serves, and a thread hand-off apiece dominated the scans themselves."""
+        ids = list(task_ids)
+        return await asyncio.to_thread(lambda: {t for t in ids if self._has_artifacts_sync(t)})
 
     # -- repo-scoped artifacts ----------------------------------------------------
     #

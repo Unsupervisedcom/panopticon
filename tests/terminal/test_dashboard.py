@@ -14,6 +14,7 @@ from typing import Any
 
 import httpx
 import pytest
+from rich.text import Text
 from textual.app import App
 from textual.css.query import NoMatches
 from textual.widgets import Checkbox, DataTable, Input, OptionList, Select, Static
@@ -27,6 +28,7 @@ from panopticon.terminal.dashboard import (
     _LINK_MARK,
     _MARKS_LABEL,
     _SNOOZE_DURATION,
+    TERMINAL_LIMIT,
     Dashboard,
     SpaceCheckbox,
     TaskDetailScreen,
@@ -37,6 +39,7 @@ from panopticon.terminal.dashboard import (
     _marks_cell,
     _matches,
     _repo_cell,
+    _same_cell,
     _slug_cell,
     _snooze_label,
     _status_cell,
@@ -135,7 +138,8 @@ class _FakeClient:
         # `signal_change()` to release a parked `list_tasks_versioned` (the producer "changed a task").
         self._version = 0
         self._change = threading.Event()
-        self.list_tasks_calls = 0  # how many times the table was (re)built — counts feed refreshes
+        self.list_tasks_calls = 0  # how many full fetches (`r`, first paint, after an action)
+        self.terminal_limits: list[int | None] = []  # the terminal_limit each list_tasks asked for
         self.created: list[tuple[str, str, str | None]] = []
         self.created_artifacts_b64: list[dict[str, str] | None] = []
         self.applied: list[tuple[str, str]] = []
@@ -151,12 +155,13 @@ class _FakeClient:
         self.repo_fetched: list[tuple[str, str]] = []  # (repo_id, name) → get_repo_artifact
         self.put_repo_artifacts: list[tuple[str, str, bytes]] = []  # repo-scoped uploads
 
-    def list_tasks(self) -> list[dict[str, Any]]:
+    def list_tasks(self, *, terminal_limit: int | None = None) -> list[dict[str, Any]]:
         self.list_tasks_calls += 1
+        self.terminal_limits.append(terminal_limit)
         return self._tasks
 
     def list_tasks_versioned(
-        self, *, since: int = 0, wait: float | None = None
+        self, *, since: int = 0, wait: float | None = None, terminal_limit: int | None = None
     ) -> tuple[list[dict[str, Any]], int]:
         """Mimic the block-until-change feed: park until a test arms `signal_change()` (then bump
         the cursor and return) or the park elapses (return the current, unchanged cursor). `wait=None`
@@ -712,7 +717,8 @@ async def test_dashboard_refreshes_when_the_feed_signals_a_change() -> None:
         fake.signal_change()  # ...and the feed releases the worker's parked long-poll
         await _settle(pilot, lambda: table.row_count == 1)
         assert table.row_count == 1
-        assert fake.list_tasks_calls == builds + 1  # exactly one feed-driven rebuild
+        # Drawn from the long-poll's own snapshot: no second full fetch of the task list.
+        assert fake.list_tasks_calls == builds
 
 
 async def test_dashboard_does_not_refresh_while_the_feed_is_idle() -> None:
@@ -724,9 +730,19 @@ async def test_dashboard_does_not_refresh_while_the_feed_is_idle() -> None:
     )  # fast idle polls, but nothing changes  # type: ignore[arg-type]
     async with app.run_test() as pilot:
         await pilot.pause()
+        renders = 0
+        real_render = app._render
+
+        def counting_render(tasks: list[dict[str, Any]]) -> None:
+            nonlocal renders
+            renders += 1
+            real_render(tasks)
+
+        app._render = counting_render  # type: ignore[method-assign]
         builds = fake.list_tasks_calls  # first paint only
         await pilot.pause(0.2)  # several idle long-poll cycles elapse
-        assert fake.list_tasks_calls == builds  # the quiet feed triggered no rebuild
+        assert fake.list_tasks_calls == builds  # the quiet feed triggered no fetch...
+        assert renders == 0  # ...and no redraw
 
 
 async def test_auto_refresh_preserves_the_highlighted_task() -> None:
@@ -744,6 +760,61 @@ async def test_auto_refresh_preserves_the_highlighted_task() -> None:
         await pilot.pause()
         assert app._current == "task-second9999"  # highlight survived the rebuild
         assert table.cursor_row == 1
+
+
+async def test_render_leaves_the_table_alone_when_no_row_changed() -> None:
+    # Most change-feed ticks change nothing the table shows (a field it doesn't render); clearing
+    # and re-adding every row for those was most of the dashboard's CPU.
+    other = {**_TASK, "id": "task-second9999", "slug": "other"}
+    fake = _FakeClient([_TASK, other])
+    app = Dashboard(fake, refresh_interval=0)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#tasks", DataTable)
+        cleared: list[bool] = []
+        real_clear = table.clear
+
+        def counting_clear(columns: bool = False) -> DataTable[Any]:
+            cleared.append(columns)
+            return real_clear(columns)
+
+        table.clear = counting_clear  # type: ignore[method-assign]
+
+        app._render([{**_TASK, "memo_unrendered": "x"}, other])  # nothing visible differs
+        await pilot.pause()
+        assert cleared == []
+
+        app._render([{**_TASK, "turn": "user"}, other])  # a visible cell differs: redraw
+        await pilot.pause()
+        assert cleared == [False]
+        assert "user" in str(table.get_row_at(0)[1])
+
+        app._render([{**_TASK, "turn": "user"}, other])  # and settles again
+        await pilot.pause()
+        assert cleared == [False]
+
+
+def test_same_cell_sees_a_style_only_change() -> None:
+    # ``Text.__eq__`` ignores the base style, so a row dimmed by a snooze would compare equal to
+    # its undimmed self and never be repainted.
+    assert not _same_cell(Text("repo", style="dim"), Text("repo"))
+    assert not _same_cell(_dim("repo"), Text("repo"))
+    assert not _same_cell("repo", Text("repo"))
+    assert _same_cell(_dim("repo"), _dim("repo"))
+
+
+async def test_finished_tasks_are_capped_until_toggled() -> None:
+    fake = _FakeClient([_TASK])
+    app = Dashboard(fake, refresh_interval=0)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert fake.terminal_limits[-1] == TERMINAL_LIMIT  # the default fetch is capped
+        await pilot.press("D")
+        await pilot.pause()
+        assert fake.terminal_limits[-1] is None  # `D` fetches every finished task...
+        await pilot.press("D")
+        await pilot.pause()
+        assert fake.terminal_limits[-1] == TERMINAL_LIMIT  # ...and again restores the cap
 
 
 async def test_dashboard_with_no_tasks() -> None:
@@ -3012,6 +3083,7 @@ def test_footer_shows_only_the_essential_keys() -> None:
     assert hidden == {
         "o",
         "r",
+        "D",
         "R",
         "p",
         "e",

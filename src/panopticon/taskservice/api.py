@@ -21,7 +21,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from panopticon import __version__
 from panopticon.core.artifacts import ArtifactError
-from panopticon.core.models import Actor, LifecyclePhase, PushStatus, Repo, Status, Task
+from panopticon.core.models import (
+    Actor,
+    ContainerStatus,
+    LifecyclePhase,
+    PushStatus,
+    Repo,
+    Status,
+    Task,
+)
 from panopticon.core.store import AlreadyExists, NotFound, StoreError
 from panopticon.core.workflow import IllegalTransition, InvalidWorkflow, ResponsibilitiesNotMet
 from panopticon.taskservice.service import (
@@ -428,14 +436,17 @@ def create_app(service: TaskService) -> FastAPI:
             out.runner_host = service.runner_host(task.claimed_by)
         return out
 
-    def _task_summary_out(task: Task, *, has_artifacts: bool = False) -> TaskSummaryOut:
+    def _task_summary_out(
+        task: Task, *, has_artifacts: bool = False, status: ContainerStatus | None = None
+    ) -> TaskSummaryOut:
         """Serialize a task to the cheap summary shape (no history), with computed status fields.
 
         ``has_artifacts`` is passed in rather than read here: it lives in the artifact store,
-        not on the task, so resolving it needs an await this synchronous serializer can't do."""
+        not on the task, so resolving it needs an await this synchronous serializer can't do.
+        ``status`` lets a list pass in a status it computed for the whole batch at once."""
         out = TaskSummaryOut.model_validate(task)
         out.has_artifacts = has_artifacts
-        out.container_status = service.container_status(task).value
+        out.container_status = (status or service.container_status(task)).value
         lifecycle = service.lifecycle(task.id)
         out.lifecycle_detail = lifecycle.detail if lifecycle is not None else None
         if task.claimed_by is not None:
@@ -582,19 +593,33 @@ def create_app(service: TaskService) -> FastAPI:
             description="Filter to terminal tasks only (true) or active tasks only (false). "
             "Omit to return all tasks.",
         ),
+        terminal_limit: int | None = Query(
+            default=None,
+            ge=0,
+            description="Return only the N most recently updated terminal task trees (every "
+            "active task is still returned, and so is a terminal task under an active governor). "
+            "Omit for every terminal task.",
+        ),
     ) -> list[TaskSummaryOut]:
         # Every response carries the current version in X-Tasks-Version so a client can echo it
         # back as ?since=. With ?wait the request parks until the version moves past ?since (or
         # the cap elapses); without it, it's an immediate snapshot — today's behaviour.
         if wait is not None:
             version = await feed.wait(since=since, timeout=min(wait, MAX_WAIT_SECONDS))
-            tasks_raw = await service.list_tasks_summary(terminal=terminal)
+            tasks_raw = await service.list_tasks_summary(
+                terminal=terminal, terminal_limit=terminal_limit
+            )
         else:
             # Read version and snapshot in a single thread call so no event-loop yield can
             # interleave a mutation between them — preserving the original atomicity invariant.
-            version, tasks_raw = await service._tasks_snapshot(terminal=terminal)
+            version, tasks_raw = await service._tasks_snapshot(
+                terminal=terminal, terminal_limit=terminal_limit
+            )
+        # Both resolved for the whole batch: one artifact-store call, one pass over registrations.
+        with_artifacts = await service.tasks_with_unhidden_artifacts(tasks_raw)
+        statuses = service.container_statuses(tasks_raw)
         tasks = [
-            _task_summary_out(t, has_artifacts=await service.has_unhidden_artifacts(t.id))
+            _task_summary_out(t, has_artifacts=t.id in with_artifacts, status=statuses[t.id])
             for t in tasks_raw
         ]
         response.headers[TASKS_VERSION_HEADER] = str(version)
