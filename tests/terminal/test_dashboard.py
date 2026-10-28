@@ -136,6 +136,8 @@ class _FakeClient:
         self._version = 0
         self._change = threading.Event()
         self.list_tasks_calls = 0  # how many times the table was (re)built — counts feed refreshes
+        # When set, list_tasks raises it (mimics the task service erroring/stalling mid-refresh).
+        self.list_error: Exception | None = None
         self.created: list[tuple[str, str, str | None]] = []
         self.created_artifacts_b64: list[dict[str, str] | None] = []
         self.applied: list[tuple[str, str]] = []
@@ -153,6 +155,8 @@ class _FakeClient:
 
     def list_tasks(self) -> list[dict[str, Any]]:
         self.list_tasks_calls += 1
+        if self.list_error is not None:
+            raise self.list_error
         return self._tasks
 
     def list_tasks_versioned(
@@ -744,6 +748,105 @@ async def test_auto_refresh_preserves_the_highlighted_task() -> None:
         await pilot.pause()
         assert app._current == "task-second9999"  # highlight survived the rebuild
         assert table.cursor_row == 1
+
+
+def _http_500() -> httpx.HTTPStatusError:
+    """A 500 from GET /tasks, as the task service returned while stalled on `database is locked`."""
+    request = httpx.Request("GET", "http://test/tasks")
+    response = httpx.Response(500, json={"detail": "database is locked"}, request=request)
+    return httpx.HTTPStatusError("500", request=request, response=response)
+
+
+def _record_notices(app: Dashboard) -> list[str]:
+    """Capture the dashboard's `notify` messages (still forwarding them to the real toast)."""
+    notices: list[str] = []
+    real = app.notify
+
+    def notify(message: str, **kwargs: Any) -> None:
+        notices.append(message)
+        real(message, **kwargs)
+
+    app.notify = notify  # type: ignore[method-assign]
+    return notices
+
+
+async def test_a_failed_refresh_keeps_the_table_and_warns() -> None:
+    # The service 500s mid-refresh: the app stays up and the last-drawn rows stay (the read happens
+    # before the table is cleared), with a warning instead of a crash screen.
+    fake = _FakeClient([_TASK])
+    app = Dashboard(fake, refresh_interval=0)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        notices = _record_notices(app)
+        table = app.query_one("#tasks", DataTable)
+        fake.list_error = _http_500()
+        app.action_refresh()
+        await pilot.pause()
+        assert app.is_running
+        assert table.row_count == 1
+        assert app._current == _TASK["id"]
+        assert notices == ["Task service unreachable — retrying…"]
+
+
+async def test_a_failing_service_warns_once_per_outage() -> None:
+    fake = _FakeClient([_TASK])
+    app = Dashboard(fake, refresh_interval=0)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        notices = _record_notices(app)
+        fake.list_error = httpx.ConnectError("refused")
+        app.action_refresh()
+        app.action_refresh()  # still down: no second toast
+        assert len(notices) == 1
+        fake.list_error = None
+        app.action_refresh()  # recovered...
+        fake.list_error = httpx.ReadTimeout("stalled")
+        app.action_refresh()  # ...and a new outage warns again
+        await pilot.pause()
+        assert len(notices) == 2
+        assert app.is_running
+
+
+async def test_a_failed_snooze_timer_refresh_keeps_running_and_retries() -> None:
+    # The snooze-display timer fires a repaint on the UI thread; a failing read there must not exit
+    # the app, and the timer re-arms so the countdown resumes once the service is back.
+    task = {**_TASK, "snoozed_until": _at(2)}
+    fake = _FakeClient([task])
+    app = Dashboard(fake, refresh_interval=0, now=lambda: _NOW)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app._snooze_timer is not None  # armed for the finite snooze
+        app._snooze_timer.stop()
+        fake.list_error = httpx.ReadTimeout("stalled")
+        app.set_timer(0.01, app._refresh_snooze_display)  # the timer firing, as it does live
+        await _settle(pilot, lambda: fake.list_tasks_calls >= 2)
+        await pilot.pause()
+        assert app.is_running
+        assert app.query_one("#tasks", DataTable).row_count == 1
+        assert app._snooze_timer is not None  # the retry is armed
+
+
+async def test_a_failed_feed_refresh_keeps_running_and_retries_the_change() -> None:
+    # The feed worker marshals the rebuild onto the UI thread; a failure there must neither kill
+    # the worker nor the app, and once the service recovers the missed change still lands.
+    fake = _FakeClient([_TASK])
+    app = Dashboard(fake, refresh_interval=0.05)  # type: ignore[arg-type]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        notices = _record_notices(app)
+        table = app.query_one("#tasks", DataTable)
+        builds = fake.list_tasks_calls
+        fake.list_error = _http_500()
+        fake._tasks = [_TASK, {**_TASK, "id": "task-second9999", "slug": "other"}]
+        fake.signal_change()
+        await _settle(pilot, lambda: fake.list_tasks_calls > builds)
+        await pilot.pause()
+        assert app.is_running
+        assert table.row_count == 1  # the last-drawn table survives
+        assert notices == ["Task service unreachable — retrying…"]
+        fake.list_error = None  # the service recovers — no further change is signalled
+        await _settle(pilot, lambda: table.row_count == 2, tries=200)
+        assert table.row_count == 2  # the rewound cursor retried the missed change
 
 
 async def test_dashboard_with_no_tasks() -> None:

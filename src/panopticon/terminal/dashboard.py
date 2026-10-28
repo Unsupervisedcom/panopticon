@@ -4,7 +4,9 @@ A task table on the left, the highlighted task's state/turn/history on the right
 from the task service **on change** — a background worker long-polls the change feed
 (``list_tasks_versioned``), so the table redraws within a round-trip of a state change and stays
 still when nothing changes (no fixed-interval redraw); `r` forces a refresh now. The redraw
-preserves the highlighted row across the rebuild. Terminal (COMPLETE/DROPPED) tasks sink below
+preserves the highlighted row across the rebuild. A refresh whose REST read fails (the service
+erroring, stalled or down) keeps the last-drawn table and warns once per outage instead of
+exiting the app — the feed worker retries it. Terminal (COMPLETE/DROPPED) tasks sink below
 active ones and are rendered in faded/dim styling so they recede visually without a hard separator.
 
 The task table, the repo table (`g`), and the `OptionList` pickers (`n`'s repo/workflow choice,
@@ -367,6 +369,9 @@ def _matches(task: JsonObj, query: str) -> bool:
 # Snoozing also **stops the task's container** (the session service reads the same deadline off its
 # own clock, `core.snooze`); clearing it — or the deadline lapsing — respawns the task.
 _SNOOZE_DURATION = timedelta(hours=12)
+# How soon the snooze timer retries a repaint whose REST read failed (it has no fresh snapshot to
+# derive the next label change from, and the stale one's delays may already be due).
+_REFRESH_RETRY_SECONDS = 5.0
 _INDEFINITE_SNOOZE_UNTIL = INDEFINITE_UNTIL
 
 
@@ -2094,6 +2099,7 @@ class Dashboard(App[None]):
             refresh_interval  # change-feed long-poll wait (0/None → manual only)
         )
         self._version = 0  # the change-feed cursor (X-Tasks-Version) the worker long-polls against
+        self._refresh_failing = False  # the last refresh's REST read failed (warn once per outage)
         self._tasks: dict[str, JsonObj] = {}
         self._repo_names: dict[str, str] = {}  # repo id → name; populated by _load_repo_names
         self._repo_clis: dict[
@@ -2175,11 +2181,14 @@ class Dashboard(App[None]):
             if worker.is_cancelled:
                 return
             if version != self._version:  # a task changed past our cursor → rebuild the table
-                self._version = version
+                previous, self._version = self._version, version
                 try:
-                    self.call_from_thread(self.action_refresh)
+                    refreshed = self.call_from_thread(self._refresh)
                 except RuntimeError:  # app shut down between the cancel check and the dispatch
                     return
+                if not refreshed:  # the rebuild's read failed — rewind so the next poll retries it
+                    self._version = previous
+                    time.sleep(min(self._refresh_interval or 1.0, 1.0))
 
     def on_unmount(self) -> None:
         if self._snooze_timer is not None:  # stop the pending snooze-display repaint
@@ -2196,16 +2205,33 @@ class Dashboard(App[None]):
         return self._artifact_tmp.name
 
     def action_refresh(self) -> None:
+        self._refresh()
+
+    def _refresh(self) -> bool:
+        """Rebuild the table from the task service; False if its REST read failed.
+
+        Every read happens before the table is touched, so a failure (a 5xx, a timeout, the
+        service down) leaves the last-drawn table in place rather than raising — an exception
+        here would exit the app, whether it ran on the UI thread or in the feed worker."""
+        try:
+            tasks = self._client.list_tasks()
+            runners = self._client.live_runners()
+        except httpx.HTTPError:
+            if not self._refresh_failing:  # one notice per outage, not one per retry
+                self._refresh_failing = True
+                self.notify("Task service unreachable — retrying…", severity="warning")
+            if self._snooze_timer is None:  # keep snooze labels ticking once the service is back
+                self._snooze_timer = self.set_timer(
+                    _REFRESH_RETRY_SECONDS, self._refresh_snooze_display
+                )
+            return False
+        self._refresh_failing = False
         table = self.query_one("#tasks", DataTable)
         selected = self._current  # keep the operator's highlight across the rebuild (feed refresh)
         display_now = self._now()  # one clock read per repaint drives every snooze label/dimming
         table.clear()
-        ordered = sorted(
-            self._client.list_tasks(), key=_make_sort_key(self._sort_by_updated, display_now)
-        )
-        new_multi_runner = (
-            len({r.get("host") for r in self._client.live_runners() if r.get("host")}) > 1
-        )
+        ordered = sorted(tasks, key=_make_sort_key(self._sort_by_updated, display_now))
+        new_multi_runner = len({r.get("host") for r in runners if r.get("host")}) > 1
         if new_multi_runner != self._multi_runner:
             table.clear(columns=True)  # rows already gone; also clears columns for rebuild
             self._multi_runner = new_multi_runner
@@ -2339,6 +2365,7 @@ class Dashboard(App[None]):
             table.move_cursor(row=table.get_row_index(target))
         self._current = target  # `d` opens the detail modal for whatever's highlighted
         self._schedule_snooze_refresh(display_now)
+        return True
 
     def _schedule_snooze_refresh(self, now: datetime) -> None:
         """(Re)arm a one-shot timer for the soonest finite-snooze display change.
