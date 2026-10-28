@@ -1381,6 +1381,35 @@ def test_cleanup_waits_when_container_still_running() -> None:
     assert removed == []  # container still up — leave workspace alone
 
 
+class _CountingRunner(_FakeRunner):
+    def __init__(self, *, running: bool) -> None:
+        super().__init__(running=running)
+        self.probes = 0
+
+    def is_running(self, task_id: str) -> bool:
+        self.probes += 1
+        return super().is_running(task_id)
+
+
+def test_cleanup_of_a_cleaned_up_task_asks_no_runner() -> None:
+    # A long-finished task with no checkout left and no claim of ours has nothing to clean up, so
+    # cleanup settles it with a stat — never the runner's ``is_running``, which forks a ``docker ps``
+    # (hundreds of finished tasks × every host pass used to mean hundreds of forks per change).
+    runner = _CountingRunner(running=False)
+    spawner = _cleanup_spawner(runner, workspace_exists=False)
+    spawner.cleanup({"id": "t1", "state": "COMPLETE", "claimed_by": None})
+    spawner.cleanup({"id": "t2", "state": "DROPPED", "claimed_by": "another-host"})
+    assert runner.probes == 0
+
+
+def test_cleanup_still_probes_a_task_this_host_claims() -> None:
+    # A claim of ours still needs releasing once the container is gone, checkout or not.
+    runner = _CountingRunner(running=False)
+    spawner = _cleanup_spawner(runner, workspace_exists=False)
+    spawner.cleanup({"id": "t1", "state": "COMPLETE", "claimed_by": "host-1"})
+    assert runner.probes == 1
+
+
 def test_cleanup_is_a_no_op_for_non_terminal_task() -> None:
     removed: list[str] = []
     runner = _FakeRunner(running=False)

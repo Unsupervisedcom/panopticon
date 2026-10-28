@@ -537,6 +537,13 @@ class Spawner:
         container could clean up)."""
         if task["state"] not in TERMINAL_LABELS:
             return
+        if task.get("claimed_by") != self._runner_id and not self._exists(
+            f"{self._tasks_root.rstrip('/')}/{task['id']}"
+        ):
+            # Nothing left to do: no claim of ours to release and no checkout to remove. Settle
+            # that with a stat before asking the runner, whose ``is_running`` forks a ``docker ps``
+            # — once per long-finished task per pass adds up to hundreds of forks on every change.
+            return
         if self._runner_for(task).is_running(task["id"]):
             return  # container/session still up — wait for it to exit naturally
         if task.get("claimed_by") == self._runner_id:

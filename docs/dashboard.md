@@ -15,6 +15,7 @@ kept in sync with the `HOTKEYS` keymap and the modal `BINDINGS` in
 | `d` | Show the task's detail in a modal |
 | `o` | Toggle sort order: created ↔ updated |
 | `r` | Refresh from the task service now |
+| `D` | Toggle finished tasks: the newest 50 (the default) ↔ all of them |
 | `R` | Respawn a down task (releases its claim so the runner re-spawns it) |
 | `p` | Open the task's URL in the browser |
 | `w` | Open the task's workdir (its per-task clone) in the host's file manager |
@@ -29,6 +30,12 @@ kept in sync with the `HOTKEYS` keymap and the modal `BINDINGS` in
 | `Y` | Copy the task's id to the clipboard |
 | `?` | Help — a modal listing every key |
 | `q` | Quit |
+
+Finished (COMPLETE/DROPPED) tasks are capped at the **newest 50 trees** by `updated_at` — a
+long-lived host accumulates hundreds, and drawing them all on every change was most of the
+dashboard's CPU. A finished task under a still-active governor is always shown, as is every member
+of a kept finished ensemble. The counter on the right of the footer reads `finished: newest 50` while
+the cap is on; `D` lifts it.
 
 `x` (drop) is the only state transition the dashboard drives; every other transition starts a new
 agentic turn and is triggered from inside the container.

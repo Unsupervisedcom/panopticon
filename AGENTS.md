@@ -171,7 +171,10 @@ proof. The `dashboard` is opt-in (restarting it drops an attached supervisor bac
 rejoin with `panopticon console`).
 Spawning needs the base image — `make build`
 first. `make dashboard` runs the dashboard once without the attach loop (talks to
-`PANOPTICON_SERVICE_URL`).
+`PANOPTICON_SERVICE_URL`). `panopticon request-mix [LOG]` tallies the task service's access log
+(default `/tmp/panopticon-service.log`) into writes vs long-polls vs full reads, plus the busiest
+write endpoints — the first look when the control plane is under load (every write wakes every
+long-poller into a full list read).
 
 Lint + format is **Ruff** (`make lint` / `make format`); the ruleset lives under `[tool.ruff]` in
 `pyproject.toml` (a curated best-practices `select`, incl. `F401` unused-import — the rule that keeps
@@ -242,6 +245,12 @@ on every PR (the same commands the Makefile wraps).
   `tick`/`run` with fakes (branch watched tasks, skip a provisioned one, isolate a failing one,
   poll until a stop condition); integration tests over REST cover the loop (slug-set → branched →
   no-op), the unprovisioned-only watch-set, and `run_daemon` provisioning a slugged task.
+- `tests/taskservice/test_list_cost.py` — what keeps `GET /tasks` cheap under load: the
+  `terminal_limit` cap (the newest N finished *trees*; a finished child of an active governor and
+  every member of a kept finished ensemble always survive), the memoised artifact mark (scanned in
+  one batch; a finished task's "no" remembered, an active task's re-probed), the batched container
+  status matching the per-task one, and the restatement writes (same turn/blocked/lifecycle phase)
+  that neither save nor bump the change feed.
 - `tests/test_mcp.py` — the MCP server surface, exercised **in-memory** via the MCP
   client (`create_connected_server_and_client_session`) — tools mutate the task, the artifact
   resource reads back. No LLM, no HTTP (HTTP hosting is the runnable server, Slice 7a).

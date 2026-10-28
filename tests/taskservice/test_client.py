@@ -55,6 +55,18 @@ def test_list_tasks_versioned_returns_snapshot_and_cursor(client: TaskServiceCli
     assert [t["id"] for t in tasks] == [task["id"]] and again == bumped
 
 
+def test_list_calls_pass_the_terminal_limit(client: TaskServiceClient) -> None:
+    older = client.create_task("r1", "spike")["id"]
+    client.request_transition(older, "COMPLETE", trigger="finish")
+    newer = client.create_task("r1", "spike")["id"]
+    client.request_transition(newer, "COMPLETE", trigger="finish")
+
+    assert {t["id"] for t in client.list_tasks()} == {older, newer}
+    assert [t["id"] for t in client.list_tasks(terminal_limit=1)] == [newer]
+    tasks, _ = client.list_tasks_versioned(terminal_limit=1)
+    assert [t["id"] for t in tasks] == [newer]
+
+
 def test_drives_slug_and_transition(client: TaskServiceClient) -> None:
     task_id = client.create_task("r1", "spike")["id"]
     client.set_slug(task_id, "fix-widget")
