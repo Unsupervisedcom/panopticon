@@ -55,7 +55,9 @@ src/panopticon/
                    # git_url names one, ADR 0011 §1c); spawner.py = the spawn loop (claim an unclaimed task → spawn its
                    # container; prefills claude's input box with the task memo on a first spawn;
                    # `pause` stops a snoozed task's container + releases its claim, and the same
-                   # snooze gate keeps spawn/reconcile/heal off it until the deadline lapses);
+                   # snooze gate keeps spawn/reconcile/heal off it until the deadline lapses;
+                   # `sweep` removes a terminal, exited task's dind + config docker volumes — once
+                   # per process, never on a respawn, which needs the nested image cache);
                    # prefill.py = the detached input-box prefill
                    # poller (mirrors cloude-cade: pipe-pane watch for ESC[?2004h → paste-buffer the
                    # description, unsent); daemon.py = the provision-only pull loop;
@@ -219,7 +221,7 @@ on every PR (the same commands the Makefile wraps).
   the truth table folding the session service's reported `LifecyclePhase` with registration
   presence + runner liveness into the displayed `ContainerStatus` (queued/…/live/down/failed/
   disconnected), order-of-precedence and all.
-- `tests/test_spawner.py` — the spawn loop (ADR 0008): unit tests pin `spawn_one` (claim → spawn,
+- `tests/sessionservice/test_spawner.py` — the spawn loop (ADR 0008): unit tests pin `spawn_one` (claim → spawn,
   skip terminal/claimed, skip on a 409 lost claim), the **reported phase sequence** (claiming →
   preparing → building → starting → awaiting, and `failed` with the error when a step raises), the
   `reconcile` down-detection (a claimed-by-us in-flight task whose container is gone → clear the
@@ -230,12 +232,16 @@ on every PR (the same commands the Makefile wraps).
   with a press-R detail — + survivor-window budget reset), `pause` **snooze → stop** (a snoozed
   task's container is stopped and its claim released — even mid-turn; no-op when unclaimed/terminal/
   shell/awake/already stopped — and the matching gates that keep `spawn_one`/`reconcile`/`heal` off a
-  paused task within the same pass), and the `spawnable_tasks` filter; integration tests claim +
+  paused task within the same pass), `sweep` **volume removal** (a terminal task whose container
+  has exited → its container, then `panopticon-dind-<id>`, then `panopticon-config-<id>` — claimed
+  or not; skips non-terminal/still-running/shell/already-swept tasks; each volume's failure is
+  logged without skipping the other or being retried every pass), and the `spawnable_tasks` filter; integration tests claim +
   spawn against the real task service over REST (fake git/runner) and drive the whole snooze cycle
   (stopped + `queued` → the deadline lapses on an injected clock → claimed + respawned).
-- `tests/test_host.py` — the unified per-host daemon (ADR 0008/0011): a unit test isolates a
+- `tests/sessionservice/test_host.py` — the unified per-host daemon (ADR 0008/0011): a unit test isolates a
   failing task, another pins that each pass also `heal`s every task, and another that it `pause`s
-  every task **before** spawning it (so nothing re-spawns what a snooze just stopped); an integration test drives
+  every task **before** spawning it (so nothing re-spawns what a snooze just stopped), and another
+  that it `sweep`s every task right after `cleanup`; an integration test drives
   spawn → set slug → provision against the real task service over REST (claimed + spawned, then
   branched, no re-spawn).
 - `tests/test_daemon.py` — the observe-and-provision loop + its launch: unit tests drive
@@ -247,10 +253,11 @@ on every PR (the same commands the Makefile wraps).
   resource reads back. No LLM, no HTTP (HTTP hosting is the runnable server, Slice 7a).
 - `tests/test_skeleton.py` — the end-to-end walking skeleton (create → register → slug →
   transition → history) over the REST API, no Docker.
-- `tests/test_local_runner.py` / `tests/test_entrypoint.py` — the runner's emitted docker/tmux
+- `tests/sessionservice/test_local_runner.py` / `tests/container/test_entrypoint.py` — the runner's emitted docker/tmux
   commands (incl. the ADR 0011 `/workspace` mount + the CLI's spawn-prep→spawn flow, `is_running`'s
   `docker ps` probe + `has_session`'s `tmux list-sessions` probe for self-heal, `exit_reason`'s
-  `docker inspect` of a stopped container — OOM-kill before exit code) and the container
+  `docker inspect` of a stopped container — OOM-kill before exit code, `remove_volume`'s
+  `docker volume rm --force`, and that the volume names it's handed match what `spawn` mounts) and the container
   entrypoint loop (fakes; no Docker/LLM), plus a `skipif` docker integration test.
 - `tests/test_spawn.py` — spawn-prep (ADR 0011): unit tests pin the `clone --local` of the
   per-task checkout and the idempotency gate (skips when the checkout already exists), plus the

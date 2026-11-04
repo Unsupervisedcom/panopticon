@@ -19,6 +19,8 @@ from panopticon.sessionservice.local_runner import (
     LocalRunner,
     base_image,
     config_mount,
+    config_volume,
+    dind_volume,
 )
 from panopticon.sessionservice.runner import Runner
 
@@ -525,6 +527,23 @@ def test_stop_kills_session_and_force_removes_container_idempotently() -> None:
     LocalRunner("http://svc", run=rec).stop("panopticon-t1")
     assert (["tmux", "-L", "panopticon", "kill-session", "-t", "panopticon-t1"], False) in rec.calls
     assert (["docker", "rm", "--force", "panopticon-t1"], False) in rec.calls
+
+
+def test_remove_volume_force_removes_the_named_volume() -> None:
+    # `--force` turns an already-gone volume into a no-op; check=True so a real failure (a volume
+    # still mounted by a container) raises for the spawner's sweep to log.
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).remove_volume("panopticon-dind-t1")
+    assert rec.calls == [(["docker", "volume", "rm", "--force", "panopticon-dind-t1"], True)]
+
+
+def test_volume_names_match_what_spawn_mounts() -> None:
+    rec = _Recorder()
+    LocalRunner("http://svc", run=rec).spawn("t1", docker_in_docker=True)
+    docker_run = next(args for args, _check in rec.calls if args[:2] == ["docker", "run"])
+    mounts = [docker_run[i + 1] for i, arg in enumerate(docker_run) if arg == "--volume"]
+    assert any(m.startswith(f"{dind_volume('t1')}:") for m in mounts)
+    assert any(m.startswith(f"{config_volume('t1')}:") for m in mounts)
 
 
 def test_delete_workspace_contents_runs_root_container_to_empty_directory() -> None:

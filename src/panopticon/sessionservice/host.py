@@ -82,6 +82,10 @@ class HostDaemon:
         ``publish`` runs **before** ``cleanup``: a task can request its push and reach a terminal
         state in the same breath, and cleanup deletes the per-task clone the push reads from.
 
+        ``sweep`` runs **after** ``cleanup``: a terminal task whose container has exited also gets its
+        dind + config volumes removed (once per process). Respawns never reach it — they skip
+        terminal tasks, so the image cache a respawn relies on survives.
+
         A cheap REST-only **pre-pass flags every orphan ``healing`` first**, before any respawn. The
         respawn loop below is serial (each :meth:`Spawner.heal` blocks on ``docker run`` + the tmux
         session), so marking inside it would surface only the orphan currently coming back and leave
@@ -101,6 +105,7 @@ class HostDaemon:
                 self._spawner.reconcile(task)
                 self._spawner.heal(task)
                 self._spawner.cleanup(task)
+                self._spawner.sweep(task)  # terminal + exited → remove its docker volumes
             except Exception:  # a transient git/REST/FS error on one task must not stall the others
                 _log.warning("host pass failed for task %s", task.get("id"), exc_info=True)
                 continue

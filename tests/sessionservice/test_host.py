@@ -128,6 +128,9 @@ def test_tick_isolates_a_failing_task_from_the_others() -> None:
         def heal(self, task: JsonObj) -> None:
             return None
 
+        def sweep(self, task: JsonObj) -> None:
+            return None
+
         def cleanup(self, task: JsonObj) -> None:
             return None
 
@@ -159,6 +162,9 @@ def test_tick_heals_each_task_in_the_snapshot() -> None:
 
         def heal(self, task: JsonObj) -> None:
             healed.append(task["id"])
+
+        def sweep(self, task: JsonObj) -> None:
+            return None
 
         def cleanup(self, task: JsonObj) -> None:
             return None
@@ -195,6 +201,9 @@ def test_tick_flags_every_orphan_healing_before_any_respawn() -> None:
         def heal(self, task: JsonObj) -> None:
             events.append(f"heal:{task['id']}")
 
+        def sweep(self, task: JsonObj) -> None:
+            return None
+
         def cleanup(self, task: JsonObj) -> None:
             return None
 
@@ -228,6 +237,9 @@ def test_tick_pauses_each_task_before_spawning_it() -> None:
             return None
 
         def heal(self, task: JsonObj) -> None:
+            return None
+
+        def sweep(self, task: JsonObj) -> None:
             return None
 
         def cleanup(self, task: JsonObj) -> None:
@@ -265,6 +277,9 @@ def test_tick_publishes_each_task_before_cleaning_it_up() -> None:
         def heal(self, task: JsonObj) -> None:
             return None
 
+        def sweep(self, task: JsonObj) -> None:
+            return None
+
         def cleanup(self, task: JsonObj) -> None:
             events.append(f"cleanup:{task['id']}")
 
@@ -280,6 +295,43 @@ def test_tick_publishes_each_task_before_cleaning_it_up() -> None:
         [{"id": "t1"}, {"id": "t2"}]
     )  # type: ignore[arg-type]
     assert events == ["publish:t1", "cleanup:t1", "publish:t2", "cleanup:t2"]
+
+
+def test_tick_sweeps_each_task_after_cleaning_it_up() -> None:
+    # Every pass offers every task to `sweep` (it self-gates on terminal + exited), right after
+    # `cleanup` — the step that removes a terminal task's dind + config volumes.
+    events: list[str] = []
+
+    class _Spawner:
+        def mark_healing(self, task: JsonObj) -> None:
+            return None
+
+        def pause(self, task: JsonObj) -> None:
+            return None
+
+        def spawn_one(self, task: JsonObj) -> None:
+            return None
+
+        def reconcile(self, task: JsonObj) -> None:
+            return None
+
+        def heal(self, task: JsonObj) -> None:
+            return None
+
+        def cleanup(self, task: JsonObj) -> None:
+            events.append(f"cleanup:{task['id']}")
+
+        def sweep(self, task: JsonObj) -> None:
+            events.append(f"sweep:{task['id']}")
+
+    class _Provisioner:
+        def provision(self, task: JsonObj) -> None:
+            return None
+
+    daemon = HostDaemon(_FakeClient([]), _Spawner(), _Provisioner(), _NoopPublisher())  # type: ignore[arg-type]
+    daemon.tick([{"id": "t1"}, {"id": "t2"}])
+    daemon.tick([{"id": "t1"}])  # and again on the next pass — sweep's own gate makes it cheap
+    assert events == ["cleanup:t1", "sweep:t1", "cleanup:t2", "sweep:t2", "cleanup:t1", "sweep:t1"]
 
 
 def test_tick_isolates_a_failing_publish_from_the_other_tasks() -> None:
@@ -299,6 +351,9 @@ def test_tick_isolates_a_failing_publish_from_the_other_tasks() -> None:
             return None
 
         def heal(self, task: JsonObj) -> None:
+            return None
+
+        def sweep(self, task: JsonObj) -> None:
             return None
 
         def cleanup(self, task: JsonObj) -> None:
@@ -343,6 +398,9 @@ def test_run_calls_startup_reclaim_once_on_first_successful_tick() -> None:
             return None
 
         def heal(self, task: JsonObj) -> None:
+            return None
+
+        def sweep(self, task: JsonObj) -> None:
             return None
 
         def cleanup(self, task: JsonObj) -> None:
@@ -394,6 +452,9 @@ def test_run_blocks_on_the_change_feed_and_feeds_the_version_back() -> None:
         def heal(self, task: JsonObj) -> None:
             return None
 
+        def sweep(self, task: JsonObj) -> None:
+            return None
+
         def cleanup(self, task: JsonObj) -> None:
             return None
 
@@ -437,6 +498,9 @@ def test_run_survives_a_whole_pass_failure() -> None:
             return None
 
         def heal(self, task: JsonObj) -> None:
+            return None
+
+        def sweep(self, task: JsonObj) -> None:
             return None
 
         def cleanup(self, task: JsonObj) -> None:
@@ -603,6 +667,9 @@ def test_tick_cleans_up_each_task() -> None:
             return None
 
         def heal(self, task: JsonObj) -> None:
+            return None
+
+        def sweep(self, task: JsonObj) -> None:
             return None
 
         def cleanup(self, task: JsonObj) -> None:
