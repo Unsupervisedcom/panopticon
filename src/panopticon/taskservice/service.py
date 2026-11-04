@@ -14,12 +14,12 @@ import asyncio
 import logging
 import os
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
-from panopticon.core.artifacts import ArtifactStore, decode_b64_artifact
+from panopticon.core.artifacts import ArtifactStore, decode_b64_artifact, is_hidden
 from panopticon.core.dirs import credential_dir_path, secrets_file_path
 from panopticon.core.features import require_available_agent_cli
 from panopticon.core.layers import LayerStore
@@ -49,6 +49,47 @@ def _utc_now_iso() -> str:
 
 def _uuid_hex() -> str:
     return uuid.uuid4().hex
+
+
+def cap_terminal_tasks(tasks: list[Task], limit: int) -> list[Task]:
+    """Keep every active task and only the ``limit`` most recently updated terminal ones —
+    counted as trees: ``limit`` terminal *roots* (no governor in ``tasks``), each with its subtree.
+
+    Terminal tasks pile up forever and are what a task list mostly consists of on a long-lived
+    host, yet a viewer only ever looks at the newest few. Two kinds of terminal task survive the
+    cap regardless, so a capped list still draws whole governance trees:
+
+    - one with a non-terminal governor somewhere up its chain — the dashboard files it in the
+      *active* section under that governor, where its absence would look like a lost child;
+    - one governed (transitively) by a terminal task the cap kept, so a finished ensemble isn't
+      shown with only some of its members.
+
+    Order is preserved (the input's), so the cap composes with any caller-side sort."""
+    by_id = {t.id: t for t in tasks}
+
+    def has_active_ancestor(task: Task) -> bool:
+        seen: set[str] = set()
+        gov = by_id.get(task.governor_task_id or "")
+        while gov is not None and gov.id not in seen:
+            if gov.state not in TERMINAL_LABELS:
+                return True
+            seen.add(gov.id)
+            gov = by_id.get(gov.governor_task_id or "")
+        return False
+
+    terminal = [t for t in tasks if t.state in TERMINAL_LABELS and not has_active_ancestor(t)]
+    roots = [t for t in terminal if by_id.get(t.governor_task_id or "") is None]
+    kept = {t.id for t in sorted(roots, key=lambda t: t.updated_at or "", reverse=True)[:limit]}
+    # Pull each kept root's (terminal) descendants in with it.
+    grew = True
+    while grew:
+        grew = False
+        for t in terminal:
+            if t.id not in kept and t.governor_task_id in kept:
+                kept.add(t.id)
+                grew = True
+    capped = {t.id for t in terminal} - kept
+    return [t for t in tasks if t.id not in capped]
 
 
 class UnknownWorkflow(Exception):
@@ -141,6 +182,13 @@ class TaskService:
         # events into the same feed (``tasks_version`` adds it; ``_notify_change`` fires listeners).
         self._ephemeral_epoch = 0
         self._change_listeners: list[Callable[[], None]] = []
+        # The task list's artifact mark, memoised: every ``GET /tasks`` asks it of every row, and
+        # a directory scan per row per long-poll was most of the endpoint's cost. Coherent because
+        # this service is the artifact store's only writer (:meth:`put_artifact` sets ``True``) and
+        # nothing deletes an artifact. A ``False`` is only kept for a terminal task — nothing writes
+        # to one, whereas an active task's agent may (and an operator may drop a file into an active
+        # task's folder by hand), so those few rows are re-probed, in one batch, each time.
+        self._has_artifacts: dict[str, bool] = {}
 
     async def init(self) -> None:
         """Bootstrap the store's schema (idempotent). Called by the task service's lifespan."""
@@ -437,14 +485,21 @@ class TaskService:
     async def list_tasks(self) -> list[Task]:
         return await self._store.list_tasks()
 
-    async def list_tasks_summary(self, *, terminal: bool | None = None) -> list[Task]:
-        """Return tasks without history. Optionally filter to terminal-only or active-only."""
+    async def list_tasks_summary(
+        self, *, terminal: bool | None = None, terminal_limit: int | None = None
+    ) -> list[Task]:
+        """Return tasks without history. Optionally filter to terminal-only or active-only, and
+        cap the terminal tasks with ``terminal_limit`` (see :func:`cap_terminal_tasks`)."""
         tasks = await self._store.list_tasks_summary()
-        if terminal is None:
-            return tasks
-        return [t for t in tasks if (t.state in TERMINAL_LABELS) == terminal]
+        if terminal_limit is not None:  # before the filter: the cap reads governors' states
+            tasks = cap_terminal_tasks(tasks, terminal_limit)
+        if terminal is not None:
+            tasks = [t for t in tasks if (t.state in TERMINAL_LABELS) == terminal]
+        return tasks
 
-    async def _tasks_snapshot(self, *, terminal: bool | None = None) -> tuple[int, list[Task]]:
+    async def _tasks_snapshot(
+        self, *, terminal: bool | None = None, terminal_limit: int | None = None
+    ) -> tuple[int, list[Task]]:
         """Read the version before the query so the reported version is a lower bound.
 
         If a mutation commits during the ``await``, the version we already captured is from before
@@ -452,7 +507,7 @@ class TaskService:
         waiting for ``MAX_WAIT_SECONDS``.
         """
         version = self.tasks_version()
-        tasks = await self.list_tasks_summary(terminal=terminal)
+        tasks = await self.list_tasks_summary(terminal=terminal, terminal_limit=terminal_limit)
         return version, tasks
 
     def tasks_version(self) -> int:
@@ -624,6 +679,11 @@ class TaskService:
         untouched, so a deliberate block survives turn flips.
         """
         task = await self.get_task(task_id)
+        if task.turn == turn:
+            # The turn hooks fire on every prompt and every stop, so most calls restate the
+            # current turn. Saving one would bump the change feed and wake every long-poller to
+            # re-read the task list for nothing — the commonest no-op write the service sees.
+            return task
         task.turn = turn
         await self._save_task(task)
         return task
@@ -631,6 +691,8 @@ class TaskService:
     async def set_blocked(self, task_id: str, blocked: bool) -> Task:
         """Set/clear the task's deliberate ``blocked`` marker (orthogonal to the turn)."""
         task = await self.get_task(task_id)
+        if task.blocked == blocked:
+            return task  # a restatement: no save, so no change-feed wake (as in set_turn)
         task.blocked = blocked
         await self._save_task(task)
         _log.debug("task %s: blocked=%s", task_id, blocked)
@@ -827,6 +889,8 @@ class TaskService:
     async def put_artifact(self, task_id: str, name: str, content: bytes) -> None:
         await self.get_task(task_id)  # ensure the task exists
         await self._artifacts.put(task_id, name, content)
+        if not is_hidden(name):
+            self._has_artifacts[task_id] = True
         # Artifacts live outside the store, so writing one bumps no version of its own — but the
         # task list reports whether a task *has* one, so a parked long-poll has to wake or the
         # first plan.md would go unnoticed until some unrelated mutation. Same treatment as the
@@ -849,7 +913,24 @@ class TaskService:
         tasks the caller has already read, once per row, and a task with no artifacts and a task
         that doesn't exist both answer ``False``. Paying for a store read per row to tell those
         apart would buy nothing."""
-        return await self._artifacts.has_unhidden_artifacts(task_id)
+        return task_id in await self.tasks_with_unhidden_artifacts([task_id])
+
+    async def tasks_with_unhidden_artifacts(self, tasks: Iterable[Task | str]) -> set[str]:
+        """The ids among ``tasks`` that carry an artifact mark — memoised (see ``__init__``), with
+        every miss resolved in one batched artifact-store call. Accepts bare ids too; an id with no
+        task to say whether it's terminal is treated as active (its ``False`` isn't kept)."""
+        terminal: dict[str, bool] = {}
+        for t in tasks:
+            if isinstance(t, str):
+                terminal[t] = False
+            else:
+                terminal[t.id] = t.state in TERMINAL_LABELS
+        misses = [tid for tid in terminal if tid not in self._has_artifacts]
+        found = await self._artifacts.tasks_with_unhidden_artifacts(misses) if misses else set()
+        for tid in misses:
+            if tid in found or terminal[tid]:
+                self._has_artifacts[tid] = tid in found
+        return found | {tid for tid in terminal if self._has_artifacts.get(tid)}
 
     # -- repo artifacts -----------------------------------------------------------
     #
@@ -936,11 +1017,20 @@ class TaskService:
     ) -> ContainerLifecycle:
         """Record the runner's latest spawn phase for a task (an upsert; the newest wins)."""
         await self.get_task(task_id)  # ensure the task exists
+        previous = self._lifecycles.get(task_id)
         lifecycle = ContainerLifecycle(
             task_id=task_id, runner_id=runner_id, phase=phase, detail=detail, at=self._clock()
         )
         self._lifecycles[task_id] = lifecycle
-        self._notify_change()
+        # A runner re-reporting the phase it already holds (a heal/reconcile pass restating
+        # ``failed``, say) changes nothing the task list renders — record the fresher ``at`` but
+        # don't wake every long-poller over it.
+        if previous is None or (previous.phase, previous.detail, previous.runner_id) != (
+            phase,
+            detail,
+            runner_id,
+        ):
+            self._notify_change()
         _log.debug("task %s: lifecycle phase=%s", task_id, phase.value)
         return lifecycle
 
@@ -957,14 +1047,25 @@ class TaskService:
     def container_status(self, task: Task) -> ContainerStatus:
         """The task's composed container-lifecycle status (the single string the dashboard shows):
         fold the reported phase together with registration presence + runner liveness."""
-        lifecycle = self._lifecycles.get(task.id)
-        return compose_container_status(
-            terminal=task.state in TERMINAL_LABELS,
-            claimed=task.claimed_by is not None,
-            registered=bool(self.registrations(task.id)),
-            runner_live=task.claimed_by in self.live_runners(),
-            phase=lifecycle.phase if lifecycle is not None else None,
-        )
+        return self.container_statuses([task])[task.id]
+
+    def container_statuses(self, tasks: Iterable[Task]) -> dict[str, ContainerStatus]:
+        """:meth:`container_status` for many tasks at once, keyed by id. The registered-task and
+        live-runner sets are built once for the batch rather than rescanned per task, so a task
+        list costs O(tasks + registrations) instead of their product."""
+        registered = {r.task_id for r in self._registrations.values()}
+        live = self.live_runners()
+        statuses: dict[str, ContainerStatus] = {}
+        for task in tasks:
+            lifecycle = self._lifecycles.get(task.id)
+            statuses[task.id] = compose_container_status(
+                terminal=task.state in TERMINAL_LABELS,
+                claimed=task.claimed_by is not None,
+                registered=task.id in registered,
+                runner_live=task.claimed_by in live,
+                phase=lifecycle.phase if lifecycle is not None else None,
+            )
+        return statuses
 
     # -- host (runner) liveness + reclaim ------------------------------------------
     #

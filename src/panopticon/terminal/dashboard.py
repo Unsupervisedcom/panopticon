@@ -1905,6 +1905,11 @@ class Hotkey:
         return Binding(self.key, self.action, self.label, show=self.show, key_display=self.display)
 
 
+#: How many finished (COMPLETE/DROPPED) task trees the dashboard fetches and draws by default —
+#: the newest by ``updated_at``. A long-lived host accumulates hundreds; drawing every one on every
+#: change-feed tick was most of the dashboard's CPU. `D` lifts the cap.
+TERMINAL_LIMIT = 50
+
 HOTKEYS: tuple[Hotkey, ...] = (
     Hotkey("t", "attach", "Attach", "Attach to the task's container tmux session"),
     Hotkey("n", "new_task", "New task", "New task (pick repo → workflow → describe)"),
@@ -1913,6 +1918,13 @@ HOTKEYS: tuple[Hotkey, ...] = (
     Hotkey("d", "toggle_detail", "Detail", "Show the task detail (modal)"),
     Hotkey("o", "toggle_sort", "Sort order", "Toggle sort: created ↔ updated", show=False),
     Hotkey("r", "refresh", "Refresh", "Refresh from the task service now", show=False),
+    Hotkey(
+        "D",
+        "toggle_all_finished",
+        "All finished",
+        f"Toggle finished tasks: the newest {TERMINAL_LIMIT} ↔ all of them",
+        show=False,
+    ),
     Hotkey("R", "respawn", "Respawn", "Respawn a down task (release its claim)", show=False),
     Hotkey("p", "open_url", "Open URL", "Open the task's URL in the browser", show=False),
     Hotkey(
@@ -2043,6 +2055,27 @@ class TaskDetailScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
+def _same_rows(
+    a: list[tuple[str, tuple[Text | str, ...]]], b: list[tuple[str, tuple[Text | str, ...]]]
+) -> bool:
+    """Whether two task-table row lists (key + cells) render identically."""
+    return len(a) == len(b) and all(
+        key_a == key_b
+        and len(cells_a) == len(cells_b)
+        and all(_same_cell(x, y) for x, y in zip(cells_a, cells_b, strict=True))
+        for (key_a, cells_a), (key_b, cells_b) in zip(a, b, strict=True)
+    )
+
+
+def _same_cell(a: Text | str, b: Text | str) -> bool:
+    """Whether two task-table cells render identically. ``Text.__eq__`` alone won't do: it compares
+    the plain text and spans but not the base style, so a row dimmed by a snooze would compare
+    equal to its undimmed self and never be repainted."""
+    if isinstance(a, Text) and isinstance(b, Text):
+        return a.plain == b.plain and a.style == b.style and a.spans == b.spans
+    return type(a) is type(b) and a == b
+
+
 def _setup_task_columns(table: DataTable[Any], *, multi_runner: bool) -> None:
     """Add the task table's columns. Includes a "runner" column when tasks span multiple hosts.
 
@@ -2100,6 +2133,14 @@ class Dashboard(App[None]):
         )
         self._version = 0  # the change-feed cursor (X-Tasks-Version) the worker long-polls against
         self._refresh_failing = False  # the last refresh's REST read failed (warn once per outage)
+        # How many finished task trees to fetch; None → all of them (`D` toggles).
+        self._terminal_limit: int | None = TERMINAL_LIMIT
+        # The last task list fetched, re-rendered when only the clock moved (a snooze ticking);
+        # None until a read has succeeded.
+        self._snapshot: list[JsonObj] | None = None
+        # The rows (key + cells) the table currently shows, so a render that would draw the same
+        # rows skips the table entirely.
+        self._rendered: list[tuple[str, tuple[Text | str, ...]]] = []
         self._tasks: dict[str, JsonObj] = {}
         self._repo_names: dict[str, str] = {}  # repo id → name; populated by _load_repo_names
         self._repo_clis: dict[
@@ -2169,21 +2210,27 @@ class Dashboard(App[None]):
         # first poll should wait for the *next* change rather than re-firing on the current version.
         # service not up yet — fall through; the loop retries with back-off
         with contextlib.suppress(Exception):
-            _, self._version = self._client.list_tasks_versioned()
+            _, self._version = self._client.list_tasks_versioned(
+                terminal_limit=self._terminal_limit
+            )
         while not worker.is_cancelled:
             try:
-                _, version = self._client.list_tasks_versioned(
-                    since=self._version, wait=self._refresh_interval
+                tasks, version = self._client.list_tasks_versioned(
+                    since=self._version,
+                    wait=self._refresh_interval,
+                    terminal_limit=self._terminal_limit,
                 )
             except Exception:  # transient feed error (service restart / blip) — back off, retry
                 time.sleep(min(self._refresh_interval or 1.0, 1.0))
                 continue
             if worker.is_cancelled:
                 return
-            if version != self._version:  # a task changed past our cursor → rebuild the table
+            if version != self._version:  # a task changed past our cursor → redraw from it
                 previous, self._version = self._version, version
                 try:
-                    refreshed = self.call_from_thread(self._refresh)
+                    # The long-poll already carries the fresh snapshot: draw it rather than
+                    # fetching the whole list a second time.
+                    refreshed = self.call_from_thread(self._refresh, tasks)
                 except RuntimeError:  # app shut down between the cancel check and the dispatch
                     return
                 if not refreshed:  # the rebuild's read failed — rewind so the next poll retries it
@@ -2205,16 +2252,24 @@ class Dashboard(App[None]):
         return self._artifact_tmp.name
 
     def action_refresh(self) -> None:
+        """Fetch the task list now and draw it (`r`, the first paint, and after a local action)."""
         self._refresh()
 
-    def _refresh(self) -> bool:
-        """Rebuild the table from the task service; False if its REST read failed.
+    def action_toggle_all_finished(self) -> None:
+        """Lift (or restore) the cap on how many finished tasks are fetched and drawn."""
+        self._terminal_limit = None if self._terminal_limit is not None else TERMINAL_LIMIT
+        self.action_refresh()
+
+    def _refresh(self, tasks: list[JsonObj] | None = None) -> bool:
+        """Draw ``tasks`` — or, when not given, a fresh fetch of the task list — and return False
+        if a REST read failed.
 
         Every read happens before the table is touched, so a failure (a 5xx, a timeout, the
         service down) leaves the last-drawn table in place rather than raising — an exception
         here would exit the app, whether it ran on the UI thread or in the feed worker."""
         try:
-            tasks = self._client.list_tasks()
+            if tasks is None:
+                tasks = self._client.list_tasks(terminal_limit=self._terminal_limit)
             runners = self._client.live_runners()
         except httpx.HTTPError:
             if not self._refresh_failing:  # one notice per outage, not one per retry
@@ -2226,14 +2281,26 @@ class Dashboard(App[None]):
                 )
             return False
         self._refresh_failing = False
+        self._render(tasks, runners)
+        return True
+
+    def _render(self, tasks: list[JsonObj], runners: list[JsonObj]) -> None:
+        """Draw ``tasks`` (a ``GET /tasks`` snapshot) into the table, touching as little as it can.
+
+        The rows are computed first and compared with what's on screen: when they're identical (a
+        change to something the table doesn't show — most change-feed ticks) the table is left
+        alone, since clearing and re-adding every row on every tick was the dashboard's main CPU
+        cost. Anything else rebuilds; patching only the changed cells was measured to cost the same
+        as a rebuild, the table's relayout dominating either way."""
+        self._snapshot = tasks
         table = self.query_one("#tasks", DataTable)
         selected = self._current  # keep the operator's highlight across the rebuild (feed refresh)
         display_now = self._now()  # one clock read per repaint drives every snooze label/dimming
-        table.clear()
         ordered = sorted(tasks, key=_make_sort_key(self._sort_by_updated, display_now))
         new_multi_runner = len({r.get("host") for r in runners if r.get("host")}) > 1
         if new_multi_runner != self._multi_runner:
-            table.clear(columns=True)  # rows already gone; also clears columns for rebuild
+            table.clear(columns=True)  # drop the columns too — they're rebuilt with the runner one
+            self._rendered = []
             self._multi_runner = new_multi_runner
             _setup_task_columns(table, multi_runner=self._multi_runner)
         # An actively snoozed task is muted, so it leaves both halves of the counter — the
@@ -2246,8 +2313,13 @@ class Dashboard(App[None]):
         ]
         agent_on = sum(1 for t in active if t.get("turn") == "agent")
         sort_label = "sort: updated" if self._sort_by_updated else "sort: created"
+        finished_label = (
+            f"  ·  finished: newest {self._terminal_limit} (D: all)"
+            if self._terminal_limit is not None
+            else ""
+        )
         self.query_one(_StatusFooter).set_counter(
-            f"active agents {agent_on}/{len(active)}  ·  {sort_label}"
+            f"active agents {agent_on}/{len(active)}  ·  {sort_label}{finished_label}"
         )
         # Inject repo_name so _matches can search on it without a separate lookup per task.
         # Also resolve the task's effective agent CLI (task override → repo default) for the detail view.
@@ -2300,12 +2372,12 @@ class Dashboard(App[None]):
         # Build the task index (real tasks only; ensemble placeholders are synthetic).
         self._tasks = {t["id"]: t for t, _ in visible if not t.get("_ensemble")}
 
-        def _add_row(task: JsonObj, prefix: str) -> None:
+        def _row(task: JsonObj, prefix: str) -> tuple[str, tuple[Text | str, ...]]:
             if task.get("_ensemble"):
                 gov_id = task["_governor_id"]
                 slug_cell = Text(f"{prefix}...", style="dim")
                 runner_blank = (Text(""),) if self._multi_runner else ()
-                table.add_row(
+                return f"{_ENSEMBLE_KEY_PREFIX}{gov_id}", (
                     Text(""),
                     Text(""),
                     Text(""),
@@ -2313,7 +2385,6 @@ class Dashboard(App[None]):
                     Text(""),
                     Text(""),  # marks: a placeholder stands for hidden rows, so it carries none
                     slug_cell,
-                    key=f"{_ENSEMBLE_KEY_PREFIX}{gov_id}",
                 )
             else:
                 state_cell: Text | str = task["state"]
@@ -2345,7 +2416,7 @@ class Dashboard(App[None]):
                     marks_cell = _dim(marks_cell)
                     slug_cell_real = _dim(slug_cell_real)
                 runner_extra = (runner_cell,) if runner_cell is not None else ()
-                table.add_row(
+                return task["id"], (
                     state_cell,
                     turn_cell,
                     status_cell,
@@ -2353,19 +2424,19 @@ class Dashboard(App[None]):
                     repo_cell,
                     marks_cell,
                     slug_cell_real,
-                    key=task["id"],
                 )
 
-        for task, prefix in active_visible:
-            _add_row(task, prefix)
-        for task, prefix in terminal_visible:
-            _add_row(task, prefix)
+        rows = [_row(task, prefix) for task, prefix in visible]
+        if not _same_rows(rows, self._rendered):
+            table.clear()
+            for key, cells in rows:
+                table.add_row(*cells, key=key)
+            self._rendered = rows
         target = selected if selected in self._tasks else next(iter(self._tasks), None)
-        if target is not None:
+        if target is not None and table.cursor_row != table.get_row_index(target):
             table.move_cursor(row=table.get_row_index(target))
         self._current = target  # `d` opens the detail modal for whatever's highlighted
         self._schedule_snooze_refresh(display_now)
-        return True
 
     def _schedule_snooze_refresh(self, now: datetime) -> None:
         """(Re)arm a one-shot timer for the soonest finite-snooze display change.
@@ -2387,7 +2458,7 @@ class Dashboard(App[None]):
     def _refresh_snooze_display(self) -> None:
         """Repaint when a finite snooze's label is due to change (fired by the one-shot timer)."""
         self._snooze_timer = None
-        self.action_refresh()
+        self._refresh(self._snapshot)  # a clock-only change: redraw the last snapshot, no fetch
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         key = event.row_key.value
